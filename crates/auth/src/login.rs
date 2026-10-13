@@ -111,8 +111,20 @@ pub async fn device_code_with(
                     .to_string(),
             )
             .send()
-            .await
-            .map_err(|e| err(format!("device auth poll: {}", e.without_url())))?;
+            .await;
+        let r = match r {
+            Ok(r) => r,
+            Err(e) => {
+                // transient network error while polling: keep polling until timeout
+                let el = start.elapsed();
+                if el >= max_wait {
+                    return Err(err(format!("device auth poll: {}", e.without_url())));
+                }
+                tracing::debug!("device auth poll transient error: {}", e.without_url());
+                tokio::time::sleep(Duration::from_secs(uc.interval.max(1)).min(max_wait - el)).await;
+                continue;
+            }
+        };
         let st = r.status();
         if st.is_success() {
             break r
