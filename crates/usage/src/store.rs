@@ -419,6 +419,65 @@ pub struct RecentQuery {
     pub since_ms: Option<i64>,
     pub filters: Filters,
     pub errors_only: bool,
+    /// Rows to skip (offset paging; `before_ms` is the stable cursor alternative).
+    pub offset: usize,
+    /// Served tier: `priority` (`fast`), `flex` or `standard`.
+    pub tier: Option<String>,
+    /// Only rows whose requested priority/flex tier was not served.
+    pub downgraded: bool,
+}
+
+/// WHERE clause (without ORDER/LIMIT) + params for [`recent`] / [`recent_count`].
+/// `None` ⇒ nothing can match.
+fn recent_where(c: &Connection, q: &RecentQuery) -> rusqlite::Result<Option<(String, Vec<i64>)>> {
+    let Some((fsql, fparams)) = q.filters.sql(c)? else {
+        return Ok(None);
+    };
+    let hi = q.before_ms.map(|b| (b << SEQ_BITS) - 1).unwrap_or(i64::MAX);
+    let lo = q.since_ms.map(|s| s << SEQ_BITS).unwrap_or(0);
+    let mut s = format!("id BETWEEN ? AND ?{fsql}");
+    let mut ps: Vec<i64> = vec![lo, hi];
+    ps.extend(fparams);
+    if q.errors_only {
+        s.push_str(" AND (error IS NOT NULL OR status >= 400)");
+    }
+    // Unknown label ⇒ -1 (never a valid id).
+    let prio = label_id(c, "priority")?.unwrap_or(-1);
+    let flex = label_id(c, "flex")?.unwrap_or(-1);
+    match q.tier.as_deref().map(|t| t.trim().to_ascii_lowercase()) {
+        None => {}
+        Some(t) if t.is_empty() => {}
+        Some(t) if t == "priority" || t == "fast" => {
+            s.push_str(" AND tier = ?");
+            ps.push(prio);
+        }
+        Some(t) if t == "flex" => {
+            s.push_str(" AND tier = ?");
+            ps.push(flex);
+        }
+        Some(_) => {
+            s.push_str(" AND (tier IS NULL OR tier NOT IN (?, ?))");
+            ps.extend([prio, flex]);
+        }
+    }
+    if q.downgraded {
+        s.push_str(" AND req_tier IN (?, ?) AND (tier IS NULL OR tier != req_tier)");
+        ps.extend([prio, flex]);
+    }
+    Ok(Some((s, ps)))
+}
+
+/// Total rows matching `q` (ignores `limit`/`offset`).
+pub(crate) fn recent_count(c: &Connection, q: &RecentQuery) -> Result<u64, UsageError> {
+    let Some((w, ps)) = recent_where(c, q)? else {
+        return Ok(0);
+    };
+    let n: i64 = c.query_row(
+        &format!("SELECT COUNT(*) FROM requests WHERE {w}"),
+        params_from_iter(ps),
+        |r| r.get(0),
+    )?;
+    Ok(n as u64)
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -512,22 +571,18 @@ pub(crate) fn recent(
     prices: &crate::PriceTable,
 ) -> Result<Vec<RecordRow>, UsageError> {
     let names = label_map(c)?;
-    let Some((fsql, fparams)) = q.filters.sql(c)? else {
+    let Some((w, mut ps)) = recent_where(c, q)? else {
         return Ok(vec![]);
     };
-    let hi = q.before_ms.map(|b| (b << SEQ_BITS) - 1).unwrap_or(i64::MAX);
-    let lo = q.since_ms.map(|s| s << SEQ_BITS).unwrap_or(0);
     let sql = format!(
         "SELECT id,account,first_account,model,effort,transport,endpoint,status,error,retries,switches,\
          ttft_ms,duration_ms,in_tok,out_tok,cached_tok,reasoning_tok,key,instance,plan,p_pct,p_reset,s_pct,s_reset,\
          tier,cw_tok,thread,turn,EXISTS(SELECT 1 FROM error_detail d WHERE d.id = requests.id),\
          req_tier,resp_model,resp_effort \
-         FROM requests WHERE id BETWEEN ? AND ?{fsql}{} ORDER BY id DESC LIMIT ?",
-        if q.errors_only { " AND (error IS NOT NULL OR status >= 400)" } else { "" }
+         FROM requests WHERE {w} ORDER BY id DESC LIMIT ? OFFSET ?"
     );
-    let mut ps: Vec<i64> = vec![lo, hi];
-    ps.extend(fparams);
     ps.push(q.limit.clamp(1, 1000) as i64);
+    ps.push(q.offset.min(1_000_000) as i64);
     let mut st = c.prepare(&sql)?;
     let name = |id: Option<i64>| id.and_then(|i| names.get(&i).cloned());
     let rows = st.query_map(params_from_iter(ps), |r| {
@@ -653,6 +708,8 @@ pub struct SummaryQuery {
     pub filters: Filters,
     /// `Some(tz_offset_minutes)` ⇒ also return per-day buckets (local day = UTC + offset).
     pub bucket_day: Option<i32>,
+    /// With `bucket_day`: hourly instead of daily buckets (`day` = `YYYY-MM-DD HH`).
+    pub bucket_hour: bool,
 }
 impl Default for SummaryQuery {
     fn default() -> Self {
@@ -662,6 +719,7 @@ impl Default for SummaryQuery {
             group_by: vec![Dim::Account, Dim::Model],
             filters: Filters::default(),
             bucket_day: None,
+            bucket_hour: false,
         }
     }
 }
@@ -897,10 +955,20 @@ pub(crate) fn summary(
         if let Some(tz) = q.bucket_day {
             let off = i64::from(tz) * 60_000;
             let id: i64 = r.get(9)?;
-            let day = ((id >> SEQ_BITS) + off).div_euclid(86_400_000);
-            let b = days.entry(day).or_insert_with(|| DayBucket {
-                day: civil(day),
-                start_ms: day * 86_400_000 - off,
+            let width = if q.bucket_hour { 3_600_000 } else { 86_400_000 };
+            let local = (id >> SEQ_BITS) + off;
+            let k = local.div_euclid(width);
+            let b = days.entry(k).or_insert_with(|| DayBucket {
+                day: if q.bucket_hour {
+                    format!(
+                        "{} {:02}",
+                        civil(local.div_euclid(86_400_000)),
+                        local.rem_euclid(86_400_000) / 3_600_000
+                    )
+                } else {
+                    civil(k)
+                },
+                start_ms: k * width - off,
                 ..Default::default()
             });
             b.count += 1;

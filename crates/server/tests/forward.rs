@@ -968,6 +968,21 @@ async fn usage_key_label_instance_and_quota_api() {
     assert!(!all.to_string().contains(KEY));
     let none = get(format!("http://{}/usage/v1/records?key=other", e.proxy)).await;
     assert!(none["records"].as_array().unwrap().is_empty());
+    // window, paging, tier and downgrade filters
+    let n = |v: &serde_json::Value| v["records"].as_array().unwrap().len();
+    let v = get(format!("http://{}/usage/v1/records?range=1h", e.proxy)).await;
+    assert_eq!((n(&v), v["total"].as_u64()), (1, Some(1)), "{v}");
+    assert!(v["next_offset"].is_null());
+    let v = get(format!("http://{}/usage/v1/records?offset=1", e.proxy)).await;
+    assert_eq!((n(&v), v["total"].as_u64()), (0, Some(1)));
+    let v = get(format!("http://{}/usage/v1/records?from=1&to=2", e.proxy)).await;
+    assert_eq!((n(&v), v["total"].as_u64()), (0, Some(0)));
+    let v = get(format!("http://{}/usage/v1/records?tier=fast", e.proxy)).await;
+    assert_eq!(n(&v), 1);
+    let v = get(format!("http://{}/usage/v1/records?tier=standard", e.proxy)).await;
+    assert_eq!(n(&v), 0);
+    let v = get(format!("http://{}/usage/v1/records?downgraded=1", e.proxy)).await;
+    assert_eq!(n(&v), 0);
     let s = get(format!(
         "http://{}/usage/v1/summary?group=key,instance",
         e.proxy
@@ -1089,7 +1104,18 @@ async fn summary_day_buckets_api() {
     assert!(b[0]["day"].as_str().unwrap().len() == 10);
     let v: serde_json::Value = get("range=7d").await.json().await.unwrap();
     assert!(v["summary"].get("buckets").is_none());
-    assert_eq!(get("bucket=hour").await.status(), 400);
+    assert_eq!(get("bucket=week").await.status(), 400);
+    let v: serde_json::Value = get("range=24h&bucket=hour&tz=0&group=account")
+        .await
+        .json()
+        .await
+        .unwrap();
+    let b = v["summary"]["buckets"].as_array().unwrap();
+    assert_eq!(
+        (b.len(), b[0]["day"].as_str().unwrap().len()),
+        (1, 13),
+        "{v}"
+    );
     assert_eq!(get("bucket=day&tz=9999").await.status(), 400);
     // numeric params next to the flattened filters
     let now = std::time::SystemTime::now()

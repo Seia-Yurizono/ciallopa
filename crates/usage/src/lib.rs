@@ -355,6 +355,14 @@ impl Recorder {
             .map_err(|_| UsageError::Gone)?
     }
 
+    /// Number of rows matching `q` (ignores limit/offset).
+    pub async fn recent_count(&self, q: RecentQuery) -> Result<u64, UsageError> {
+        let p = self.path.clone();
+        tokio::task::spawn_blocking(move || store::recent_count(&store::open_ro(&p)?, &q))
+            .await
+            .map_err(|_| UsageError::Gone)?
+    }
+
     pub async fn summary(&self, q: SummaryQuery) -> Result<Summary, UsageError> {
         let (p, pr) = (self.path.clone(), self.prices());
         tokio::task::spawn_blocking(move || store::summary(&store::open_ro(&p)?, &q, &pr))
@@ -826,6 +834,27 @@ mod tests {
         assert_eq!(new.response_model.as_deref(), Some("gpt-5.5-2026-09-30"));
         assert_eq!(new.response_effort.as_deref(), Some("medium"));
         assert_eq!(new.model_mismatch, Some(false));
+        let q = |tier: Option<&str>, downgraded| RecentQuery {
+            limit: 10,
+            tier: tier.map(Into::into),
+            downgraded,
+            ..Default::default()
+        };
+        let cnt = |q| store::recent_count(&c, &q).unwrap();
+        assert_eq!(cnt(q(None, true)), 1);
+        assert_eq!(cnt(q(Some("standard"), false)), 2);
+        assert_eq!(cnt(q(Some("fast"), false)), 0);
+        let page = store::recent(
+            &c,
+            &RecentQuery {
+                offset: 1,
+                ..q(None, false)
+            },
+            &PriceTable::default(),
+        )
+        .unwrap();
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].account.as_deref(), Some("old-acct"));
     }
 
     #[test]

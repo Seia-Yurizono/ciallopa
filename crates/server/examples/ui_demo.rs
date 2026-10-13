@@ -1,4 +1,4 @@
-//! Local demo for the /ui page: fake usage data (incl. XSS-looking names), mock accounts,
+//! Local demo for the /ui page: fake usage data (a few XSS-looking names, two instances), mock accounts,
 //! no upstream traffic. `cargo run --example ui_demo -- 127.0.0.1:8399 /tmp/ui-demo`
 #![allow(clippy::unwrap_used)]
 use ciallopa_core::Config;
@@ -31,6 +31,8 @@ async fn main() {
         serde_json::json!({"needs_relogin":true,"disabled":true}),
     );
     acct("evil", serde_json::json!({"email": EVIL}));
+    // configured, never used: empty card
+    acct("dave", serde_json::json!({"plan_type":"team"}));
     let cfg = Config::parse(&format!(
         "listen = \"{listen}\"\ninstance_id = \"demo-vps\"\nauth_dir = \"{}\"\n\
          [[api_keys]]\nlabel = \"laptop\"\nkey = \"{DEMO_KEY}\"\n\
@@ -42,6 +44,8 @@ async fn main() {
     ))
     .unwrap();
     let rec = Recorder::open_as(&cfg.usage, &cfg.instance_id).unwrap();
+    // a second proxy instance writing to the same log
+    let rec2 = Recorder::open_as(&cfg.usage, "home-nas").unwrap();
     rec.set_prices(
         ciallopa_usage::PriceTable::load(std::path::Path::new(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -60,21 +64,16 @@ async fn main() {
         rng ^= rng << 17;
         rng
     };
-    let models = [
-        "gpt-5.5",
-        "gpt-5.6-terra",
-        "gpt-5.6-sol",
-        "gpt-6-luna",
-        EVIL,
-    ];
-    let accts = ["alice", "bob", "evil"];
+    let models = ["gpt-5.5", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-luna"];
+    let accts = ["alice", "bob"];
     let n = 1500;
     for i in 0..n {
         let ts = now - 14 * 86_400_000
             + (i as i64) * (14 * 86_400_000 / n as i64)
             + (next() % 60_000) as i64;
+        let rr = if next() % 4 == 0 { &rec2 } else { &rec };
         let mut r = Record::new(
-            rec.ids.next_at(ts),
+            rr.ids.next_at(ts),
             if i % 3 == 0 {
                 Transport::Ws
             } else {
@@ -82,25 +81,36 @@ async fn main() {
             },
             "responses",
         );
-        let a = accts[(next() % 3) as usize];
+        // XSS-looking names: only a couple of rows (account / model / key)
+        let a = if i == n - 20 {
+            "evil"
+        } else {
+            accts[(next() % 2) as usize]
+        };
         r.account = Some(a.into());
-        r.model = Some(models[(next() % models.len() as u64) as usize].into());
-        r.effort = Some(["low", "medium", "high"][(next() % 3) as usize].into());
-        r.key = Some(if next() % 5 == 0 {
+        r.model = Some(if i == n - 21 {
             EVIL.into()
+        } else {
+            models[(next() % models.len() as u64) as usize].into()
+        });
+        r.effort = Some(["low", "medium", "high"][(next() % 3) as usize].into());
+        r.key = Some(if i == n - 22 {
+            EVIL.into()
+        } else if next() % 5 == 0 {
+            "ci".into()
         } else {
             "laptop".into()
         });
         r.status = 200;
-        let fail = next() % 25 == 0 || i == n - 3;
+        let fail = next() % 25 == 0 || i == n - 10 || i == n - 11;
         if fail {
-            let limit = next() % 2 == 0 && i != n - 3;
+            let limit = i == n - 11 || (next() % 2 == 0 && i != n - 10);
             r.error = Some(if limit {
                 "usage_limit".into()
             } else {
                 "upstream_5xx".into()
             });
-            r.status = 502;
+            r.status = if limit { 429 } else { 502 };
             // Fake upstream error (redacted on write; XSS payload must render as text).
             let mut d = ciallopa_usage::ErrorDetail::default();
             d.add_header("content-type", "application/json");
@@ -185,9 +195,11 @@ async fn main() {
                 s_window_min: Some(10080),
             });
         }
-        rec.record(r);
+        rr.record(r);
     }
     rec.flush_blocking().unwrap();
+    rec2.flush_blocking().unwrap();
+    drop(rec2);
     let state = AppState {
         usage: Some(rec),
         accounts: Arc::new(
