@@ -112,6 +112,7 @@ pub fn downstream_headers(up: &HeaderMap) -> HeaderMap {
                 | "upgrade"
                 // upstream cookies (__cf_bm, __oailb) belong to the shared account session
                 | "set-cookie"
+                | "set-cookie2"
         ) || n.starts_with("sec-websocket-")
         {
             continue;
@@ -171,7 +172,10 @@ mod tests {
     fn set_cookie_stripped() {
         let mut h = HeaderMap::new();
         h.append("set-cookie", HeaderValue::from_static("__cf_bm=x"));
-        h.append("x-codex-primary-used-percent", HeaderValue::from_static("1"));
+        h.append(
+            "x-codex-primary-used-percent",
+            HeaderValue::from_static("1"),
+        );
         let o = downstream_headers(&h);
         assert!(o.get("set-cookie").is_none());
         assert!(o.get("x-codex-primary-used-percent").is_some());

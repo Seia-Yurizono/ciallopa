@@ -84,7 +84,12 @@ fn mid_limit(id: &str) -> Vec<Value> {
 
 async fn responses(State(s): State<St>, h: HeaderMap, b: Bytes) -> Response {
     let acct = hv(&h, "chatgpt-account-id");
-    let body: Value = serde_json::from_slice(&b).unwrap_or_default();
+    let plain = if hv(&h, "content-encoding") == "zstd" {
+        zstd::decode_all(&b[..]).unwrap_or_default()
+    } else {
+        b.to_vec()
+    };
+    let body: Value = serde_json::from_slice(&plain).unwrap_or_default();
     s.log(json!({"t":"sse","acct":acct,"session":hv(&h,"session-id"),"auth":hv(&h,"authorization").len()>20,"zstd":hv(&h,"content-encoding"),"prev":body.get("previous_response_id")}));
     if s.limited(&acct) {
         return (axum::http::StatusCode::TOO_MANY_REQUESTS, LIMIT).into_response();

@@ -55,6 +55,12 @@ max_attempts = 4    # RETRIES (Codex request_max_retries): transport/408/5xx bef
                     # WS after output / incremental turn: frame withheld, close 1012 ⇒ Codex
                     # reconnects with full input on another account.
 connect_timeout_secs = 30
+compress_requests = true   # zstd level 3 on plaintext HTTP POST /responses bodies (incl. compaction
+                           # turns), like official Codex with ChatGPT auth. Already-encoded bodies,
+                           # /responses/compact, /models, images, passthrough and WS are never touched.
+                           # Client Accept-Encoding is always stripped on /responses so upstream
+                           # SSE stays identity (usage/TTFT parsing). Upstream set-cookie is never
+                           # returned to clients (HTTP and WS handshake).
 
 [images]
 enabled = true

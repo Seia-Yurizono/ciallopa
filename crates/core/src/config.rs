@@ -72,6 +72,10 @@ pub struct UpstreamOpts {
     /// 401/403/404/429 failovers to another account do not consume retries.
     pub max_attempts: u32,
     pub connect_timeout_secs: u64,
+    /// zstd-compress (level 3) plaintext HTTP `POST /responses` bodies before forwarding, like
+    /// official Codex does with ChatGPT auth. Bodies that already carry a `Content-Encoding`
+    /// are forwarded untouched; models / images / passthrough / WebSocket are never compressed.
+    pub compress_requests: bool,
 }
 impl Default for UpstreamOpts {
     fn default() -> Self {
@@ -79,6 +83,7 @@ impl Default for UpstreamOpts {
             stream_idle_timeout_secs: 300,
             max_attempts: 4,
             connect_timeout_secs: 30,
+            compress_requests: true,
         }
     }
 }

@@ -153,6 +153,17 @@ async fn forward(
     } else {
         None
     };
+    let (headers, body) = if inspect {
+        prepare_responses_body(
+            &path,
+            &method,
+            headers,
+            body,
+            st.config.upstream_opts.compress_requests,
+        )
+    } else {
+        (headers, body)
+    };
     let ob = proxy::Outbound {
         method,
         path,
@@ -163,8 +174,104 @@ async fn forward(
     proxy::send_streaming(&st, ob, trk).await
 }
 
+/// Official Codex compression level (`codex-rs/http-client/src/request.rs`).
+const ZSTD_LEVEL: i32 = 3;
+
+/// `/responses` request shaping (after the plaintext was inspected): drop the client's
+/// `Accept-Encoding` so the upstream SSE stays identity (usage/TTFT parsing), and zstd-compress
+/// plaintext `POST /codex/responses` bodies like official Codex. The returned bytes are reused
+/// verbatim for every retry / failover attempt.
+pub(crate) fn prepare_responses_body(
+    path: &str,
+    method: &Method,
+    mut headers: HeaderMap,
+    body: Bytes,
+    compress: bool,
+) -> (HeaderMap, Bytes) {
+    headers.remove(http::header::ACCEPT_ENCODING);
+    let route = path.split('?').next().unwrap_or(path);
+    if !compress || method != Method::POST || route != "/codex/responses" || body.is_empty() {
+        return (headers, body);
+    }
+    let encs: Vec<String> = headers
+        .get_all(http::header::CONTENT_ENCODING)
+        .iter()
+        .map(|v| v.to_str().unwrap_or("?").trim().to_ascii_lowercase())
+        .collect();
+    if encs.iter().any(|e| !e.is_empty() && e != "identity") {
+        return (headers, body);
+    }
+    match zstd::stream::encode_all(&body[..], ZSTD_LEVEL) {
+        Ok(z) => {
+            headers.remove(http::header::CONTENT_ENCODING);
+            headers.remove(http::header::CONTENT_LENGTH);
+            headers.insert(
+                http::header::CONTENT_ENCODING,
+                http::HeaderValue::from_static("zstd"),
+            );
+            (headers, Bytes::from(z))
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "zstd request compression failed; forwarding plaintext");
+            (headers, body)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::prepare_responses_body as prep;
+    use bytes::Bytes;
+    use http::{HeaderMap, HeaderValue, Method};
+
+    fn hm(kv: &[(&'static str, &'static str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in kv {
+            h.append(*k, HeaderValue::from_static(v));
+        }
+        h
+    }
+
+    #[test]
+    fn compresses_plain_responses() {
+        let raw = Bytes::from_static(br#"{"model":"m","input":[]}"#);
+        let (h, b) = prep(
+            "/codex/responses",
+            &Method::POST,
+            hm(&[
+                ("accept-encoding", "gzip"),
+                ("content-encoding", "identity"),
+            ]),
+            raw.clone(),
+            true,
+        );
+        assert_eq!(h["content-encoding"], "zstd");
+        assert!(h.get("accept-encoding").is_none());
+        assert_eq!(zstd::decode_all(&b[..]).unwrap(), raw.to_vec());
+    }
+
+    #[test]
+    fn leaves_other_bodies() {
+        let raw = Bytes::from_static(b"{}");
+        for (path, h, on) in [
+            (
+                "/codex/responses",
+                hm(&[("content-encoding", "gzip")]),
+                true,
+            ),
+            ("/codex/responses/compact", HeaderMap::new(), true),
+            ("/codex/responses", HeaderMap::new(), false),
+        ] {
+            let (o, b) = prep(path, &Method::POST, h.clone(), raw.clone(), on);
+            assert_eq!(b, raw, "{path}");
+            assert_eq!(
+                o.get("content-encoding"),
+                h.get("content-encoding"),
+                "{path}"
+            );
+        }
+    }
+
     #[test]
     fn maps() {
         use super::map_path as m;

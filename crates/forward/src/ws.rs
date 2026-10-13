@@ -76,7 +76,13 @@ pub(crate) async fn handler(
         if n.starts_with("sec-websocket-")
             || matches!(
                 n,
-                "connection" | "upgrade" | "content-length" | "transfer-encoding"
+                "connection"
+                    | "upgrade"
+                    | "content-length"
+                    | "transfer-encoding"
+                    // upstream cookies belong to the shared account session (same as HTTP)
+                    | "set-cookie"
+                    | "set-cookie2"
             )
         {
             continue;

@@ -23,7 +23,7 @@ chatgpt.com/backend-api (SSE + WS Responses, models, wham, quota headers, 429 us
 | 11 | weighted-round-robin weights 3/1/0 | PASS (6/2/0 over 8) |
 | 12 | wrong client key → 401 (Codex shows `invalid api key`), `/healthz` open, unknown path 404, `wham/usage` passthrough 200 | PASS |
 | 13 | fp-check: HTTP JA4 + Akamai h2 + Responses WS handshake JA4 (`t13d101000_61a7ad8aa9b6_0d308c48d2a3`) and header prefix order == Codex CLI | PASS |
-| 14 | Unit + integration tests (SSE headers/zstd byte-identical, 5xx retry, 429 failover, 401 force-refresh, idle timeout, models cache, WS relay + pre-output quota replay on another account + incremental-turn quota close 1012, SSE pre-output quota replay / post-output forward, Images wrap/stream/direct/multipart) | PASS |
+| 14 | Unit + integration tests (SSE headers/zstd byte-identical, upstream zstd compression + opt-out, 5xx retry, 429 failover, 401 force-refresh, idle timeout, models cache, WS relay + pre-output quota replay on another account + incremental-turn quota close 1012, SSE pre-output quota replay / post-output forward, Images wrap/stream/direct/multipart) | PASS |
 | 15 | SSE: acc-1/acc-2 answer 200 + `response.created` then `error` usage_limit_reached (`scripts/e2e/midlimit.sh`) → proxy holds the preamble, cools the account, replays the same body on acc-3; Codex output normal, no error shown; next session skips the cooled account | PASS (acc-2→acc-3, then acc-1→acc-3) |
 | 16 | WS: same in-stream usage_limit frame → not forwarded; proxy redials another account and replays the `response.create` (no `previous_response_id`, nothing sent yet); Codex output normal | PASS (acc-2→acc-3, then acc-1→acc-3) |
 | 17 | All accounts limited → Codex shows "You've hit your usage limit" (WS: 1012 close → reconnect → handshake 429; SSE: 429), no hang | PASS |
@@ -38,6 +38,8 @@ resets its WS session and resends the full input (core client.rs:474-485, 1656),
 account. Same 1012 path for incremental (`previous_response_id`) turns.
 
 Not covered end-to-end: WS quota error on an incremental (`previous_response_id`) turn with real
-Codex (needs a tool-call turn; covered by integration test + codex-rs reading), zstd request bodies (Codex only compresses
-with ChatGPT auth, not a custom API-key provider; byte-identical passthrough covered by test), real
+Codex (needs a tool-call turn; covered by integration test + codex-rs reading), zstd request bodies against real chatgpt.com
+(Codex only compresses with ChatGPT auth; ciallopa compresses plaintext `POST /responses` bodies itself
+when `upstream_opts.compress_requests = true`, default; pre-encoded passthrough, level-3 output, retry
+byte reuse, Accept-Encoding stripping and WS set-cookie filtering covered by mock tests), real
 chatgpt.com / Cloudflare behaviour, paste/PKCE login interactively.

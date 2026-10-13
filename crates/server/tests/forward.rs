@@ -238,6 +238,10 @@ async fn up_ws(State(m): State<Mock>, h: HeaderMap, ws: WebSocketUpgrade) -> Res
     });
     r.headers_mut()
         .insert("x-codex-turn-state", "ts-1".parse().unwrap());
+    r.headers_mut()
+        .insert("set-cookie", "__cf_bm=secret".parse().unwrap());
+    r.headers_mut()
+        .insert("set-cookie2", "__oailb=secret".parse().unwrap());
     r
 }
 
@@ -469,6 +473,8 @@ async fn websocket_relay_and_limit_close() {
         .insert("session_id", "ws-1".parse().unwrap());
     let (mut ws, resp) = tokio_tungstenite::connect_async(req).await.unwrap();
     assert_eq!(resp.headers()["x-codex-turn-state"], "ts-1");
+    assert!(resp.headers().get("set-cookie").is_none());
+    assert!(resp.headers().get("set-cookie2").is_none());
     ws.send(M::text(r#"{"type":"response.create","n":1}"#))
         .await
         .unwrap();
@@ -595,6 +601,13 @@ async fn images_wrap_and_direct() {
     assert_eq!(sent["tools"][0]["type"], "image_generation");
     assert_eq!(sent["tools"][0]["model"], "gpt-image-2");
     assert_eq!(sent["model"], "gpt-5.5");
+    assert!(
+        !e.mock.seen.lock().unwrap()[0]
+            .0
+            .iter()
+            .any(|(k, _)| k == "content-encoding"),
+        "images wrap is never compressed"
+    );
 
     // streaming wrap
     let r = e
@@ -664,7 +677,14 @@ async fn compaction_v2_passthrough() {
     let seen = e.mock.seen.lock().unwrap();
     assert_eq!(seen.len(), 2);
     for (h, b) in seen.iter() {
-        assert_eq!(b.as_ref(), body.as_bytes(), "body byte-identical");
+        assert!(h
+            .iter()
+            .any(|(k, v)| k == "content-encoding" && v == "zstd"));
+        assert_eq!(
+            zstd::decode_all(b.as_ref()).unwrap(),
+            body.as_bytes(),
+            "compressed compaction turn decodes to the original body"
+        );
         assert!(h
             .iter()
             .any(|(k, v)| k == "x-codex-beta-features" && v == "remote_compaction_v2"));
@@ -1132,4 +1152,108 @@ async fn usage_error_detail_capture_and_api() {
     );
     let v: serde_json::Value = detail_of(&e, &id(idle), true).await.json().await.unwrap();
     assert!(v["message"].as_str().unwrap().contains("idle"), "{v}");
+}
+
+fn hdr<'a>(h: &'a [(String, String)], k: &str) -> Option<&'a str> {
+    h.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str())
+}
+
+#[tokio::test]
+async fn responses_compressed_like_codex_and_retries_reuse_bytes() {
+    let e = env(300).await;
+    let body = r#"{"model":"gpt-5.5","prompt_cache_key":"pk","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello hello hello"}]}]}"#;
+    // 503, 503, 200: three attempts must carry the same compressed bytes.
+    let r = e
+        .post("/v1/responses")
+        .header("x-test-mode", "retry")
+        .header("accept-encoding", "gzip, br")
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert!(r.headers().get("content-encoding").is_none());
+    assert!(r.text().await.unwrap().contains("response.completed"));
+    let seen = e.mock.seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 3);
+    for (h, b) in &seen {
+        assert_eq!(hdr(h, "content-encoding"), Some("zstd"));
+        assert!(
+            hdr(h, "accept-encoding").is_none(),
+            "accept-encoding stripped"
+        );
+        assert_eq!(hdr(h, "content-length"), Some(b.len().to_string().as_str()));
+        assert_eq!(zstd::decode_all(b.as_ref()).unwrap(), body.as_bytes());
+        assert_eq!(b, &seen[0].1, "retries reuse the same bytes");
+    }
+    assert_eq!(
+        seen[0].1.as_ref(),
+        zstd::encode_all(body.as_bytes(), 3).unwrap().as_slice(),
+        "zstd level 3"
+    );
+    // Session routing still sees the plaintext body.
+    assert!(matches!(
+        &e.outcomes().last().unwrap().1,
+        Outcome::Success { .. }
+    ));
+}
+
+#[tokio::test]
+async fn compression_skips_compact_models_and_preencoded() {
+    let e = env(300).await;
+    let r = e
+        .post("/v1/responses/compact")
+        .header("accept-encoding", "gzip")
+        .body(r#"{"model":"m"}"#)
+        .send()
+        .await
+        .unwrap();
+    // mock has no /compact route; only the request shape matters
+    let _ = r.status();
+    let pre = zstd::encode_all(&b"{\"model\":\"m\"}"[..], 19).unwrap();
+    e.post("/backend-api/codex/responses")
+        .header("content-encoding", "zstd")
+        .body(pre.clone())
+        .send()
+        .await
+        .unwrap();
+    e.http
+        .get(format!("http://{}/v1/models", e.proxy))
+        .bearer_auth(KEY)
+        .send()
+        .await
+        .unwrap();
+    let seen = e.mock.seen.lock().unwrap().clone();
+    let (h, b) = &seen[0];
+    assert_eq!(
+        b.as_ref(),
+        pre.as_slice(),
+        "pre-encoded body byte-identical"
+    );
+    assert_eq!(hdr(h, "content-encoding"), Some("zstd"));
+    let (h, _) = &seen[1];
+    assert!(
+        hdr(h, "content-encoding").is_none(),
+        "models never compressed"
+    );
+}
+
+#[tokio::test]
+async fn compression_can_be_disabled() {
+    let e = env_cfg(300, None, "compress_requests = false").await;
+    let body = r#"{"model":"gpt-5.5","input":[]}"#;
+    e.post("/v1/responses")
+        .header("accept-encoding", "gzip")
+        .body(body)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let seen = e.mock.seen.lock().unwrap().clone();
+    let (h, b) = &seen[0];
+    assert_eq!(b.as_ref(), body.as_bytes());
+    assert!(hdr(h, "content-encoding").is_none());
+    assert!(hdr(h, "accept-encoding").is_none());
 }
