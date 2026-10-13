@@ -68,3 +68,13 @@ WS: one downstream WS ↔ one upstream WS pinned to one account; on usage_limit/
 ## Gates (every worker PR)
 `cargo build --all-targets && cargo clippy --all-targets -- -D warnings && cargo test && scripts/lock-check.sh`;
 `scripts/fp-check.sh` (needs sudo; edits/restores /etc/hosts) for anything touching crates/upstream.
+
+## M1 additive core changes (worker B, routing) — pending lead review
+- `SessionInfo.is_fork: bool` (Codex `forked_from_thread_id`; fork inherits parent binding, not a subagent).
+  `parent_key` = CPA "fallback id" (explicit parent / fork source / `conv:` alias for `pck:` / short message hash).
+- `Outcome::ModelUnsupported { retry_after }` (404 / model unsupported → that model, Retry-After else 12h) and
+  `Outcome::Challenge` (Cloudflare challenge → ≥10s exponential). `Transient{status:None}` = transport error:
+  no cooldown, bindings untouched; `ClientError` likewise.
+- routing exports for forwarding: `parse_quota`, `parse_quota_event_headers` (SSE/WS `codex.rate_limits` / `error` frames),
+  `retry_after_for_429(headers, body, now)` (body resets_at/resets_in_seconds first, then Retry-After ≤6h),
+  `is_usage_limit(body)`, `is_cloudflare_challenge(text)`; `CpaRouter::{quota_snapshot, cooldown_until, invalidate_account}`.
