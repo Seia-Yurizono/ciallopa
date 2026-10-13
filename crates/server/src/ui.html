@@ -124,7 +124,7 @@ function renderCards(q){
   const sel=$("facct"),cur=sel.value;while(sel.options.length>1)sel.remove(1);
   for(const a of q.accounts||[]){
     const o=el("option",null,a.account);o.value=a.account;sel.appendChild(o);
-    const c=el("div","card");const h=el("h3",null,a.email||a.account);c.appendChild(h);
+    const c=el("div","card");const h=el("h3",null,a.email||a.account);h.title=a.account;c.appendChild(h);
     const meta=el("div");
     const qq=a.quota;
     meta.appendChild(el("span","badge",qq&&qq.plan?qq.plan:"未知套餐"));
@@ -132,7 +132,7 @@ function renderCards(q){
     else if(a.disabled)meta.appendChild(el("span","badge warn","已停用"));
     if(a.configured===false)meta.appendChild(el("span","badge","未配置"));
     c.appendChild(meta);
-    if(a.email)c.appendChild(el("div","mut",a.account));
+    if(a.email){const m=el("div","mut",a.account);m.title=a.account;c.appendChild(m)}
     if(!qq){c.appendChild(el("div","mut","尚无额度数据（该账号还没有请求经过）"));box.appendChild(c);continue}
     for(const w of [qq.primary,qq.secondary]){
       if(!w||w.used_pct===null||w.used_pct===undefined)continue;
@@ -192,7 +192,7 @@ function renderRecords(rs){
   for(const r of rs){const tr=el("tr",((r.error||r.status>=400)?"err":"")+(r.has_detail?" dt":""));
     if(r.has_detail){tr.title="点击查看错误详情";tr.addEventListener("click",()=>openDetail(r))}
     const cells=[[fmtTime(r.ts_ms),"l"],[r.account||"–","l"],[r.key||"–","l"],[(r.model||"–")+(r.reasoning_effort?" · "+r.reasoning_effort:"")+(r.service_tier&&r.service_tier!=="default"&&r.service_tier!=="auto"?" · "+r.service_tier:""),"l"],[r.status],[r.error||"","l"],[fmtMs(r.ttft_ms)],[fmtMs(r.duration_ms)],[fmtN(r.input_tokens)],[fmtN(r.output_tokens)],[r.price_status==="unknown_price"?"未定价":fmtUsd(r.cost_usd)]];
-    for(const [v,c] of cells){const t=td(v,c);if(c&&!r.has_detail)t.title=String(v);tr.appendChild(t)}tb.appendChild(tr)}
+    for(const [v,c] of cells){const t=td(v,c);if(c)t.title=String(v)+(r.has_detail?"\n点击查看错误详情":"");tr.appendChild(t)}tb.appendChild(tr)}
   if(!rs.length){const tr=el("tr");const c=td("没有记录","l");c.colSpan=11;tr.appendChild(c);tb.appendChild(tr)}
 }
 
