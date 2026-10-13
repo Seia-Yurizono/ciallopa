@@ -7,7 +7,7 @@ mod writer;
 
 pub use prices::{PriceTable, Tier};
 pub use store::{
-    AccountQuota, Dim, Estimate, Filters, RecentQuery, RecordRow, Summary, SummaryGroup,
+    AccountQuota, DayBucket, Dim, Estimate, Filters, RecentQuery, RecordRow, Summary, SummaryGroup,
     SummaryQuery, WindowQuota,
 };
 
@@ -834,5 +834,72 @@ mod tests {
         let s = r.summary(SummaryQuery::default()).await.unwrap();
         assert_eq!((s.total.cost_usd, s.total.unknown_price), (None, 3));
         r.shutdown();
+    }
+
+    #[tokio::test]
+    async fn day_buckets_with_tz() {
+        let d = tempfile::tempdir().unwrap();
+        let r = Recorder::open_as(
+            &UsageConfig {
+                retention_days: 0,
+                ..cfg(d.path())
+            },
+            "h",
+        )
+        .unwrap();
+        r.set_prices(PriceTable::parse("[[model]]\nmodel=\"m\"\nin=1.0\nout=1.0\n").unwrap());
+        let day = 86_400_000i64;
+        let base = (now_ms() / day - 3) * day; // 00:00 UTC three days ago
+                                               // 23:30 UTC (day 0), 00:30 UTC (day 1), 01:30 UTC (day 1)
+        for (off, model) in [
+            (23 * 3_600_000 + 1_800_000, "m"),
+            (day + 1_800_000, "m"),
+            (day + 5_400_000, "zz"),
+        ] {
+            let mut x = Record::new(r.ids.next_at(base + off), Transport::Sse, "responses");
+            x.model = Some(model.into());
+            x.status = 200;
+            x.input_tokens = Some(1_000_000);
+            x.output_tokens = Some(10);
+            assert!(r.record(x));
+        }
+        r.flush_blocking().unwrap();
+        let q = |tz| SummaryQuery {
+            from_ms: base,
+            to_ms: now_ms(),
+            bucket_day: Some(tz),
+            ..Default::default()
+        };
+        let b = r.summary(q(0)).await.unwrap().buckets.unwrap();
+        assert_eq!(b.len(), 2);
+        assert_eq!((b[0].count, b[1].count), (1, 2));
+        assert_eq!(b[0].start_ms, base);
+        assert!((b[1].cost_usd.unwrap() - 1.00001).abs() < 1e-9);
+        assert_eq!(b[1].unknown_price, 1);
+        assert_eq!(b[0].day, store_day(base));
+        // UTC+8: all three fall on the same local day
+        let b8 = r.summary(q(480)).await.unwrap().buckets.unwrap();
+        assert_eq!(b8.len(), 1);
+        assert_eq!(b8[0].count, 3);
+        assert_eq!(b8[0].start_ms, base + day - 480 * 60_000);
+        assert!(r
+            .summary(SummaryQuery::default())
+            .await
+            .unwrap()
+            .buckets
+            .is_none());
+        r.shutdown();
+    }
+
+    fn store_day(ms: i64) -> String {
+        let days = ms.div_euclid(86_400_000);
+        let p = |d: &str| prices::parse_date(d).unwrap();
+        // find via parse_date round-trip over a small range
+        (2020..2100)
+            .flat_map(|y| {
+                (1..=12).flat_map(move |m| (1..=31).map(move |d| format!("{y:04}-{m:02}-{d:02}")))
+            })
+            .find(|s| prices::parse_date(s).is_some_and(|x| x == days) && p(s) == days)
+            .unwrap()
     }
 }

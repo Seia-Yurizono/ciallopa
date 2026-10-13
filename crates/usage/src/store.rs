@@ -580,6 +580,8 @@ pub struct SummaryQuery {
     /// Default: account, model.
     pub group_by: Vec<Dim>,
     pub filters: Filters,
+    /// `Some(tz_offset_minutes)` ⇒ also return per-day buckets (local day = UTC + offset).
+    pub bucket_day: Option<i32>,
 }
 impl Default for SummaryQuery {
     fn default() -> Self {
@@ -588,6 +590,7 @@ impl Default for SummaryQuery {
             to_ms: i64::MAX >> SEQ_BITS,
             group_by: vec![Dim::Account, Dim::Model],
             filters: Filters::default(),
+            bucket_day: None,
         }
     }
 }
@@ -625,6 +628,39 @@ pub struct Summary {
     pub groups: Vec<SummaryGroup>,
     /// Models (with tiers) that had rows without a price.
     pub unknown_price_models: Vec<String>,
+    /// Per-day totals (only with `bucket=day`), ascending; days without rows are omitted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub buckets: Option<Vec<DayBucket>>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Default)]
+pub struct DayBucket {
+    /// Local date `YYYY-MM-DD` (per `tz` offset).
+    pub day: String,
+    /// Start of that local day, unix ms.
+    pub start_ms: i64,
+    pub count: u64,
+    pub errors: u64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cached_tokens: i64,
+    pub reasoning_tokens: i64,
+    pub cost_usd: Option<f64>,
+    pub unknown_price: u64,
+}
+
+/// days since epoch → `YYYY-MM-DD` (civil_from_days).
+fn civil(z: i64) -> String {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}")
 }
 
 #[derive(Default)]
@@ -762,6 +798,7 @@ pub(crate) fn summary(
     let mut groups: HashMap<Vec<Option<i64>>, Acc> = HashMap::new();
     let mut rows = st.query(params_from_iter(ps))?;
     let mut unknown_models = std::collections::BTreeSet::new();
+    let mut days: std::collections::BTreeMap<i64, DayBucket> = Default::default();
     while let Some(r) = rows.next()? {
         let key: Vec<Option<i64>> = (0..dims.len())
             .map(|i| r.get(12 + i))
@@ -785,6 +822,27 @@ pub(crate) fn summary(
                 _ => lbl(m).unwrap_or("?").to_string(),
             };
             unknown_models.insert(k);
+        }
+        if let Some(tz) = q.bucket_day {
+            let off = i64::from(tz) * 60_000;
+            let id: i64 = r.get(9)?;
+            let day = ((id >> SEQ_BITS) + off).div_euclid(86_400_000);
+            let b = days.entry(day).or_insert_with(|| DayBucket {
+                day: civil(day),
+                start_ms: day * 86_400_000 - off,
+                ..Default::default()
+            });
+            b.count += 1;
+            b.errors += u64::from(err.is_some() || status >= 400);
+            b.input_tokens += tok[0].unwrap_or(0);
+            b.output_tokens += tok[1].unwrap_or(0);
+            b.cached_tokens += tok[2].unwrap_or(0);
+            b.reasoning_tokens += tok[3].unwrap_or(0);
+            match cost {
+                (Some(c), _) => *b.cost_usd.get_or_insert(0.0) += c,
+                (None, "unknown_price") => b.unknown_price += 1,
+                _ => {}
+            }
         }
         groups.entry(key).or_default().add(
             err.is_some() || status >= 400,
@@ -817,6 +875,7 @@ pub(crate) fn summary(
     out.total = total.finish(Default::default());
     out.groups = gs;
     out.unknown_price_models = unknown_models.into_iter().collect();
+    out.buckets = q.bucket_day.map(|_| days.into_values().collect());
     Ok(out)
 }
 

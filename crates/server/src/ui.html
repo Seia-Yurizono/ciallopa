@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
+<title>cpa-lite 管理面板</title>
+<style>
+:root{--bg:#f6f7f9;--fg:#1d2330;--mut:#667085;--card:#fff;--line:#e3e6ea;--acc:#2f6fed;--ok:#1a9e5a;--warn:#d98a00;--bad:#d64545;--bar:#e9edf2}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1218;--fg:#e6e9ef;--mut:#98a2b3;--card:#171b23;--line:#2a303b;--acc:#5b8cff;--ok:#3cc27e;--warn:#f0a930;--bad:#ff6b6b;--bar:#262c37}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+header{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:2}
+header h1{font-size:16px;margin:0;flex:1}
+main{max-width:1200px;margin:0 auto;padding:16px}
+section{margin-bottom:24px}
+h2{font-size:15px;margin:0 0 10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.mut{color:var(--mut);font-size:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px}
+.card h3{font-size:14px;margin:0 0 6px;word-break:break-all}
+.badge{display:inline-block;font-size:11px;padding:1px 6px;border-radius:9px;border:1px solid var(--line);margin-right:4px;color:var(--mut)}
+.badge.bad{color:#fff;background:var(--bad);border-color:var(--bad)}
+.badge.warn{color:#fff;background:var(--warn);border-color:var(--warn)}
+.win{margin-top:8px}
+.winh{display:flex;justify-content:space-between;font-size:12px}
+.bar{height:8px;background:var(--bar);border-radius:4px;overflow:hidden;margin:3px 0}
+.bar>i{display:block;height:100%;background:var(--ok)}
+.bar>i.w{background:var(--warn)}.bar>i.b{background:var(--bad)}
+.tablewrap{overflow-x:auto;background:var(--card);border:1px solid var(--line);border-radius:10px}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+th:first-child,td:first-child,td.l,th.l{text-align:left}
+td.l{max-width:260px;overflow:hidden;text-overflow:ellipsis}
+tr.err td{color:var(--bad)}
+select,input,button{font:inherit;color:inherit;background:var(--card);border:1px solid var(--line);border-radius:6px;padding:4px 8px}
+button{cursor:pointer}button.pri{background:var(--acc);border-color:var(--acc);color:#fff}
+.ctl{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px}
+#login{max-width:360px;margin:15vh auto;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px}
+#login input{width:100%;margin:10px 0}
+.hide{display:none!important}
+#chart{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px}
+#chart svg{width:100%;height:220px;display:block}
+.ax{fill:var(--mut);font-size:10px}.tb{fill:var(--acc);opacity:.75}.cl{fill:none;stroke:var(--warn);stroke-width:2}.cd{fill:var(--warn)}.gl{stroke:var(--line)}
+.legend{display:flex;gap:12px;font-size:12px;color:var(--mut);padding:0 4px}
+.sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+.sw.t{background:var(--acc)}.sw.c{background:var(--warn)}
+#msg{color:var(--bad);font-size:12px}
+@media (max-width:600px){main{padding:10px}th,td{padding:5px 6px;font-size:12px}header h1{font-size:15px}}
+</style>
+</head>
+<body>
+<div id="login" class="hide">
+  <h2>cpa-lite 管理面板</h2>
+  <div class="mut">请输入访问密钥（与代理的 API key 相同）。仅保存在本标签页的 sessionStorage 中，关闭即清除。</div>
+  <form id="lf"><input id="key" type="password" autocomplete="current-password" placeholder="sk-..." required><button class="pri" type="submit">进入</button></form>
+  <div id="lerr" class="mut"></div>
+</div>
+<div id="app" class="hide">
+<header><h1>cpa-lite 管理面板 <span class="mut">只读</span></h1>
+  <label class="mut"><input type="checkbox" id="auto"> 自动刷新</label>
+  <button id="refresh">刷新</button><button id="logout">退出</button></header>
+<main>
+  <div id="msg"></div>
+  <section><h2>账号额度 <span class="mut" id="qnote"></span></h2><div class="grid" id="cards"></div></section>
+  <section><h2>汇总
+    <select id="range"><option value="24h">最近 24 小时</option><option value="7d">最近 7 天</option><option value="30d">最近 30 天</option></select>
+    <select id="group"><option value="account">按账号</option><option value="key">按密钥</option><option value="instance">按实例</option><option value="model">按模型</option></select>
+    <span class="mut" id="unk"></span></h2>
+    <div class="tablewrap"><table><thead><tr><th class="l" id="gh">账号</th><th>请求数</th><th>错误率</th><th>TTFT p50</th><th>TTFT p90</th><th>耗时 p50</th><th>耗时 p90</th><th>输入</th><th>缓存</th><th>输出</th><th>TPS</th><th>成本</th></tr></thead><tbody id="sum"></tbody></table></div>
+    <div class="mut">成本为按 API 标价折算的名义成本，订阅计划实际不按此计费。</div>
+  </section>
+  <section><h2>每日趋势 <span class="mut" id="trange"></span></h2>
+    <div id="chart"><div class="legend"><span><i class="sw t"></i>Token（输入+输出）</span><span><i class="sw c"></i>成本 (USD)</span></div><svg id="svg" viewBox="0 0 800 220" preserveAspectRatio="none" role="img" aria-label="每日 token 与成本"></svg></div>
+  </section>
+  <section><h2>最近请求</h2>
+    <div class="ctl"><select id="facct"><option value="">全部账号</option></select>
+      <input id="fkey" placeholder="密钥标签" size="12">
+      <label class="mut"><input type="checkbox" id="ferr"> 仅错误</label></div>
+    <div class="tablewrap"><table><thead><tr><th class="l">时间</th><th class="l">账号</th><th class="l">密钥</th><th class="l">模型</th><th>状态</th><th class="l">错误</th><th>TTFT</th><th>耗时</th><th>输入</th><th>输出</th><th>成本</th></tr></thead><tbody id="rec"></tbody></table></div>
+  </section>
+</main></div>
+<script>
+"use strict";
+(function(){
+const $=id=>document.getElementById(id);
+const KS="cpa_lite_key";
+let timer=null;
+// All dynamic text goes through textContent / createTextNode: never parsed as HTML.
+function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined&&text!==null)e.textContent=String(text);return e}
+function td(text,cls){return el("td",cls,text)}
+function clear(e){while(e.firstChild)e.removeChild(e.firstChild)}
+function fmtN(n){if(n===null||n===undefined)return"–";n=Number(n);if(Math.abs(n)>=1e9)return(n/1e9).toFixed(2)+"B";if(Math.abs(n)>=1e6)return(n/1e6).toFixed(2)+"M";if(Math.abs(n)>=1e4)return(n/1e3).toFixed(1)+"k";return String(Math.round(n))}
+function fmtMs(n){return n===null||n===undefined?"–":(n>=1e4?(n/1e3).toFixed(1)+"s":n+"ms")}
+function fmtUsd(c){if(c===null||c===undefined)return"–";if(c===0)return"$0";return"$"+(c>=100?c.toFixed(0):c>=1?c.toFixed(2):c.toFixed(4))}
+function fmtDur(s){if(s<=0)return"已到期";const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return(d?d+"天":"")+(d||h?h+"小时":"")+m+"分"}
+function fmtTime(ms){const d=new Date(ms),p=x=>String(x).padStart(2,"0");return p(d.getMonth()+1)+"-"+p(d.getDate())+" "+p(d.getHours())+":"+p(d.getMinutes())+":"+p(d.getSeconds())}
+function winName(m){if(!m)return"窗口";if(m===300)return"5 小时窗口";if(m===10080)return"周窗口";if(m>=1440)return Math.round(m/1440)+" 天窗口";return Math.round(m/60)+" 小时窗口"}
+function key(){return sessionStorage.getItem(KS)||""}
+async function api(path){
+  const r=await fetch(path,{headers:{"Authorization":"Bearer "+key()},cache:"no-store",credentials:"omit",referrerPolicy:"no-referrer"});
+  if(r.status===401){sessionStorage.removeItem(KS);show(false,"密钥无效或已过期");throw new Error("401")}
+  if(!r.ok)throw new Error(path.split("?")[0]+" → HTTP "+r.status);
+  return r.json();
+}
+function show(app,err){$("app").classList.toggle("hide",!app);$("login").classList.toggle("hide",app);$("lerr").textContent=err||"";if(!app)stopAuto()}
+function qs(o){const u=new URLSearchParams();for(const k in o)if(o[k]!==""&&o[k]!==null&&o[k]!==undefined)u.set(k,o[k]);return u.toString()}
+
+function renderCards(q){
+  const box=$("cards");clear(box);
+  $("qnote").textContent="已用百分比来自上游，包含其他客户端/实例的用量；容量为估算";
+  const sel=$("facct"),cur=sel.value;while(sel.options.length>1)sel.remove(1);
+  for(const a of q.accounts||[]){
+    const o=el("option",null,a.account);o.value=a.account;sel.appendChild(o);
+    const c=el("div","card");const h=el("h3",null,a.email||a.account);c.appendChild(h);
+    const meta=el("div");
+    const qq=a.quota;
+    meta.appendChild(el("span","badge",qq&&qq.plan?qq.plan:"未知套餐"));
+    if(a.needs_relogin)meta.appendChild(el("span","badge bad","需要重新登录"));
+    else if(a.disabled)meta.appendChild(el("span","badge warn","已停用"));
+    if(a.configured===false)meta.appendChild(el("span","badge","未配置"));
+    c.appendChild(meta);
+    if(a.email)c.appendChild(el("div","mut",a.account));
+    if(!qq){c.appendChild(el("div","mut","尚无额度数据（该账号还没有请求经过）"));box.appendChild(c);continue}
+    for(const [w,label] of [[qq.primary,"主"],[qq.secondary,"次"]]){
+      if(!w||w.used_pct===null||w.used_pct===undefined)continue;
+      const d=el("div","win");const hh=el("div","winh");
+      hh.appendChild(el("span",null,label+" · "+winName(w.window_minutes)));
+      hh.appendChild(el("span",null,w.used_pct.toFixed(0)+"% 已用"));d.appendChild(hh);
+      const b=el("div","bar"),i=el("i",w.used_pct>=90?"b":w.used_pct>=70?"w":"");i.style.width=Math.min(100,Math.max(0,w.used_pct))+"%";b.appendChild(i);d.appendChild(b);
+      const info=el("div","mut");
+      let t=w.resets_at?"重置倒计时 "+fmtDur(w.resets_at-Date.now()/1000):"无重置时间";
+      const e=w.estimate||{};
+      if(e.status==="ok")t+=" · 容量≈"+fmtN(e.capacity_tokens)+" 加权 token，剩余≈"+fmtN(e.remaining_tokens);
+      else if(e.status==="insufficient_data")t+=" · 容量估算：数据不足";
+      else if(e.status==="window_reset")t+=" · 窗口已重置";
+      info.textContent=t;d.appendChild(info);c.appendChild(d);
+    }
+    if(qq.observed_at_ms)c.appendChild(el("div","mut","更新于 "+fmtTime(qq.observed_at_ms)+(qq.observed_by?" · "+qq.observed_by:"")));
+    box.appendChild(c);
+  }
+  if(sel.querySelector("option[value='"+CSS.escape(cur)+"']"))sel.value=cur;
+  if(!(q.accounts||[]).length)box.appendChild(el("div","mut","没有账号"));
+}
+
+const GN={account:"账号",key:"密钥",instance:"实例",model:"模型"};
+function renderSummary(s){
+  const g=$("group").value;$("gh").textContent=GN[g];
+  const tb=$("sum");clear(tb);
+  const row=(name,x,bold)=>{const tr=el("tr");const n=td(name,"l");if(bold)n.textContent=name;n.title=name;tr.appendChild(n);
+    [x.count,(x.error_rate*100).toFixed(1)+"%",fmtMs(x.ttft_p50_ms),fmtMs(x.ttft_p90_ms),fmtMs(x.duration_p50_ms),fmtMs(x.duration_p90_ms),fmtN(x.input_tokens),fmtN(x.cached_tokens),fmtN(x.output_tokens),x.tps?x.tps.toFixed(1):"–"].forEach(v=>tr.appendChild(td(v)));
+    const c=td(fmtUsd(x.cost_usd)+(x.unknown_price?" ⚠":""));if(x.unknown_price)c.title=x.unknown_price+" 条请求缺少价格，成本为下限";tr.appendChild(c);return tr};
+  for(const x of s.groups){const v=x.group[g==="model"?"model":g];tb.appendChild(row(v===null||v===undefined?"（无）":v,x))}
+  if(s.groups.length)tb.appendChild(row("合计",s.total,true));else{const tr=el("tr");const c=td("此时间段没有请求","l");c.colSpan=12;tr.appendChild(c);tb.appendChild(tr)}
+  $("unk").textContent=(s.unknown_price_models&&s.unknown_price_models.length)?"⚠ 未定价模型："+s.unknown_price_models.join("、"):"";
+}
+
+const SVGNS="http://www.w3.org/2000/svg";
+function sv(tag,attrs,text){const e=document.createElementNS(SVGNS,tag);for(const k in attrs)e.setAttribute(k,String(attrs[k]));if(text!==undefined)e.textContent=String(text);return e}
+function renderTrend(buckets,days){
+  const svg=$("svg");clear(svg);
+  const DAY=864e5,now=new Date();const start=new Date(now.getFullYear(),now.getMonth(),now.getDate()).getTime()-(days-1)*DAY;
+  const by={};for(const b of buckets||[])by[b.day]=b;
+  const pts=[];for(let i=0;i<days;i++){const d=new Date(start+i*DAY+DAY/2),p=x=>String(x).padStart(2,"0");const k=d.getFullYear()+"-"+p(d.getMonth()+1)+"-"+p(d.getDate());const b=by[k];pts.push({k,t:b?b.input_tokens+b.output_tokens:0,c:b&&b.cost_usd!==null?b.cost_usd:0,u:b?b.unknown_price:0})}
+  const W=800,H=220,L=48,R=48,T=10,B=24,iw=W-L-R,ih=H-T-B;
+  const mt=Math.max(1,...pts.map(p=>p.t)),mc=Math.max(1e-9,...pts.map(p=>p.c));
+  for(let i=0;i<=4;i++){const y=T+ih*i/4;svg.appendChild(sv("line",{x1:L,x2:W-R,y1:y,y2:y,class:"gl"}));
+    svg.appendChild(sv("text",{x:L-4,y:y+3,"text-anchor":"end",class:"ax"},fmtN(mt*(1-i/4))));
+    svg.appendChild(sv("text",{x:W-R+4,y:y+3,class:"ax"},fmtUsd(mc*(1-i/4))))}
+  const bw=iw/days;let path="";
+  pts.forEach((p,i)=>{const x=L+i*bw,h=ih*p.t/mt;const r=sv("rect",{x:x+bw*.15,y:T+ih-h,width:Math.max(1,bw*.7),height:h,class:"tb"});
+    r.appendChild(sv("title",{},p.k+"：token "+fmtN(p.t)+"，成本 "+fmtUsd(p.c)+(p.u?"（"+p.u+" 条未定价）":"")));svg.appendChild(r);
+    const cx=x+bw/2,cy=T+ih-ih*p.c/mc;path+=(i?"L":"M")+cx.toFixed(1)+" "+cy.toFixed(1);svg.appendChild(sv("circle",{cx,cy,r:2.5,class:"cd"}));
+    const every=Math.ceil(days/10);if(i%every===0)svg.appendChild(sv("text",{x:cx,y:H-8,"text-anchor":"middle",class:"ax"},p.k.slice(5)))});
+  if(path)svg.appendChild(sv("path",{d:path,class:"cl"}));
+}
+
+function renderRecords(rs){
+  const tb=$("rec");clear(tb);
+  for(const r of rs){const tr=el("tr",(r.error||r.status>=400)?"err":"");
+    const cells=[[fmtTime(r.ts_ms),"l"],[r.account||"–","l"],[r.key||"–","l"],[(r.model||"–")+(r.reasoning_effort?" · "+r.reasoning_effort:"")+(r.service_tier&&r.service_tier!=="default"&&r.service_tier!=="auto"?" · "+r.service_tier:""),"l"],[r.status],[r.error||"","l"],[fmtMs(r.ttft_ms)],[fmtMs(r.duration_ms)],[fmtN(r.input_tokens)],[fmtN(r.output_tokens)],[r.price_status==="unknown_price"?"未定价":fmtUsd(r.cost_usd)]];
+    for(const [v,c] of cells){const t=td(v,c);if(c)t.title=String(v);tr.appendChild(t)}tb.appendChild(tr)}
+  if(!rs.length){const tr=el("tr");const c=td("没有记录","l");c.colSpan=11;tr.appendChild(c);tb.appendChild(tr)}
+}
+
+async function loadRecords(){const q=qs({limit:50,account:$("facct").value,key:$("fkey").value.trim(),errors:$("ferr").checked?1:""});renderRecords((await api("/usage/v1/records?"+q)).records)}
+async function loadSummary(){const s=await api("/usage/v1/summary?"+qs({range:$("range").value,group:$("group").value}));renderSummary(s.summary)}
+async function loadTrend(){const r=$("range").value,days=r==="30d"?30:7;$("trange").textContent="（最近 "+days+" 天，本地时区）";
+  const s=await api("/usage/v1/summary?"+qs({range:days+"d",group:"account",bucket:"day",tz:-new Date().getTimezoneOffset()}));renderTrend(s.summary.buckets,days)}
+async function loadAll(){$("msg").textContent="";
+  const jobs=[api("/usage/v1/quota").then(renderCards),loadSummary(),loadTrend(),loadRecords()];
+  for(const r of await Promise.allSettled(jobs))if(r.status==="rejected"&&r.reason&&r.reason.message!=="401")$("msg").textContent="加载失败："+r.reason.message}
+function stopAuto(){if(timer){clearInterval(timer);timer=null}}
+$("auto").addEventListener("change",e=>{stopAuto();if(e.target.checked)timer=setInterval(()=>{if(!document.hidden)loadAll()},15000)});
+$("refresh").addEventListener("click",loadAll);
+$("logout").addEventListener("click",()=>{sessionStorage.removeItem(KS);show(false)});
+$("range").addEventListener("change",()=>{loadSummary();loadTrend()});
+$("group").addEventListener("change",loadSummary);
+for(const id of ["facct","ferr"])$(id).addEventListener("change",loadRecords);
+let kt;$("fkey").addEventListener("input",()=>{clearTimeout(kt);kt=setTimeout(loadRecords,400)});
+$("lf").addEventListener("submit",async e=>{e.preventDefault();sessionStorage.setItem(KS,$("key").value);$("key").value="";
+  try{await api("/usage/v1/summary?range=1m");show(true);loadAll()}catch(err){if(err.message!=="401")$("lerr").textContent=err.message}});
+if(key()){show(true);loadAll()}else show(false);
+})();
+</script>
+</body>
+</html>

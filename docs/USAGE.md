@@ -111,6 +111,10 @@ Filters on both list endpoints: `account=`, `model=`, `key=<label>`, `instance=`
   ttft_p50_ms, ttft_p90_ms, duration_p50_ms, duration_p90_ms, input_tokens, output_tokens,
   cached_tokens, reasoning_tokens, tps, cost_usd, unknown_price}]}, "unknown_price_models":[…]}, "recorder":{accepted, dropped, written,
   write_errors, purged}}`. Percentiles are exact (nearest rank).
+- `GET /usage/v1/summary?…&bucket=day&tz=<minutes east of UTC>` additionally returns
+  `"buckets":[{day:"YYYY-MM-DD", start_ms, count, errors, input_tokens, output_tokens,
+  cached_tokens, reasoning_tokens, cost_usd, unknown_price}]` (ascending, empty days omitted;
+  `tz` −840..840, default 0; other `bucket` values → 400). Used by the `/ui` trend chart.
 - `GET /usage/v1/quota` → `{"accounts":[{account, email, disabled, needs_relogin, quota:
   {plan, observed_at_ms, observed_by, primary:{used_pct, resets_at, window_minutes, estimate},
   secondary:{…}}}], "note": …}`. Every configured account is listed (`quota: null` if never
@@ -204,3 +208,12 @@ output = 4.0                        # output incl. reasoning
 min_delta_pct = 5.0                 # below → "insufficient_data"
 ```
 `[usage] prices = "~/.cpa-lite/prices.toml"` — price table (see "Cost").
+
+## Web UI (`/ui`)
+`[ui] enabled = true` (default). Static page, no data without the key; every call goes to the
+endpoints above with the key from `sessionStorage`. Read-only: there are no write endpoints.
+Headers: CSP `default-src 'none'; script-src 'sha256-…'; style-src 'sha256-…'; connect-src
+'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
+`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`,
+`Cache-Control: no-store`. Hashes are computed from the embedded file at startup, so editing
+`crates/server/src/ui.html` needs no manual CSP update.

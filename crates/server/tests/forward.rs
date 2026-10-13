@@ -250,6 +250,10 @@ async fn env(idle: u64) -> Env {
 }
 
 async fn env_usage(idle: u64, usage: Option<Arc<cpa_lite_usage::Recorder>>) -> Env {
+    env_cfg(idle, usage, "").await
+}
+
+async fn env_cfg(idle: u64, usage: Option<Arc<cpa_lite_usage::Recorder>>, extra: &str) -> Env {
     let mock = Mock::default();
     let up = Router::new()
         .route(
@@ -263,7 +267,7 @@ async fn env_usage(idle: u64, usage: Option<Arc<cpa_lite_usage::Recorder>>) -> E
         .with_state(mock.clone());
     let up_addr = serve(up).await;
     let cfg = Config::parse(&format!(
-        "api_keys = [\"{KEY}\"]\nupstream = \"http://{up_addr}/backend-api\"\n[upstream_opts]\nstream_idle_timeout_secs = {idle}\n"
+        "api_keys = [\"{KEY}\"]\nupstream = \"http://{up_addr}/backend-api\"\n[upstream_opts]\nstream_idle_timeout_secs = {idle}\n{extra}"
     ))
     .unwrap();
     let rec = Arc::new(Rec::default());
@@ -946,4 +950,99 @@ async fn usage_key_label_instance_and_quota_api() {
     );
     let b = accts.iter().find(|x| x["account"] == "b").unwrap();
     assert!(b["quota"].is_null());
+}
+
+#[tokio::test]
+async fn ui_page_csp_and_toggle() {
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    // static page needs no key and contains no data
+    let r = e
+        .http
+        .get(format!("http://{}/ui", e.proxy))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let csp = r.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        csp.contains("default-src 'none'")
+            && csp.contains("script-src 'sha256-")
+            && csp.contains("connect-src 'self'"),
+        "{csp}"
+    );
+    assert!(!csp.contains("unsafe-inline"));
+    assert_eq!(r.headers()["x-content-type-options"], "nosniff");
+    assert_eq!(r.headers()["cache-control"], "no-store");
+    let body = r.text().await.unwrap();
+    assert!(body.contains("管理面板") && !body.contains(KEY));
+    let r = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap()
+        .get(format!("http://{}/", e.proxy))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.headers()["location"], "/ui");
+    // APIs the page calls stay behind the key
+    let r = e
+        .http
+        .get(format!("http://{}/usage/v1/quota", e.proxy))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401);
+
+    let off = env_cfg(300, None, "[ui]\nenabled = false\n").await;
+    let r = off
+        .http
+        .get(format!("http://{}/ui", off.proxy))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
+}
+
+#[tokio::test]
+async fn summary_day_buckets_api() {
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    sse_text(&e, "usage").await;
+    wait_rows(&e, 1).await;
+    let get = |q: &str| {
+        let (h, u) = (
+            e.http.clone(),
+            format!("http://{}/usage/v1/summary?{q}", e.proxy),
+        );
+        async move { h.get(u).bearer_auth(KEY).send().await.unwrap() }
+    };
+    let v: serde_json::Value = get("range=7d&bucket=day&tz=480&group=account")
+        .await
+        .json()
+        .await
+        .unwrap();
+    let b = v["summary"]["buckets"].as_array().unwrap();
+    assert_eq!(b.len(), 1, "{v}");
+    assert_eq!(b[0]["count"], 1);
+    assert_eq!(b[0]["input_tokens"], 120);
+    assert!(b[0]["day"].as_str().unwrap().len() == 10);
+    let v: serde_json::Value = get("range=7d").await.json().await.unwrap();
+    assert!(v["summary"].get("buckets").is_none());
+    assert_eq!(get("bucket=hour").await.status(), 400);
+    assert_eq!(get("bucket=day&tz=9999").await.status(), 400);
+    // numeric params next to the flattened filters
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    let v: serde_json::Value = get(&format!("from={}&to={}", now - 60_000, now + 1000))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(v["summary"]["total"]["count"], 1, "{v}");
 }

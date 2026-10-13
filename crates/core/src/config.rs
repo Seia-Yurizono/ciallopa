@@ -106,6 +106,18 @@ impl Default for ImagesConfig {
     }
 }
 
+/// Built-in read-only management page at `/ui`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct UiConfig {
+    pub enabled: bool,
+}
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LogConfig {
@@ -241,6 +253,7 @@ pub struct Config {
     pub images: ImagesConfig,
     pub log: LogConfig,
     pub usage: UsageConfig,
+    pub ui: UiConfig,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -257,6 +270,7 @@ impl Default for Config {
             images: ImagesConfig::default(),
             log: LogConfig::default(),
             usage: UsageConfig::default(),
+            ui: UiConfig::default(),
         }
     }
 }

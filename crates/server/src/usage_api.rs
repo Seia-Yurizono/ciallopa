@@ -83,6 +83,10 @@ struct SummaryQ {
     to: Option<i64>,
     /// Comma list of account,model,key,instance,effort,transport,endpoint. Default `account,model`.
     group: Option<String>,
+    /// `day` ⇒ per-day buckets (trend chart).
+    bucket: Option<String>,
+    /// Minutes east of UTC for day boundaries (e.g. 480). String: `flatten` breaks numbers.
+    tz: Option<String>,
     #[serde(flatten)]
     f: FiltersQ,
 }
@@ -135,11 +139,26 @@ async fn summary(State(St { rec, .. }): State<St>, Query(q): Query<SummaryQ>) ->
                 v
             }
         };
+    let bucket_day = match (q.bucket.as_deref(), q.tz.as_deref()) {
+        (None, _) => None,
+        (Some("day"), tz) => match tz.map(|t| t.trim().parse::<i32>()) {
+            None => Some(0),
+            Some(Ok(t)) if (-840..=840).contains(&t) => Some(t),
+            _ => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "bad tz (minutes east of UTC, -840..840)",
+                )
+            }
+        },
+        (Some(_), _) => return err(StatusCode::BAD_REQUEST, "bad bucket (only `day`)"),
+    };
     let sq = SummaryQuery {
         from_ms: from,
         to_ms: to,
         group_by,
         filters: q.f.into(),
+        bucket_day,
     };
     match rec.summary(sq).await {
         Ok(s) => Json(serde_json::json!({"summary": s, "recorder": rec.stats()})).into_response(),

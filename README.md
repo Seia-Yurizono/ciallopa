@@ -106,6 +106,15 @@ records and summaries then carry `cost_usd` (null + `unknown_price` for unpriced
 `cpa-lite prices sync --from models.dev` (dry run; `--write` to apply). Records also keep
 `service_tier`, cache-write tokens and the Codex `thread_id` / `turn_id`.
 
+Read-only web page: `GET /ui` (`/` redirects; `[ui] enabled = true` by default). It is a
+single static HTML file embedded in the binary (inline CSS/JS, no external resources) that asks
+for the access key (kept in `sessionStorage`, sent as `Authorization: Bearer`, never in the
+URL) and shows account quota cards, a summary table (24h/7d/30d, by account/key/instance/model),
+a daily token/cost chart and recent requests. Strict CSP (`default-src 'none'`, script/style
+allowed by SHA-256 hash only, `connect-src 'self'`); all data rendered via `textContent`.
+Local demo with fake data: `cargo run --example ui_demo` → http://127.0.0.1:8399/ui
+(key `sk-demo-0123456789abcdef`).
+
 Details: docs/USAGE.md.
 
 Token refresh is cross-process safe: under the file lock the auth file is re-read; a newer
