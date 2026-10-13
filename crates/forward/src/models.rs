@@ -33,6 +33,7 @@ pub(crate) async fn handler(
     let Some(path) = map_path(pq(&uri)) else {
         return proxy::json_error(StatusCode::NOT_FOUND, "not_found", "unknown path");
     };
+    let path = with_client_version(path);
     // Conditional requests go straight through (client ETag semantics).
     let conditional = headers.contains_key(http::header::IF_NONE_MATCH);
     if !conditional {
@@ -75,4 +76,27 @@ pub(crate) async fn handler(
         m.insert(path, (Instant::now(), h.clone(), b.clone()));
     }
     respond(&h, b)
+}
+
+/// Upstream `/codex/models` requires `client_version`; plain OpenAI clients don't send it.
+const DEFAULT_CLIENT_VERSION: &str = "0.162.1";
+
+fn with_client_version(path: String) -> String {
+    let q = path.split_once('?').map(|(_, q)| q).unwrap_or("");
+    if q.split('&').any(|kv| kv.starts_with("client_version=")) {
+        return path;
+    }
+    let sep = if path.contains('?') { '&' } else { '?' };
+    format!("{path}{sep}client_version={DEFAULT_CLIENT_VERSION}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::with_client_version as w;
+    #[test]
+    fn client_version_default() {
+        assert_eq!(w("/codex/models".into()), "/codex/models?client_version=0.162.1");
+        assert_eq!(w("/codex/models?a=1".into()), "/codex/models?a=1&client_version=0.162.1");
+        assert_eq!(w("/codex/models?client_version=9".into()), "/codex/models?client_version=9");
+    }
 }
