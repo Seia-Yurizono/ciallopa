@@ -3,7 +3,8 @@
 //! via a non-blocking `try_send`; nothing here can stall a stream.
 use crate::AppState;
 use cpa_lite_core::AccountId;
-use cpa_lite_usage::{Record, Recorder, Transport};
+use cpa_lite_usage::{QuotaObs, Record, Recorder, Transport};
+use http::HeaderMap;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Instant;
@@ -29,11 +30,18 @@ pub(crate) fn endpoint_of(path: &str) -> Option<&'static str> {
 }
 
 impl Tracker {
-    pub(crate) fn start(st: &AppState, transport: Transport, endpoint: &'static str) -> Option<Self> {
+    pub(crate) fn start(
+        st: &AppState,
+        transport: Transport,
+        endpoint: &'static str,
+        key: Option<&str>,
+    ) -> Option<Self> {
         let sink = st.usage.clone()?;
         let id = sink.ids.next();
+        let mut rec = Record::new(id, transport, endpoint);
+        rec.key = key.map(str::to_string);
         Some(Self {
-            rec: Record::new(id, transport, endpoint),
+            rec,
             sink,
             start: Instant::now(),
             terminal: false,
@@ -56,7 +64,6 @@ impl Tracker {
         }
     }
 
-
     /// Final account plus the accounts tried (and abandoned) before it.
     pub(crate) fn accounts(&mut self, tried: &[AccountId], fin: Option<&AccountId>) {
         self.rec.switches = tried.len() as u32;
@@ -73,6 +80,13 @@ impl Tracker {
             self.rec.first_account = self.rec.account.clone();
         }
         self.rec.account = Some(acct.clone());
+    }
+
+    /// Latest upstream quota snapshot for this request/turn (headers or `codex.rate_limits`).
+    pub(crate) fn quota(&mut self, h: &HeaderMap) {
+        if let Some(q) = quota_obs(h) {
+            self.rec.quota = Some(q);
+        }
     }
 
     pub(crate) fn retries(&mut self, n: u32) {
@@ -109,9 +123,12 @@ impl Tracker {
             let n = |v: Option<&Value>| v.and_then(|x| x.as_i64());
             self.rec.input_tokens = n(u.get("input_tokens"));
             self.rec.output_tokens = n(u.get("output_tokens"));
-            self.rec.cached_tokens = n(u.get("input_tokens_details").and_then(|d| d.get("cached_tokens")));
-            self.rec.reasoning_tokens =
-                n(u.get("output_tokens_details").and_then(|d| d.get("reasoning_tokens")));
+            self.rec.cached_tokens = n(u
+                .get("input_tokens_details")
+                .and_then(|d| d.get("cached_tokens")));
+            self.rec.reasoning_tokens = n(u
+                .get("output_tokens_details")
+                .and_then(|d| d.get("reasoning_tokens")));
         }
         match ty {
             "response.completed" | "response.done" => {}
@@ -191,6 +208,43 @@ fn sse_data_json(ev: &[u8]) -> Option<Value> {
     serde_json::from_str(&data.join("\n")).ok()
 }
 
+/// `x-codex-*` headers → snapshot. A window without `window-minutes` whose reset is "now"
+/// (free plans send `secondary-window-minutes: 0`, `reset-after-seconds: 0`) is treated as absent.
+pub(crate) fn quota_obs(h: &HeaderMap) -> Option<QuotaObs> {
+    let now = std::time::SystemTime::now();
+    let snap = cpa_lite_routing::parse_quota_at(h, now)?;
+    let secs = |t: std::time::SystemTime| {
+        t.duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|d| d.as_secs() as i64)
+    };
+    let real = |w: &Option<cpa_lite_core::QuotaWindow>| {
+        w.clone().filter(|w| {
+            w.window_minutes.is_some()
+                || w.resets_at
+                    .is_some_and(|r| r > now + std::time::Duration::from_secs(1))
+        })
+    };
+    let (p, s) = (real(&snap.primary), real(&snap.secondary));
+    if p.is_none() && s.is_none() {
+        return None;
+    }
+    let plan = h
+        .get("x-codex-plan-type")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.trim().to_ascii_lowercase())
+        .filter(|v| !v.is_empty());
+    Some(QuotaObs {
+        plan,
+        p_pct: p.as_ref().map(|w| w.used_percent),
+        p_reset: p.as_ref().and_then(|w| w.resets_at).and_then(secs),
+        p_window_min: p.as_ref().and_then(|w| w.window_minutes).map(|m| m as i64),
+        s_pct: s.as_ref().map(|w| w.used_percent),
+        s_reset: s.as_ref().and_then(|w| w.resets_at).and_then(secs),
+        s_window_min: s.as_ref().and_then(|w| w.window_minutes).map(|m| m as i64),
+    })
+}
+
 fn elapsed_ms(t: Instant) -> u32 {
     t.elapsed().as_millis().min(u128::from(u32::MAX)) as u32
 }
@@ -227,14 +281,44 @@ mod tests {
     use super::*;
     #[test]
     fn terminal_detection() {
-        assert!(is_terminal(br#"data: {"type":"response.completed","response":{}}"#));
-        assert!(!is_terminal(br#"data: {"type":"response.output_text.delta","delta":"x"}"#));
-        let v = sse_data_json(b"event: response.completed\ndata: {\"type\":\"response.completed\"}").unwrap();
+        assert!(is_terminal(
+            br#"data: {"type":"response.completed","response":{}}"#
+        ));
+        assert!(!is_terminal(
+            br#"data: {"type":"response.output_text.delta","delta":"x"}"#
+        ));
+        let v =
+            sse_data_json(b"event: response.completed\ndata: {\"type\":\"response.completed\"}")
+                .unwrap();
         assert_eq!(v["type"], "response.completed");
         assert_eq!(endpoint_of("/codex/responses/compact?x=1"), Some("compact"));
         assert_eq!(endpoint_of("/wham/usage"), None);
         assert_eq!(find_boundary(b"a\nb\n\nc"), Some((3, 2)));
         assert_eq!(find_boundary(b"a\r\n\r\nc"), Some((2, 3)));
         assert_eq!(find_boundary(b"a\nb"), None);
+        let mut h = HeaderMap::new();
+        for (k, v) in [
+            ("x-codex-plan-type", "Free"),
+            ("x-codex-primary-used-percent", "6"),
+            ("x-codex-primary-window-minutes", "43200"),
+            ("x-codex-primary-reset-at", "1794464253"),
+            ("x-codex-secondary-used-percent", "0"),
+            ("x-codex-secondary-window-minutes", "0"),
+            ("x-codex-secondary-reset-after-seconds", "0"),
+        ] {
+            h.insert(k, v.parse().unwrap());
+        }
+        let q = quota_obs(&h).unwrap();
+        assert_eq!(q.plan.as_deref(), Some("free"));
+        assert_eq!(
+            (q.p_pct, q.p_reset, q.p_window_min),
+            (Some(6.0), Some(1794464253), Some(43200))
+        );
+        assert_eq!(
+            (q.s_pct, q.s_reset),
+            (None, None),
+            "free plan's empty secondary dropped"
+        );
+        assert!(quota_obs(&HeaderMap::new()).is_none());
     }
 }

@@ -1,20 +1,47 @@
-//! Read-only usage API (behind the client key): `/usage/v1/records`, `/usage/v1/summary`.
+//! Read-only usage API (behind the client key): `/usage/v1/records`, `/usage/v1/summary`,
+//! `/usage/v1/quota`.
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-use cpa_lite_usage::{now_ms, RecentQuery, Recorder, SummaryQuery};
+use cpa_lite_core::AccountStore;
+use cpa_lite_usage::{now_ms, Dim, Filters, RecentQuery, Recorder, SummaryQuery};
 use serde::Deserialize;
 use std::sync::Arc;
 
-type St = Option<Arc<Recorder>>;
+type Rec = Option<Arc<Recorder>>;
+#[derive(Clone)]
+struct St {
+    rec: Rec,
+    accounts: Arc<dyn AccountStore>,
+}
 
-pub fn routes(rec: St) -> Router {
+pub fn routes(rec: Rec, accounts: Arc<dyn AccountStore>) -> Router {
     Router::new()
         .route("/usage/v1/records", get(records))
         .route("/usage/v1/summary", get(summary))
-        .with_state(rec)
+        .route("/usage/v1/quota", get(quota))
+        .with_state(St { rec, accounts })
+}
+
+#[derive(Deserialize, Default)]
+struct FiltersQ {
+    account: Option<String>,
+    model: Option<String>,
+    /// Client key **label**.
+    key: Option<String>,
+    instance: Option<String>,
+}
+impl From<FiltersQ> for Filters {
+    fn from(q: FiltersQ) -> Self {
+        Filters {
+            account: q.account,
+            model: q.model,
+            key: q.key,
+            instance: q.instance,
+        }
+    }
 }
 
 fn err(status: StatusCode, msg: &str) -> Response {
@@ -26,12 +53,12 @@ struct RecordsQ {
     limit: Option<usize>,
     before: Option<i64>,
     since: Option<i64>,
-    account: Option<String>,
-    model: Option<String>,
     errors: Option<u8>,
+    #[serde(flatten)]
+    f: FiltersQ,
 }
 
-async fn records(State(rec): State<St>, Query(q): Query<RecordsQ>) -> Response {
+async fn records(State(St { rec, .. }): State<St>, Query(q): Query<RecordsQ>) -> Response {
     let Some(rec) = rec else {
         return err(StatusCode::NOT_FOUND, "usage log disabled");
     };
@@ -39,8 +66,7 @@ async fn records(State(rec): State<St>, Query(q): Query<RecordsQ>) -> Response {
         limit: q.limit.unwrap_or(100),
         before_ms: q.before,
         since_ms: q.since,
-        account: q.account,
-        model: q.model,
+        filters: q.f.into(),
         errors_only: q.errors.unwrap_or(0) != 0,
     };
     match rec.recent(q).await {
@@ -55,6 +81,10 @@ struct SummaryQ {
     range: Option<String>,
     from: Option<i64>,
     to: Option<i64>,
+    /// Comma list of account,model,key,instance,effort,transport,endpoint. Default `account,model`.
+    group: Option<String>,
+    #[serde(flatten)]
+    f: FiltersQ,
 }
 
 /// `90s` / `30m` / `24h` / `7d` → ms.
@@ -72,7 +102,7 @@ pub fn parse_range(s: &str) -> Option<i64> {
     n.checked_mul(mul)
 }
 
-async fn summary(State(rec): State<St>, Query(q): Query<SummaryQ>) -> Response {
+async fn summary(State(St { rec, .. }): State<St>, Query(q): Query<SummaryQ>) -> Response {
     let Some(rec) = rec else {
         return err(StatusCode::NOT_FOUND, "usage log disabled");
     };
@@ -87,10 +117,71 @@ async fn summary(State(rec): State<St>, Query(q): Query<SummaryQ>) -> Response {
     if from > to {
         return err(StatusCode::BAD_REQUEST, "from > to");
     }
-    match rec.summary(SummaryQuery { from_ms: from, to_ms: to }).await {
+    let group_by = match q.group.as_deref() {
+        None => SummaryQuery::default().group_by,
+        Some(g) => {
+            let mut v = vec![];
+            for p in g.split(',').filter(|p| !p.trim().is_empty()) {
+                match Dim::parse(p) {
+                    Some(d) if !v.contains(&d) => v.push(d),
+                    Some(_) => {}
+                    None => {
+                        return err(
+                            StatusCode::BAD_REQUEST,
+                            "bad group (account,model,key,instance,effort,transport,endpoint)",
+                        )
+                    }
+                }
+            }
+            v
+        }
+    };
+    let sq = SummaryQuery {
+        from_ms: from,
+        to_ms: to,
+        group_by,
+        filters: q.f.into(),
+    };
+    match rec.summary(sq).await {
         Ok(s) => Json(serde_json::json!({"summary": s, "recorder": rec.stats()})).into_response(),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     }
+}
+
+/// Per account: latest upstream used %, reset times, capacity estimate, relogin flags.
+async fn quota(State(St { rec, accounts }): State<St>) -> Response {
+    let Some(rec) = rec else {
+        return err(StatusCode::NOT_FOUND, "usage log disabled");
+    };
+    let obs = match rec.quota().await {
+        Ok(o) => o,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    };
+    let relogin = accounts.relogin_required().await;
+    let mut out: Vec<serde_json::Value> = vec![];
+    let known = accounts.list().await;
+    for a in &known {
+        let q = obs.iter().find(|q| q.account == a.id);
+        out.push(serde_json::json!({
+            "account": a.id,
+            "email": a.email,
+            "disabled": a.disabled,
+            "needs_relogin": relogin.contains(&a.id),
+            "quota": q,
+        }));
+    }
+    // Observed in the log but no longer configured.
+    for q in obs
+        .iter()
+        .filter(|q| !known.iter().any(|a| a.id == q.account))
+    {
+        out.push(serde_json::json!({"account": q.account, "configured": false, "quota": q}));
+    }
+    Json(serde_json::json!({
+        "accounts": out,
+        "note": "used_percent comes from upstream and includes usage by other clients and other instances of the same account; capacity/remaining are estimates from this instance's weighted token deltas between snapshots",
+    }))
+    .into_response()
 }
 
 #[cfg(test)]

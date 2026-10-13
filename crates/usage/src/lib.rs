@@ -4,9 +4,12 @@
 mod store;
 mod writer;
 
-pub use store::{RecentQuery, RecordRow, Summary, SummaryGroup, SummaryQuery};
+pub use store::{
+    AccountQuota, Dim, Estimate, Filters, RecentQuery, RecordRow, Summary, SummaryGroup,
+    SummaryQuery, WindowQuota,
+};
 
-use cpa_lite_core::config::UsageConfig;
+use cpa_lite_core::config::{QuotaWeights, UsageConfig};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
@@ -68,6 +71,53 @@ pub struct Record {
     pub output_tokens: Option<i64>,
     pub cached_tokens: Option<i64>,
     pub reasoning_tokens: Option<i64>,
+    /// Label of the client key (never the key).
+    pub key: Option<String>,
+    /// Upstream quota snapshot seen on this response (headers / `codex.rate_limits`).
+    pub quota: Option<QuotaObs>,
+}
+
+/// One upstream quota snapshot (`x-codex-{primary,secondary}-*`, `x-codex-plan-type`).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct QuotaObs {
+    pub plan: Option<String>,
+    pub p_pct: Option<f64>,
+    /// Unix seconds.
+    pub p_reset: Option<i64>,
+    pub p_window_min: Option<i64>,
+    pub s_pct: Option<f64>,
+    pub s_reset: Option<i64>,
+    pub s_window_min: Option<i64>,
+}
+
+/// Cost hook: USD per 1M tokens per model. Empty by default (cost columns stay null); a later
+/// pricing module fills it via [`Recorder::set_prices`]. Cost is computed at query time from
+/// the stored tokens, so prices can change without rewriting rows.
+#[derive(Debug, Clone, Default)]
+pub struct PriceTable(pub std::collections::HashMap<String, Price>);
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Price {
+    pub input: f64,
+    pub cached_input: f64,
+    pub output: f64,
+}
+impl PriceTable {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    /// `output` includes reasoning tokens (as upstream reports them).
+    pub fn cost(
+        &self,
+        model: Option<&str>,
+        input: Option<i64>,
+        cached: Option<i64>,
+        output: Option<i64>,
+    ) -> Option<f64> {
+        let p = self.0.get(model?)?;
+        let (i, c, o) = (input.unwrap_or(0), cached.unwrap_or(0), output.unwrap_or(0));
+        let uncached = (i - c).max(0) as f64;
+        Some((uncached * p.input + c as f64 * p.cached_input + o as f64 * p.output) / 1e6)
+    }
 }
 impl Record {
     pub fn new(id: i64, transport: Transport, endpoint: &'static str) -> Self {
@@ -89,6 +139,8 @@ impl Record {
             output_tokens: None,
             cached_tokens: None,
             reasoning_tokens: None,
+            key: None,
+            quota: None,
         }
     }
     pub fn ts_ms(&self) -> i64 {
@@ -156,6 +208,8 @@ pub enum UsageError {
 pub struct Recorder {
     fast: SyncSender<Msg>,
     path: PathBuf,
+    weights: QuotaWeights,
+    prices: std::sync::RwLock<Arc<PriceTable>>,
     pub ids: RequestIds,
     counters: Arc<Counters>,
     join: Mutex<Option<std::thread::JoinHandle<()>>>,
@@ -164,6 +218,11 @@ pub struct Recorder {
 impl Recorder {
     /// Open/create the DB (schema + pragmas) and start the writer thread.
     pub fn open(cfg: &UsageConfig) -> Result<Arc<Self>, UsageError> {
+        Self::open_as(cfg, &cpa_lite_core::config::hostname())
+    }
+
+    /// Like [`open`](Self::open) with an explicit `instance_id` stored on every record.
+    pub fn open_as(cfg: &UsageConfig, instance: &str) -> Result<Arc<Self>, UsageError> {
         if let Some(dir) = cfg.path.parent().filter(|d| !d.as_os_str().is_empty()) {
             std::fs::create_dir_all(dir)?;
         }
@@ -177,6 +236,7 @@ impl Recorder {
             flush: std::time::Duration::from_millis(cfg.flush_ms),
             retention_days: cfg.retention_days,
             counters: counters.clone(),
+            state: store::WriterState::new(instance.to_string()),
         };
         let join = std::thread::Builder::new()
             .name("usage-writer".into())
@@ -184,6 +244,8 @@ impl Recorder {
         Ok(Arc::new(Self {
             fast: tx,
             path: cfg.path.clone(),
+            weights: cfg.quota_weights.clone(),
+            prices: Default::default(),
             ids: RequestIds::default(),
             counters,
             join: Mutex::new(Some(join)),
@@ -234,7 +296,9 @@ impl Recorder {
     /// Block until everything queued before this call is committed (tests / shutdown).
     pub fn flush_blocking(&self) -> Result<(), UsageError> {
         let (tx, rx) = sync_channel(1);
-        self.fast.send(Msg::Flush(tx)).map_err(|_| UsageError::Gone)?;
+        self.fast
+            .send(Msg::Flush(tx))
+            .map_err(|_| UsageError::Gone)?;
         rx.recv().map_err(|_| UsageError::Gone)
     }
 
@@ -246,16 +310,36 @@ impl Recorder {
         }
     }
 
+    /// Install / replace the price table (cost hook).
+    pub fn set_prices(&self, p: PriceTable) {
+        *self.prices.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(p);
+    }
+    fn prices(&self) -> Arc<PriceTable> {
+        self.prices
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
     pub async fn recent(&self, q: RecentQuery) -> Result<Vec<RecordRow>, UsageError> {
-        let p = self.path.clone();
-        tokio::task::spawn_blocking(move || store::recent(&store::open_ro(&p)?, &q))
+        let (p, pr) = (self.path.clone(), self.prices());
+        tokio::task::spawn_blocking(move || store::recent(&store::open_ro(&p)?, &q, &pr))
             .await
             .map_err(|_| UsageError::Gone)?
     }
 
     pub async fn summary(&self, q: SummaryQuery) -> Result<Summary, UsageError> {
-        let p = self.path.clone();
-        tokio::task::spawn_blocking(move || store::summary(&store::open_ro(&p)?, &q))
+        let (p, pr) = (self.path.clone(), self.prices());
+        tokio::task::spawn_blocking(move || store::summary(&store::open_ro(&p)?, &q, &pr))
+            .await
+            .map_err(|_| UsageError::Gone)?
+    }
+
+    /// Latest quota snapshot + capacity estimate per observed account. Snapshots come from
+    /// upstream and include usage by *other* clients / instances of the same account.
+    pub async fn quota(&self) -> Result<Vec<AccountQuota>, UsageError> {
+        let (p, w) = (self.path.clone(), self.weights.clone());
+        tokio::task::spawn_blocking(move || store::quota(&store::open_ro(&p)?, &w, now_ms()))
             .await
             .map_err(|_| UsageError::Gone)?
     }
@@ -346,34 +430,72 @@ mod tests {
         assert_eq!(st.written, 13);
         assert_eq!(st.dropped, 0);
 
-        let rows = r.recent(RecentQuery { limit: 100, ..Default::default() }).await.unwrap();
+        let rows = r
+            .recent(RecentQuery {
+                limit: 100,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
         assert_eq!(rows.len(), 12, "duplicate ignored");
         assert!(rows.windows(2).all(|w| w[0].ts_ms >= w[1].ts_ms));
-        let first = rows.iter().find(|x| x.request_id == format!("{id:016x}")).unwrap();
+        let first = rows
+            .iter()
+            .find(|x| x.request_id == format!("{id:016x}"))
+            .unwrap();
         assert_eq!(first.status, 200);
         assert_eq!(first.reasoning_effort.as_deref(), Some("low"));
         assert_eq!(first.tps, Some(50.0)); // 50 tok / 1.0 s
         let errs = r
-            .recent(RecentQuery { limit: 10, errors_only: true, ..Default::default() })
+            .recent(RecentQuery {
+                limit: 10,
+                errors_only: true,
+                ..Default::default()
+            })
             .await
             .unwrap();
         assert_eq!(errs.len(), 1);
         assert_eq!(errs[0].error.as_deref(), Some("usage_limit"));
         let by = r
-            .recent(RecentQuery { limit: 10, account: Some("b".into()), ..Default::default() })
+            .recent(RecentQuery {
+                limit: 10,
+                filters: Filters {
+                    account: Some("b".into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
             .await
             .unwrap();
         assert_eq!(by.len(), 2);
         assert!(r
-            .recent(RecentQuery { limit: 10, account: Some("nobody".into()), ..Default::default() })
+            .recent(RecentQuery {
+                limit: 10,
+                filters: Filters {
+                    account: Some("nobody".into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
             .await
             .unwrap()
             .is_empty());
 
-        let s = r.summary(SummaryQuery { from_ms: t0 - 1, to_ms: now_ms() }).await.unwrap();
+        let s = r
+            .summary(SummaryQuery {
+                from_ms: t0 - 1,
+                to_ms: now_ms(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
         assert_eq!(s.total.count, 12);
         assert_eq!(s.total.errors, 1);
-        let a = s.groups.iter().find(|g| g.account.as_deref() == Some("a")).unwrap();
+        let a = s
+            .groups
+            .iter()
+            .find(|g| g.group["account"].as_deref() == Some("a"))
+            .unwrap();
         assert_eq!(a.count, 10);
         assert_eq!(a.ttft_p50_ms, Some(230)); // 100,200..280 → 5th of 10
         assert_eq!(a.ttft_p90_ms, Some(270));
@@ -382,7 +504,14 @@ mod tests {
         assert_eq!(a.cached_tokens, 40);
         assert!(a.tps.unwrap() > 50.0);
         // time range excludes everything
-        let none = r.summary(SummaryQuery { from_ms: 0, to_ms: t0 - 1 }).await.unwrap();
+        let none = r
+            .summary(SummaryQuery {
+                from_ms: 0,
+                to_ms: t0 - 1,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
         assert_eq!(none.total.count, 0);
 
         r.shutdown();
@@ -425,7 +554,11 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let c = cfg(d.path());
         {
-            let r = Recorder::open(&UsageConfig { retention_days: 0, ..c.clone() }).unwrap();
+            let r = Recorder::open(&UsageConfig {
+                retention_days: 0,
+                ..c.clone()
+            })
+            .unwrap();
             let old = r.ids.next_at(now_ms() - 40 * 86_400_000);
             r.record(Record::new(old, Transport::Sse, "responses"));
             let new = r.ids.next();
@@ -437,6 +570,193 @@ mod tests {
         // purge happens before the first batch; give the thread a moment
         std::thread::sleep(std::time::Duration::from_millis(100));
         assert_eq!(r.stats().purged, 1);
+        r.shutdown();
+    }
+
+    fn qrec(r: &Recorder, ms: i64, acct: &str, key: &str, out: i64, p: f64, reset: i64) {
+        let mut x = Record::new(r.ids.next_at(ms), Transport::Sse, "responses");
+        x.account = Some(acct.into());
+        x.model = Some("m".into());
+        x.key = Some(key.into());
+        x.status = 200;
+        x.input_tokens = Some(1000);
+        x.cached_tokens = Some(500);
+        x.output_tokens = Some(out);
+        x.quota = Some(QuotaObs {
+            plan: Some("plus".into()),
+            p_pct: Some(p),
+            p_reset: Some(reset),
+            p_window_min: Some(300),
+            ..Default::default()
+        });
+        assert!(r.record(x));
+    }
+
+    #[tokio::test]
+    async fn keys_instances_quota_and_cost() {
+        let d = tempfile::tempdir().unwrap();
+        let r = Recorder::open_as(&cfg(d.path()), "host-a").unwrap();
+        let t0 = now_ms() - 60_000;
+        let reset = now_ms() / 1000 + 3600;
+        // 10 requests, % unchanged for pairs (only changes create quota_obs rows); jitter in reset
+        for i in 0..10 {
+            let key = if i % 2 == 0 { "laptop" } else { "ci" };
+            qrec(
+                &r,
+                t0 + i * 10,
+                "a",
+                key,
+                100,
+                10.0 + (i / 2) as f64 * 2.0,
+                reset + (i % 3),
+            );
+        }
+        // other account: tiny delta → insufficient data
+        qrec(&r, t0, "b", "laptop", 10, 1.0, reset);
+        qrec(&r, t0 + 1, "b", "laptop", 10, 2.0, reset);
+        r.flush_blocking().unwrap();
+
+        let c = store::open_ro(&d.path().join("u.db")).unwrap();
+        let obs: i64 = c
+            .query_row("SELECT count(*) FROM quota_obs", [], |x| x.get(0))
+            .unwrap();
+        assert_eq!(obs, 5 + 2, "rows only on change (reset jitter tolerated)");
+
+        let rows = r
+            .recent(RecentQuery {
+                limit: 100,
+                filters: Filters {
+                    key: Some("ci".into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 5);
+        assert!(rows
+            .iter()
+            .all(|x| x.key.as_deref() == Some("ci") && x.instance.as_deref() == Some("host-a")));
+        assert_eq!(rows[0].primary_used_pct, Some(18.0));
+        assert_eq!(rows[0].cost_usd, None, "no price table → no cost");
+
+        let s = r
+            .summary(SummaryQuery {
+                from_ms: t0 - 1,
+                to_ms: now_ms(),
+                group_by: vec![Dim::Key, Dim::Instance],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(s.groups.len(), 2);
+        let lap = s
+            .groups
+            .iter()
+            .find(|g| g.group["key"].as_deref() == Some("laptop"))
+            .unwrap();
+        assert_eq!(lap.count, 7);
+        assert_eq!(lap.group["instance"].as_deref(), Some("host-a"));
+
+        // estimate: first obs at %10 (req 0) .. last at %18 (req 8): reqs 0..8 → 8 requests
+        // weighted = 8 * (1.0*500 + 0.1*500 + 4.0*100) = 7600, Δ=8% → 950/%.
+        let q = r.quota().await.unwrap();
+        let a = q.iter().find(|x| x.account == "a").unwrap();
+        assert_eq!(a.plan.as_deref(), Some("plus"));
+        assert_eq!(a.primary.used_pct, Some(18.0));
+        let e = &a.primary.estimate;
+        assert_eq!(e.status, "ok");
+        assert_eq!(e.requests, Some(8));
+        assert!((e.tokens_per_pct.unwrap() - 950.0).abs() < 1e-6);
+        assert!((e.capacity_tokens.unwrap() - 95_000.0).abs() < 1e-6);
+        assert!((e.remaining_tokens.unwrap() - 82.0 * 950.0).abs() < 1e-6);
+        assert_eq!(a.secondary.estimate.status, "no_window");
+        let b = q.iter().find(|x| x.account == "b").unwrap();
+        assert_eq!(b.primary.estimate.status, "insufficient_data");
+
+        // cost hook
+        let mut pt = PriceTable::default();
+        pt.0.insert(
+            "m".into(),
+            Price {
+                input: 1.0,
+                cached_input: 0.1,
+                output: 10.0,
+            },
+        );
+        r.set_prices(pt);
+        let rows = r
+            .recent(RecentQuery {
+                limit: 1,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let want = (500.0 * 1.0 + 500.0 * 0.1 + 10.0 * 10.0) / 1e6;
+        assert!((rows[0].cost_usd.unwrap() - want).abs() < 1e-12);
+        let s = r
+            .summary(SummaryQuery {
+                from_ms: t0 - 1,
+                to_ms: now_ms(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(s.total.cost_usd.unwrap() > 0.0);
+        r.shutdown();
+    }
+
+    #[test]
+    fn migrates_v1_db() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("u.db");
+        let old_id = (now_ms() - 5_000) << SEQ_BITS;
+        {
+            let c = rusqlite::Connection::open(&p).unwrap();
+            c.execute_batch(&format!(
+                "CREATE TABLE labels(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);
+                 CREATE TABLE requests(id INTEGER PRIMARY KEY, account INTEGER, first_account INTEGER,
+                   model INTEGER, effort INTEGER, transport INTEGER NOT NULL, endpoint INTEGER,
+                   status INTEGER NOT NULL, error INTEGER, retries INTEGER NOT NULL,
+                   switches INTEGER NOT NULL, ttft_ms INTEGER, duration_ms INTEGER NOT NULL,
+                   in_tok INTEGER, out_tok INTEGER, cached_tok INTEGER, reasoning_tok INTEGER);
+                 INSERT INTO labels VALUES(1,'old-acct');
+                 INSERT INTO requests(id,account,transport,status,retries,switches,duration_ms,out_tok)
+                   VALUES({old_id},1,1,200,0,0,5,7);
+                 PRAGMA user_version=1;"
+            ))
+            .unwrap();
+        }
+        let r = Recorder::open_as(
+            &UsageConfig {
+                path: p.clone(),
+                ..UsageConfig::default()
+            },
+            "h",
+        )
+        .unwrap();
+        qrec(&r, now_ms(), "new", "k", 1, 1.0, now_ms() / 1000 + 60);
+        r.flush_blocking().unwrap();
+        let c = store::open_ro(&p).unwrap();
+        let v: i64 = c
+            .query_row("PRAGMA user_version", [], |x| x.get(0))
+            .unwrap();
+        assert_eq!(v, store::SCHEMA_VERSION);
+        let n: i64 = c
+            .query_row("SELECT count(*) FROM requests", [], |x| x.get(0))
+            .unwrap();
+        assert_eq!(n, 2, "old rows kept");
+        let rows = store::recent(
+            &c,
+            &RecentQuery {
+                limit: 10,
+                ..Default::default()
+            },
+            &PriceTable::default(),
+        )
+        .unwrap();
+        assert_eq!(rows[1].account.as_deref(), Some("old-acct"));
+        assert_eq!(rows[1].key, None);
         r.shutdown();
     }
 }

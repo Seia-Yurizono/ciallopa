@@ -240,7 +240,16 @@ pub(crate) fn stream_back_tracked(st: &AppState, c: Chosen, mut trk: Option<Trac
         }
     }
     let up = c.resp.bytes_stream().boxed();
-    stream_body(st, status, headers, c.route, c.account, Bytes::new(), up, trk)
+    stream_body(
+        st,
+        status,
+        headers,
+        c.route,
+        c.account,
+        Bytes::new(),
+        up,
+        trk,
+    )
 }
 
 type UpStream = futures::stream::BoxStream<'static, reqwest::Result<Bytes>>;
@@ -455,6 +464,9 @@ pub(crate) async fn send_streaming(
         if let Some(t) = trk.as_mut() {
             t.retries(info.retries);
             t.accounts(&info.tried, res.as_ref().ok().map(|c| &c.account));
+            if let Ok(c) = &res {
+                t.quota(c.resp.headers());
+            }
         }
         let c = match res {
             Ok(c) => c,
@@ -540,7 +552,16 @@ pub(crate) async fn send_streaming(
         if let Some(t) = trk.as_mut() {
             t.status(status.as_u16());
         }
-        return stream_body(st, status, headers, route, account, Bytes::from(buf), up, trk);
+        return stream_body(
+            st,
+            status,
+            headers,
+            route,
+            account,
+            Bytes::from(buf),
+            up,
+            trk,
+        );
     }
 }
 

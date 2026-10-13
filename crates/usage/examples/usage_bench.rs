@@ -20,6 +20,7 @@ fn cfg(p: &str, queue: usize, batch: usize, flush_ms: u64) -> UsageConfig {
         queue_size: queue,
         batch_size: batch,
         flush_ms,
+        quota_weights: Default::default(),
     }
 }
 
@@ -39,7 +40,11 @@ impl Rng {
 fn fake(r: &Recorder, rng: &mut Rng, ms: i64, accounts: u64, models: u64) -> Record {
     let id = r.ids.next_at(ms);
     let ws = rng.below(3) != 0;
-    let mut x = Record::new(id, if ws { Transport::Ws } else { Transport::Sse }, "responses");
+    let mut x = Record::new(
+        id,
+        if ws { Transport::Ws } else { Transport::Sse },
+        "responses",
+    );
     let a = rng.below(accounts);
     x.account = Some(format!("codex-{a:08x}-user{a}@example.com-plus"));
     x.model = Some(format!("gpt-5.{}", rng.below(models)));
@@ -51,7 +56,10 @@ fn fake(r: &Recorder, rng: &mut Rng, ms: i64, accounts: u64, models: u64) -> Rec
     }
     if rng.below(50) == 0 {
         x.switches = 1;
-        x.first_account = Some(format!("codex-{:08x}-other@example.com-plus", rng.below(accounts)));
+        x.first_account = Some(format!(
+            "codex-{:08x}-other@example.com-plus",
+            rng.below(accounts)
+        ));
     }
     let ttft = 300 + rng.below(4000) as u32;
     x.ttft_ms = Some(ttft);
@@ -90,7 +98,9 @@ fn main() {
                 let s = r.stats();
                 r.shutdown();
                 let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0)
-                    + std::fs::metadata(p.with_extension("db-wal")).map(|m| m.len()).unwrap_or(0);
+                    + std::fs::metadata(p.with_extension("db-wal"))
+                        .map(|m| m.len())
+                        .unwrap_or(0);
                 println!(
                     "{{\"bench\":\"writer\",\"batch\":{batch},\"rows\":{rows},\"secs\":{:.3},\"rows_per_s\":{:.0},\"written\":{},\"bytes_per_row\":{:.1}}}",
                     el.as_secs_f64(),
@@ -109,7 +119,9 @@ fn main() {
             let r = Recorder::open(&cfg(p.to_str().unwrap(), queue, batch, 50)).unwrap();
             let mut rng = Rng(7);
             let t0 = now_ms();
-            let recs: Vec<Record> = (0..rows).map(|i| fake(&r, &mut rng, t0 + i as i64, 8, 4)).collect();
+            let recs: Vec<Record> = (0..rows)
+                .map(|i| fake(&r, &mut rng, t0 + i as i64, 8, 4))
+                .collect();
             let mut lat = Vec::with_capacity(rows);
             let t = Instant::now();
             for x in recs {
@@ -161,25 +173,56 @@ fn main() {
             let p = &a[2];
             let r = Recorder::open(&cfg(p, 1024, 256, 50)).unwrap();
             let now = now_ms();
-            for (name, ms) in [("24h", 86_400_000i64), ("7d", 7 * 86_400_000), ("30d", 30 * 86_400_000)] {
+            for (name, ms) in [
+                ("24h", 86_400_000i64),
+                ("7d", 7 * 86_400_000),
+                ("30d", 30 * 86_400_000),
+            ] {
                 let mut ts = vec![];
                 let mut cnt = 0;
                 for _ in 0..3 {
                     let t = Instant::now();
-                    let s = rt.block_on(r.summary(SummaryQuery { from_ms: now - ms, to_ms: now })).unwrap();
+                    let s = rt
+                        .block_on(r.summary(SummaryQuery {
+                            from_ms: now - ms,
+                            to_ms: now,
+                            ..Default::default()
+                        }))
+                        .unwrap();
                     ts.push(t.elapsed().as_millis() as u64);
                     cnt = s.total.count;
                 }
                 println!("{{\"bench\":\"summary\",\"range\":\"{name}\",\"rows_in_range\":{cnt},\"ms_runs\":{ts:?},\"ms_min\":{}}}", ts.iter().min().unwrap());
             }
             let t = Instant::now();
-            let rows = rt.block_on(r.recent(RecentQuery { limit: 100, ..Default::default() })).unwrap();
-            println!("{{\"bench\":\"recent\",\"limit\":100,\"got\":{},\"ms\":{:.2}}}", rows.len(), t.elapsed().as_secs_f64() * 1e3);
+            let rows = rt
+                .block_on(r.recent(RecentQuery {
+                    limit: 100,
+                    ..Default::default()
+                }))
+                .unwrap();
+            println!(
+                "{{\"bench\":\"recent\",\"limit\":100,\"got\":{},\"ms\":{:.2}}}",
+                rows.len(),
+                t.elapsed().as_secs_f64() * 1e3
+            );
             let t = Instant::now();
             let rows = rt
-                .block_on(r.recent(RecentQuery { limit: 100, account: Some("codex-00000003-user3@example.com-plus".into()), errors_only: true, ..Default::default() }))
+                .block_on(r.recent(RecentQuery {
+                    limit: 100,
+                    filters: cpa_lite_usage::Filters {
+                        account: Some("codex-00000003-user3@example.com-plus".into()),
+                        ..Default::default()
+                    },
+                    errors_only: true,
+                    ..Default::default()
+                }))
                 .unwrap();
-            println!("{{\"bench\":\"recent_filtered\",\"got\":{},\"ms\":{:.2}}}", rows.len(), t.elapsed().as_secs_f64() * 1e3);
+            println!(
+                "{{\"bench\":\"recent_filtered\",\"got\":{},\"ms\":{:.2}}}",
+                rows.len(),
+                t.elapsed().as_secs_f64() * 1e3
+            );
             r.shutdown();
         }
         "purge" => {
@@ -190,7 +233,11 @@ fn main() {
             // oldest row time
             let r = Recorder::open(&cfg(a[2].as_str(), 16, 16, 50)).unwrap();
             let oldest = rt
-                .block_on(r.recent(RecentQuery { limit: 1, before_ms: Some(i64::MAX >> SEQ_BITS), ..Default::default() }))
+                .block_on(r.recent(RecentQuery {
+                    limit: 1,
+                    before_ms: Some(i64::MAX >> SEQ_BITS),
+                    ..Default::default()
+                }))
                 .unwrap();
             r.shutdown();
             let _ = oldest;

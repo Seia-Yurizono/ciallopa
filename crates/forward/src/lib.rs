@@ -28,6 +28,11 @@ use cpa_lite_core::{AccountStore, Config, RouteRequest, Router as AccountRouter}
 use cpa_lite_upstream::UpstreamClient;
 use std::sync::Arc;
 
+/// Label of the client key that authenticated the request (inserted by the server's key
+/// middleware as a request extension). Never the key itself.
+#[derive(Clone, Debug)]
+pub struct ClientKey(pub Arc<str>);
+
 /// Everything handlers need. Built once in `cpa-lite` (server) main.
 #[derive(Clone)]
 pub struct AppState {
@@ -92,27 +97,36 @@ pub(crate) fn session_route(headers: &HeaderMap, body: Option<&serde_json::Value
     }
 }
 
+pub(crate) type Key = Option<axum::Extension<ClientKey>>;
+
+pub(crate) fn key_label(k: &Key) -> Option<&str> {
+    k.as_ref().map(|e| &*e.0 .0)
+}
+
 async fn responses(
     State(st): State<AppState>,
+    key: Key,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    forward(st, Method::POST, &uri, headers, body, true).await
+    forward(st, key, Method::POST, &uri, headers, body, true).await
 }
 
 async fn passthrough(
     State(st): State<AppState>,
+    key: Key,
     method: Method,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    forward(st, method, &uri, headers, body, false).await
+    forward(st, key, method, &uri, headers, body, false).await
 }
 
 async fn forward(
     st: AppState,
+    key: Key,
     method: Method,
     uri: &http::Uri,
     headers: HeaderMap,
@@ -130,7 +144,8 @@ async fn forward(
     let route = session_route(&headers, parsed.as_ref());
     let trk = if inspect {
         usage::endpoint_of(&path).and_then(|ep| {
-            let mut t = usage::Tracker::start(&st, cpa_lite_usage::Transport::Sse, ep)?;
+            let mut t =
+                usage::Tracker::start(&st, cpa_lite_usage::Transport::Sse, ep, key_label(&key))?;
             t.meta(parsed.as_ref());
             Some(t)
         })

@@ -14,6 +14,11 @@ pub trait AccountStore: Send + Sync + 'static {
     async fn force_refresh(&self, id: &AccountId) -> Result<Credentials, AuthError>;
     /// Re-scan auth_dir (new logins / imports).
     async fn reload(&self) -> Result<(), AuthError>;
+    /// Accounts whose refresh token was rejected (`refresh_token_reused`, `invalid_grant`, ...):
+    /// excluded from routing until re-login. Default: none.
+    async fn relogin_required(&self) -> Vec<AccountId> {
+        vec![]
+    }
 }
 
 /// Owned by the **routing** worker (crate `cpa-lite-routing`). Sync + cheap: no I/O.

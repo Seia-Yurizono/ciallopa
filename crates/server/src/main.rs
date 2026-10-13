@@ -72,9 +72,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::warn!("api_keys is empty: every proxied request will get 401");
     }
     let usage = if cfg.usage.enabled {
-        match cpa_lite_usage::Recorder::open(&cfg.usage) {
+        match cpa_lite_usage::Recorder::open_as(&cfg.usage, &cfg.instance_id) {
             Ok(r) => {
-                tracing::info!(path = %cfg.usage.path.display(), "usage log enabled");
+                tracing::info!(path = %cfg.usage.path.display(), instance = %cfg.instance_id, "usage log enabled");
                 Some(r)
             }
             Err(e) => {

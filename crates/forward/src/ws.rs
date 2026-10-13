@@ -2,7 +2,6 @@
 use crate::headers::upstream_headers;
 use crate::usage::{endpoint_of, Tracker};
 use crate::{map_path, pq, proxy, session_route, AppState};
-use cpa_lite_usage::Transport;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{OriginalUri, State};
 use axum::response::Response;
@@ -11,6 +10,7 @@ use cpa_lite_routing::{parse_quota, parse_quota_event_headers};
 use cpa_lite_upstream::retry::{delay_for, is_retryable_status};
 use cpa_lite_upstream::ws::handshake_status;
 use cpa_lite_upstream::{UpstreamWs, WsMessage};
+use cpa_lite_usage::Transport;
 use futures::{SinkExt, StreamExt};
 use http::{HeaderMap, StatusCode};
 use std::time::Duration;
@@ -31,6 +31,7 @@ const CLOSE_INTERNAL: u16 = 1011;
 
 pub(crate) async fn handler(
     State(st): State<AppState>,
+    key: crate::Key,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
@@ -44,7 +45,7 @@ pub(crate) async fn handler(
         Err(r) => {
             // Handshake failure: one usage row for the attempt.
             if let Some(mut t) = endpoint_of(&path)
-                .and_then(|ep| Tracker::start(&st, Transport::Ws, ep))
+                .and_then(|ep| Tracker::start(&st, Transport::Ws, ep, crate::key_label(&key)))
             {
                 t.status(r.status().as_u16());
                 t.accounts(&route.exclude, None);
@@ -55,8 +56,14 @@ pub(crate) async fn handler(
     };
     let idle = Duration::from_secs(st.config.upstream_opts.stream_idle_timeout_secs.max(1));
     let st2 = st.clone();
-    let ctx = Ctx { path, headers };
-    let mut resp = ws.on_upgrade(move |socket| relay(st2, ctx, route, account, socket, up, idle));
+    let ctx = Ctx {
+        path,
+        headers,
+        key: crate::key_label(&key).map(str::to_string),
+    };
+    let hs_headers = resp_headers.clone();
+    let mut resp =
+        ws.on_upgrade(move |socket| relay(st2, ctx, route, account, socket, up, idle, hs_headers));
     for (k, v) in resp_headers.iter() {
         let n = k.as_str();
         if n.starts_with("sec-websocket-")
@@ -231,6 +238,8 @@ fn close(code: u16, reason: &str) -> Message {
 struct Ctx {
     path: String,
     headers: HeaderMap,
+    /// Client key label (usage log).
+    key: Option<String>,
 }
 
 /// Inspect an upstream text frame: (kind, request finished, quota snapshot outcome).
@@ -270,6 +279,7 @@ fn replayable(text: &str) -> bool {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn relay(
     st: AppState,
     ctx: Ctx,
@@ -278,7 +288,10 @@ async fn relay(
     down: WebSocket,
     up: UpstreamWs,
     idle: Duration,
+    handshake: HeaderMap,
 ) {
+    // Latest quota headers on this connection: handshake, then `codex.rate_limits` frames.
+    let mut quota_h = handshake;
     let (mut dtx, mut drx) = down.split();
     let (mut utx, mut urx) = up.split();
     let max_switches = st.accounts.list().await.len().max(1);
@@ -313,10 +326,11 @@ async fn relay(
                         if !awaiting {
                             if let (Message::Text(t), Some(ep)) = (&m, endpoint) {
                                 if t.as_str().contains("response.create") {
-                                    turn = Tracker::start(&st, Transport::Ws, ep).map(|mut tr| {
+                                    turn = Tracker::start(&st, Transport::Ws, ep, ctx.key.as_deref()).map(|mut tr| {
                                         let v = serde_json::from_str::<serde_json::Value>(t.as_str()).ok();
                                         tr.meta(v.as_ref());
                                         tr.accounts(&[], Some(&account));
+                                        tr.quota(&quota_h);
                                         tr.status(200);
                                         tr
                                     });
@@ -361,7 +375,13 @@ async fn relay(
                         let (kind, done) = match &m {
                             WsMessage::Text(t) => {
                                 let (k, d, snap) = classify(t.as_str());
-                                if let Some(o) = snap { st.router.report(&route, &account, &o); }
+                                if let Some(o) = snap {
+                                    st.router.report(&route, &account, &o);
+                                    if let Some(h) = parse_quota_event_headers(t.as_str().as_bytes()) {
+                                        if let Some(tr) = turn.as_mut() { tr.quota(&h); }
+                                        quota_h = h;
+                                    }
+                                }
                                 (k, d)
                             }
                             _ => (proxy::EventKind::Preamble, false),
@@ -375,9 +395,10 @@ async fn relay(
                                 if let Some(req) = pending.clone() {
                                     route.exclude.push(account.clone());
                                     match connect(&st, &ctx.path, &ctx.headers, &mut route).await {
-                                        Ok((ws, _, id)) => {
+                                        Ok((ws, h, id)) => {
+                                            quota_h = h;
                                             tracing::info!(from = %account, to = %id, "ws quota error before output; replayed on another account");
-                                            if let Some(t) = turn.as_mut() { t.switch_to(&id); }
+                                            if let Some(t) = turn.as_mut() { t.switch_to(&id); t.quota(&quota_h); }
                                             account = id;
                                             let (t, r) = ws.split();
                                             utx = t;

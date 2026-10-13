@@ -16,11 +16,11 @@ pub(crate) struct Writer {
     pub flush: Duration,
     pub retention_days: u32,
     pub counters: Arc<Counters>,
+    pub state: store::WriterState,
 }
 
 impl Writer {
     pub fn run(mut self) {
-        let mut labels = store::Labels::default();
         let mut batch: Vec<Record> = Vec::with_capacity(self.batch_size);
         let mut acks = Vec::new();
         let mut next_purge = Instant::now();
@@ -34,7 +34,9 @@ impl Writer {
                 };
             }
             // Wait for the first message of a batch (wake up for purges).
-            let wait = next_purge.saturating_duration_since(Instant::now()).max(Duration::from_millis(1));
+            let wait = next_purge
+                .saturating_duration_since(Instant::now())
+                .max(Duration::from_millis(1));
             let first = match self.rx.recv_timeout(wait) {
                 Ok(m) => m,
                 Err(RecvTimeoutError::Timeout) => continue,
@@ -74,13 +76,13 @@ impl Writer {
             }
             if !batch.is_empty() {
                 let n = batch.len() as u64;
-                match store::insert_batch(&mut self.conn, &mut labels, &batch) {
+                match store::insert_batch(&mut self.conn, &mut self.state, &batch) {
                     Ok(()) => {
                         self.counters.written.fetch_add(n, Ordering::Relaxed);
                     }
                     Err(e) => {
                         // Labels cache may reference rolled-back rows.
-                        labels = store::Labels::default();
+                        self.state.reset();
                         self.counters.write_errors.fetch_add(n, Ordering::Relaxed);
                         tracing::warn!(error = %e, rows = n, "usage batch write failed; rows dropped");
                     }

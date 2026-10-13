@@ -119,6 +119,75 @@ impl Default for LogConfig {
     }
 }
 
+/// One client key. Config accepts a plain string (label = `key-<sha256(key)[:8]>`) or a
+/// table `{ label = "laptop", key = "sk-..." }`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum ApiKeyEntry {
+    Plain(String),
+    Labeled { label: String, key: String },
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct ApiKey {
+    pub label: String,
+    pub key: String,
+}
+impl std::fmt::Debug for ApiKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApiKey")
+            .field("label", &self.label)
+            .field("key", &"<redacted>")
+            .finish()
+    }
+}
+
+/// Default label for an unlabeled key: never the key itself.
+pub fn default_key_label(key: &str) -> String {
+    use sha2::Digest;
+    let d = sha2::Sha256::digest(key.as_bytes());
+    let hex: String = d.iter().take(4).map(|b| format!("{b:02x}")).collect();
+    format!("key-{hex}")
+}
+
+impl ApiKeyEntry {
+    pub fn resolve(&self) -> ApiKey {
+        match self {
+            ApiKeyEntry::Plain(k) => ApiKey {
+                label: default_key_label(k),
+                key: k.clone(),
+            },
+            ApiKeyEntry::Labeled { label, key } => ApiKey {
+                label: label.trim().to_string(),
+                key: key.clone(),
+            },
+        }
+    }
+}
+
+/// Weights for estimating "tokens per 1% of quota" (see docs/USAGE.md). `output` covers
+/// reasoning tokens too (they are part of output_tokens upstream).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct QuotaWeights {
+    /// Uncached input tokens.
+    pub input: f64,
+    pub cached: f64,
+    pub output: f64,
+    /// Minimum used-% increase between two snapshots of one window before estimating.
+    pub min_delta_pct: f64,
+}
+impl Default for QuotaWeights {
+    fn default() -> Self {
+        Self {
+            input: 1.0,
+            cached: 0.1,
+            output: 4.0,
+            min_delta_pct: 5.0,
+        }
+    }
+}
+
 /// Per-request usage log (SQLite, see docs/USAGE.md).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -134,6 +203,7 @@ pub struct UsageConfig {
     pub batch_size: usize,
     /// Max time a record waits in the writer before its batch is committed.
     pub flush_ms: u64,
+    pub quota_weights: QuotaWeights,
 }
 impl Default for UsageConfig {
     fn default() -> Self {
@@ -144,6 +214,7 @@ impl Default for UsageConfig {
             queue_size: 8192,
             batch_size: 256,
             flush_ms: 50,
+            quota_weights: QuotaWeights::default(),
         }
     }
 }
@@ -153,7 +224,10 @@ impl Default for UsageConfig {
 pub struct Config {
     pub listen: SocketAddr,
     /// Static client keys (Bearer or x-api-key). Empty = reject everything but /healthz.
-    pub api_keys: Vec<String>,
+    /// Plain strings or `[[api_keys]] label = "..." key = "..."`; see [`Config::keys`].
+    pub api_keys: Vec<ApiKeyEntry>,
+    /// Name of this proxy instance in usage records. Default: hostname.
+    pub instance_id: String,
     pub upstream: String,
     pub auth_dir: PathBuf,
     /// Global egress proxy: http://, https://, socks5://, socks5h://. Empty = direct.
@@ -170,6 +244,7 @@ impl Default for Config {
         Self {
             listen: SocketAddr::from(([127, 0, 0, 1], 8317)),
             api_keys: vec![],
+            instance_id: String::new(),
             upstream: "https://chatgpt.com/backend-api".into(),
             auth_dir: PathBuf::from("~/.cpa-lite/auths"),
             proxy_url: String::new(),
@@ -192,6 +267,9 @@ impl Config {
         let mut c: Config = toml::from_str(s)?;
         c.auth_dir = expand_tilde(&c.auth_dir);
         c.usage.path = expand_tilde(&c.usage.path);
+        if c.instance_id.trim().is_empty() {
+            c.instance_id = hostname();
+        }
         c.validate()?;
         Ok(c)
     }
@@ -212,10 +290,29 @@ impl Config {
                 ));
             }
         }
-        if self.api_keys.iter().any(|k| k.len() < 16) {
+        let keys = self.keys();
+        if keys.iter().any(|k| k.key.len() < 16) {
             return Err(ConfigError::Invalid(
                 "api_keys entries must be >= 16 chars".into(),
             ));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for k in &keys {
+            if k.label.is_empty() || k.label.len() > 64 {
+                return Err(ConfigError::Invalid(
+                    "api_keys label must be 1..=64 chars".into(),
+                ));
+            }
+            if !seen.insert(k.label.as_str()) {
+                return Err(ConfigError::Invalid(format!(
+                    "duplicate api_keys label {:?}",
+                    k.label
+                )));
+            }
+        }
+        let mut uniq = std::collections::HashSet::new();
+        if !keys.iter().all(|k| uniq.insert(k.key.as_str())) {
+            return Err(ConfigError::Invalid("duplicate api_keys key".into()));
         }
         if self.usage.enabled && (self.usage.queue_size == 0 || self.usage.batch_size == 0) {
             return Err(ConfigError::Invalid(
@@ -229,6 +326,24 @@ impl Config {
         }
         Ok(())
     }
+}
+
+impl Config {
+    /// Resolved client keys with labels (labels default to `key-<sha256 prefix>`).
+    pub fn keys(&self) -> Vec<ApiKey> {
+        self.api_keys.iter().map(ApiKeyEntry::resolve).collect()
+    }
+}
+
+/// `/proc/sys/kernel/hostname`, `$HOSTNAME`, else "cpa-lite".
+pub fn hostname() -> String {
+    std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .ok()
+        .or_else(|| std::env::var("HOSTNAME").ok())
+        .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "cpa-lite".into())
 }
 
 pub fn parse_duration(s: &str) -> Result<Duration, ConfigError> {
@@ -280,6 +395,31 @@ quota_avoid_threshold = 0.9
         .unwrap();
         assert_eq!(c.routing.strategy, Strategy::WeightedRoundRobin);
         assert_eq!(c.api_keys.len(), 1);
+    }
+
+    #[test]
+    fn labeled_and_plain_keys() {
+        let c = Config::parse(
+            r#"instance_id = "nas"
+api_keys = ["sk-plain-0123456789abcdef", { label = "laptop", key = "sk-laptop-0123456789" }]
+"#,
+        )
+        .unwrap();
+        let k = c.keys();
+        assert_eq!(k[0].label, default_key_label("sk-plain-0123456789abcdef"));
+        assert!(k[0].label.starts_with("key-") && k[0].label.len() == 12);
+        assert!(!k[0].label.contains("sk-"));
+        assert_eq!(k[1].label, "laptop");
+        assert_eq!(c.instance_id, "nas");
+        assert!(!format!("{:?}", k[1]).contains("sk-laptop"));
+        let t = Config::parse("[[api_keys]]\nlabel = \"phone\"\nkey = \"sk-phone-0123456789ab\"\n")
+            .unwrap();
+        assert_eq!(t.keys()[0].label, "phone");
+        assert!(!Config::parse("").unwrap().instance_id.is_empty());
+        assert!(Config::parse(
+            "api_keys = [{ label = \"a\", key = \"sk-0123456789abcdefg\" }, { label = \"a\", key = \"sk-0123456789abcdefh\" }]"
+        )
+        .is_err());
     }
 
     #[test]

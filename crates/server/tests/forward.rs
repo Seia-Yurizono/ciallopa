@@ -153,11 +153,19 @@ async fn up_responses(State(m): State<Mock>, h: HeaderMap, b: Bytes) -> Response
             });
             Response::builder().header("content-type", "text/event-stream").body(Body::from_stream(s)).unwrap()
         }
-        "usage" => sse_resp(concat!(
+        "usage" => {
+            let mut r = sse_resp(concat!(
             "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-u\"}}\n\n",
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n",
             "event: response.completed\r\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r-u\",\"usage\":{\"input_tokens\":120,\"input_tokens_details\":{\"cached_tokens\":100},\"output_tokens\":30,\"output_tokens_details\":{\"reasoning_tokens\":12}}}}\r\n\r\n"
-        )),
+            ));
+            let reset = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() + 3600).to_string();
+            let h = r.headers_mut();
+            h.insert("x-codex-plan-type", "plus".parse().unwrap());
+            h.insert("x-codex-primary-window-minutes", "300".parse().unwrap());
+            h.insert("x-codex-primary-reset-at", reset.parse().unwrap());
+            r
+        }
         "compact" => sse_resp(concat!(
             "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-c\"}}\n\n",
             "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"compaction\"}}\n\n",
@@ -632,13 +640,19 @@ async fn compaction_v2_passthrough() {
             .unwrap();
         assert_eq!(r.status(), 200);
         let t = r.text().await.unwrap();
-        assert!(t.contains("response.compaction.compacting") && t.contains("\"encrypted_content\":\"gAAA\""), "{t}");
+        assert!(
+            t.contains("response.compaction.compacting")
+                && t.contains("\"encrypted_content\":\"gAAA\""),
+            "{t}"
+        );
     }
     let seen = e.mock.seen.lock().unwrap();
     assert_eq!(seen.len(), 2);
     for (h, b) in seen.iter() {
         assert_eq!(b.as_ref(), body.as_bytes(), "body byte-identical");
-        assert!(h.iter().any(|(k, v)| k == "x-codex-beta-features" && v == "remote_compaction_v2"));
+        assert!(h
+            .iter()
+            .any(|(k, v)| k == "x-codex-beta-features" && v == "remote_compaction_v2"));
     }
 }
 
@@ -781,15 +795,26 @@ async fn usage_ws_turn_rows() {
     req.headers_mut()
         .insert("authorization", format!("Bearer {KEY}").parse().unwrap());
     let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
-    ws.send(M::text(r#"{"type":"response.create","model":"gpt-5.5","reasoning":{"effort":"high"}}"#))
-        .await
-        .unwrap();
+    ws.send(M::text(
+        r#"{"type":"response.create","model":"gpt-5.5","reasoning":{"effort":"high"}}"#,
+    ))
+    .await
+    .unwrap();
     ws.next().await.unwrap().unwrap();
-    ws.send(M::text(r#"{"type":"response.create","model":"gpt-5.5","tag":"limit"}"#))
-        .await
-        .unwrap();
+    ws.send(M::text(
+        r#"{"type":"response.create","model":"gpt-5.5","tag":"limit"}"#,
+    ))
+    .await
+    .unwrap();
     loop {
-        let t = ws.next().await.unwrap().unwrap().to_text().unwrap().to_string();
+        let t = ws
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .to_text()
+            .unwrap()
+            .to_string();
         if t.contains("response.completed") {
             break;
         }
@@ -813,4 +838,79 @@ async fn usage_ws_turn_rows() {
     assert!(t2["error"].is_null(), "{t2}");
     assert!(t2["ttft_ms"].is_u64());
     assert_eq!(t3["error"], "usage_limit");
+}
+
+#[tokio::test]
+async fn usage_key_label_instance_and_quota_api() {
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    let r = e
+        .post("/v1/responses")
+        .header("x-test-mode", "usage")
+        .body(r#"{"model":"gpt-5.5","input":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    r.text().await.unwrap();
+    let rows = wait_rows(&e, 1).await;
+    let u = &rows[0];
+    let label = cpa_lite_core::config::default_key_label(KEY);
+    assert_eq!(u["key"], label.as_str());
+    assert_eq!(u["instance"], cpa_lite_core::config::hostname().as_str());
+    assert_eq!(u["plan"], "plus");
+    assert_eq!(u["primary_used_pct"], 12.0);
+    assert!(u["primary_reset_at"].is_i64());
+    assert!(u["cost_usd"].is_null());
+    let get = |path: String| {
+        let h = e.http.clone();
+        async move {
+            h.get(path)
+                .bearer_auth(KEY)
+                .send()
+                .await
+                .unwrap()
+                .json::<serde_json::Value>()
+                .await
+                .unwrap()
+        }
+    };
+    // raw key never stored or returned
+    assert!(!std::fs::read(d.path().join("usage.db"))
+        .unwrap()
+        .windows(KEY.len())
+        .any(|w| w == KEY.as_bytes()));
+    let all = get(format!("http://{}/usage/v1/records?key={label}", e.proxy)).await;
+    assert_eq!(all["records"].as_array().unwrap().len(), 1);
+    assert!(!all.to_string().contains(KEY));
+    let none = get(format!("http://{}/usage/v1/records?key=other", e.proxy)).await;
+    assert!(none["records"].as_array().unwrap().is_empty());
+    let s = get(format!(
+        "http://{}/usage/v1/summary?group=key,instance",
+        e.proxy
+    ))
+    .await;
+    assert_eq!(s["summary"]["groups"][0]["group"]["key"], label.as_str());
+    let r = e
+        .http
+        .get(format!("http://{}/usage/v1/summary?group=bogus", e.proxy))
+        .bearer_auth(KEY)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
+
+    let q = get(format!("http://{}/usage/v1/quota", e.proxy)).await;
+    assert!(q["note"].as_str().unwrap().contains("other clients"));
+    let accts = q["accounts"].as_array().unwrap();
+    assert_eq!(accts.len(), 2, "{q}");
+    let a = accts.iter().find(|x| x["account"] == "a").unwrap();
+    assert_eq!(a["needs_relogin"], false);
+    assert_eq!(a["quota"]["primary"]["used_pct"], 12.0);
+    assert_eq!(
+        a["quota"]["primary"]["estimate"]["status"],
+        "insufficient_data"
+    );
+    let b = accts.iter().find(|x| x["account"] == "b").unwrap();
+    assert!(b["quota"].is_null());
 }
