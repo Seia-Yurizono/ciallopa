@@ -23,7 +23,10 @@ pub(crate) struct SessionCache {
 }
 
 fn is_pck(alias: &str) -> bool {
-    alias.starts_with("pck:") || alias.split_once("::").is_some_and(|(_, r)| r.starts_with("pck:"))
+    alias.starts_with("pck:")
+        || alias
+            .split_once("::")
+            .is_some_and(|(_, r)| r.starts_with("pck:"))
 }
 
 fn compact(aliases: Vec<String>) -> Vec<String> {
@@ -58,8 +61,18 @@ fn merge(mut base: Vec<String>, more: &[String]) -> Vec<String> {
 
 impl SessionCache {
     pub fn new(ttl: Duration, max_entries: usize) -> Self {
-        let ttl = if ttl.is_zero() { Duration::from_secs(1800) } else { ttl };
-        Self { ttl, max_entries: max_entries.max(1), entries: HashMap::new(), groups: BTreeMap::new(), next: 0 }
+        let ttl = if ttl.is_zero() {
+            Duration::from_secs(1800)
+        } else {
+            ttl
+        };
+        Self {
+            ttl,
+            max_entries: max_entries.max(1),
+            entries: HashMap::new(),
+            groups: BTreeMap::new(),
+            next: 0,
+        }
     }
 
     fn remove_group(&mut self, seq: u64) -> Option<Group> {
@@ -92,9 +105,19 @@ impl SessionCache {
         for a in &aliases {
             self.entries.insert(a.clone(), seq);
         }
-        self.groups.insert(seq, Group { auth, expires, aliases, seq });
+        self.groups.insert(
+            seq,
+            Group {
+                auth,
+                expires,
+                aliases,
+                seq,
+            },
+        );
         while self.entries.len() > self.max_entries {
-            let Some((&oldest, _)) = self.groups.iter().next() else { break };
+            let Some((&oldest, _)) = self.groups.iter().next() else {
+                break;
+            };
             self.remove_group(oldest);
         }
     }
@@ -128,7 +151,9 @@ impl SessionCache {
         let mut aliases = merge(vec![], keys);
         for k in keys {
             if let Some(seq) = self.entries.get(k).copied() {
-                let Some(g) = self.groups.get(&seq).cloned() else { continue };
+                let Some(g) = self.groups.get(&seq).cloned() else {
+                    continue;
+                };
                 self.remove_group(seq);
                 if now < g.expires {
                     aliases = merge(aliases, &g.aliases);
@@ -156,8 +181,12 @@ impl SessionCache {
     }
 
     pub fn compare_and_delete(&mut self, key: &str, auth: &str) -> bool {
-        let Some(seq) = self.entries.get(key).copied() else { return false };
-        let Some(g) = self.groups.get(&seq).cloned() else { return false };
+        let Some(seq) = self.entries.get(key).copied() else {
+            return false;
+        };
+        let Some(g) = self.groups.get(&seq).cloned() else {
+            return false;
+        };
         if g.auth != auth {
             return false;
         }
@@ -168,7 +197,12 @@ impl SessionCache {
     }
 
     pub fn invalidate_auth(&mut self, auth: &str) {
-        let seqs: Vec<u64> = self.groups.values().filter(|g| g.auth == auth).map(|g| g.seq).collect();
+        let seqs: Vec<u64> = self
+            .groups
+            .values()
+            .filter(|g| g.auth == auth)
+            .map(|g| g.seq)
+            .collect();
         for s in seqs {
             self.remove_group(s);
         }
@@ -191,8 +225,15 @@ mod tests {
     fn get_and_refresh_slides_ttl() {
         let mut c = SessionCache::new(Duration::from_secs(10), DEFAULT_MAX_ENTRIES);
         c.set("s", "a", t0());
-        assert_eq!(c.get_and_refresh("s", t0() + Duration::from_secs(8)).as_deref(), Some("a"));
-        assert_eq!(c.get("s", t0() + Duration::from_secs(15)).as_deref(), Some("a"));
+        assert_eq!(
+            c.get_and_refresh("s", t0() + Duration::from_secs(8))
+                .as_deref(),
+            Some("a")
+        );
+        assert_eq!(
+            c.get("s", t0() + Duration::from_secs(15)).as_deref(),
+            Some("a")
+        );
         assert_eq!(c.get("s", t0() + Duration::from_secs(19)), None);
     }
 
@@ -214,8 +255,16 @@ mod tests {
     #[test]
     fn compaction_keeps_single_prompt_cache_alias() {
         let mut c = SessionCache::new(Duration::from_secs(60), DEFAULT_MAX_ENTRIES);
-        c.set_aliases("a", &["codex::pck:1::m".into(), "codex::conv:1::m".into()], t0());
-        c.set_aliases("a", &["codex::pck:2::m".into(), "codex::conv:1::m".into()], t0());
+        c.set_aliases(
+            "a",
+            &["codex::pck:1::m".into(), "codex::conv:1::m".into()],
+            t0(),
+        );
+        c.set_aliases(
+            "a",
+            &["codex::pck:2::m".into(), "codex::conv:1::m".into()],
+            t0(),
+        );
         assert_eq!(c.get("codex::pck:2::m", t0()).as_deref(), Some("a"));
         assert_eq!(c.get("codex::pck:1::m", t0()), None);
         assert_eq!(c.get("codex::conv:1::m", t0()).as_deref(), Some("a"));
@@ -238,7 +287,10 @@ mod tests {
         c.set("s", "a", t0());
         assert!(!c.touch("s", "b", t0() + Duration::from_secs(5)));
         assert!(c.touch("s", "a", t0() + Duration::from_secs(5)));
-        assert_eq!(c.get("s", t0() + Duration::from_secs(12)).as_deref(), Some("a"));
+        assert_eq!(
+            c.get("s", t0() + Duration::from_secs(12)).as_deref(),
+            Some("a")
+        );
         c.invalidate_auth("a");
         assert_eq!(c.get("s", t0()), None);
     }

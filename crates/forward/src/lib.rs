@@ -10,11 +10,10 @@ mod headers;
 mod images;
 mod models;
 mod proxy;
-mod quota;
 mod ws;
 
+pub use cpa_lite_routing::parse_quota;
 pub use headers::{downstream_headers, upstream_headers};
-pub use quota::parse_quota;
 
 use axum::{
     body::Bytes,

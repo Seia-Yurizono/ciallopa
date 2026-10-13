@@ -482,5 +482,12 @@ async fn images_wrap_and_direct() {
     assert!(j["images"][0]["image_url"]
         .as_str()
         .unwrap()
-        .starts_with("data:image/png;base64,"));
+        .starts_with("data:"));
+    assert_eq!(j["prompt"], "edit it");
+    assert!(seen
+        .last()
+        .unwrap()
+        .0
+        .iter()
+        .any(|(k, v)| k == "originator" && v == "codex_exec"));
 }

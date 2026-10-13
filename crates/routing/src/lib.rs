@@ -139,7 +139,11 @@ impl CpaRouter {
     }
 
     pub fn with_clock(cfg: RoutingConfig, clock: Clock) -> Self {
-        let ttl = cfg.ttl().ok().filter(|d| !d.is_zero()).unwrap_or(Duration::from_secs(3600));
+        let ttl = cfg
+            .ttl()
+            .ok()
+            .filter(|d| !d.is_zero())
+            .unwrap_or(Duration::from_secs(3600));
         Self {
             cfg,
             clock,
@@ -205,15 +209,21 @@ impl CpaRouter {
                     st.wrr.clear();
                 }
                 let s = st.wrr.entry(key).or_default();
-                let weights: HashMap<String, i64> =
-                    avail.iter().filter(|a| eff_weight(a) > 0).map(|a| (a.id.clone(), eff_weight(a))).collect();
+                let weights: HashMap<String, i64> = avail
+                    .iter()
+                    .filter(|a| eff_weight(a) > 0)
+                    .map(|a| (a.id.clone(), eff_weight(a)))
+                    .collect();
                 // prepare(): reset credits only when a configured weight changed.
                 let changed = !s.weights.is_empty()
-                    && weights.iter().any(|(k, w)| s.weights.get(k).is_some_and(|p| p != w));
+                    && weights
+                        .iter()
+                        .any(|(k, w)| s.weights.get(k).is_some_and(|p| p != w));
                 if changed {
                     s.current.clear();
                 }
-                s.weights.extend(weights.iter().map(|(k, v)| (k.clone(), *v)));
+                s.weights
+                    .extend(weights.iter().map(|(k, v)| (k.clone(), *v)));
                 if s.current.len() > 1024 || s.weights.len() > 1024 {
                     s.current.retain(|k, _| weights.contains_key(k));
                     s.weights.retain(|k, _| weights.contains_key(k));
@@ -245,7 +255,10 @@ impl CpaRouter {
 
 fn blocked(st: &State, id: &AccountId, model: &str, now: SystemTime) -> Option<SystemTime> {
     let a = st.account.get(id).and_then(|s| s.live_until(now));
-    let m = st.model.get(&(id.clone(), model.to_string())).and_then(|s| s.live_until(now));
+    let m = st
+        .model
+        .get(&(id.clone(), model.to_string()))
+        .and_then(|s| s.live_until(now));
     match (a, m) {
         (Some(a), Some(m)) => Some(a.max(m)),
         (x, y) => x.or(y),
@@ -279,7 +292,9 @@ impl Router for CpaRouter {
 
         let mut cands: Vec<&Account> = accounts
             .iter()
-            .filter(|a| !a.disabled && !req.exclude.contains(&a.id) && (!weighted || eff_weight(a) > 0))
+            .filter(|a| {
+                !a.disabled && !req.exclude.contains(&a.id) && (!weighted || eff_weight(a) > 0)
+            })
             .collect();
         if cands.is_empty() {
             return Err(RouteError::NoAccounts);
@@ -298,7 +313,9 @@ impl Router for CpaRouter {
             })
             .collect();
         if available.is_empty() {
-            let retry_after = earliest.and_then(|e| e.duration_since(now).ok()).unwrap_or_default();
+            let retry_after = earliest
+                .and_then(|e| e.duration_since(now).ok())
+                .unwrap_or_default();
             return Err(RouteError::AllCoolingDown { retry_after });
         }
 
@@ -310,7 +327,11 @@ impl Router for CpaRouter {
                 let ok: Vec<&Account> = pool
                     .iter()
                     .copied()
-                    .filter(|a| st.quota.get(&a.id).is_none_or(|q| quota::max_used_fraction(q, now) < thr))
+                    .filter(|a| {
+                        st.quota
+                            .get(&a.id)
+                            .is_none_or(|q| quota::max_used_fraction(q, now) < thr)
+                    })
                     .collect();
                 if !ok.is_empty() {
                     pool = ok;
@@ -320,33 +341,54 @@ impl Router for CpaRouter {
             let tier: Vec<&Account> = pool.into_iter().filter(|a| a.priority == best).collect();
             self.pick_strategy(st, &model, &tier)
         };
-        let fresh = |account: AccountId| Ok(Selection { account, from_binding: false });
+        let fresh = |account: AccountId| {
+            Ok(Selection {
+                account,
+                from_binding: false,
+            })
+        };
 
         let primary = match (&req.session.key, self.cfg.session_affinity) {
             (Some(k), true) if !k.is_empty() => k.clone(),
-            _ => return cold(&mut st).map(fresh).unwrap_or(Err(RouteError::NoAccounts)),
+            _ => {
+                return cold(&mut st)
+                    .map(fresh)
+                    .unwrap_or(Err(RouteError::NoAccounts))
+            }
         };
         let fallback = req.session.parent_key.clone().unwrap_or_default();
         let is_fork = req.session.is_fork;
         let is_sub = !is_fork && session::is_subagent_session(&primary, &fallback);
         let cache_key = format!("{PROVIDER}::{primary}::{model}");
-        let fallback_key = (!fallback.is_empty() && fallback != primary).then(|| format!("{PROVIDER}::{fallback}::{model}"));
+        let fallback_key = (!fallback.is_empty() && fallback != primary)
+            .then(|| format!("{PROVIDER}::{fallback}::{model}"));
         let preserve_quota = self.cfg.session_affinity_rebind_on == RebindOn::Quota;
         let bind = |st: &mut State, id: &str| match (&fallback_key, is_sub || is_fork) {
-            (Some(fk), false) => st.cache.set_aliases(id, &[cache_key.clone(), fk.clone()], now),
+            (Some(fk), false) => st
+                .cache
+                .set_aliases(id, &[cache_key.clone(), fk.clone()], now),
             _ => st.cache.set(&cache_key, id, now),
         };
         let preserve = |st: &State, id: &str| {
-            preserve_quota && accounts.iter().find(|a| a.id == id).is_some_and(|a| !blocked_by_quota_or_auth(st, a, &model, now))
+            preserve_quota
+                && accounts
+                    .iter()
+                    .find(|a| a.id == id)
+                    .is_some_and(|a| !blocked_by_quota_or_auth(st, a, &model, now))
         };
         let in_avail = |id: &str| available.iter().any(|a| a.id == id);
 
         if let Some(cached) = st.cache.get_and_refresh(&cache_key, now) {
             if in_avail(&cached) {
                 bind(&mut st, &cached);
-                return Ok(Selection { account: cached, from_binding: true });
+                return Ok(Selection {
+                    account: cached,
+                    from_binding: true,
+                });
             }
-            let Some(pick) = cold(&mut st) else { return Err(RouteError::NoAccounts) };
+            let Some(pick) = cold(&mut st) else {
+                return Err(RouteError::NoAccounts);
+            };
             if preserve(&st, &cached) {
                 bind(&mut st, &cached);
             } else {
@@ -358,16 +400,23 @@ impl Router for CpaRouter {
             if let Some(cached) = st.cache.get(fk, now) {
                 if in_avail(&cached) && (!is_sub || self.cfg.session_affinity_subagents) {
                     bind(&mut st, &cached);
-                    return Ok(Selection { account: cached, from_binding: true });
+                    return Ok(Selection {
+                        account: cached,
+                        from_binding: true,
+                    });
                 }
                 if !is_sub && !is_fork && preserve(&st, &cached) {
-                    let Some(pick) = cold(&mut st) else { return Err(RouteError::NoAccounts) };
+                    let Some(pick) = cold(&mut st) else {
+                        return Err(RouteError::NoAccounts);
+                    };
                     bind(&mut st, &cached);
                     return fresh(pick);
                 }
             }
         }
-        let Some(pick) = cold(&mut st) else { return Err(RouteError::NoAccounts) };
+        let Some(pick) = cold(&mut st) else {
+            return Err(RouteError::NoAccounts);
+        };
         bind(&mut st, &pick);
         fresh(pick)
     }
@@ -388,20 +437,33 @@ impl Router for CpaRouter {
                 st.account.remove(account);
                 None
             }
-            Outcome::RateLimited { retry_after, usage_limit, quota } => {
+            Outcome::RateLimited {
+                retry_after,
+                usage_limit,
+                quota,
+            } => {
                 if let Some(q) = quota {
                     st.quota.insert(account.clone(), q.clone());
                 }
                 if *usage_limit {
                     // credential-scoped: whole account.
                     let a = st.account.entry(account.clone()).or_default();
-                    let base = if a.last_err == Some(ErrKind::UsageLimit) { a.clone() } else { CoolState::default() };
+                    let base = if a.last_err == Some(ErrKind::UsageLimit) {
+                        a.clone()
+                    } else {
+                        CoolState::default()
+                    };
                     let (next, lvl) = match retry_after {
                         Some(d) => (now + (*d).max(MIN_QUOTA_COOLDOWN_FLOOR), base.backoff_level),
                         None => quota_after_failure(&base, now),
                     };
                     let next = max_opt(a.live_until(now), next);
-                    *a = CoolState { next_retry: Some(next), recover_at: Some(next), backoff_level: lvl, last_err: Some(ErrKind::UsageLimit) };
+                    *a = CoolState {
+                        next_retry: Some(next),
+                        recover_at: Some(next),
+                        backoff_level: lvl,
+                        last_err: Some(ErrKind::UsageLimit),
+                    };
                     let m = st.model.entry(mkey).or_default();
                     m.next_retry = Some(max_opt(m.recover_at.filter(|r| *r > now), next));
                     m.recover_at = m.next_retry;
@@ -414,7 +476,12 @@ impl Router for CpaRouter {
                         None => quota_after_failure(m, now),
                     };
                     let next = max_opt(m.recover_at.filter(|r| *r > now), next);
-                    *m = CoolState { next_retry: Some(next), recover_at: Some(next), backoff_level: lvl, last_err: Some(ErrKind::Quota) };
+                    *m = CoolState {
+                        next_retry: Some(next),
+                        recover_at: Some(next),
+                        backoff_level: lvl,
+                        last_err: Some(ErrKind::Quota),
+                    };
                     Some(ErrKind::Quota)
                 }
             }
@@ -426,7 +493,11 @@ impl Router for CpaRouter {
             }
             Outcome::ModelUnsupported { retry_after } => {
                 let m = st.model.entry(mkey).or_default();
-                m.next_retry = Some(now + retry_after.filter(|d| !d.is_zero()).unwrap_or(NOT_FOUND_COOLDOWN));
+                m.next_retry = Some(
+                    now + retry_after
+                        .filter(|d| !d.is_zero())
+                        .unwrap_or(NOT_FOUND_COOLDOWN),
+                );
                 m.last_err = Some(ErrKind::ModelUnsupported);
                 Some(ErrKind::ModelUnsupported)
             }
@@ -434,7 +505,12 @@ impl Router for CpaRouter {
                 let m = st.model.entry(mkey).or_default();
                 let (c, lvl) = next_quota_cooldown(m.backoff_level);
                 let next = now + c.max(CHALLENGE_MIN_COOLDOWN);
-                *m = CoolState { next_retry: Some(next), recover_at: Some(next), backoff_level: lvl, last_err: Some(ErrKind::Challenge) };
+                *m = CoolState {
+                    next_retry: Some(next),
+                    recover_at: Some(next),
+                    backoff_level: lvl,
+                    last_err: Some(ErrKind::Challenge),
+                };
                 Some(ErrKind::Challenge)
             }
             // Transport errors (no status) and request-scoped 4xx never cool the credential
@@ -457,11 +533,15 @@ impl Router for CpaRouter {
                 return;
             }
         }
-        let Some(primary) = req.session.key.as_deref().filter(|k| !k.is_empty()) else { return };
+        let Some(primary) = req.session.key.as_deref().filter(|k| !k.is_empty()) else {
+            return;
+        };
         let fallback = req.session.parent_key.as_deref().unwrap_or("");
         let cache_key = format!("{PROVIDER}::{primary}::{model}");
-        let fallback_key = (!fallback.is_empty() && fallback != primary && !session::is_subagent_session(primary, fallback))
-            .then(|| format!("{PROVIDER}::{fallback}::{model}"));
+        let fallback_key = (!fallback.is_empty()
+            && fallback != primary
+            && !session::is_subagent_session(primary, fallback))
+        .then(|| format!("{PROVIDER}::{fallback}::{model}"));
         if kind.is_none() {
             st.cache.touch(&cache_key, account, now);
             if let Some(fk) = &fallback_key {

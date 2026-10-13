@@ -1,12 +1,12 @@
 //! Responses WebSocket: one downstream WS ↔ one upstream WS pinned to one account.
 use crate::headers::upstream_headers;
-use crate::quota::{parse_quota, parse_quota_json};
 use crate::{map_path, pq, proxy, session_route, AppState};
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{OriginalUri, State};
 use axum::response::Response;
 use cpa_lite_core::{AccountId, Outcome, RouteError, RouteRequest};
-use cpa_lite_upstream::retry::{delay_for, is_retryable_status, parse_limit_body, retry_after};
+use cpa_lite_routing::{is_usage_limit, parse_quota, parse_quota_event_headers};
+use cpa_lite_upstream::retry::{delay_for, is_retryable_status};
 use cpa_lite_upstream::ws::handshake_status;
 use cpa_lite_upstream::{UpstreamWs, WsMessage};
 use futures::{SinkExt, StreamExt};
@@ -146,23 +146,9 @@ async fn connect(
                             last = Some(resp);
                             break;
                         }
-                        401 | 403 => {
-                            st.router.report(route, &id, &Outcome::AuthFailed);
-                            route.exclude.push(id.clone());
-                            last = Some(resp);
-                            break;
-                        }
-                        429 => {
-                            let (usage_limit, ra) = parse_limit_body(&body);
-                            st.router.report(
-                                route,
-                                &id,
-                                &Outcome::RateLimited {
-                                    retry_after: ra.or_else(|| retry_after(&h)),
-                                    usage_limit,
-                                    quota: parse_quota(&h),
-                                },
-                            );
+                        401 | 403 | 404 | 429 => {
+                            st.router
+                                .report(route, &id, &proxy::classify_error(status, &h, &body));
                             route.exclude.push(id.clone());
                             last = Some(resp);
                             break;
@@ -225,7 +211,9 @@ fn close(code: u16, reason: &str) -> Message {
 
 /// Inspect an upstream text frame. Returns (limit outcome, request finished).
 fn classify(text: &str) -> (Option<Outcome>, bool) {
-    let looks = text.contains("\"error\"") || text.contains("response.");
+    let looks = text.contains("\"error\"")
+        || text.contains("response.")
+        || text.contains("codex.rate_limits");
     if !looks {
         return (None, false);
     }
@@ -233,22 +221,20 @@ fn classify(text: &str) -> (Option<Outcome>, bool) {
         return (None, false);
     };
     let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    let quota = parse_quota_event_headers(text.as_bytes()).and_then(|h| parse_quota(&h));
     match ty {
         "error" => {
             let status = v
                 .get("status")
                 .or_else(|| v.get("status_code"))
                 .and_then(|s| s.as_u64());
-            let err = v.get("error").cloned().unwrap_or_default();
-            let code = err
-                .get("code")
-                .or_else(|| err.get("type"))
-                .and_then(|c| c.as_str())
-                .unwrap_or("");
-            let usage = code.contains("usage_limit");
+            let usage = is_usage_limit(text.as_bytes());
             if usage || status == Some(429) {
-                let (_, ra) = parse_limit_body(text.as_bytes());
-                let quota = v.get("headers").and_then(parse_quota_json);
+                let ra = cpa_lite_routing::parse_codex_retry_after(
+                    429,
+                    text.as_bytes(),
+                    std::time::SystemTime::now(),
+                );
                 return (
                     Some(Outcome::RateLimited {
                         retry_after: ra,
@@ -260,6 +246,7 @@ fn classify(text: &str) -> (Option<Outcome>, bool) {
             }
             (None, true)
         }
+        "codex.rate_limits" => (quota.map(|q| Outcome::Success { quota: Some(q) }), false),
         "response.completed" | "response.failed" | "response.incomplete" | "response.done" => {
             let usage = ty == "response.failed" && text.contains("usage_limit_reached");
             (
@@ -340,6 +327,7 @@ async fn relay(
                         }
                         if let Some(o) = limit {
                             st.router.report(&route, &account, &o);
+                            if !matches!(o, Outcome::RateLimited { .. }) { continue; }
                             let _ = dtx.send(close(CLOSE_TRY_AGAIN, "account rate limited; reconnect")).await;
                             let _ = utx.send(WsMessage::Close(None)).await;
                             break;

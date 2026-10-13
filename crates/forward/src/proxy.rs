@@ -1,16 +1,17 @@
 //! HTTP forwarding core: account selection, failover, pre-first-byte retries, idle timeout.
 use crate::headers::{downstream_headers, upstream_headers};
-use crate::quota::parse_quota;
 use crate::AppState;
 use axum::body::Body;
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use cpa_lite_core::{AccountId, AuthError, Outcome, RouteError, RouteRequest};
-use cpa_lite_upstream::retry::{delay_for, is_retryable_status, parse_limit_body};
+use cpa_lite_routing::{is_cloudflare_challenge, is_usage_limit, parse_quota, retry_after_for_429};
+use cpa_lite_upstream::retry::{delay_for, is_retryable_status};
 use futures::StreamExt;
 use http::{HeaderMap, HeaderValue, Method, StatusCode};
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::SystemTime;
 
 pub(crate) fn json_error(status: StatusCode, kind: &str, msg: &str) -> Response {
     let body = serde_json::json!({"error": {"type": kind, "message": msg}}).to_string();
@@ -153,23 +154,10 @@ pub(crate) async fn send(st: &AppState, ob: Outbound) -> Result<Chosen, Response
                     route.exclude.push(id.clone());
                     break;
                 }
-                401 | 403 => {
+                401 | 403 | 404 | 429 => {
                     let h = r.headers().clone();
                     let b = r.bytes().await.unwrap_or_default();
-                    st.router.report(&route, &id, &Outcome::AuthFailed);
-                    last = Some(buffered(status, &h, b));
-                    route.exclude.push(id.clone());
-                    break;
-                }
-                429 => {
-                    let h = r.headers().clone();
-                    let b = r.bytes().await.unwrap_or_default();
-                    let (usage_limit, body_ra) = parse_limit_body(&b);
-                    let outcome = Outcome::RateLimited {
-                        retry_after: body_ra.or_else(|| cpa_lite_upstream::retry::retry_after(&h)),
-                        usage_limit,
-                        quota: parse_quota(&h),
-                    };
+                    let outcome = classify_error(status, &h, &b);
                     st.router.report(&route, &id, &outcome);
                     last = Some(buffered(status, &h, b));
                     route.exclude.push(id.clone());
@@ -297,5 +285,29 @@ pub(crate) fn inspect_json(headers: &HeaderMap, body: &[u8]) -> Option<serde_jso
             serde_json::from_slice(&out).ok()
         }
         _ => None,
+    }
+}
+
+/// Account-level failure classification (shared with WS handshake).
+pub(crate) fn classify_error(status: u16, h: &HeaderMap, body: &[u8]) -> Outcome {
+    let now = SystemTime::now();
+    match status {
+        429 => Outcome::RateLimited {
+            retry_after: retry_after_for_429(h, body, now),
+            usage_limit: is_usage_limit(body),
+            quota: parse_quota(h),
+        },
+        403 if h.contains_key("cf-mitigated")
+            || is_cloudflare_challenge(&String::from_utf8_lossy(body)) =>
+        {
+            Outcome::Challenge
+        }
+        404 => Outcome::ModelUnsupported {
+            retry_after: h
+                .get(http::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| cpa_lite_routing::parse_retry_after_header(v, now)),
+        },
+        _ => Outcome::AuthFailed,
     }
 }

@@ -11,7 +11,10 @@ const MAX_ADDITIONAL: usize = 8;
 pub const MAX_HEADER_RETRY_AFTER: Duration = Duration::from_secs(6 * 3600);
 
 fn hget<'a>(h: &'a HeaderMap, n: &str) -> Option<&'a str> {
-    h.get(n).and_then(|v| v.to_str().ok()).map(str::trim).filter(|s| !s.is_empty())
+    h.get(n)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
 }
 
 fn window(h: &HeaderMap, prefix: &str, now: SystemTime) -> Option<QuotaWindow> {
@@ -19,7 +22,9 @@ fn window(h: &HeaderMap, prefix: &str, now: SystemTime) -> Option<QuotaWindow> {
     if !(0.0..=100.0).contains(&used) || used.is_nan() {
         return None;
     }
-    let window_minutes = hget(h, &format!("{prefix}-window-minutes")).and_then(|s| s.parse::<u64>().ok()).filter(|m| *m > 0);
+    let window_minutes = hget(h, &format!("{prefix}-window-minutes"))
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|m| *m > 0);
     let resets_at = hget(h, &format!("{prefix}-reset-at"))
         .and_then(|s| s.parse::<i64>().ok())
         .filter(|s| *s > 0)
@@ -30,7 +35,11 @@ fn window(h: &HeaderMap, prefix: &str, now: SystemTime) -> Option<QuotaWindow> {
                 .filter(|s| *s >= 0.0 && s.is_finite())
                 .map(|s| now + Duration::from_secs_f64(s))
         });
-    Some(QuotaWindow { used_percent: used, window_minutes, resets_at })
+    Some(QuotaWindow {
+        used_percent: used,
+        window_minutes,
+        resets_at,
+    })
 }
 
 /// Base (`x-codex-primary-*` / `x-codex-secondary-*`) windows from response headers.
@@ -99,7 +108,9 @@ fn event_kind(p: &[u8]) -> Kind {
 }
 
 fn first<'a>(v: &'a Value, paths: &[&str]) -> Option<&'a Value> {
-    paths.iter().find_map(|p| v.get(*p).filter(|x| !x.is_null()))
+    paths
+        .iter()
+        .find_map(|p| v.get(*p).filter(|x| !x.is_null()))
 }
 
 fn scalar(v: &Value) -> Option<String> {
@@ -117,7 +128,10 @@ fn first_str(v: &Value, paths: &[&str]) -> Option<String> {
 }
 
 fn set(h: &mut HeaderMap, name: &str, val: &str) -> bool {
-    match (HeaderName::from_bytes(name.as_bytes()), HeaderValue::from_str(val)) {
+    match (
+        HeaderName::from_bytes(name.as_bytes()),
+        HeaderValue::from_str(val),
+    ) {
         (Ok(n), Ok(v)) => {
             h.insert(n, v);
             true
@@ -135,7 +149,10 @@ fn set_from(h: &mut HeaderMap, name: &str, obj: &Value, paths: &[&str]) -> bool 
 
 fn as_i64(v: &Value) -> i64 {
     match v {
-        Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)).unwrap_or(0),
+        Value::Number(n) => n
+            .as_i64()
+            .or_else(|| n.as_f64().map(|f| f as i64))
+            .unwrap_or(0),
         Value::String(s) => s.trim().parse().unwrap_or(0),
         _ => 0,
     }
@@ -149,27 +166,53 @@ fn as_f64(v: &Value) -> f64 {
 }
 
 fn add_rate_limit(h: &mut HeaderMap, prefix: &str, info: Option<&Value>) -> bool {
-    let Some(info) = info.filter(|v| v.is_object()) else { return false };
+    let Some(info) = info.filter(|v| v.is_object()) else {
+        return false;
+    };
     let mut changed = set_from(h, &format!("{prefix}Allowed"), info, &["allowed"]);
-    changed |= set_from(h, &format!("{prefix}Limit-Reached"), info, &["limit_reached", "limitReached"]);
+    changed |= set_from(
+        h,
+        &format!("{prefix}Limit-Reached"),
+        info,
+        &["limit_reached", "limitReached"],
+    );
     for (name, cap) in [("primary", "Primary"), ("secondary", "Secondary")] {
-        let Some(w) = first(info, &[name]).filter(|v| v.is_object()) else { continue };
+        let Some(w) = first(info, &[name]).filter(|v| v.is_object()) else {
+            continue;
+        };
         let used = first(w, &["used_percent", "usedPercent"]);
         let mins = first(w, &["window_minutes", "windowMinutes"]);
         let ra = first(w, &["reset_after_seconds", "resetAfterSeconds"]);
         let rat = first(w, &["reset_at", "resetAt"]);
         let has_ra = ra.is_some_and(|v| as_i64(v) >= 0);
         let has_rat = rat.is_some_and(|v| as_i64(v) > 0);
-        let (Some(used), Some(mins)) = (used, mins) else { continue };
+        let (Some(used), Some(mins)) = (used, mins) else {
+            continue;
+        };
         let u = as_f64(used);
         if !(0.0..=100.0).contains(&u) || as_i64(mins) <= 0 || (!has_ra && !has_rat) {
             continue;
         }
         let wp = format!("{prefix}{cap}-");
-        set_from(h, &format!("{wp}Used-Percent"), w, &["used_percent", "usedPercent"]);
-        set_from(h, &format!("{wp}Window-Minutes"), w, &["window_minutes", "windowMinutes"]);
+        set_from(
+            h,
+            &format!("{wp}Used-Percent"),
+            w,
+            &["used_percent", "usedPercent"],
+        );
+        set_from(
+            h,
+            &format!("{wp}Window-Minutes"),
+            w,
+            &["window_minutes", "windowMinutes"],
+        );
         if has_ra {
-            set_from(h, &format!("{wp}Reset-After-Seconds"), w, &["reset_after_seconds", "resetAfterSeconds"]);
+            set_from(
+                h,
+                &format!("{wp}Reset-After-Seconds"),
+                w,
+                &["reset_after_seconds", "resetAfterSeconds"],
+            );
         }
         if has_rat {
             set_from(h, &format!("{wp}Reset-At"), w, &["reset_at", "resetAt"]);
@@ -181,7 +224,10 @@ fn add_rate_limit(h: &mut HeaderMap, prefix: &str, info: Option<&Value>) -> bool
 
 fn valid_ident(v: &str) -> bool {
     let v = v.trim();
-    !v.is_empty() && v.len() <= 256 && v.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+    !v.is_empty()
+        && v.len() <= 256
+        && v.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
 }
 fn valid_text(v: &str) -> bool {
     let v = v.trim();
@@ -203,7 +249,9 @@ fn normalize_ident(v: &str) -> Option<String> {
             last_dash = true;
         }
     }
-    let id = out.trim_matches(|c| matches!(c, '-' | '_' | '.')).to_string();
+    let id = out
+        .trim_matches(|c| matches!(c, '-' | '_' | '.'))
+        .to_string();
     (valid_ident(&id)).then_some(id)
 }
 
@@ -212,15 +260,22 @@ fn is_quota_header_name(name: &str) -> bool {
     if l == "retry-after" || l.starts_with("x-ratelimit-") {
         return true;
     }
-    if l == "x-codex-active-limit" || l == "x-codex-plan-type" || l.starts_with("x-codex-credits-") {
+    if l == "x-codex-active-limit" || l == "x-codex-plan-type" || l.starts_with("x-codex-credits-")
+    {
         return true;
     }
     if !l.starts_with("x-codex-") {
         return false;
     }
     [
-        "-allowed", "-limit-reached", "-limit-name", "-used-percent", "-window-minutes",
-        "-reset-after-seconds", "-reset-at", "-over-secondary-limit-percent",
+        "-allowed",
+        "-limit-reached",
+        "-limit-name",
+        "-used-percent",
+        "-window-minutes",
+        "-reset-after-seconds",
+        "-reset-at",
+        "-over-secondary-limit-percent",
     ]
     .iter()
     .any(|m| l.contains(m))
@@ -249,13 +304,22 @@ pub fn parse_quota_event_headers(payload: &[u8]) -> Option<HeaderMap> {
         }
         return (!h.is_empty()).then_some(h);
     }
-    let mut has = add_rate_limit(&mut h, "X-Codex-", first(&root, &["rate_limits", "rateLimit"]));
+    let mut has = add_rate_limit(
+        &mut h,
+        "X-Codex-",
+        first(&root, &["rate_limits", "rateLimit"]),
+    );
     if let Some(add) = first(&root, &["additional_rate_limits", "additionalRateLimits"]) {
         let items: Vec<(String, &Value)> = match add {
             Value::Object(m) => m.iter().map(|(k, v)| (k.trim().to_string(), v)).collect(),
             Value::Array(a) => a
                 .iter()
-                .map(|v| (first_str(v, &["limit_name", "limitName", "name"]).unwrap_or_default(), v))
+                .map(|v| {
+                    (
+                        first_str(v, &["limit_name", "limitName", "name"]).unwrap_or_default(),
+                        v,
+                    )
+                })
                 .collect(),
             _ => vec![],
         };
@@ -267,7 +331,9 @@ pub fn parse_quota_event_headers(payload: &[u8]) -> Option<HeaderMap> {
             if name.is_empty() {
                 continue;
             }
-            let Some(id) = normalize_ident(&name) else { continue };
+            let Some(id) = normalize_ident(&name) else {
+                continue;
+            };
             let info = first(v, &["rate_limit", "rateLimit"]).unwrap_or(v);
             let prefix = format!("X-Codex-Additional-{id}-");
             if add_rate_limit(&mut h, &prefix, Some(info)) {
@@ -279,16 +345,33 @@ pub fn parse_quota_event_headers(payload: &[u8]) -> Option<HeaderMap> {
             }
         }
     }
-    has |= add_rate_limit(&mut h, "X-Codex-Code-Review-", first(&root, &["code_review_rate_limits", "codeReviewRateLimits"]));
+    has |= add_rate_limit(
+        &mut h,
+        "X-Codex-Code-Review-",
+        first(&root, &["code_review_rate_limits", "codeReviewRateLimits"]),
+    );
     if let Some(c) = first(&root, &["credits"]).filter(|v| v.is_object()) {
-        has |= set_from(&mut h, "X-Codex-Credits-Has-Credits", c, &["has_credits", "hasCredits"]);
+        has |= set_from(
+            &mut h,
+            "X-Codex-Credits-Has-Credits",
+            c,
+            &["has_credits", "hasCredits"],
+        );
         has |= set_from(&mut h, "X-Codex-Credits-Unlimited", c, &["unlimited"]);
         has |= set_from(&mut h, "X-Codex-Credits-Balance", c, &["balance"]);
     }
     if !has {
         return None;
     }
-    if let Some(a) = first_str(&root, &["metered_limit_name", "meteredLimitName", "limit_name", "limitName"]) {
+    if let Some(a) = first_str(
+        &root,
+        &[
+            "metered_limit_name",
+            "meteredLimitName",
+            "limit_name",
+            "limitName",
+        ],
+    ) {
         if valid_ident(&a) {
             set(&mut h, "X-Codex-Active-Limit", &a);
         }
@@ -326,7 +409,11 @@ fn usage_limit_objs(body: &Value) -> impl Iterator<Item = &Value> {
     [body.get("error"), Some(body)]
         .into_iter()
         .flatten()
-        .filter(|q| q.get("type").and_then(Value::as_str).is_some_and(|t| t.trim().eq_ignore_ascii_case("usage_limit_reached")))
+        .filter(|q| {
+            q.get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|t| t.trim().eq_ignore_ascii_case("usage_limit_reached"))
+        })
 }
 
 /// CPA `isCodexUsageLimitError`: `error.type` or `type` == usage_limit_reached.
@@ -360,7 +447,8 @@ pub fn parse_codex_retry_after(status: u16, body: &[u8], now: SystemTime) -> Opt
 
 /// Body reset time first, then `Retry-After` header (CPA `withCodexRetryAfterHeader`).
 pub fn retry_after_for_429(headers: &HeaderMap, body: &[u8], now: SystemTime) -> Option<Duration> {
-    parse_codex_retry_after(429, body, now).or_else(|| hget(headers, "retry-after").and_then(|r| parse_retry_after_header(r, now)))
+    parse_codex_retry_after(429, body, now)
+        .or_else(|| hget(headers, "retry-after").and_then(|r| parse_retry_after_header(r, now)))
 }
 
 /// CPA `isCloudflareChallengeErrorMessage` (callers: only for status < 500).

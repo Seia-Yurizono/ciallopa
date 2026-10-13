@@ -111,45 +111,92 @@ pub(crate) struct RawInfo {
 }
 
 const PARENT_PATHS: &[&str] = &[
-    "parent_session_id", "parentSessionId", "parentSessionID",
-    "parent_thread_id", "parentThreadId", "parentThreadID",
-    "forked_from_thread_id", "forked_from_id",
-    "parent_conversation_id", "parentConversationId", "parentConversationID",
-    "parent_id", "parentId", "parentID",
-    "parent_task_id", "parentTaskId", "parentTaskID",
-    "parent_action_id", "parentActionId", "parentActionID",
-    "parent_session", "parentSession",
-    "parent_subagent_id", "parentSubagentId",
-    "forkSource.sessionId", "fork_source.session_id",
-    "previousSessionId", "previous_session_id",
-    "metadata.parent_session_id", "metadata.parentSessionId", "metadata.parentSessionID",
-    "metadata.parent_thread_id", "metadata.parentThreadId",
-    "metadata.forked_from_thread_id", "metadata.forked_from_id",
-    "metadata.parent_id", "metadata.parentId", "metadata.parentID",
-    "metadata.parent_task_id", "metadata.parentTaskId", "metadata.parentTaskID",
-    "metadata.parent_action_id", "metadata.parentActionId",
-    "metadata.parent_subagent_id", "metadata.parentSubagentId",
-    "metadata.parent_session", "metadata.parentSession",
-    "metadata.parent_agent_id", "metadata.parentAgentId",
-    "metadata.forkSource.sessionId", "metadata.previousSessionId",
-    "extra_body.parent_session_id", "extra_body.parentSessionId", "extra_body.parentSessionID",
-    "extra_body.parent_thread_id", "extra_body.parentThreadId",
-    "extra_body.forked_from_thread_id", "extra_body.forked_from_id",
-    "extra_body.parent_id", "extra_body.parentId", "extra_body.parentID",
-    "extra_body.parent_task_id", "extra_body.parentTaskId",
-    "extra_body.parent_action_id", "extra_body.parentActionId",
-    "extra_body.parent_subagent_id", "extra_body.parentSubagentId",
-    "extra_body.parent_session", "extra_body.parentSession",
+    "parent_session_id",
+    "parentSessionId",
+    "parentSessionID",
+    "parent_thread_id",
+    "parentThreadId",
+    "parentThreadID",
+    "forked_from_thread_id",
+    "forked_from_id",
+    "parent_conversation_id",
+    "parentConversationId",
+    "parentConversationID",
+    "parent_id",
+    "parentId",
+    "parentID",
+    "parent_task_id",
+    "parentTaskId",
+    "parentTaskID",
+    "parent_action_id",
+    "parentActionId",
+    "parentActionID",
+    "parent_session",
+    "parentSession",
+    "parent_subagent_id",
+    "parentSubagentId",
+    "forkSource.sessionId",
+    "fork_source.session_id",
+    "previousSessionId",
+    "previous_session_id",
+    "metadata.parent_session_id",
+    "metadata.parentSessionId",
+    "metadata.parentSessionID",
+    "metadata.parent_thread_id",
+    "metadata.parentThreadId",
+    "metadata.forked_from_thread_id",
+    "metadata.forked_from_id",
+    "metadata.parent_id",
+    "metadata.parentId",
+    "metadata.parentID",
+    "metadata.parent_task_id",
+    "metadata.parentTaskId",
+    "metadata.parentTaskID",
+    "metadata.parent_action_id",
+    "metadata.parentActionId",
+    "metadata.parent_subagent_id",
+    "metadata.parentSubagentId",
+    "metadata.parent_session",
+    "metadata.parentSession",
+    "metadata.parent_agent_id",
+    "metadata.parentAgentId",
+    "metadata.forkSource.sessionId",
+    "metadata.previousSessionId",
+    "extra_body.parent_session_id",
+    "extra_body.parentSessionId",
+    "extra_body.parentSessionID",
+    "extra_body.parent_thread_id",
+    "extra_body.parentThreadId",
+    "extra_body.forked_from_thread_id",
+    "extra_body.forked_from_id",
+    "extra_body.parent_id",
+    "extra_body.parentId",
+    "extra_body.parentID",
+    "extra_body.parent_task_id",
+    "extra_body.parentTaskId",
+    "extra_body.parent_action_id",
+    "extra_body.parentActionId",
+    "extra_body.parent_subagent_id",
+    "extra_body.parentSubagentId",
+    "extra_body.parent_session",
+    "extra_body.parentSession",
 ];
 
 const FORK_BODY_PATHS: &[&str] = &[
-    "forked_from_thread_id", "forked_from_id",
-    "forkSource.sessionId", "fork_source.session_id",
-    "previousSessionId", "previous_session_id",
-    "metadata.forked_from_thread_id", "metadata.forked_from_id",
-    "metadata.forkSource.sessionId", "metadata.previousSessionId",
-    "extra_body.forked_from_thread_id", "extra_body.forked_from_id",
-    "extra_body.forkSource.sessionId", "extra_body.previousSessionId",
+    "forked_from_thread_id",
+    "forked_from_id",
+    "forkSource.sessionId",
+    "fork_source.session_id",
+    "previousSessionId",
+    "previous_session_id",
+    "metadata.forked_from_thread_id",
+    "metadata.forked_from_id",
+    "metadata.forkSource.sessionId",
+    "metadata.previousSessionId",
+    "extra_body.forked_from_thread_id",
+    "extra_body.forked_from_id",
+    "extra_body.forkSource.sessionId",
+    "extra_body.previousSessionId",
 ];
 
 fn finalize(mut i: RawInfo) -> Option<RawInfo> {
@@ -167,8 +214,16 @@ fn finalize(mut i: RawInfo) -> Option<RawInfo> {
 }
 
 /// Simple "<prefix>:<sid>" + header parent / body parent candidate family.
-fn simple(prefix: &str, sid: &str, parent_hdr: Option<String>, pc: &Option<String>) -> Option<RawInfo> {
-    let mut i = RawInfo { session_id: format!("{prefix}:{sid}"), ..Default::default() };
+fn simple(
+    prefix: &str,
+    sid: &str,
+    parent_hdr: Option<String>,
+    pc: &Option<String>,
+) -> Option<RawInfo> {
+    let mut i = RawInfo {
+        session_id: format!("{prefix}:{sid}"),
+        ..Default::default()
+    };
     if let Some(p) = parent_hdr.filter(|p| p != sid) {
         i.parent = format!("{prefix}:{p}");
     } else if let Some(p) = pc.as_ref().filter(|p| *p != sid) {
@@ -180,7 +235,11 @@ fn simple(prefix: &str, sid: &str, parent_hdr: Option<String>, pc: &Option<Strin
 /// CPA `ExtractSessionInfo` minus Claude-identity / execution / LCP branches.
 pub(crate) fn extract_info(h: &HeaderMap, body: Option<&Value>) -> Option<RawInfo> {
     let b = Body::new(body);
-    let pc = if b.exists() { b.first(PARENT_PATHS) } else { None };
+    let pc = if b.exists() {
+        b.first(PARENT_PATHS)
+    } else {
+        None
+    };
 
     // ---- Codex ----
     let mut sid = hv_any(h, &["session-id", "session_id"]);
@@ -202,13 +261,17 @@ pub(crate) fn extract_info(h: &HeaderMap, body: Option<&Value>) -> Option<RawInf
         tid = b.first(&["thread_id", "threadId", "metadata.thread_id"]);
     }
     if sid.is_some() || tid.is_some() {
-        let parent_thread = hv(h, "x-codex-parent-thread-id").or_else(|| cand(m, "parent_thread_id"));
+        let parent_thread =
+            hv(h, "x-codex-parent-thread-id").or_else(|| cand(m, "parent_thread_id"));
         let mut forked = cand(m, "forked_from_thread_id").or_else(|| cand(m, "forked_from_id"));
         if forked.is_none() && b.exists() {
             forked = b.first(&[
-                "forked_from_thread_id", "forked_from_id",
-                "metadata.forked_from_thread_id", "metadata.forked_from_id",
-                "extra_body.forked_from_thread_id", "extra_body.forked_from_id",
+                "forked_from_thread_id",
+                "forked_from_id",
+                "metadata.forked_from_thread_id",
+                "metadata.forked_from_id",
+                "extra_body.forked_from_thread_id",
+                "extra_body.forked_from_id",
             ]);
         }
         let agent = m
@@ -238,7 +301,10 @@ pub(crate) fn extract_info(h: &HeaderMap, body: Option<&Value>) -> Option<RawInf
             });
         }
         let pt = parent_thread.clone().unwrap_or_default();
-        if sub_sig || (!t.is_empty() && !s.is_empty() && t != s) || (!pt.is_empty() && pt != t && pt != s) {
+        if sub_sig
+            || (!t.is_empty() && !s.is_empty() && t != s)
+            || (!pt.is_empty() && pt != t && pt != s)
+        {
             let child = if t.is_empty() { s.clone() } else { t.clone() };
             let psid = if pt.is_empty() { s.clone() } else { pt.clone() };
             let mut i = RawInfo::default();
@@ -260,7 +326,10 @@ pub(crate) fn extract_info(h: &HeaderMap, body: Option<&Value>) -> Option<RawInf
             return finalize(i);
         }
         let session = if s.is_empty() { t } else { s };
-        let mut i = RawInfo { session_id: format!("codex:{session}"), ..Default::default() };
+        let mut i = RawInfo {
+            session_id: format!("codex:{session}"),
+            ..Default::default()
+        };
         if !pt.is_empty() && pt != session {
             i.parent = format!("codex:{pt}");
         } else if let Some(p) = pc.as_ref().filter(|p| **p != session) {
@@ -278,19 +347,61 @@ pub(crate) fn extract_info(h: &HeaderMap, body: Option<&Value>) -> Option<RawInf
         return simple("header", &s, hv_any(h, P), &pc);
     }
     if let Some(s) = hv(h, "x-session-affinity") {
-        return simple("affinity", &s, hv_any(h, &["x-parent-session-affinity", "x-parent-session-id", "x-parent-id"]), &pc);
+        return simple(
+            "affinity",
+            &s,
+            hv_any(
+                h,
+                &[
+                    "x-parent-session-affinity",
+                    "x-parent-session-id",
+                    "x-parent-id",
+                ],
+            ),
+            &pc,
+        );
     }
     if let Some(s) = hv(h, "x-slot-session-id") {
-        return simple("slot", &s, hv_any(h, &["x-parent-slot-session-id", "x-parent-session-id", "x-parent-id"]), &pc);
+        return simple(
+            "slot",
+            &s,
+            hv_any(
+                h,
+                &[
+                    "x-parent-slot-session-id",
+                    "x-parent-session-id",
+                    "x-parent-id",
+                ],
+            ),
+            &pc,
+        );
     }
     if let Some(s) = hv_any(h, &["x-task-id", "x-task_id"]) {
-        return simple("task", &s, hv_any(h, &["x-parent-task-id", "x-parent-session-id", "x-parent-id"]), &pc);
+        return simple(
+            "task",
+            &s,
+            hv_any(
+                h,
+                &["x-parent-task-id", "x-parent-session-id", "x-parent-id"],
+            ),
+            &pc,
+        );
     }
     if let Some(s) = hv(h, "x-conversation-id") {
-        return simple("conv", &s, hv_any(h, &["x-parent-conversation-id", "x-parent-id"]), &pc);
+        return simple(
+            "conv",
+            &s,
+            hv_any(h, &["x-parent-conversation-id", "x-parent-id"]),
+            &pc,
+        );
     }
     if let Some(s) = hv(h, "x-thread-id") {
-        return simple("thread", &s, hv_any(h, &["x-parent-thread-id", "x-parent-id"]), &pc);
+        return simple(
+            "thread",
+            &s,
+            hv_any(h, &["x-parent-thread-id", "x-parent-id"]),
+            &pc,
+        );
     }
     if let Some(s) = hv(h, "x-client-request-id") {
         return simple("clientreq", &s, hv_any(h, P), &pc);
@@ -302,14 +413,20 @@ pub(crate) fn extract_info(h: &HeaderMap, body: Option<&Value>) -> Option<RawInf
     }
     let is_fork_body = || b.first(FORK_BODY_PATHS).is_some();
     let body_child = |prefix: &str, id: &str| {
-        let mut i = RawInfo { session_id: format!("{prefix}:{id}"), ..Default::default() };
+        let mut i = RawInfo {
+            session_id: format!("{prefix}:{id}"),
+            ..Default::default()
+        };
         if let Some(p) = pc.as_ref().filter(|p| *p != id) {
             i.parent = format!("{prefix}:{p}");
             i.is_fork = is_fork_body();
         }
         finalize(i)
     };
-    if let Some(c) = b.first(&["cachedContent"]).or_else(|| b.first(&["cached_content"])) {
+    if let Some(c) = b
+        .first(&["cachedContent"])
+        .or_else(|| b.first(&["cached_content"]))
+    {
         return simple("geminicache", &c, None, &pc);
     }
     for p in ["thread_id", "threadId", "metadata.thread_id"] {
@@ -323,9 +440,18 @@ pub(crate) fn extract_info(h: &HeaderMap, body: Option<&Value>) -> Option<RawInf
         .or_else(|| cand(b.req, "metadata.agent_id"))
         .or_else(|| cand(b.req, "metadata.subagent_id"));
     for p in [
-        "session_id", "sessionId", "sessionID", "child_session_id", "childSessionId",
-        "metadata.session_id", "metadata.sessionId", "metadata.sessionID", "metadata.child_session_id",
-        "extra_body.session_id", "extra_body.sessionId", "extra_body.sessionID",
+        "session_id",
+        "sessionId",
+        "sessionID",
+        "child_session_id",
+        "childSessionId",
+        "metadata.session_id",
+        "metadata.sessionId",
+        "metadata.sessionID",
+        "metadata.child_session_id",
+        "extra_body.session_id",
+        "extra_body.sessionId",
+        "extra_body.sessionID",
     ] {
         if let Some(s) = b.first(&[p]) {
             if let Some(a) = agent.as_ref().filter(|a| *a != "main") {
@@ -343,30 +469,57 @@ pub(crate) fn extract_info(h: &HeaderMap, body: Option<&Value>) -> Option<RawInf
         }
     }
     for p in [
-        "task_id", "taskId", "taskID", "action_id", "actionId", "actionID",
-        "metadata.task_id", "metadata.taskId", "metadata.taskID",
-        "metadata.action_id", "metadata.actionId", "metadata.actionID",
-        "extra_body.task_id", "extra_body.taskId", "extra_body.taskID",
+        "task_id",
+        "taskId",
+        "taskID",
+        "action_id",
+        "actionId",
+        "actionID",
+        "metadata.task_id",
+        "metadata.taskId",
+        "metadata.taskID",
+        "metadata.action_id",
+        "metadata.actionId",
+        "metadata.actionID",
+        "extra_body.task_id",
+        "extra_body.taskId",
+        "extra_body.taskID",
     ] {
         if let Some(t) = b.first(&[p]) {
             return body_child("task", &t);
         }
     }
     let conversation_id = conversation_alias(&b);
-    if let Some(pck) = b.first(&["prompt_cache_key"]).or_else(|| b.first(&["promptCacheKey"])) {
+    if let Some(pck) = b
+        .first(&["prompt_cache_key"])
+        .or_else(|| b.first(&["promptCacheKey"]))
+    {
         return simple("pck", &pck, None, &pc);
     }
     if let Some(cid) = conversation_id {
-        let mut i = RawInfo { session_id: cid.clone(), ..Default::default() };
+        let mut i = RawInfo {
+            session_id: cid.clone(),
+            ..Default::default()
+        };
         if let Some(p) = pc.as_ref().filter(|p| format!("conv:{p}") != cid) {
             i.parent = format!("conv:{p}");
         }
         return finalize(i);
     }
     if let Some(u) = b.first(&["metadata.user_id"]) {
-        return finalize(RawInfo { session_id: format!("user:{u}"), ..Default::default() });
+        return finalize(RawInfo {
+            session_id: format!("user:{u}"),
+            ..Default::default()
+        });
     }
-    for p in ["conversation_id", "conversationId", "chat_id", "chatId", "metadata.conversation_id", "extra_body.conversation_id"] {
+    for p in [
+        "conversation_id",
+        "conversationId",
+        "chat_id",
+        "chatId",
+        "metadata.conversation_id",
+        "extra_body.conversation_id",
+    ] {
         if let Some(c) = b.first(&[p]) {
             return simple("conv", &c, None, &pc);
         }
@@ -436,7 +589,11 @@ pub fn extract_session(headers: &HeaderMap, body: Option<&Value>) -> SessionInfo
         return SessionInfo::default();
     }
     let primary = bound_session_identity(&primary);
-    let fallback = if fallback.is_empty() { String::new() } else { bound_session_identity(&fallback) };
+    let fallback = if fallback.is_empty() {
+        String::new()
+    } else {
+        bound_session_identity(&fallback)
+    };
     let is_subagent = !is_fork && is_subagent_session(&primary, &fallback);
     SessionInfo {
         key: Some(primary),
@@ -445,7 +602,6 @@ pub fn extract_session(headers: &HeaderMap, body: Option<&Value>) -> SessionInfo
         is_fork,
     }
 }
-
 
 fn trunc(s: &str) -> &[u8] {
     let b = s.as_bytes();
@@ -521,7 +677,11 @@ pub(crate) fn message_hash_ids(payload: &Value) -> (String, String) {
     if sys.is_empty() {
         match get(root, "system") {
             Some(Value::Array(a)) => {
-                if let Some(t) = a.iter().map(|p| gstr(get(Some(p), "text"))).find(|t| !t.is_empty()) {
+                if let Some(t) = a
+                    .iter()
+                    .map(|p| gstr(get(Some(p), "text")))
+                    .find(|t| !t.is_empty())
+                {
                     set(&mut sys, &t);
                 }
             }
@@ -531,7 +691,11 @@ pub(crate) fn message_hash_ids(payload: &Value) -> (String, String) {
     }
     if sys.is_empty() && usr.is_empty() {
         if let Some(Value::Array(a)) = get(root, "systemInstruction.parts") {
-            if let Some(t) = a.iter().map(|p| gstr(get(Some(p), "text"))).find(|t| !t.is_empty()) {
+            if let Some(t) = a
+                .iter()
+                .map(|p| gstr(get(Some(p), "text")))
+                .find(|t| !t.is_empty())
+            {
                 set(&mut sys, &t);
             }
         }
@@ -539,7 +703,11 @@ pub(crate) fn message_hash_ids(payload: &Value) -> (String, String) {
             for m in cs {
                 let role = gstr(get(Some(m), "role"));
                 if let Some(Value::Array(parts)) = get(Some(m), "parts") {
-                    if let Some(t) = parts.iter().map(|p| gstr(get(Some(p), "text"))).find(|t| !t.is_empty()) {
+                    if let Some(t) = parts
+                        .iter()
+                        .map(|p| gstr(get(Some(p), "text")))
+                        .find(|t| !t.is_empty())
+                    {
                         match role.as_str() {
                             "user" => set(&mut usr, &t),
                             "model" => set(&mut ast, &t),
@@ -568,7 +736,10 @@ pub(crate) fn message_hash_ids(payload: &Value) -> (String, String) {
                 if ty.is_empty() && role.is_empty() {
                     continue;
                 }
-                let t = texts_of(get(Some(it), "content"), &["input_text", "output_text", "text"]);
+                let t = texts_of(
+                    get(Some(it), "content"),
+                    &["input_text", "output_text", "text"],
+                );
                 if t.is_empty() {
                     continue;
                 }
