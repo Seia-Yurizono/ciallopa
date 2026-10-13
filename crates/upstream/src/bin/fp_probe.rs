@@ -25,5 +25,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await?;
         println!("{path} -> {} {:?}", r.status(), r.version());
     }
+    // Responses WebSocket handshake through the same dialer the proxy uses.
+    let up = cpa_lite_upstream::UpstreamClient {
+        base_url: base.trim_end_matches('/').to_string(),
+        http: c,
+        opts: ClientOptions::default(),
+    };
+    let mut h = http::HeaderMap::new();
+    h.insert("authorization", "Bearer fake".parse()?);
+    h.insert("user-agent", "codex_exec/0.162.1 (Debian 13.0.0; x86_64) dumb".parse()?);
+    h.insert("originator", "codex_exec".parse()?);
+    match up.ws_connect("/codex/responses", h).await {
+        Ok(_) => println!("ws -> connected"),
+        Err(e) => println!("ws -> {e}"),
+    }
     Ok(())
 }
