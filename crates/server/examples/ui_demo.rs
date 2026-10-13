@@ -133,7 +133,7 @@ async fn main() {
         r.resp_model = m.clone();
         r.resp_effort = r.effort.clone();
         r.service_tier = Some("default".into());
-        match if i >= n - 8 {
+        match if i >= n - 9 {
             (n - 1 - i) as u64
         } else {
             next() % 12
@@ -163,6 +163,11 @@ async fn main() {
             6 => {
                 r.effort = Some("xhigh".into());
                 r.resp_effort = Some("xhigh".into());
+            }
+            // effort differs between request and response
+            7 => {
+                r.effort = Some("low".into());
+                r.resp_effort = Some("medium".into());
             }
             _ => {}
         }

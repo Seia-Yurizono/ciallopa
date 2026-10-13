@@ -58,7 +58,9 @@ button{cursor:pointer}button.pri{background:var(--acc);border-color:var(--acc);c
 .chip.fast.dg{color:var(--warn);background:transparent;text-decoration:line-through}
 .chip.flex{color:var(--acc);border-color:var(--acc)}
 .chip.flex.dg{text-decoration:line-through}
-.rm{display:block;font-size:11px;color:var(--mut)}
+.rm{display:block;font-size:11px;color:var(--mut);overflow:hidden;text-overflow:ellipsis}
+.ef{display:block}.ef.fb{font-style:italic}.ef small{font-size:10.5px;color:var(--mut);margin-left:4px;font-style:normal}
+.ef.fw{font-size:11.5px;color:var(--mut)}
 .rm.mm{color:var(--bad)}
 @media (max-width:600px){main{padding:10px}th,td{padding:5px 6px;font-size:12px}header h1{font-size:15px}}
 </style>
@@ -91,7 +93,7 @@ button{cursor:pointer}button.pri{background:var(--acc);border-color:var(--acc);c
     <div class="ctl"><select id="facct"><option value="">全部账号</option></select>
       <input id="fkey" placeholder="密钥标签" size="12">
       <label class="mut"><input type="checkbox" id="ferr"> 仅错误</label></div>
-    <div class="tablewrap"><table><thead><tr><th class="l">时间</th><th class="l">账号</th><th class="l">密钥</th><th class="l">模型</th><th>状态</th><th class="l">错误</th><th>TTFT</th><th>耗时</th><th>输入</th><th>输出</th><th>成本</th></tr></thead><tbody id="rec"></tbody></table></div>
+    <div class="tablewrap"><table><thead><tr><th class="l">时间</th><th class="l">账号</th><th class="l">密钥</th><th class="l">模型</th><th class="l">推理强度</th><th>状态</th><th class="l">错误</th><th>TTFT</th><th>耗时</th><th>输入</th><th>输出</th><th>成本</th></tr></thead><tbody id="rec"></tbody></table></div>
   </section>
 </main></div>
 <div id="dp" class="hide" role="dialog" aria-modal="true" aria-labelledby="dtitle"><div id="dpb">
@@ -198,33 +200,38 @@ function renderTrend(buckets,days){
 // Tier names: fast ≡ priority; auto/default/standard ≡ standard.
 function normTier(t){t=(t||"").trim().toLowerCase();if(!t)return null;if(t==="fast")return "priority";if(t==="auto"||t==="default"||t==="standard")return "standard";return t}
 const TIERN={priority:"Fast",flex:"Flex",standard:"标准"};
-const EFF={minimal:"min",low:"low",medium:"med",high:"high",xhigh:"xhigh"};
 function stripSnap(m){return (m||"").replace(/-\d{4}-\d{2}-\d{2}$/,"").toLowerCase()}
+function tierName(t){return t?TIERN[t]||t:"–"}
 function modelCell(r){
   const box=el("span");const req=r.model||"–";box.appendChild(el("span",null,req));
-  const tip=["请求模型："+req];
-  const eff=r.reasoning_effort||r.response_effort;
-  if(eff){const c=el("span","chip"+(r.reasoning_effort?"":" dim"),EFF[eff]||eff);box.appendChild(c)}
-  tip.push("请求推理强度："+(r.reasoning_effort||"–")+"，实际："+(r.response_effort||"–"));
   const rq=normTier(r.requested_service_tier),sv=normTier(r.service_tier);
+  const down=rq&&rq!=="standard"&&rq!==sv;
   for(const t of ["priority","flex"]){
-    if(sv===t){box.appendChild(el("span","chip "+(t==="priority"?"fast":"flex"),t==="priority"?"⚡ Fast":"Flex"))}
-    else if(rq===t){const c=el("span","chip "+(t==="priority"?"fast":"flex")+" dg",t==="priority"?"⚡ Fast":"Flex");box.appendChild(c);
-      tip.push("请求 "+TIERN[t]+"，实际 "+(r.service_tier||"default")+"（已降级）")}}
-  tip.push("请求档位："+(rq?TIERN[rq]||rq:"–")+"，实际档位："+(sv?TIERN[sv]||sv:"–"));
-  const rm=r.response_model;
-  if(rm&&rm!==r.model){const mm=r.model_mismatch===true;
-    box.appendChild(el("span","rm"+(mm?" mm":""),"↳ "+rm+(mm?"（不一致）":"（快照）")))}
-  tip.push("响应模型："+(rm||"–")+(r.model_mismatch===true?"（与请求不一致）":""));
+    const lab=t==="priority"?"⚡ Fast":"Flex",cls="chip "+(t==="priority"?"fast":"flex");
+    if(sv===t)box.appendChild(el("span",cls,lab));else if(rq===t)box.appendChild(el("span",cls+" dg",lab))}
+  const rm=r.response_model,mm=r.model_mismatch===true;
+  if(rm&&rm!==r.model){const l=el("span","rm"+(mm?" mm":""),"↳ "+rm+(mm?"（不一致）":"（快照）"));l.title=rm;box.appendChild(l)}
+  const tip=["模型：请求 "+req+(rm?" · 响应 "+rm+(rm===r.model?"":mm?"（不一致）":"（快照）"):"")];
+  if(rq||sv)tip.push("档位：请求 "+tierName(rq||"standard")+" · 实际 "+tierName(sv)+(down?"（已降级）":""));
   box.dataset.tip=tip.join("\n");return box}
+// Reasoning effort column (sub2api pattern): requested, "↳ actual" when different; response-only
+// values are italic with a small "响应" hint.
+function effortCell(r){
+  const box=el("span"),q=r.reasoning_effort,a=r.response_effort;let tip;
+  if(q){box.appendChild(el("span","ef",q));
+    if(a&&a!==q){box.appendChild(el("span","ef fw","↳ "+a));tip="推理强度：请求 "+q+" · 实际 "+a}
+    else tip="推理强度：请求 "+q+(a?" · 实际 "+a:"")}
+  else if(a){const e=el("span","ef fb",a);e.appendChild(el("small",null,"响应"));box.appendChild(e);tip="推理强度：请求未指定 · 实际 "+a}
+  else{box.appendChild(el("span","ef","–"));tip="推理强度：–"}
+  box.dataset.tip=tip;return box}
 
 function renderRecords(rs){
   const tb=$("rec");clear(tb);
   for(const r of rs){const tr=el("tr",((r.error||r.status>=400)?"err":"")+(r.has_detail?" dt":""));
     if(r.has_detail){tr.title="点击查看错误详情";tr.addEventListener("click",()=>openDetail(r))}
-    const cells=[[fmtTime(r.ts_ms),"l"],[r.account||"–","l"],[r.key||"–","l"],[modelCell(r),"l"],[r.status],[r.error||"","l"],[fmtMs(r.ttft_ms)],[fmtMs(r.duration_ms)],[fmtN(r.input_tokens)],[fmtN(r.output_tokens)],[r.price_status==="unknown_price"?"未定价":fmtUsd(r.cost_usd)]];
+    const cells=[[fmtTime(r.ts_ms),"l"],[r.account||"–","l"],[r.key||"–","l"],[modelCell(r),"l"],[effortCell(r),"l"],[r.status],[r.error||"","l"],[fmtMs(r.ttft_ms)],[fmtMs(r.duration_ms)],[fmtN(r.input_tokens)],[fmtN(r.output_tokens)],[r.price_status==="unknown_price"?"未定价":fmtUsd(r.cost_usd)]];
     for(const [v,c] of cells){let t;if(v instanceof Node){t=el("td",c);t.appendChild(v);t.title=v.dataset.tip+(r.has_detail?"\n点击查看错误详情":"")}else{t=td(v,c);if(c)t.title=String(v)+(r.has_detail?"\n点击查看错误详情":"")}tr.appendChild(t)}tb.appendChild(tr)}
-  if(!rs.length){const tr=el("tr");const c=td("没有记录","l");c.colSpan=11;tr.appendChild(c);tb.appendChild(tr)}
+  if(!rs.length){const tr=el("tr");const c=td("没有记录","l");c.colSpan=12;tr.appendChild(c);tb.appendChild(tr)}
 }
 
 // Detail panel: everything rendered with textContent (bodies are untrusted upstream data).
