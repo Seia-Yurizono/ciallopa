@@ -65,6 +65,9 @@ impl RoutingConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct UpstreamOpts {
     pub stream_idle_timeout_secs: u64,
+    /// Number of *retries* after the first attempt for transport errors / 408 / 5xx, before any
+    /// byte reaches the client (Codex `request_max_retries`): default 4 ⇒ up to 5 requests.
+    /// 401/403/404/429 failovers to another account do not consume retries.
     pub max_attempts: u32,
     pub connect_timeout_secs: u64,
 }
@@ -83,12 +86,20 @@ impl Default for UpstreamOpts {
 pub struct ImagesConfig {
     pub enabled: bool,
     pub main_model: String,
+    /// `originator` sent for Images API requests from non-Codex clients (absent header only).
+    pub default_originator: String,
+    /// `User-Agent` for non-Codex clients (used when the client UA does not start with "codex").
+    pub default_user_agent: String,
 }
+/// Codex CLI version the network stack is pinned to (see Cargo.toml / scripts/fp-check.sh).
+pub const PINNED_CODEX_VERSION: &str = "0.162.1";
 impl Default for ImagesConfig {
     fn default() -> Self {
         Self {
             enabled: true,
             main_model: "gpt-5.4-mini".into(),
+            default_originator: "codex_exec".into(),
+            default_user_agent: format!("codex_exec/{PINNED_CODEX_VERSION}"),
         }
     }
 }

@@ -44,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Cmd::Login { method, from } => {
             use cpa_lite_auth::login;
             let dir = cfg.auth_dir.clone();
-            let oauth = cpa_lite_auth::OAuthClient::new(&cfg.proxy_url)?;
+            let oauth = oauth_client(&cfg)?;
             let id = match method.as_str() {
                 "paste" => login::paste_callback(&oauth, &dir).await,
                 "pkce" => login::pkce_localhost(&oauth, &dir).await,
@@ -73,11 +73,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let state = AppState {
         accounts: Arc::new(
-            cpa_lite_auth::FileAccountStore::open_with(
-                cfg.auth_dir.clone(),
-                cpa_lite_auth::OAuthClient::new(&cfg.proxy_url)?,
-            )
-            .await?,
+            cpa_lite_auth::FileAccountStore::open_with(cfg.auth_dir.clone(), oauth_client(&cfg)?)
+                .await?,
         ),
         router: Arc::new(cpa_lite_routing::CpaRouter::new(cfg.routing.clone())),
         upstream: Arc::new(cpa_lite_upstream::UpstreamClient::new(&cfg)?),
@@ -93,4 +90,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await?;
     Ok(())
+}
+
+/// Production OAuth client; `CPA_LITE_OAUTH_ISSUER` overrides the issuer (tests / mocks only).
+fn oauth_client(cfg: &Config) -> Result<cpa_lite_auth::OAuthClient, Box<dyn std::error::Error>> {
+    let c = cpa_lite_auth::OAuthClient::new(&cfg.proxy_url)?;
+    Ok(match std::env::var("CPA_LITE_OAUTH_ISSUER") {
+        Ok(i) if !i.is_empty() => cpa_lite_auth::OAuthClient::with_issuer(&i, c.http),
+        _ => c,
+    })
 }

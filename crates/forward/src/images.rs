@@ -21,9 +21,6 @@ const DIRECT_MODELS: &[&str] = &[
     "gpt-image-2.5-flare",
     "gpt-image-2.5-sunburst",
 ];
-/// Default identity for non-Codex clients (kept in sync with the pinned Codex version).
-const DEFAULT_ORIGINATOR: &str = "codex_exec";
-const DEFAULT_UA: &str = "codex_exec/0.162.1";
 
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
@@ -271,7 +268,11 @@ fn responses_request(
     })
 }
 
-fn out_headers(client: &HeaderMap, accept_sse: bool) -> HeaderMap {
+fn out_headers(
+    cfg: &cpa_lite_core::config::ImagesConfig,
+    client: &HeaderMap,
+    accept_sse: bool,
+) -> HeaderMap {
     let mut h = HeaderMap::new();
     for (k, v) in client.iter() {
         if matches!(
@@ -283,17 +284,18 @@ fn out_headers(client: &HeaderMap, accept_sse: bool) -> HeaderMap {
         h.append(k.clone(), v.clone());
     }
     if !h.contains_key("originator") {
-        h.insert("originator", HeaderValue::from_static(DEFAULT_ORIGINATOR));
+        if let Ok(v) = HeaderValue::from_str(&cfg.default_originator) {
+            h.insert("originator", v);
+        }
     }
     if !client
         .get(http::header::USER_AGENT)
         .and_then(|v| v.to_str().ok())
         .is_some_and(|u| u.starts_with("codex"))
     {
-        h.insert(
-            http::header::USER_AGENT,
-            HeaderValue::from_static(DEFAULT_UA),
-        );
+        if let Ok(v) = HeaderValue::from_str(&cfg.default_user_agent) {
+            h.insert(http::header::USER_AGENT, v);
+        }
     }
     h.insert(
         http::header::CONTENT_TYPE,
@@ -410,7 +412,7 @@ async fn run(st: AppState, headers: HeaderMap, body: Bytes, kind: Kind) -> Respo
         let ob = Outbound {
             method: Method::POST,
             path: path.into(),
-            headers: out_headers(&headers, stream),
+            headers: out_headers(&st.config.images, &headers, stream),
             body: Bytes::from(payload.to_string()),
             route,
         };
@@ -464,7 +466,7 @@ async fn run(st: AppState, headers: HeaderMap, body: Bytes, kind: Kind) -> Respo
     let ob = Outbound {
         method: Method::POST,
         path: "/codex/responses".into(),
-        headers: out_headers(&headers, true),
+        headers: out_headers(&st.config.images, &headers, true),
         body: Bytes::from(req.to_string()),
         route,
     };
