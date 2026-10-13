@@ -357,6 +357,7 @@ version = "0.0.1"
 dependencies = [
  "async-trait",
  "axum",
+ "base64",
  "bytes",
  "clap",
  "cpa-lite-auth",

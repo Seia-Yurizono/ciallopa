@@ -1,16 +1,105 @@
 # cpa-lite
 
-Minimal Rust rewrite of CLIProxyAPI's Codex path: multi ChatGPT-subscription accounts for Codex clients, behind Caddy.
-Design: `<local-path>`. Interfaces/ownership: `docs/INTERFACES.md`.
+Minimal Rust rewrite of CLIProxyAPI's Codex path: several ChatGPT-subscription accounts behind one
+endpoint for Codex clients (Codex CLI, plus OpenAI Images API clients), meant to sit behind Caddy.
+Network stack pinned to codex-rs (reqwest/rustls/hyper/h2/tokio-tungstenite fork), so upstream TLS,
+h2 and WebSocket fingerprints equal Codex CLI 0.162.1 (`scripts/fp-check.sh`).
+Design: `<local-path>` · interfaces: `docs/INTERFACES.md` · acceptance: `docs/ACCEPTANCE.md`.
 
-Status: **M0** — workspace, config, pinned network stack (= codex-rs Cargo.lock), upstream client mirroring codex-rs, axum server with `/healthz` + static key auth, redacting logs, stubs for auth/routing/forwarding.
+## Build / gates
+```
+cargo build --release && cargo clippy --all-targets -- -D warnings && cargo test
+scripts/lock-check.sh   # every dep version ⊆ codex-rs Cargo.lock
+scripts/fp-check.sh     # JA4 + Akamai h2 + WS handshake == Codex CLI 0.162.1 (sudo; restores /etc/hosts)
+```
 
+## Accounts
 ```
-cargo build && cargo clippy --all-targets -- -D warnings && cargo test
-scripts/lock-check.sh   # deps ⊆ codex-rs Cargo.lock
-scripts/fp-check.sh     # JA4 + Akamai h2 == Codex CLI 0.162.1 (sudo; restores /etc/hosts)
-cargo run -p cpa-lite -- -c config.toml
+cpa-lite -c config.toml login                     # device code (default; best for servers)
+cpa-lite -c config.toml login --method paste      # open URL, paste the redirected callback URL
+cpa-lite -c config.toml login --method pkce       # local browser, callback on 127.0.0.1:1455
+cpa-lite -c config.toml login --method import --from ~/.codex/auth.json
 ```
+Files land in `auth_dir` (plain JSON, 0600, CPA-compatible names). Optional per-account keys in the
+file: `"priority": 5` (higher tier used first), `"weight": 3` (weighted-round-robin; ≤0 excluded),
+`"disabled": true`. Restart (or reload) after editing.
+
+## Config (`config.toml`)
+```toml
+listen = "127.0.0.1:8317"              # keep loopback; Caddy terminates TLS
+api_keys = ["sk-cpa-change-me-0123456789"]   # client keys (Bearer or x-api-key), ≥16 chars
+upstream = "https://chatgpt.com/backend-api"
+auth_dir = "~/.cpa-lite/auths"
+proxy_url = ""                          # global egress: http:// | socks5h:// (https:// = HTTP only, not WS)
+max_body_mb = 16
+
+[routing]
+strategy = "round-robin"                # | weighted-round-robin | fill-first
+session_affinity = true
+session_affinity_ttl = "1h"
+session_affinity_subagents = true
+session_affinity_rebind_on = "quota"    # | any
+quota_avoid_threshold = 0.99            # new sessions skip accounts at/over this used fraction
+
+[upstream_opts]
+stream_idle_timeout_secs = 300
+max_attempts = 4    # RETRIES (Codex request_max_retries): transport/408/5xx before first byte ⇒ ≤5 requests.
+                    # 401/403/404/429 fail over to another account and do not consume retries.
+connect_timeout_secs = 30
+
+[images]
+enabled = true
+main_model = "gpt-5.4-mini"             # wrapper model for non-gpt-image-* Images requests
+default_originator = "codex_exec"       # only for clients that don't send one
+default_user_agent = "codex_exec/0.162.1"   # used when client UA doesn't start with "codex"
+```
+
+## Codex CLI client (`~/.codex/config.toml`)
+```toml
+model_provider = "cpa"
+[model_providers.cpa]
+name = "cpa"
+base_url = "https://cpa.example.com/v1"   # or http://127.0.0.1:8317/v1 locally
+env_key = "CPA_KEY"                       # export CPA_KEY=<one of api_keys>
+wire_api = "responses"
+supports_websockets = true                # false = HTTP SSE only
+```
+Endpoints: `/backend-api/codex/{responses,responses/compact,models}` (+ WS on `responses`),
+`/backend-api/*` passthrough (`wham/*` …), `/api/codex/*`→`/wham/*`, `/v1/{responses,responses/compact,models}`,
+`/v1/images/{generations,edits}`, `/healthz` (no auth). Everything else 404.
+
+## Caddy
+```
+cpa.example.com {
+    encode off
+    reverse_proxy 127.0.0.1:8317 {
+        flush_interval -1          # stream SSE immediately
+        transport http {
+            read_timeout 0
+            write_timeout 0
+        }
+    }
+}
+```
+WebSocket upgrades are proxied by Caddy automatically.
+
+## systemd (optional)
+```
+[Unit]
+Description=cpa-lite
+After=network-online.target
+[Service]
+ExecStart=/usr/local/bin/cpa-lite -c /etc/cpa-lite/config.toml
+User=cpa-lite
+Restart=on-failure
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/cpa-lite
+[Install]
+WantedBy=multi-user.target
+```
+(set `auth_dir = "/var/lib/cpa-lite/auths"`). Docker: `FROM debian:13-slim`, copy the release
+binary, `ca-certificates`, mount the auth dir as a volume, run with `--network host` or publish 8317 on loopback.
 
 ## Disclaimer / 免责声明
 

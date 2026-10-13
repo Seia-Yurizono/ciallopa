@@ -1,0 +1,10 @@
+listen = "127.0.0.1:18317"
+api_keys = ["sk-cpa-e2e-0123456789abcdef"]
+upstream = "http://127.0.0.1:18080/backend-api"
+auth_dir = "/tmp/cpa-e2e/auths"
+[routing]
+strategy = "round-robin"
+session_affinity = true
+quota_avoid_threshold = 0.9
+[log]
+level = "info"
