@@ -207,6 +207,15 @@ impl Recorder {
         }
     }
 
+    /// Blocking send (bulk import / benchmarks only — never call from the proxy path).
+    pub fn record_blocking(&self, r: Record) -> bool {
+        let ok = self.fast.send(Msg::Rec(Box::new(r))).is_ok();
+        if ok {
+            self.counters.accepted.fetch_add(1, Ordering::Relaxed);
+        }
+        ok
+    }
+
     pub fn stats(&self) -> Stats {
         let c = &self.counters;
         Stats {
@@ -250,6 +259,27 @@ impl Recorder {
             .await
             .map_err(|_| UsageError::Gone)?
     }
+}
+
+/// Maintenance: delete rows started before `cutoff_ms`, `chunk` rows per transaction.
+pub fn purge_db(path: &Path, cutoff_ms: i64, chunk: u64) -> Result<u64, UsageError> {
+    let mut c = store::open_rw(path)?;
+    let mut n = 0;
+    loop {
+        let k = store::purge_before(&mut c, cutoff_ms, chunk)?;
+        n += k;
+        if k < chunk {
+            return Ok(n);
+        }
+    }
+}
+
+/// `PRAGMA integrity_check` result ("ok" when healthy) and row count.
+pub fn integrity_check(path: &Path) -> Result<(String, i64), UsageError> {
+    let c = store::open_ro(path)?;
+    let s: String = c.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
+    let n: i64 = c.query_row("SELECT count(*) FROM requests", [], |r| r.get(0))?;
+    Ok((s, n))
 }
 
 #[cfg(test)]

@@ -82,6 +82,18 @@ Endpoints: `/backend-api/codex/{responses,responses/compact,models}` (+ WS on `r
 `/backend-api/*` passthrough (`wham/*` …), `/api/codex/*`→`/wham/*`, `/v1/{responses,responses/compact,models}`,
 `/v1/images/{generations,edits}`, `/healthz` (no auth). Everything else 404.
 
+## Usage log
+Per-request records (account, model, effort, transport, status/error, retries/failover,
+TTFT, duration, tokens) go to a local SQLite file without ever blocking forwarding. Read-only
+API behind the client key: `GET /usage/v1/records`, `GET /usage/v1/summary?range=24h`.
+```toml
+[usage]
+enabled = true
+path = "~/.cpa-lite/usage.db"
+retention_days = 30
+```
+Details: docs/USAGE.md.
+
 ## Caddy
 ```
 cpa.example.com {
