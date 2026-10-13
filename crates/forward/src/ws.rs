@@ -328,6 +328,7 @@ async fn relay(
                                 if t.as_str().contains("response.create") {
                                     turn = Tracker::start(&st, Transport::Ws, ep, ctx.key.as_deref()).map(|mut tr| {
                                         let v = serde_json::from_str::<serde_json::Value>(t.as_str()).ok();
+                                        tr.headers(&ctx.headers);
                                         tr.meta(v.as_ref());
                                         tr.accounts(&[], Some(&account));
                                         tr.quota(&quota_h);

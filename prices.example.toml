@@ -1,0 +1,79 @@
+# cpa-lite price table — copy to the path in `[usage] prices` (default ~/.cpa-lite/prices.toml).
+#
+# USD per 1M tokens. Costs are NOTIONAL for ChatGPT-subscription traffic: what the same tokens
+# would cost on the OpenAI API, not what you are billed.
+#
+# Source: https://developers.openai.com/api/docs/pricing (checked 2026-10-13).
+# Fields: in, cache (cached input / cache read), write (cache write; missing ⇒ = in), out
+# (reasoning tokens are part of out), long = {threshold, in_x, out_x} (total input incl.
+# cached > threshold ⇒ input-side ×in_x, output ×out_x), tier = standard | flex |
+# priority-fast (no entry for a tier ⇒ standard × flex_x / fast_x), effective_from /
+# effective_until (YYYY-MM-DD, inclusive, UTC; dated entries win over undated ones).
+# Unknown model / no entry for the date ⇒ cost null + `unknown_price` (never 0).
+#
+# Refresh standard prices: `cpa-lite prices sync --from models.dev` (diff), add `--write`.
+
+[defaults]
+flex_x = 0.5          # Flex = 50% of standard
+fast_x = 2.0          # Fast mode (formerly "priority") = 2× standard for 5.6 / 6 series
+
+# --- GPT-5.6 -------------------------------------------------------------------------------
+# Promotional price, "available at least through November 21, 2026".
+# TODO: regular gpt-5.6-sol price is not published yet — add an undated entry (or one with
+# effective_from = "2026-11-22") once known. Until then requests after the promo are unpriced.
+[[model]]
+model = "gpt-5.6-sol"
+in = 4.0
+cache = 0.4
+write = 5.0
+out = 20.0
+long = { threshold = 272000, in_x = 2.0, out_x = 1.5 }
+effective_until = "2026-11-21"
+note = "promo price; regular price unknown (TODO)"
+
+[[model]]
+model = "gpt-5.6-terra"
+in = 2.0
+cache = 0.2
+write = 2.5
+out = 12.0
+long = { threshold = 272000, in_x = 2.0, out_x = 1.5 }
+
+[[model]]
+model = "gpt-5.6-luna"
+in = 0.2
+cache = 0.02
+write = 0.25
+out = 1.2
+long = { threshold = 272000, in_x = 2.0, out_x = 1.5 }
+
+# --- GPT-6 ---------------------------------------------------------------------------------
+[[model]]
+model = "gpt-6-luna"
+in = 0.1
+cache = 0.01
+write = 0.125
+out = 0.5
+long = { threshold = 272000, in_x = 2.0, out_x = 1.5 }
+
+# --- GPT-5.5 / 5.4 (no cache-write pricing) ------------------------------------------------
+[[model]]
+model = "gpt-5.5"
+in = 5.0
+cache = 0.5
+out = 30.0
+long = { threshold = 272000, in_x = 2.0, out_x = 1.5 }
+fast_x = 2.5          # Fast: 12.50 / 1.25 / 75.00
+
+[[model]]
+model = "gpt-5.4"
+in = 2.5
+cache = 0.25
+out = 15.0
+long = { threshold = 272000, in_x = 2.0, out_x = 1.5 }
+
+[[model]]
+model = "gpt-5.3-codex"
+in = 1.75
+cache = 0.175
+out = 14.0

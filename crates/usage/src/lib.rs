@@ -1,9 +1,11 @@
 //! Per-request usage log. **Never blocks forwarding**: `Recorder::record` is a non-blocking
 //! `try_send` into a bounded queue (full ⇒ drop + count); one dedicated OS thread batch-writes
 //! to SQLite (WAL). Reads open their own read-only connections. Design: docs/USAGE.md.
+pub mod prices;
 mod store;
 mod writer;
 
+pub use prices::{PriceTable, Tier};
 pub use store::{
     AccountQuota, Dim, Estimate, Filters, RecentQuery, RecordRow, Summary, SummaryGroup,
     SummaryQuery, WindowQuota,
@@ -71,6 +73,13 @@ pub struct Record {
     pub output_tokens: Option<i64>,
     pub cached_tokens: Option<i64>,
     pub reasoning_tokens: Option<i64>,
+    /// `input_tokens_details.cache_write_tokens` (part of `input_tokens`).
+    pub cache_write_tokens: Option<i64>,
+    /// Response `service_tier` (else the request's), e.g. `default`, `flex`, `priority`.
+    pub service_tier: Option<String>,
+    /// Codex `thread-id` / `x-codex-turn-metadata` (for a future authoritative cost lookup).
+    pub thread_id: Option<String>,
+    pub turn_id: Option<String>,
     /// Label of the client key (never the key).
     pub key: Option<String>,
     /// Upstream quota snapshot seen on this response (headers / `codex.rate_limits`).
@@ -90,35 +99,6 @@ pub struct QuotaObs {
     pub s_window_min: Option<i64>,
 }
 
-/// Cost hook: USD per 1M tokens per model. Empty by default (cost columns stay null); a later
-/// pricing module fills it via [`Recorder::set_prices`]. Cost is computed at query time from
-/// the stored tokens, so prices can change without rewriting rows.
-#[derive(Debug, Clone, Default)]
-pub struct PriceTable(pub std::collections::HashMap<String, Price>);
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Price {
-    pub input: f64,
-    pub cached_input: f64,
-    pub output: f64,
-}
-impl PriceTable {
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-    /// `output` includes reasoning tokens (as upstream reports them).
-    pub fn cost(
-        &self,
-        model: Option<&str>,
-        input: Option<i64>,
-        cached: Option<i64>,
-        output: Option<i64>,
-    ) -> Option<f64> {
-        let p = self.0.get(model?)?;
-        let (i, c, o) = (input.unwrap_or(0), cached.unwrap_or(0), output.unwrap_or(0));
-        let uncached = (i - c).max(0) as f64;
-        Some((uncached * p.input + c as f64 * p.cached_input + o as f64 * p.output) / 1e6)
-    }
-}
 impl Record {
     pub fn new(id: i64, transport: Transport, endpoint: &'static str) -> Self {
         Self {
@@ -139,6 +119,10 @@ impl Record {
             output_tokens: None,
             cached_tokens: None,
             reasoning_tokens: None,
+            cache_write_tokens: None,
+            service_tier: None,
+            thread_id: None,
+            turn_id: None,
             key: None,
             quota: None,
         }
@@ -675,15 +659,8 @@ mod tests {
         assert_eq!(b.primary.estimate.status, "insufficient_data");
 
         // cost hook
-        let mut pt = PriceTable::default();
-        pt.0.insert(
-            "m".into(),
-            Price {
-                input: 1.0,
-                cached_input: 0.1,
-                output: 10.0,
-            },
-        );
+        let pt =
+            PriceTable::parse("[[model]]\nmodel=\"m\"\nin=1.0\ncache=0.1\nout=10.0\n").unwrap();
         r.set_prices(pt);
         let rows = r
             .recent(RecentQuery {
@@ -757,6 +734,105 @@ mod tests {
         .unwrap();
         assert_eq!(rows[1].account.as_deref(), Some("old-acct"));
         assert_eq!(rows[1].key, None);
+        r.shutdown();
+    }
+
+    #[tokio::test]
+    async fn cost_tier_cache_write_unknown_and_grouping() {
+        let d = tempfile::tempdir().unwrap();
+        let r = Recorder::open_as(&cfg(d.path()), "h1").unwrap();
+        r.set_prices(
+            PriceTable::parse("[[model]]\nmodel=\"m\"\nin=2.0\ncache=0.2\nwrite=2.5\nout=12.0\n")
+                .unwrap(),
+        );
+        let t0 = now_ms() - 1000;
+        let mk = |model: &str, key: &str, tier: Option<&str>| {
+            let mut x = Record::new(r.ids.next_at(t0), Transport::Sse, "responses");
+            x.account = Some("a".into());
+            x.model = Some(model.into());
+            x.key = Some(key.into());
+            x.status = 200;
+            x.input_tokens = Some(1000);
+            x.cached_tokens = Some(500);
+            x.cache_write_tokens = Some(100);
+            x.output_tokens = Some(100);
+            x.reasoning_tokens = Some(60);
+            x.service_tier = tier.map(str::to_string);
+            x.thread_id = Some("th-1".into());
+            x.turn_id = Some("tu-1".into());
+            x
+        };
+        assert!(r.record(mk("m", "k1", None)));
+        assert!(r.record(mk("m", "k2", Some("priority"))));
+        assert!(r.record(mk("zz", "k2", Some("flex"))));
+        let mut e = Record::new(r.ids.next_at(t0), Transport::Sse, "responses");
+        e.model = Some("zz".into());
+        e.status = 502;
+        assert!(r.record(e)); // no tokens: neither priced nor unknown
+        r.flush_blocking().unwrap();
+        let base = (400.0 * 2.0 + 500.0 * 0.2 + 100.0 * 2.5 + 100.0 * 12.0) / 1e6;
+        let rows = r
+            .recent(RecentQuery {
+                limit: 10,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let by = |k: &str, m: &str| {
+            rows.iter()
+                .find(|x| x.key.as_deref() == Some(k) && x.model.as_deref() == Some(m))
+                .unwrap()
+        };
+        let a = by("k1", "m");
+        assert!((a.cost_usd.unwrap() - base).abs() < 1e-12);
+        assert_eq!(
+            (a.thread_id.as_deref(), a.turn_id.as_deref()),
+            (Some("th-1"), Some("tu-1"))
+        );
+        assert_eq!(a.cache_write_tokens, Some(100));
+        assert!(
+            (by("k2", "m").cost_usd.unwrap() - base * 2.0).abs() < 1e-12,
+            "fast ×2"
+        );
+        let z = by("k2", "zz");
+        assert_eq!((z.cost_usd, z.price_status), (None, "unknown_price"));
+        assert_eq!(
+            rows.iter().find(|x| x.status == 502).unwrap().price_status,
+            "no_tokens"
+        );
+
+        let s = r
+            .summary(SummaryQuery {
+                group_by: vec![Dim::Key],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(s.total.unknown_price, 1);
+        assert!((s.total.cost_usd.unwrap() - base * 3.0).abs() < 1e-12);
+        assert_eq!(s.unknown_price_models, vec!["zz (flex)".to_string()]);
+        let k2 = s
+            .groups
+            .iter()
+            .find(|g| g.group["key"].as_deref() == Some("k2"))
+            .unwrap();
+        assert_eq!(k2.unknown_price, 1);
+        assert!((k2.cost_usd.unwrap() - base * 2.0).abs() < 1e-12);
+        let s = r
+            .summary(SummaryQuery {
+                group_by: vec![Dim::Tier],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(s
+            .groups
+            .iter()
+            .any(|g| g.group["service_tier"].as_deref() == Some("priority")));
+        // nothing priced ⇒ null, never 0
+        r.set_prices(PriceTable::default());
+        let s = r.summary(SummaryQuery::default()).await.unwrap();
+        assert_eq!((s.total.cost_usd, s.total.unknown_price), (None, 3));
         r.shutdown();
     }
 }

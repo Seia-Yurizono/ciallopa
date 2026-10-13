@@ -157,7 +157,7 @@ async fn up_responses(State(m): State<Mock>, h: HeaderMap, b: Bytes) -> Response
             let mut r = sse_resp(concat!(
             "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-u\"}}\n\n",
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n",
-            "event: response.completed\r\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r-u\",\"usage\":{\"input_tokens\":120,\"input_tokens_details\":{\"cached_tokens\":100},\"output_tokens\":30,\"output_tokens_details\":{\"reasoning_tokens\":12}}}}\r\n\r\n"
+            "event: response.completed\r\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r-u\",\"usage\":{\"input_tokens\":120,\"input_tokens_details\":{\"cached_tokens\":100,\"cache_write_tokens\":10},\"output_tokens\":30,\"output_tokens_details\":{\"reasoning_tokens\":12}}}}\r\n\r\n"
             ));
             let reset = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() + 3600).to_string();
             let h = r.headers_mut();
@@ -843,11 +843,23 @@ async fn usage_ws_turn_rows() {
 #[tokio::test]
 async fn usage_key_label_instance_and_quota_api() {
     let d = tempfile::tempdir().unwrap();
-    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    let recorder = usage_recorder(d.path());
+    recorder.set_prices(
+        cpa_lite_usage::PriceTable::parse(
+            "[[model]]\nmodel=\"gpt-5.5\"\nin=5.0\ncache=0.5\nout=30.0\nfast_x=2.5\n",
+        )
+        .unwrap(),
+    );
+    let e = env_usage(300, Some(recorder)).await;
     let r = e
         .post("/v1/responses")
         .header("x-test-mode", "usage")
-        .body(r#"{"model":"gpt-5.5","input":[]}"#)
+        .header("thread-id", "th-abc")
+        .header(
+            "x-codex-turn-metadata",
+            r#"{"turn_id":"turn-1","thread_id":"th-abc"}"#,
+        )
+        .body(r#"{"model":"gpt-5.5","service_tier":"priority","input":[]}"#)
         .send()
         .await
         .unwrap();
@@ -861,7 +873,17 @@ async fn usage_key_label_instance_and_quota_api() {
     assert_eq!(u["plan"], "plus");
     assert_eq!(u["primary_used_pct"], 12.0);
     assert!(u["primary_reset_at"].is_i64());
-    assert!(u["cost_usd"].is_null());
+    assert_eq!(u["thread_id"], "th-abc");
+    assert_eq!(u["turn_id"], "turn-1");
+    assert_eq!(u["service_tier"], "priority");
+    assert_eq!(u["cache_write_tokens"], 10);
+    // (120-100-10)·5 + 100·0.5 + 10·5 (no write price ⇒ input) + 30·30, fast ×2.5
+    let want = (10.0 * 5.0 + 100.0 * 0.5 + 10.0 * 5.0 + 30.0 * 30.0) * 2.5 / 1e6;
+    assert!(
+        (u["cost_usd"].as_f64().unwrap() - want).abs() < 1e-12,
+        "{u}"
+    );
+    assert_eq!(u["price_status"], "ok");
     let get = |path: String| {
         let h = e.http.clone();
         async move {
@@ -891,6 +913,17 @@ async fn usage_key_label_instance_and_quota_api() {
     ))
     .await;
     assert_eq!(s["summary"]["groups"][0]["group"]["key"], label.as_str());
+    assert!((s["summary"]["groups"][0]["cost_usd"].as_f64().unwrap() - want).abs() < 1e-12);
+    assert_eq!(s["summary"]["total"]["unknown_price"], 0);
+    let s = get(format!(
+        "http://{}/usage/v1/summary?group=account,tier",
+        e.proxy
+    ))
+    .await;
+    assert_eq!(
+        s["summary"]["groups"][0]["group"]["service_tier"],
+        "priority"
+    );
     let r = e
         .http
         .get(format!("http://{}/usage/v1/summary?group=bogus", e.proxy))

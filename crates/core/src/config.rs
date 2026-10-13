@@ -204,6 +204,8 @@ pub struct UsageConfig {
     /// Max time a record waits in the writer before its batch is committed.
     pub flush_ms: u64,
     pub quota_weights: QuotaWeights,
+    /// Price table for notional cost (see prices.example.toml). Missing file ⇒ costs null.
+    pub prices: PathBuf,
 }
 impl Default for UsageConfig {
     fn default() -> Self {
@@ -215,6 +217,7 @@ impl Default for UsageConfig {
             batch_size: 256,
             flush_ms: 50,
             quota_weights: QuotaWeights::default(),
+            prices: PathBuf::from("~/.cpa-lite/prices.toml"),
         }
     }
 }
@@ -267,6 +270,7 @@ impl Config {
         let mut c: Config = toml::from_str(s)?;
         c.auth_dir = expand_tilde(&c.auth_dir);
         c.usage.path = expand_tilde(&c.usage.path);
+        c.usage.prices = expand_tilde(&c.usage.prices);
         if c.instance_id.trim().is_empty() {
             c.instance_id = hostname();
         }

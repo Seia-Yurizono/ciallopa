@@ -146,6 +146,7 @@ async fn forward(
         usage::endpoint_of(&path).and_then(|ep| {
             let mut t =
                 usage::Tracker::start(&st, cpa_lite_usage::Transport::Sse, ep, key_label(&key))?;
+            t.headers(&headers);
             t.meta(parsed.as_ref());
             Some(t)
         })

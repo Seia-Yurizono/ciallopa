@@ -49,9 +49,49 @@ impl Tracker {
         })
     }
 
-    /// `model` / `reasoning.effort` from a Responses request body or WS `response.create`.
+    /// Codex `thread-id` header and `x-codex-turn-metadata` (JSON: `thread_id`, `turn_id`).
+    pub(crate) fn headers(&mut self, h: &HeaderMap) {
+        let get = |k: &str| h.get(k).and_then(|v| v.to_str().ok());
+        if let Some(t) = get("thread-id").and_then(short) {
+            self.rec.thread_id = Some(t);
+        }
+        if let Some(m) = get("x-codex-turn-metadata") {
+            self.turn_metadata(m);
+        }
+    }
+
+    fn turn_metadata(&mut self, json: &str) {
+        let Ok(v) = serde_json::from_str::<Value>(json) else {
+            return;
+        };
+        let s = |k: &str| v.get(k).and_then(|x| x.as_str()).and_then(short);
+        if let Some(t) = s("thread_id") {
+            self.rec.thread_id = Some(t);
+        }
+        if let Some(t) = s("turn_id") {
+            self.rec.turn_id = Some(t);
+        }
+    }
+
+    /// `model` / `reasoning.effort` / `service_tier` / `client_metadata` ids from a Responses
+    /// request body or WS `response.create` (body values win over handshake headers).
     pub(crate) fn meta(&mut self, body: Option<&Value>) {
         let Some(b) = body else { return };
+        if let Some(t) = b
+            .get("service_tier")
+            .and_then(|v| v.as_str())
+            .and_then(short)
+        {
+            self.rec.service_tier = Some(t);
+        }
+        if let Some(cm) = b.get("client_metadata") {
+            if let Some(t) = cm.get("thread_id").and_then(|v| v.as_str()).and_then(short) {
+                self.rec.thread_id = Some(t);
+            }
+            if let Some(m) = cm.get("x-codex-turn-metadata").and_then(|v| v.as_str()) {
+                self.turn_metadata(m);
+            }
+        }
         if let Some(m) = b.get("model").and_then(|v| v.as_str()) {
             self.rec.model = Some(m.to_string());
         }
@@ -129,6 +169,17 @@ impl Tracker {
             self.rec.reasoning_tokens = n(u
                 .get("output_tokens_details")
                 .and_then(|d| d.get("reasoning_tokens")));
+            self.rec.cache_write_tokens = n(u
+                .get("input_tokens_details")
+                .and_then(|d| d.get("cache_write_tokens")));
+        }
+        // The tier actually used (e.g. `priority` may be downgraded) wins over the request's.
+        if let Some(t) = resp
+            .and_then(|r| r.get("service_tier"))
+            .and_then(|v| v.as_str())
+            .and_then(short)
+        {
+            self.rec.service_tier = Some(t);
         }
         match ty {
             "response.completed" | "response.done" => {}
@@ -243,6 +294,12 @@ pub(crate) fn quota_obs(h: &HeaderMap) -> Option<QuotaObs> {
         s_reset: s.as_ref().and_then(|w| w.resets_at).and_then(secs),
         s_window_min: s.as_ref().and_then(|w| w.window_minutes).map(|m| m as i64),
     })
+}
+
+/// Ids / tiers are short tokens; refuse junk so a client can't bloat the label table.
+fn short(s: &str) -> Option<String> {
+    let s = s.trim();
+    (!s.is_empty() && s.len() <= 128).then(|| s.to_string())
 }
 
 fn elapsed_ms(t: Instant) -> u32 {

@@ -6,9 +6,9 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
 
-pub(crate) const SCHEMA_VERSION: i64 = 2;
+pub(crate) const SCHEMA_VERSION: i64 = 3;
 
-const CREATE_V2: &str = r#"
+const CREATE_V3: &str = r#"
 CREATE TABLE IF NOT EXISTS labels(
   id   INTEGER PRIMARY KEY,
   name TEXT NOT NULL UNIQUE
@@ -38,7 +38,12 @@ CREATE TABLE IF NOT EXISTS requests(
   p_pct         REAL,                  -- x-codex-primary-used-percent seen on this response
   p_reset       INTEGER,               -- unix s
   s_pct         REAL,
-  s_reset       INTEGER
+  s_reset       INTEGER,
+  -- v3
+  tier          INTEGER,               -- labels.id, service_tier
+  cw_tok        INTEGER,               -- cache_write_tokens (part of in_tok)
+  thread        INTEGER,               -- labels.id, Codex thread id
+  turn          TEXT                   -- Codex turn id
 );
 -- Quota snapshots, one row only when an account's values change. id = observing request id.
 CREATE TABLE IF NOT EXISTS quota_obs(
@@ -60,6 +65,13 @@ ALTER TABLE requests ADD COLUMN p_pct REAL;
 ALTER TABLE requests ADD COLUMN p_reset INTEGER;
 ALTER TABLE requests ADD COLUMN s_pct REAL;
 ALTER TABLE requests ADD COLUMN s_reset INTEGER;
+"#;
+
+const MIGRATE_2_TO_3: &str = r#"
+ALTER TABLE requests ADD COLUMN tier INTEGER;
+ALTER TABLE requests ADD COLUMN cw_tok INTEGER;
+ALTER TABLE requests ADD COLUMN thread INTEGER;
+ALTER TABLE requests ADD COLUMN turn TEXT;
 "#;
 
 fn pragmas(c: &Connection) -> rusqlite::Result<()> {
@@ -85,7 +97,10 @@ pub(crate) fn migrate(c: &mut Connection) -> rusqlite::Result<()> {
     if has_requests && v == 1 {
         tx.execute_batch(MIGRATE_1_TO_2)?;
     }
-    tx.execute_batch(CREATE_V2)?;
+    if has_requests && (1..=2).contains(&v) {
+        tx.execute_batch(MIGRATE_2_TO_3)?;
+    }
+    tx.execute_batch(CREATE_V3)?;
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
     tx.commit()
 }
@@ -208,8 +223,8 @@ pub(crate) fn insert_batch(
         let mut st = tx.prepare_cached(
             "INSERT OR IGNORE INTO requests(id,account,first_account,model,effort,transport,endpoint,\
              status,error,retries,switches,ttft_ms,duration_ms,in_tok,out_tok,cached_tok,reasoning_tok,\
-             key,instance,plan,p_pct,p_reset,s_pct,s_reset) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24)",
+             key,instance,plan,p_pct,p_reset,s_pct,s_reset,tier,cw_tok,thread,turn) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28)",
         )?;
         let mut qst = tx.prepare_cached(
             "INSERT OR IGNORE INTO quota_obs(id,account,instance,plan,p_pct,p_reset,p_win,s_pct,s_reset,s_win) \
@@ -227,6 +242,8 @@ pub(crate) fn insert_batch(
             let key = ws.label(&tx, r.key.as_deref())?;
             let q = r.quota.as_ref();
             let plan = ws.label(&tx, q.and_then(|q| q.plan.as_deref()))?;
+            let tier = ws.label(&tx, r.service_tier.as_deref())?;
+            let thread = ws.label(&tx, r.thread_id.as_deref())?;
             let n = st.execute(params![
                 r.id,
                 account,
@@ -252,6 +269,10 @@ pub(crate) fn insert_batch(
                 q.and_then(|q| q.p_reset),
                 q.and_then(|q| q.s_pct),
                 q.and_then(|q| q.s_reset),
+                tier,
+                r.cache_write_tokens,
+                thread,
+                r.turn_id,
             ])?;
             if let (1, Some(q), Some(a)) = (n, q, account) {
                 if quota_changed(ws.last_quota.get(&a), q) {
@@ -381,8 +402,43 @@ pub struct RecordRow {
     pub primary_reset_at: Option<i64>,
     pub secondary_used_pct: Option<f64>,
     pub secondary_reset_at: Option<i64>,
-    /// Computed from tokens × price table when one is configured (cost hook); else null.
+    pub cache_write_tokens: Option<i64>,
+    pub service_tier: Option<String>,
+    pub thread_id: Option<String>,
+    pub turn_id: Option<String>,
+    /// Notional USD from tokens × price table at query time; null when unpriced.
     pub cost_usd: Option<f64>,
+    /// `ok`, `unknown_price` (model/tier/date not in the price table) or `no_tokens`.
+    pub price_status: &'static str,
+}
+
+/// Row cost + status. Rows without any token counts (errors before output) are `no_tokens`.
+fn row_cost(
+    prices: &crate::PriceTable,
+    model: Option<&str>,
+    tier: Option<&str>,
+    id: i64,
+    tok: [Option<i64>; 4],
+    cw: Option<i64>,
+) -> (Option<f64>, &'static str) {
+    if tok[0].is_none() && tok[1].is_none() {
+        return (None, "no_tokens");
+    }
+    let u = crate::prices::Usage {
+        input: tok[0].unwrap_or(0),
+        output: tok[1].unwrap_or(0),
+        cached: tok[2].unwrap_or(0),
+        cache_write: cw.unwrap_or(0),
+    };
+    match prices.cost(
+        model,
+        crate::Tier::from_service_tier(tier),
+        id >> SEQ_BITS,
+        u,
+    ) {
+        Some(c) => (Some(c), "ok"),
+        None => (None, "unknown_price"),
+    }
 }
 
 fn tps(out: Option<i64>, ttft: Option<u32>, dur: u32) -> Option<f64> {
@@ -404,7 +460,8 @@ pub(crate) fn recent(
     let lo = q.since_ms.map(|s| s << SEQ_BITS).unwrap_or(0);
     let sql = format!(
         "SELECT id,account,first_account,model,effort,transport,endpoint,status,error,retries,switches,\
-         ttft_ms,duration_ms,in_tok,out_tok,cached_tok,reasoning_tok,key,instance,plan,p_pct,p_reset,s_pct,s_reset \
+         ttft_ms,duration_ms,in_tok,out_tok,cached_tok,reasoning_tok,key,instance,plan,p_pct,p_reset,s_pct,s_reset,\
+         tier,cw_tok,thread,turn \
          FROM requests WHERE id BETWEEN ? AND ?{fsql}{} ORDER BY id DESC LIMIT ?",
         if q.errors_only { " AND (error IS NOT NULL OR status >= 400)" } else { "" }
     );
@@ -420,12 +477,28 @@ pub(crate) fn recent(
         let out: Option<i64> = r.get(14)?;
         let model = name(r.get(3)?);
         let (inp, cached): (Option<i64>, Option<i64>) = (r.get(13)?, r.get(15)?);
+        let reasoning: Option<i64> = r.get(16)?;
+        let tier = name(r.get(24)?);
+        let cw: Option<i64> = r.get(25)?;
+        let (cost_usd, price_status) = row_cost(
+            prices,
+            model.as_deref(),
+            tier.as_deref(),
+            id,
+            [inp, out, cached, reasoning],
+            cw,
+        );
         Ok(RecordRow {
             request_id: format!("{id:016x}"),
             ts_ms: id >> SEQ_BITS,
             account: name(r.get(1)?),
             first_account: name(r.get(2)?),
-            cost_usd: prices.cost(model.as_deref(), inp, cached, out),
+            cost_usd,
+            price_status,
+            cache_write_tokens: cw,
+            service_tier: tier,
+            thread_id: name(r.get(26)?),
+            turn_id: r.get(27)?,
             model,
             reasoning_effort: name(r.get(4)?),
             transport: Transport::from_i64(r.get(5)?),
@@ -439,7 +512,7 @@ pub(crate) fn recent(
             input_tokens: inp,
             output_tokens: out,
             cached_tokens: cached,
-            reasoning_tokens: r.get(16)?,
+            reasoning_tokens: reasoning,
             tps: tps(out, ttft, dur),
             key: name(r.get(17)?),
             instance: name(r.get(18)?),
@@ -463,6 +536,7 @@ pub enum Dim {
     Effort,
     Transport,
     Endpoint,
+    Tier,
 }
 impl Dim {
     pub fn parse(s: &str) -> Option<Self> {
@@ -474,6 +548,7 @@ impl Dim {
             "effort" | "reasoning_effort" => Dim::Effort,
             "transport" => Dim::Transport,
             "endpoint" => Dim::Endpoint,
+            "tier" | "service_tier" => Dim::Tier,
             _ => return None,
         })
     }
@@ -486,11 +561,13 @@ impl Dim {
             Dim::Effort => "effort",
             Dim::Transport => "transport",
             Dim::Endpoint => "endpoint",
+            Dim::Tier => "tier",
         }
     }
     pub fn name(self) -> &'static str {
         match self {
             Dim::Effort => "reasoning_effort",
+            Dim::Tier => "service_tier",
             d => d.col(),
         }
     }
@@ -532,8 +609,11 @@ pub struct SummaryGroup {
     pub reasoning_tokens: i64,
     /// Σ output_tokens / Σ generation seconds over rows that have both.
     pub tps: Option<f64>,
-    /// Σ per-row cost when a price table covers the rows' models (cost hook); else null.
+    /// Σ notional cost of the priced rows; null when no row is priced (never a fake 0).
     pub cost_usd: Option<f64>,
+    /// Rows with tokens but no price (model/tier/date missing from the table). > 0 ⇒
+    /// `cost_usd` is a lower bound.
+    pub unknown_price: u64,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Default)]
@@ -543,6 +623,8 @@ pub struct Summary {
     pub group_by: Vec<&'static str>,
     pub total: SummaryGroup,
     pub groups: Vec<SummaryGroup>,
+    /// Models (with tiers) that had rows without a price.
+    pub unknown_price_models: Vec<String>,
 }
 
 #[derive(Default)]
@@ -555,6 +637,7 @@ struct Acc {
     gen_ms: i64,
     gen_out: i64,
     cost: Option<f64>,
+    unknown: u64,
 }
 impl Acc {
     fn add(
@@ -563,7 +646,7 @@ impl Acc {
         ttft: Option<u32>,
         dur: u32,
         tok: [Option<i64>; 4],
-        cost: Option<f64>,
+        cost: (Option<f64>, &'static str),
     ) {
         self.count += 1;
         self.errors += u64::from(err);
@@ -581,8 +664,10 @@ impl Acc {
                 self.gen_out += o;
             }
         }
-        if let Some(c) = cost {
-            *self.cost.get_or_insert(0.0) += c;
+        match cost {
+            (Some(c), _) => *self.cost.get_or_insert(0.0) += c,
+            (None, "unknown_price") => self.unknown += 1,
+            _ => {}
         }
     }
     fn merge(&mut self, o: &Acc) {
@@ -598,6 +683,7 @@ impl Acc {
         if let Some(c) = o.cost {
             *self.cost.get_or_insert(0.0) += c;
         }
+        self.unknown += o.unknown;
     }
     fn finish(
         mut self,
@@ -622,6 +708,7 @@ impl Acc {
             reasoning_tokens: self.tok[3],
             tps: (self.gen_ms > 0).then(|| self.gen_out as f64 * 1000.0 / self.gen_ms as f64),
             cost_usd: self.cost,
+            unknown_price: self.unknown,
         }
     }
 }
@@ -658,34 +745,47 @@ pub(crate) fn summary(
     };
     let dim_cols: Vec<&str> = dims.iter().map(|d| d.col()).collect();
     let sql = format!(
-        "SELECT status,error,ttft_ms,duration_ms,in_tok,out_tok,cached_tok,reasoning_tok,model,{} \
+        "SELECT status,error,ttft_ms,duration_ms,in_tok,out_tok,cached_tok,reasoning_tok,model,id,tier,cw_tok,{} \
          FROM requests WHERE id BETWEEN ? AND ?{fsql}",
         dim_cols.join(",")
     );
-    let mut ps: Vec<i64> = vec![q.from_ms << SEQ_BITS, ((q.to_ms + 1) << SEQ_BITS) - 1];
+    let mut ps: Vec<i64> = vec![
+        q.from_ms << SEQ_BITS,
+        if q.to_ms >= i64::MAX >> SEQ_BITS {
+            i64::MAX
+        } else {
+            ((q.to_ms + 1) << SEQ_BITS) - 1
+        },
+    ];
     ps.extend(fparams);
     let mut st = c.prepare(&sql)?;
     let mut groups: HashMap<Vec<Option<i64>>, Acc> = HashMap::new();
     let mut rows = st.query(params_from_iter(ps))?;
-    let priced = !prices.is_empty();
+    let mut unknown_models = std::collections::BTreeSet::new();
     while let Some(r) = rows.next()? {
         let key: Vec<Option<i64>> = (0..dims.len())
-            .map(|i| r.get(9 + i))
+            .map(|i| r.get(12 + i))
             .collect::<rusqlite::Result<_>>()?;
         let status: u16 = r.get(0)?;
         let err: Option<i64> = r.get(1)?;
         let tok: [Option<i64>; 4] = [r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?];
-        let cost = if priced {
-            let m: Option<i64> = r.get(8)?;
-            prices.cost(
-                m.and_then(|m| names.get(&m)).map(String::as_str),
-                tok[0],
-                tok[2],
-                tok[1],
-            )
-        } else {
-            None
-        };
+        let m: Option<i64> = r.get(8)?;
+        let t: Option<i64> = r.get(10)?;
+        let lbl = |x: Option<i64>| x.and_then(|x| names.get(&x)).map(String::as_str);
+        let cost = row_cost(prices, lbl(m), lbl(t), r.get(9)?, tok, r.get(11)?);
+        if cost.1 == "unknown_price" {
+            let k = match lbl(t) {
+                Some(t) if crate::Tier::from_service_tier(Some(t)) != crate::Tier::Standard => {
+                    format!(
+                        "{} ({})",
+                        lbl(m).unwrap_or("?"),
+                        crate::Tier::from_service_tier(Some(t)).name()
+                    )
+                }
+                _ => lbl(m).unwrap_or("?").to_string(),
+            };
+            unknown_models.insert(k);
+        }
         groups.entry(key).or_default().add(
             err.is_some() || status >= 400,
             r.get(2)?,
@@ -716,6 +816,7 @@ pub(crate) fn summary(
     gs.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.group.cmp(&b.group)));
     out.total = total.finish(Default::default());
     out.groups = gs;
+    out.unknown_price_models = unknown_models.into_iter().collect();
     Ok(out)
 }
 

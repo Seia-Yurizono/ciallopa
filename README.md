@@ -100,6 +100,12 @@ enabled = true
 path = "~/.cpa-lite/usage.db"
 retention_days = 30
 ```
+Notional cost: copy `prices.example.toml` to `~/.cpa-lite/prices.toml` (`[usage] prices`);
+records and summaries then carry `cost_usd` (null + `unknown_price` for unpriced models, never
+0). It is what the tokens would cost on the API, not what a subscription bills. Refresh with
+`cpa-lite prices sync --from models.dev` (dry run; `--write` to apply). Records also keep
+`service_tier`, cache-write tokens and the Codex `thread_id` / `turn_id`.
+
 Details: docs/USAGE.md.
 
 Token refresh is cross-process safe: under the file lock the auth file is re-read; a newer

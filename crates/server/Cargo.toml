@@ -19,6 +19,7 @@ http = { workspace = true }
 subtle = { workspace = true }
 tracing = { workspace = true }
 clap = { workspace = true }
+reqwest = { workspace = true }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

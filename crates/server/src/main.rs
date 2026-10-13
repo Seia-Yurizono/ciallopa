@@ -29,6 +29,26 @@ enum Cmd {
         #[arg(long, default_value = "~/.codex/auth.json")]
         from: PathBuf,
     },
+    /// Price table tools.
+    Prices {
+        #[command(subcommand)]
+        cmd: PricesCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum PricesCmd {
+    /// Fetch standard prices, print the diff vs `[usage] prices`; write only with --write.
+    Sync {
+        /// `models.dev`, an http(s) URL, or a local api.json path.
+        #[arg(long, default_value = "models.dev")]
+        from: String,
+        #[arg(long, default_value = "openai")]
+        provider: String,
+        /// Apply the changes (keeps a .bak). Without it: dry run.
+        #[arg(long)]
+        write: bool,
+    },
 }
 
 #[tokio::main]
@@ -63,6 +83,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("saved account {id} in {}", dir.display());
             return Ok(());
         }
+        Cmd::Prices {
+            cmd:
+                PricesCmd::Sync {
+                    from,
+                    provider,
+                    write,
+                },
+        } => {
+            let src = cpa_lite::prices_cli::fetch_source(&cfg, &from).await?;
+            let o = cpa_lite::prices_cli::sync_with(&cfg.usage.prices, &src, &provider, write)?;
+            print!("{}", o.report);
+            return Ok(());
+        }
         Cmd::Serve => {}
     }
     if !cfg.listen.ip().is_loopback() {
@@ -75,6 +108,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match cpa_lite_usage::Recorder::open_as(&cfg.usage, &cfg.instance_id) {
             Ok(r) => {
                 tracing::info!(path = %cfg.usage.path.display(), instance = %cfg.instance_id, "usage log enabled");
+                match cpa_lite_usage::PriceTable::load(&cfg.usage.prices) {
+                    Ok(p) if p.is_empty() => {
+                        tracing::info!(path = %cfg.usage.prices.display(), "no price table; cost_usd stays null")
+                    }
+                    Ok(p) => {
+                        tracing::info!(path = %cfg.usage.prices.display(), models = p.models.len(), "price table loaded (notional cost)");
+                        r.set_prices(p);
+                    }
+                    Err(e) => tracing::warn!(error = %e, "price table ignored"),
+                }
                 Some(r)
             }
             Err(e) => {

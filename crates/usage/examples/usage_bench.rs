@@ -21,6 +21,7 @@ fn cfg(p: &str, queue: usize, batch: usize, flush_ms: u64) -> UsageConfig {
         batch_size: batch,
         flush_ms,
         quota_weights: Default::default(),
+        prices: PathBuf::new(),
     }
 }
 

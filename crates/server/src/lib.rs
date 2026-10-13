@@ -13,6 +13,7 @@ use cpa_lite_forward::AppState;
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
 
+pub mod prices_cli;
 pub mod usage_api;
 
 #[derive(Clone)]

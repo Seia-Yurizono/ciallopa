@@ -60,6 +60,7 @@ async fn tracked(st: AppState, key: crate::Key, h: HeaderMap, b: Bytes, kind: Ki
         crate::key_label(&key),
     );
     if let Some(t) = trk.as_mut() {
+        t.headers(&h);
         t.meta(serde_json::from_slice::<Value>(&b).ok().as_ref());
         t.not_stream();
     }

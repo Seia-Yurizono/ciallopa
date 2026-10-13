@@ -44,6 +44,9 @@ writer OS thread "usage-writer":  recv first msg → collect until batch_size or
 | `ttft_ms` | request start → first non-preamble event (SSE/WS); → response headers (non-stream) |
 | `duration_ms` | request start → end of stream / turn |
 | `in_tok`, `out_tok`, `cached_tok`, `reasoning_tok` | from `response.usage` |
+| `cw_tok` | `input_tokens_details.cache_write_tokens` (part of `in_tok`) |
+| `tier` | `service_tier`: response's `response.service_tier`, else the request body's (`priority` = Fast mode, `flex`, `default`/`auto` = standard) |
+| `thread`, `turn` | Codex thread / turn id from the `thread-id` header, `x-codex-turn-metadata` (JSON `thread_id`, `turn_id`) or body `client_metadata` (WS `response.create`). Stored for a future authoritative cost lookup; nothing queries upstream yet. Values > 128 chars are ignored. |
 | `key` | **label** of the client key that made the request (`[[api_keys]] label`, or `key-<sha256[..8]>` for plain keys). The raw key is never stored. |
 | `instance` | `instance_id` of the cpa-lite that wrote the row (default: hostname) |
 | `plan`, `p_pct`, `p_reset`, `s_pct`, `s_reset` | upstream quota snapshot seen on this response: `x-codex-plan-type`, primary/secondary `used-percent` and `reset-at` (unix s). SSE: response headers; WS: handshake headers, updated by `codex.rate_limits` frames. A window without `window-minutes` whose reset is "now" (free plan's empty secondary) is treated as absent. |
@@ -60,20 +63,21 @@ CREATE TABLE requests(
   retries INTEGER NOT NULL, switches INTEGER NOT NULL, ttft_ms INTEGER, duration_ms INTEGER NOT NULL,
   in_tok INTEGER, out_tok INTEGER, cached_tok INTEGER, reasoning_tok INTEGER,
   key INTEGER, instance INTEGER, plan INTEGER,                -- labels.id
-  p_pct REAL, p_reset INTEGER, s_pct REAL, s_reset INTEGER);
+  p_pct REAL, p_reset INTEGER, s_pct REAL, s_reset INTEGER,
+  tier INTEGER, cw_tok INTEGER, thread INTEGER, turn TEXT);   -- v3
 -- one row per *change* of an account's quota (id = observing request id)
 CREATE TABLE quota_obs(id INTEGER PRIMARY KEY, account INTEGER NOT NULL, instance INTEGER,
   plan INTEGER, p_pct REAL, p_reset INTEGER, p_win INTEGER, s_pct REAL, s_reset INTEGER, s_win INTEGER);
 CREATE INDEX quota_obs_account ON quota_obs(account, id);
 ```
-- v1 → v2 migration is automatic (`ALTER TABLE ADD COLUMN` + new table, keyed on
-  `user_version`); old rows keep NULL key/instance/quota.
+- v1 → v2 → v3 migrations are automatic (`ALTER TABLE ADD COLUMN` + new table, keyed on
+  `user_version`); old rows keep NULL in the new columns (old rows: standard tier, no cache writes).
 - `quota_obs` gets a row only when used % / plan changes or a reset time moves by > 120 s
   (upstream reset times jitter by a few seconds). Purge keeps each account's latest row.
 - **No secondary index.** Time ranges are rowid range scans (`id BETWEEN from<<20 AND to<<20`),
   purge is a rowid range delete, "recent" is a reverse rowid scan. Strings (account e-mails,
   model names) are interned in `labels`, so a row is ~51 bytes on disk (1M rows ≈ 51 MB).
-- `PRAGMA user_version = 2`.
+- `PRAGMA user_version = 3`.
 
 ## Retention
 - `retention_days` (default 30, 0 = keep). The writer purges at startup and then hourly, in
@@ -97,13 +101,15 @@ CREATE INDEX quota_obs_account ON quota_obs(account, id);
 Filters on both list endpoints: `account=`, `model=`, `key=<label>`, `instance=`.
 - `GET /usage/v1/records?limit=100&before=<ms>&since=<ms>&errors=1&<filters>`
   → `{"records":[…]}` newest first (limit ≤ 1000; `before` = pagination cursor). Rows include
-  `key`, `instance`, `plan`, `primary_used_pct`, `primary_reset_at`, `secondary_*`, `cost_usd`.
+  `key`, `instance`, `plan`, `primary_used_pct`, `primary_reset_at`, `secondary_*`,
+  `cache_write_tokens`, `service_tier`, `thread_id`, `turn_id`, `cost_usd`, `price_status`
+  (`ok` | `unknown_price` | `no_tokens`).
 - `GET /usage/v1/summary?range=24h&group=key,instance&<filters>` (or `7d`, `30m`, …; or
-  `from=<ms>&to=<ms>`). `group` = comma list of `account,model,key,instance,effort,transport,endpoint`
+  `from=<ms>&to=<ms>`). `group` = comma list of `account,model,key,instance,effort,transport,endpoint,tier`
   (default `account,model`; unknown → 400)
   → `{"summary":{"group_by":[…],"total":{…},"groups":[{group:{key:…,instance:…}, count, errors, error_rate,
   ttft_p50_ms, ttft_p90_ms, duration_p50_ms, duration_p90_ms, input_tokens, output_tokens,
-  cached_tokens, reasoning_tokens, tps, cost_usd}]}, "recorder":{accepted, dropped, written,
+  cached_tokens, reasoning_tokens, tps, cost_usd, unknown_price}]}, "unknown_price_models":[…]}, "recorder":{accepted, dropped, written,
   write_errors, purged}}`. Percentiles are exact (nearest rank).
 - `GET /usage/v1/quota` → `{"accounts":[{account, email, disabled, needs_relogin, quota:
   {plan, observed_at_ms, observed_by, primary:{used_pct, resets_at, window_minutes, estimate},
@@ -131,12 +137,44 @@ Per account and window (primary / secondary):
 Weights (defaults: input 1, cached 0.1, output 4 — output/reasoning cost more, cache hits
 less) are in `[usage.quota_weights]`.
 
-## Cost hook
-No cost column is stored: rows keep exact token counts, and `cost_usd` is computed at query
-time from a `PriceTable` (model → USD per 1M input / cached input / output tokens;
-`Recorder::set_prices`). The table is empty by default, so `cost_usd` is `null`. Prices can
-change later without rewriting rows. Manual export/import is intentionally not provided
-(the DB is a plain SQLite file).
+## Cost (notional)
+**For subscription (ChatGPT plan) traffic the cost is notional**: what the same tokens would
+cost on the OpenAI API at list price, not what is billed. Nothing is stored: rows keep exact
+token counts and `cost_usd` is computed at query time from the price table, so a price fix
+re-prices history.
+
+Price table: `[usage] prices` (default `~/.cpa-lite/prices.toml`; missing ⇒ all costs null).
+Start from `prices.example.toml` (official prices from developers.openai.com/api/docs/pricing,
+checked 2026-10-13). Entries are `[[model]]` with `model`, optional `tier`
+(`standard` | `flex` | `priority-fast`), `in`, `cache` (cache read), `write` (cache write),
+`out` in USD per 1M tokens, optional `long = {threshold, in_x, out_x}`, `flex_x`, `fast_x`,
+`effective_from` / `effective_until` (`YYYY-MM-DD`, inclusive, UTC), `note`.
+
+```
+cost = (in − cached − cache_write)·P_in + cached·P_cache + cache_write·P_write + out·P_out
+```
+- `out` already includes reasoning tokens (not added again). Missing `cache` / `write` price ⇒ `in`.
+- Long context: total input (incl. cached) > `long.threshold` ⇒ `P_in`, `P_cache`, `P_write`
+  × `in_x`, `P_out` × `out_x` (OpenAI: 272K, ×2 / ×1.5).
+- Tier: an entry with that tier wins; else the standard entry × `flex_x` (default 0.5) or
+  `fast_x` (default 2; per model, e.g. gpt-5.5 = 2.5). `[defaults]` sets the global multipliers.
+- Dates: on the request's UTC date a dated entry wins over an undated one; with no matching
+  entry the row is unpriced. gpt-5.6-sol ships only as a promo entry until 2026-11-21
+  (regular price not published — TODO in the example), so later rows are `unknown_price`.
+- Unknown model / tier / date ⇒ `cost_usd: null`, `price_status: "unknown_price"`; summaries
+  count those rows in `unknown_price` and list them in `unknown_price_models`. A group's
+  `cost_usd` sums only priced rows (null if none) — never a fake 0; `unknown_price > 0` means
+  it is a lower bound.
+- Model names match exactly (case-insensitive); add aliases as extra entries.
+
+`cpa-lite prices sync --from models.dev [--provider openai] [--write]` fetches
+`https://models.dev/api.json` through the configured `proxy_url`, prints the diff against the
+local table (`+` new, `~` changed, `!` model has a dated/promo entry ⇒ never touched,
+`?` local model missing upstream ⇒ kept) and writes only with `--write` (backup
+`prices.toml.bak`; comments are not preserved; per-model `fast_x`/`flex_x`/`note` are kept).
+`--from` also accepts a URL or a local `api.json`. Only standard-tier undated entries are synced.
+
+Manual export/import is intentionally not provided (the DB is a plain SQLite file).
 
 ## Client keys & instance
 ```toml
@@ -165,3 +203,4 @@ cached = 0.1
 output = 4.0                        # output incl. reasoning
 min_delta_pct = 5.0                 # below → "insufficient_data"
 ```
+`[usage] prices = "~/.cpa-lite/prices.toml"` — price table (see "Cost").
