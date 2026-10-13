@@ -80,6 +80,7 @@ button{cursor:pointer}button.pri{background:var(--acc);border-color:var(--acc);c
 #chart svg{width:100%;height:auto;display:block}
 .ax{fill:var(--mut);font-size:11px}.tb{fill:var(--acc);opacity:.75}.tb.now{opacity:.4;stroke:var(--acc);stroke-dasharray:3 2}.cl{fill:none;stroke:var(--warn);stroke-width:2}.cd{fill:var(--warn)}.gl{stroke:var(--line)}
 .hit{fill:transparent}.hit:hover{fill:color-mix(in srgb,var(--acc) 8%,transparent)}
+#tt{position:fixed;z-index:20;max-width:min(360px,calc(100vw - 16px));pointer-events:none;background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:5px 8px;font-size:12px;line-height:1.4;white-space:pre-line;box-shadow:0 2px 10px rgba(0,0,0,.18)}
 #ctip{position:absolute;pointer-events:none;background:var(--card);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12px;white-space:pre;box-shadow:0 2px 8px rgba(0,0,0,.15)}
 .legend{display:flex;gap:12px;font-size:12px;color:var(--mut);padding:0 4px;flex-wrap:wrap}
 .sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
@@ -139,6 +140,7 @@ td.cw{white-space:nowrap;padding-right:12px}.wi{display:inline-block;margin-left
     <div class="legend"><span>图例：</span><span><span class="chip fast">⚡ Fast</span> 实际以 Fast 处理</span><span><span class="chip dg">Fast→标准</span> 请求 Fast 但被降级</span><span>↳ 上游实际值（与请求不同）</span><span><i>medium</i> <small>响应</small> 请求未指定，取自响应</span><span>（快照）带日期的同一模型</span></div>
   </section>
 </main></div>
+<div id="tt" class="hide" role="tooltip"></div>
 <div id="dp" class="hide" role="dialog" aria-modal="true" aria-labelledby="dtitle"><div id="dpb">
   <h3><span id="dtitle">错误详情</span><button id="dcopy">复制</button><button id="dclose">关闭</button></h3>
   <div class="mut" id="dmeta"></div><div id="dmsg"></div>
@@ -188,6 +190,7 @@ function keepScroll(id,f){const w=$(id),x=w.scrollLeft;f();w.scrollLeft=x}
 // ---- quota cards
 function maxUsed(a){const q=a.quota;if(!q)return-1;return Math.max(-1,...[q.primary,q.secondary].filter(w=>w&&w.used_pct!==null&&w.used_pct!==undefined).map(w=>w.used_pct))}
 function renderCards(q){
+  ttHide();
   const box=$("cards");clear(box);
   $("qnote").textContent="已用百分比来自上游，包含其他客户端/实例的用量；容量为估算";
   const sel=$("facct"),cur=sel.value;while(sel.options.length>1)sel.remove(1);
@@ -220,7 +223,7 @@ function renderCards(q){
       else info.appendChild(document.createTextNode("无重置时间"));
       const e=w.estimate||{};
       if(e.status==="ok"){const s=el("div",null,"容量≈"+fmtN(e.capacity_tokens)+" 加权 token，剩余≈"+fmtN(e.remaining_tokens));s.title="容量 "+exact(e.capacity_tokens)+"，剩余 "+exact(e.remaining_tokens)+"（估算）";info.appendChild(s)}
-      else if(e.status==="insufficient_data"){const s=el("div","est","容量估算：数据不足");const i=el("span","i","ⓘ");i.tabIndex=0;i.setAttribute("role","note");const why="本实例在两次额度快照之间的用量太少（已用百分比变化不足），还无法可靠估算窗口容量；多些请求后会出现。";i.title=why;i.setAttribute("aria-label",why);s.appendChild(i);info.appendChild(s)}
+      else if(e.status==="insufficient_data"){const s=el("div","est","容量估算：数据不足");const i=el("span","i","ⓘ");i.tabIndex=0;i.setAttribute("role","note");const why="本实例在两次额度快照之间的用量太少（已用百分比变化不足），还无法可靠估算窗口容量；多些请求后会出现。";i.dataset.tt=why;i.setAttribute("aria-label",why);s.appendChild(i);info.appendChild(s)}
       else if(e.status==="window_reset")info.appendChild(el("div",null,"窗口已重置，等待新快照"));
       d.appendChild(info);c.appendChild(d);
     }
@@ -235,12 +238,13 @@ function renderCards(q){
 const GN={account:"账号",key:"密钥",instance:"实例",model:"模型",response_model:"实际模型"};
 function costCell(c,unk){
   let t,tip=exactUsd(c);
-  if(unk&&c!==null&&c!==undefined&&c>0){const W="部分模型未定价，实际成本不低于此值";const x=td("≥"+fmtUsd(c),"cw",tip+"\n"+unk+" 条请求缺少价格，成本为下限");
-    const i=el("span","wi","⚠");i.tabIndex=0;i.setAttribute("role","img");i.title=W;i.setAttribute("aria-label",W);x.appendChild(i);return x}
+  if(unk&&c!==null&&c!==undefined&&c>0){const W="部分模型未定价，实际成本不低于此值";const x=td("≥"+fmtUsd(c),"cw");
+    const i=el("span","wi","⚠");i.tabIndex=0;i.setAttribute("role","img");i.dataset.tt=W+"\n"+unk+" 条请求缺少价格；已定价部分 "+tip;i.setAttribute("aria-label",W);x.appendChild(i);return x}
   else if(unk&&!c){t="未定价";tip=unk+" 条请求缺少价格"}
   else t=fmtUsd(c);
   return td(t,"",tip)}
 function renderSummary(s){
+  ttHide();
   const g=$("group").value;$("gh").textContent=GN[g];
   const tb=$("sum");
   keepScroll("sw",()=>{clear(tb);
@@ -282,6 +286,21 @@ function renderTrend(buckets,hourly,days){
     hit.addEventListener("mousemove",ev=>tipAt(ev,txt));hit.addEventListener("mouseleave",()=>$("ctip").classList.add("hide"));svg.appendChild(hit)});
   if(path)svg.insertBefore(sv("path",{d:path,class:"cl"}),svg.querySelector(".hit"));
 }
+
+// ---- custom tooltips for [data-tt] (icons): fixed-positioned next to the element's
+// getBoundingClientRect(), flipped/clamped to the viewport; hover and keyboard focus.
+let ttFor=null;
+function ttShow(e){const t=$("tt");t.textContent=e.dataset.tt;t.classList.remove("hide");ttFor=e;
+  const r=e.getBoundingClientRect(),vw=document.documentElement.clientWidth,vh=document.documentElement.clientHeight,w=t.offsetWidth,h=t.offsetHeight,g=6;
+  let top=r.bottom+g;if(top+h>vh-4)top=Math.max(4,r.top-g-h);
+  const left=Math.min(Math.max(4,r.left+r.width/2-w/2),vw-w-4);t.style.left=left+"px";t.style.top=top+"px";e.setAttribute("aria-describedby","tt")}
+function ttHide(){if(!ttFor)return;$("tt").classList.add("hide");ttFor.removeAttribute("aria-describedby");ttFor=null}
+document.addEventListener("mouseover",e=>{const x=e.target.closest&&e.target.closest("[data-tt]");if(x&&x!==ttFor)ttShow(x);else if(!x&&ttFor&&ttFor!==document.activeElement)ttHide()});
+document.addEventListener("focusin",e=>{const x=e.target.closest&&e.target.closest("[data-tt]");if(x)ttShow(x);else ttHide()});
+document.addEventListener("focusout",ttHide);
+document.addEventListener("keydown",e=>{if(e.key==="Escape")ttHide()});
+window.addEventListener("scroll",()=>{ttHide();$("ctip").classList.add("hide")},{passive:true,capture:true});
+window.addEventListener("resize",ttHide);
 
 // ---- records
 function normTier(t){t=(t||"").trim().toLowerCase();if(!t)return null;if(t==="fast")return "priority";if(t==="auto"||t==="default"||t==="standard")return "standard";return t}
