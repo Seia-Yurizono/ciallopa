@@ -8,6 +8,7 @@ license.workspace = true
 cpa-lite-core = { workspace = true }
 cpa-lite-upstream = { workspace = true }
 cpa-lite-routing = { workspace = true }
+cpa-lite-usage = { workspace = true }
 axum = { workspace = true }
 http = { workspace = true }
 bytes = { workspace = true }

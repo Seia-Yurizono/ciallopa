@@ -10,6 +10,7 @@ mod headers;
 mod images;
 mod models;
 mod proxy;
+mod usage;
 mod ws;
 
 pub use cpa_lite_routing::parse_quota;
@@ -34,6 +35,8 @@ pub struct AppState {
     pub accounts: Arc<dyn AccountStore>,
     pub router: Arc<dyn AccountRouter>,
     pub upstream: Arc<UpstreamClient>,
+    /// Per-request usage log; `None` = disabled.
+    pub usage: Option<Arc<cpa_lite_usage::Recorder>>,
 }
 
 /// Routes mounted *behind* the client-key middleware.
@@ -125,6 +128,15 @@ async fn forward(
         None
     };
     let route = session_route(&headers, parsed.as_ref());
+    let trk = if inspect {
+        usage::endpoint_of(&path).and_then(|ep| {
+            let mut t = usage::Tracker::start(&st, cpa_lite_usage::Transport::Sse, ep)?;
+            t.meta(parsed.as_ref());
+            Some(t)
+        })
+    } else {
+        None
+    };
     let ob = proxy::Outbound {
         method,
         path,
@@ -132,7 +144,7 @@ async fn forward(
         body,
         route,
     };
-    proxy::send_streaming(&st, ob).await
+    proxy::send_streaming(&st, ob, trk).await
 }
 
 #[cfg(test)]

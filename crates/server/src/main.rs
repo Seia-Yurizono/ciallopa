@@ -71,7 +71,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if cfg.api_keys.is_empty() {
         tracing::warn!("api_keys is empty: every proxied request will get 401");
     }
+    let usage = if cfg.usage.enabled {
+        match cpa_lite_usage::Recorder::open(&cfg.usage) {
+            Ok(r) => {
+                tracing::info!(path = %cfg.usage.path.display(), "usage log enabled");
+                Some(r)
+            }
+            Err(e) => {
+                // Never let the usage log stop the proxy.
+                tracing::warn!(error = %e, "usage log disabled: open failed");
+                None
+            }
+        }
+    } else {
+        None
+    };
     let state = AppState {
+        usage: usage.clone(),
         accounts: Arc::new(
             cpa_lite_auth::FileAccountStore::open_with(cfg.auth_dir.clone(), oauth_client(&cfg)?)
                 .await?,
@@ -89,6 +105,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let _ = tokio::signal::ctrl_c().await;
         })
         .await?;
+    if let Some(u) = usage {
+        u.shutdown();
+    }
     Ok(())
 }
 

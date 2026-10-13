@@ -1,6 +1,8 @@
 //! Responses WebSocket: one downstream WS ↔ one upstream WS pinned to one account.
 use crate::headers::upstream_headers;
+use crate::usage::{endpoint_of, Tracker};
 use crate::{map_path, pq, proxy, session_route, AppState};
+use cpa_lite_usage::Transport;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{OriginalUri, State};
 use axum::response::Response;
@@ -39,7 +41,17 @@ pub(crate) async fn handler(
     let mut route = session_route(&headers, None);
     let (up, resp_headers, account) = match connect(&st, &path, &headers, &mut route).await {
         Ok(v) => v,
-        Err(r) => return r,
+        Err(r) => {
+            // Handshake failure: one usage row for the attempt.
+            if let Some(mut t) = endpoint_of(&path)
+                .and_then(|ep| Tracker::start(&st, Transport::Ws, ep))
+            {
+                t.status(r.status().as_u16());
+                t.accounts(&route.exclude, None);
+                t.not_stream();
+            }
+            return r;
+        }
     };
     let idle = Duration::from_secs(st.config.upstream_opts.stream_idle_timeout_secs.max(1));
     let st2 = st.clone();
@@ -277,6 +289,10 @@ async fn relay(
     let mut pending: Option<String> = None;
     let mut held: Vec<Message> = Vec::new();
     let mut started = false;
+    // Usage: one tracker per turn (client `response.create` → terminal event). Dropping it
+    // emits the record, so every `break` below records the in-flight turn with its error.
+    let endpoint = endpoint_of(&ctx.path);
+    let mut turn: Option<Tracker> = None;
     let sleep = tokio::time::sleep(idle);
     tokio::pin!(sleep);
     'outer: loop {
@@ -294,6 +310,19 @@ async fn relay(
                             Message::Text(t) if !awaiting && replayable(t.as_str()) => Some(t.as_str().to_string()),
                             _ => None,
                         };
+                        if !awaiting {
+                            if let (Message::Text(t), Some(ep)) = (&m, endpoint) {
+                                if t.as_str().contains("response.create") {
+                                    turn = Tracker::start(&st, Transport::Ws, ep).map(|mut tr| {
+                                        let v = serde_json::from_str::<serde_json::Value>(t.as_str()).ok();
+                                        tr.meta(v.as_ref());
+                                        tr.accounts(&[], Some(&account));
+                                        tr.status(200);
+                                        tr
+                                    });
+                                }
+                            }
+                        }
                         awaiting = true;
                     }
                     if let Some(u) = to_up(m) {
@@ -302,9 +331,13 @@ async fn relay(
                             break;
                         }
                     }
-                    if is_close { break; }
+                    if is_close {
+                        if let Some(t) = turn.as_mut() { t.fail("client_closed"); }
+                        break;
+                    }
                 }
                 _ => {
+                    if let Some(t) = turn.as_mut() { t.fail("client_closed"); }
                     let _ = utx.send(WsMessage::Close(None)).await;
                     break;
                 }
@@ -314,6 +347,7 @@ async fn relay(
                 match m {
                     Some(Ok(WsMessage::Close(f))) => {
                         let code = f.as_ref().map(|f| u16::from(f.code)).unwrap_or(1000);
+                        if let Some(t) = turn.as_mut() { t.fail("upstream_closed"); }
                         if code != 1000 {
                             st.router.report(&route, &account, &Outcome::Transient { status: None });
                         }
@@ -343,6 +377,7 @@ async fn relay(
                                     match connect(&st, &ctx.path, &ctx.headers, &mut route).await {
                                         Ok((ws, _, id)) => {
                                             tracing::info!(from = %account, to = %id, "ws quota error before output; replayed on another account");
+                                            if let Some(t) = turn.as_mut() { t.switch_to(&id); }
                                             account = id;
                                             let (t, r) = ws.split();
                                             utx = t;
@@ -357,6 +392,7 @@ async fn relay(
                                 }
                             }
                             tracing::info!(account = %account, "ws quota error mid-turn; closing for client replay");
+                            if let Some(t) = turn.as_mut() { t.fail("usage_limit"); }
                             let _ = dtx.send(close(CLOSE_REPLAY, CLOSE_REPLAY_REASON)).await;
                             break;
                         }
@@ -365,11 +401,23 @@ async fn relay(
                             if let Some(d) = to_down(m) { held.push(d); }
                             continue;
                         }
-                        if awaiting { started = true; }
+                        if awaiting {
+                            if !started { if let Some(t) = turn.as_mut() { t.ttft(); } }
+                            started = true;
+                        }
                         for h in held.drain(..) {
                             if dtx.send(h).await.is_err() { break 'outer; }
                         }
-                        if done { awaiting = false; pending = None; }
+                        if done {
+                            awaiting = false;
+                            pending = None;
+                            if let (Some(mut t), WsMessage::Text(txt)) = (turn.take(), &m) {
+                                if let Ok(v) = serde_json::from_str::<serde_json::Value>(txt.as_str()) {
+                                    t.terminal_event(&v);
+                                }
+                                // `t` dropped here → record emitted.
+                            }
+                        }
                         if let Some(d) = to_down(m) {
                             if dtx.send(d).await.is_err() {
                                 let _ = utx.send(WsMessage::Close(None)).await;
@@ -378,6 +426,7 @@ async fn relay(
                         }
                     }
                     _ => {
+                        if let Some(t) = turn.as_mut() { t.fail("upstream_closed"); }
                         st.router.report(&route, &account, &Outcome::Transient { status: None });
                         let _ = dtx.send(close(CLOSE_INTERNAL, "upstream disconnected")).await;
                         break;
@@ -386,6 +435,7 @@ async fn relay(
             },
             _ = &mut sleep, if awaiting => {
                 tracing::warn!(account = %account, "upstream websocket idle timeout");
+                if let Some(t) = turn.as_mut() { t.fail("idle_timeout"); }
                 st.router.report(&route, &account, &Outcome::Transient { status: None });
                 let _ = dtx.send(close(CLOSE_INTERNAL, "stream idle timeout")).await;
                 let _ = utx.send(WsMessage::Close(None)).await;

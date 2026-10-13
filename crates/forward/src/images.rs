@@ -35,10 +35,25 @@ struct Form {
 }
 
 pub(crate) async fn generations(st: State<AppState>, h: HeaderMap, b: Bytes) -> Response {
-    run(st.0, h, b, Kind::Generate).await
+    tracked(st.0, h, b, Kind::Generate).await
 }
 pub(crate) async fn edits(st: State<AppState>, h: HeaderMap, b: Bytes) -> Response {
-    run(st.0, h, b, Kind::Edit).await
+    tracked(st.0, h, b, Kind::Edit).await
+}
+
+/// Usage row per Images call: status + time to response headers (bodies may still stream).
+async fn tracked(st: AppState, h: HeaderMap, b: Bytes, kind: Kind) -> Response {
+    let mut trk = crate::usage::Tracker::start(&st, cpa_lite_usage::Transport::Http, "images");
+    if let Some(t) = trk.as_mut() {
+        t.meta(serde_json::from_slice::<Value>(&b).ok().as_ref());
+        t.not_stream();
+    }
+    let r = run(st, h, b, kind).await;
+    if let Some(t) = trk.as_mut() {
+        t.status(r.status().as_u16());
+        t.ttft();
+    }
+    r
 }
 
 fn bad(msg: &str) -> Response {

@@ -1,5 +1,6 @@
 //! HTTP forwarding core: account selection, failover, pre-first-byte retries, idle timeout.
 use crate::headers::{downstream_headers, upstream_headers};
+use crate::usage::Tracker;
 use crate::AppState;
 use axum::body::Body;
 use axum::response::{IntoResponse, Response};
@@ -62,13 +63,40 @@ fn cooling_down(retry_after: Duration) -> Response {
     r
 }
 
+/// What `send_info` observed (for the usage log).
+#[derive(Default)]
+pub(crate) struct SendInfo {
+    pub retries: u32,
+    /// Accounts tried and abandoned (failover), in order.
+    pub tried: Vec<AccountId>,
+}
+
 /// Run the selection / retry loop. `Err` is a ready-made downstream response.
 pub(crate) async fn send(st: &AppState, ob: Outbound) -> Result<Chosen, Response> {
+    send_info(st, ob, &mut SendInfo::default()).await
+}
+
+pub(crate) async fn send_info(
+    st: &AppState,
+    ob: Outbound,
+    info: &mut SendInfo,
+) -> Result<Chosen, Response> {
+    let r = send_inner(st, ob, info).await;
+    info.tried = match &r {
+        Ok(c) => c.route.exclude.clone(),
+        Err(_) => std::mem::take(&mut info.tried),
+    };
+    r
+}
+
+async fn send_inner(st: &AppState, ob: Outbound, info: &mut SendInfo) -> Result<Chosen, Response> {
     let retries = u64::from(st.config.upstream_opts.max_attempts);
     let mut route = ob.route;
     let mut transient: u64 = 0;
     let mut last: Option<Response> = None;
     loop {
+        info.retries = transient as u32;
+        info.tried.clone_from(&route.exclude);
         let accounts = st.accounts.list().await;
         let sel = match st.router.select(&route, &accounts) {
             Ok(s) => s,
@@ -115,6 +143,7 @@ pub(crate) async fn send(st: &AppState, ob: Outbound) -> Result<Chosen, Response
                     st.router
                         .report(&route, &id, &Outcome::Transient { status: None });
                     transient += 1;
+                    info.retries = transient as u32;
                     if transient > retries {
                         return Err(json_error(
                             StatusCode::BAD_GATEWAY,
@@ -168,6 +197,7 @@ pub(crate) async fn send(st: &AppState, ob: Outbound) -> Result<Chosen, Response
                     st.router
                         .report(&route, &id, &Outcome::Transient { status: Some(s) });
                     transient += 1;
+                    info.retries = transient as u32;
                     if transient > retries {
                         return Ok(Chosen {
                             resp: r,
@@ -197,14 +227,25 @@ pub(crate) async fn send(st: &AppState, ob: Outbound) -> Result<Chosen, Response
 /// Stream an upstream response downstream untouched, with a per-chunk idle timeout.
 /// In-stream `usage_limit_reached` (e.g. `response.failed`) is reported to the router.
 pub(crate) fn stream_back(st: &AppState, c: Chosen) -> Response {
+    stream_back_tracked(st, c, None)
+}
+
+pub(crate) fn stream_back_tracked(st: &AppState, c: Chosen, mut trk: Option<Tracker>) -> Response {
     let status = c.resp.status();
     let headers = downstream_headers(c.resp.headers());
+    if let Some(t) = trk.as_mut() {
+        t.status(status.as_u16());
+        if !is_event_stream(c.resp.headers()) {
+            t.not_stream();
+        }
+    }
     let up = c.resp.bytes_stream().boxed();
-    stream_body(st, status, headers, c.route, c.account, Bytes::new(), up)
+    stream_body(st, status, headers, c.route, c.account, Bytes::new(), up, trk)
 }
 
 type UpStream = futures::stream::BoxStream<'static, reqwest::Result<Bytes>>;
 
+#[allow(clippy::too_many_arguments)]
 fn stream_body(
     st: &AppState,
     status: StatusCode,
@@ -213,6 +254,7 @@ fn stream_body(
     account: AccountId,
     prefix: Bytes,
     mut up: UpStream,
+    mut trk: Option<Tracker>,
 ) -> Response {
     let idle = Duration::from_secs(st.config.upstream_opts.stream_idle_timeout_secs.max(1));
     let router = Arc::clone(&st.router);
@@ -233,18 +275,29 @@ fn stream_body(
                 },
             );
         };
+        let fail = |trk: &mut Option<Tracker>, k: &str| {
+            if let Some(t) = trk.as_mut() {
+                t.fail(k);
+            }
+        };
         if !prefix.is_empty() {
             if memfind(&prefix, b"usage_limit_reached") {
                 reported = true;
                 report_limit(&prefix);
+                fail(&mut trk, "usage_limit");
+            }
+            if let Some(t) = trk.as_mut() {
+                t.feed_sse(&prefix);
             }
             if tx.send(Ok(prefix)).await.is_err() {
+                fail(&mut trk, "client_closed");
                 return;
             }
         }
         loop {
             match tokio::time::timeout(idle, up.next()).await {
                 Err(_) => {
+                    fail(&mut trk, "idle_timeout");
                     tracing::warn!(account = %account, "upstream stream idle timeout");
                     router.report(&route, &account, &Outcome::Transient { status: None });
                     let _ = tx
@@ -257,6 +310,7 @@ fn stream_body(
                 }
                 Ok(None) => return,
                 Ok(Some(Err(e))) => {
+                    fail(&mut trk, "stream_error");
                     router.report(&route, &account, &Outcome::Transient { status: None });
                     let _ = tx.send(Err(std::io::Error::other(e))).await;
                     return;
@@ -265,8 +319,13 @@ fn stream_body(
                     if !reported && memfind(&chunk, b"usage_limit_reached") {
                         reported = true;
                         report_limit(&chunk);
+                        fail(&mut trk, "usage_limit");
+                    }
+                    if let Some(t) = trk.as_mut() {
+                        t.feed_sse(&chunk);
                     }
                     if tx.send(Ok(chunk)).await.is_err() {
+                        fail(&mut trk, "client_closed");
                         return;
                     }
                 }
@@ -382,17 +441,36 @@ fn is_event_stream(h: &HeaderMap) -> bool {
 /// `send` + stream back, with an SSE bootstrap window: until the first meaningful event,
 /// upstream bytes are held; a quota / usage-limit error inside that window cools the
 /// account down and transparently replays the same request on another account.
-pub(crate) async fn send_streaming(st: &AppState, mut ob: Outbound) -> Response {
+pub(crate) async fn send_streaming(
+    st: &AppState,
+    mut ob: Outbound,
+    mut trk: Option<Tracker>,
+) -> Response {
     let max_switches = st.accounts.list().await.len().max(1);
     let idle = Duration::from_secs(st.config.upstream_opts.stream_idle_timeout_secs.max(1));
     let mut switches = 0usize;
     loop {
-        let c = match send(st, ob.clone()).await {
+        let mut info = SendInfo::default();
+        let res = send_info(st, ob.clone(), &mut info).await;
+        if let Some(t) = trk.as_mut() {
+            t.retries(info.retries);
+            t.accounts(&info.tried, res.as_ref().ok().map(|c| &c.account));
+        }
+        let c = match res {
             Ok(c) => c,
-            Err(r) => return r,
+            Err(r) => {
+                if let Some(t) = trk.as_mut() {
+                    t.status(r.status().as_u16());
+                    t.not_stream();
+                }
+                return r;
+            }
         };
         if !c.resp.status().is_success() || !is_event_stream(c.resp.headers()) {
-            return stream_back(st, c);
+            if let Some(t) = trk.as_mut() {
+                t.ttft();
+            }
+            return stream_back_tracked(st, c, trk);
         }
         let status = c.resp.status();
         let headers = downstream_headers(c.resp.headers());
@@ -414,7 +492,12 @@ pub(crate) async fn send_streaming(st: &AppState, mut ob: Outbound) -> Response 
                     for e in evs {
                         match event_kind(&e) {
                             EventKind::Preamble => {}
-                            EventKind::Content => break 'boot,
+                            EventKind::Content => {
+                                if let Some(t) = trk.as_mut() {
+                                    t.ttft();
+                                }
+                                break 'boot;
+                            }
                             EventKind::Quota(o) => {
                                 switch = Some(o);
                                 break 'boot;
@@ -441,6 +524,11 @@ pub(crate) async fn send_streaming(st: &AppState, mut ob: Outbound) -> Response 
                 continue;
             }
             // Out of accounts: deliver what we have (the quota error) as-is.
+            if let Some(t) = trk.as_mut() {
+                t.status(status.as_u16());
+                t.fail("usage_limit");
+                t.not_stream();
+            }
             let mut r = Response::new(Body::from(buf));
             *r.status_mut() = status;
             *r.headers_mut() = headers;
@@ -449,7 +537,10 @@ pub(crate) async fn send_streaming(st: &AppState, mut ob: Outbound) -> Response 
         if ended {
             up = futures::stream::empty().boxed();
         }
-        return stream_body(st, status, headers, route, account, Bytes::from(buf), up);
+        if let Some(t) = trk.as_mut() {
+            t.status(status.as_u16());
+        }
+        return stream_body(st, status, headers, route, account, Bytes::from(buf), up, trk);
     }
 }
 

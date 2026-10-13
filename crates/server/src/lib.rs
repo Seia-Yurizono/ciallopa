@@ -13,6 +13,8 @@ use cpa_lite_forward::AppState;
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
 
+pub mod usage_api;
+
 #[derive(Clone)]
 struct Keys(Arc<Vec<String>>);
 
@@ -46,8 +48,10 @@ async fn healthz() -> &'static str {
 pub fn build_app(state: AppState) -> Router {
     let keys = Keys(Arc::new(state.config.api_keys.clone()));
     let limit = (state.config.max_body_mb.max(20) as usize) * 1024 * 1024;
-    let protected =
-        cpa_lite_forward::routes(state).layer(middleware::from_fn_with_state(keys, require_key));
+    let usage = usage_api::routes(state.usage.clone());
+    let protected = cpa_lite_forward::routes(state)
+        .merge(usage)
+        .layer(middleware::from_fn_with_state(keys, require_key));
     Router::new()
         .route("/healthz", get(healthz))
         .merge(protected)

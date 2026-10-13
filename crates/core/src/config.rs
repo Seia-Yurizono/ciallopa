@@ -119,6 +119,35 @@ impl Default for LogConfig {
     }
 }
 
+/// Per-request usage log (SQLite, see docs/USAGE.md).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct UsageConfig {
+    pub enabled: bool,
+    /// SQLite file (WAL mode; `-wal`/`-shm` siblings are created next to it).
+    pub path: PathBuf,
+    /// Raw rows older than this are purged (hourly). 0 = keep forever.
+    pub retention_days: u32,
+    /// Bounded in-memory queue between the proxy and the writer thread; full = drop + count.
+    pub queue_size: usize,
+    /// Max rows per write transaction.
+    pub batch_size: usize,
+    /// Max time a record waits in the writer before its batch is committed.
+    pub flush_ms: u64,
+}
+impl Default for UsageConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            path: PathBuf::from("~/.cpa-lite/usage.db"),
+            retention_days: 30,
+            queue_size: 8192,
+            batch_size: 256,
+            flush_ms: 50,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -134,6 +163,7 @@ pub struct Config {
     pub upstream_opts: UpstreamOpts,
     pub images: ImagesConfig,
     pub log: LogConfig,
+    pub usage: UsageConfig,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -148,6 +178,7 @@ impl Default for Config {
             upstream_opts: UpstreamOpts::default(),
             images: ImagesConfig::default(),
             log: LogConfig::default(),
+            usage: UsageConfig::default(),
         }
     }
 }
@@ -160,6 +191,7 @@ impl Config {
     pub fn parse(s: &str) -> Result<Self, ConfigError> {
         let mut c: Config = toml::from_str(s)?;
         c.auth_dir = expand_tilde(&c.auth_dir);
+        c.usage.path = expand_tilde(&c.usage.path);
         c.validate()?;
         Ok(c)
     }
@@ -183,6 +215,11 @@ impl Config {
         if self.api_keys.iter().any(|k| k.len() < 16) {
             return Err(ConfigError::Invalid(
                 "api_keys entries must be >= 16 chars".into(),
+            ));
+        }
+        if self.usage.enabled && (self.usage.queue_size == 0 || self.usage.batch_size == 0) {
+            return Err(ConfigError::Invalid(
+                "usage.queue_size and usage.batch_size must be >= 1".into(),
             ));
         }
         if self.upstream_opts.max_attempts == 0 {

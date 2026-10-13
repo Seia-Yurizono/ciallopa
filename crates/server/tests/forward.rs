@@ -153,6 +153,11 @@ async fn up_responses(State(m): State<Mock>, h: HeaderMap, b: Bytes) -> Response
             });
             Response::builder().header("content-type", "text/event-stream").body(Body::from_stream(s)).unwrap()
         }
+        "usage" => sse_resp(concat!(
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-u\"}}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n",
+            "event: response.completed\r\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r-u\",\"usage\":{\"input_tokens\":120,\"input_tokens_details\":{\"cached_tokens\":100},\"output_tokens\":30,\"output_tokens_details\":{\"reasoning_tokens\":12}}}}\r\n\r\n"
+        )),
         "compact" => sse_resp(concat!(
             "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-c\"}}\n\n",
             "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"compaction\"}}\n\n",
@@ -233,6 +238,10 @@ struct Env {
 }
 
 async fn env(idle: u64) -> Env {
+    env_usage(idle, None).await
+}
+
+async fn env_usage(idle: u64, usage: Option<Arc<cpa_lite_usage::Recorder>>) -> Env {
     let mock = Mock::default();
     let up = Router::new()
         .route(
@@ -258,6 +267,7 @@ async fn env(idle: u64) -> Env {
         accounts: store.clone(),
         router: rec.clone(),
         upstream: Arc::new(cpa_lite_upstream::UpstreamClient::new(&cfg).unwrap()),
+        usage,
         config: Arc::new(cfg),
     };
     let proxy = serve(cpa_lite::build_app(state)).await;
@@ -630,4 +640,177 @@ async fn compaction_v2_passthrough() {
         assert_eq!(b.as_ref(), body.as_bytes(), "body byte-identical");
         assert!(h.iter().any(|(k, v)| k == "x-codex-beta-features" && v == "remote_compaction_v2"));
     }
+}
+
+fn usage_recorder(dir: &std::path::Path) -> Arc<cpa_lite_usage::Recorder> {
+    cpa_lite_usage::Recorder::open(&cpa_lite_core::config::UsageConfig {
+        path: dir.join("usage.db"),
+        flush_ms: 5,
+        ..Default::default()
+    })
+    .unwrap()
+}
+
+async fn usage_rows(e: &Env) -> Vec<serde_json::Value> {
+    // the record is emitted when the stream task ends; poll the API
+    for _ in 0..100 {
+        let r = e
+            .http
+            .get(format!("http://{}/usage/v1/records?limit=50", e.proxy))
+            .bearer_auth(KEY)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        let v: serde_json::Value = r.json().await.unwrap();
+        let rows = v["records"].as_array().unwrap().clone();
+        if !rows.is_empty() {
+            return rows;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    vec![]
+}
+
+async fn wait_rows(e: &Env, n: usize) -> Vec<serde_json::Value> {
+    for _ in 0..100 {
+        let rows = usage_rows(e).await;
+        if rows.len() >= n {
+            return rows;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    usage_rows(e).await
+}
+
+#[tokio::test]
+async fn usage_sse_rows() {
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    let r = e
+        .post("/v1/responses")
+        .header("x-test-mode", "usage")
+        .body(r#"{"model":"gpt-5.5","reasoning":{"effort":"low"},"input":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert!(r.text().await.unwrap().contains("r-u"));
+    let rows = wait_rows(&e, 1).await;
+    let u = &rows[0];
+    assert_eq!(u["account"], "a");
+    assert_eq!(u["model"], "gpt-5.5");
+    assert_eq!(u["reasoning_effort"], "low");
+    assert_eq!(u["transport"], "sse");
+    assert_eq!(u["endpoint"], "responses");
+    assert_eq!(u["status"], 200);
+    assert!(u["error"].is_null(), "{u}");
+    assert_eq!(u["input_tokens"], 120);
+    assert_eq!(u["cached_tokens"], 100);
+    assert_eq!(u["output_tokens"], 30);
+    assert_eq!(u["reasoning_tokens"], 12);
+    assert!(u["ttft_ms"].is_u64());
+    assert_eq!(u["switches"], 0);
+
+    // quota before output → transparent switch a→b
+    sse_text(&e, "midlimit").await;
+    // quota after output → recorded as usage_limit
+    sse_text(&e, "latelimit").await;
+    // 429 on a → failover to b
+    let r = e
+        .post("/backend-api/codex/responses")
+        .header("x-test-mode", "limit")
+        .body(r#"{"model":"gpt-5.5","input":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    r.text().await.unwrap();
+    let rows = wait_rows(&e, 4).await;
+    assert_eq!(rows.len(), 4, "{rows:?}");
+    let (limit, late, mid) = (&rows[0], &rows[1], &rows[2]);
+    assert_eq!(mid["first_account"], "a");
+    assert_eq!(mid["account"], "b");
+    assert_eq!(mid["switches"], 1);
+    assert!(mid["error"].is_null(), "{mid}");
+    assert_eq!(late["error"], "usage_limit");
+    assert_eq!(limit["account"], "b");
+    assert_eq!(limit["switches"], 1);
+
+    let s: serde_json::Value = e
+        .http
+        .get(format!("http://{}/usage/v1/summary?range=1h", e.proxy))
+        .bearer_auth(KEY)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(s["summary"]["total"]["count"], 4);
+    assert_eq!(s["summary"]["total"]["errors"], 1);
+    assert_eq!(s["recorder"]["dropped"], 0);
+    // API is behind the key
+    let r = e
+        .http
+        .get(format!("http://{}/usage/v1/summary", e.proxy))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401);
+}
+
+#[tokio::test]
+async fn usage_counts_retries() {
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    sse_text(&e, "retry").await; // two 503s, then ok
+    let rows = wait_rows(&e, 1).await;
+    assert_eq!(rows[0]["retries"], 2, "{rows:?}");
+    assert!(rows[0]["error"].is_null());
+}
+
+#[tokio::test]
+async fn usage_ws_turn_rows() {
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as M};
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    let mut req = format!("ws://{}/v1/responses", e.proxy)
+        .into_client_request()
+        .unwrap();
+    req.headers_mut()
+        .insert("authorization", format!("Bearer {KEY}").parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    ws.send(M::text(r#"{"type":"response.create","model":"gpt-5.5","reasoning":{"effort":"high"}}"#))
+        .await
+        .unwrap();
+    ws.next().await.unwrap().unwrap();
+    ws.send(M::text(r#"{"type":"response.create","model":"gpt-5.5","tag":"limit"}"#))
+        .await
+        .unwrap();
+    loop {
+        let t = ws.next().await.unwrap().unwrap().to_text().unwrap().to_string();
+        if t.contains("response.completed") {
+            break;
+        }
+    }
+    ws.send(M::text(
+        r#"{"type":"response.create","previous_response_id":"r-b","tag":"prevlimit"}"#,
+    ))
+    .await
+    .unwrap();
+    let _ = ws.next().await; // 1012 close
+    let rows = wait_rows(&e, 3).await;
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    let (t3, t2, t1) = (&rows[0], &rows[1], &rows[2]);
+    assert_eq!(t1["transport"], "ws");
+    assert_eq!(t1["reasoning_effort"], "high");
+    assert_eq!(t1["account"], "a");
+    assert!(t1["error"].is_null(), "{t1}");
+    assert_eq!(t2["first_account"], "a");
+    assert_eq!(t2["account"], "b");
+    assert_eq!(t2["switches"], 1);
+    assert!(t2["error"].is_null(), "{t2}");
+    assert!(t2["ttft_ms"].is_u64());
+    assert_eq!(t3["error"], "usage_limit");
 }
