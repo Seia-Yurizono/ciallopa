@@ -99,7 +99,7 @@ impl Default for ImagesConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            main_model: "gpt-5.4-mini".into(),
+            main_model: "gpt-5.5".into(),
             default_originator: "codex_exec".into(),
             default_user_agent: format!("codex_exec/{PINNED_CODEX_VERSION}"),
         }

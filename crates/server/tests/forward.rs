@@ -554,7 +554,7 @@ async fn images_wrap_and_direct() {
         serde_json::from_slice(&e.mock.seen.lock().unwrap()[0].1).unwrap();
     assert_eq!(sent["tools"][0]["type"], "image_generation");
     assert_eq!(sent["tools"][0]["model"], "gpt-image-2");
-    assert_eq!(sent["model"], "gpt-5.4-mini");
+    assert_eq!(sent["model"], "gpt-5.5");
 
     // streaming wrap
     let r = e

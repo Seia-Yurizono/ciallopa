@@ -53,7 +53,7 @@ connect_timeout_secs = 30
 
 [images]
 enabled = true
-main_model = "gpt-5.4-mini"             # wrapper model for non-gpt-image-* Images requests
+main_model = "gpt-5.5"             # wrapper model for non-gpt-image-* Images requests
 default_originator = "codex_exec"       # only for clients that don't send one
 default_user_agent = "codex_exec/0.162.1"   # used when client UA doesn't start with "codex"
 ```
