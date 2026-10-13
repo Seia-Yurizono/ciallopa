@@ -6,13 +6,27 @@ license.workspace = true
 
 [dependencies]
 cpa-lite-core = { workspace = true }
+# Only for `build_reqwest` (pinned codex-rs network stack, global egress proxy).
+cpa-lite-upstream = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
 async-trait = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+base64 = "=0.22.1"
+sha2 = "=0.10.9"
+rand = "=0.9.3"
+url = "=2.5.8"
+libc = "=0.2.186"
+chrono = { version = "=0.4.43", default-features = false, features = ["clock", "std"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+axum = { workspace = true }
+base64 = "=0.22.1"
+url = "=2.5.8"
+chrono = { version = "=0.4.43", default-features = false, features = ["clock", "std"] }
 
 [lints]
 workspace = true

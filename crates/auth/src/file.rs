@@ -1,8 +1,13 @@
+use crate::oauth::{parse_jwt, OAuthClient, RefreshFailure, TokenResponse};
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use cpa_lite_core::{Account, AccountId, AccountStore, AuthError, Credentials};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
 /// On-disk format: CPA codex auth JSON (plain, 0600) + cpa-lite routing fields.
@@ -13,7 +18,7 @@ pub struct AuthFile {
     pub raw: Value,
 }
 impl AuthFile {
-    fn s(&self, k: &str) -> Option<String> {
+    pub(crate) fn s(&self, k: &str) -> Option<String> {
         self.raw.get(k).and_then(Value::as_str).map(str::to_owned)
     }
     pub fn to_account(&self) -> Account {
@@ -64,19 +69,365 @@ pub fn write_auth_file(dir: &Path, id: &str, v: &Value) -> Result<PathBuf, AuthE
     Ok(path)
 }
 
+/// Refresh when the access token expires within this window (INTERFACES: `exp < now+5m`).
+pub const REFRESH_SKEW: chrono::Duration = chrono::Duration::minutes(5);
+/// A `force_refresh` arriving within this window of a completed refresh reuses it (single-flight).
+pub const FORCE_DEDUP: Duration = Duration::from_secs(10);
+/// codex-rs `TOKEN_REFRESH_INTERVAL` (days): refresh when `last_refresh` is older.
+pub const TOKEN_REFRESH_INTERVAL_DAYS: i64 = 8;
+
+impl AuthFile {
+    /// `expired` (RFC3339, CPA) or else the access-token JWT `exp`.
+    pub fn expires_at(&self) -> Option<DateTime<Utc>> {
+        if let Some(t) = self
+            .s("expired")
+            .and_then(|e| DateTime::parse_from_rfc3339(&e).ok())
+        {
+            return Some(t.with_timezone(&Utc));
+        }
+        self.s("access_token")
+            .and_then(|t| parse_jwt(&t))
+            .and_then(|c| c.exp)
+            .and_then(|e| DateTime::from_timestamp(e, 0))
+    }
+    fn needs_refresh(&self, now: DateTime<Utc>) -> bool {
+        self.expires_at().is_some_and(|e| e < now + REFRESH_SKEW)
+            || self
+                .s("last_refresh")
+                .and_then(|t| DateTime::parse_from_rfc3339(&t).ok())
+                .is_some_and(|t| t < now - chrono::Duration::days(TOKEN_REFRESH_INTERVAL_DAYS))
+    }
+    fn needs_relogin(&self) -> bool {
+        self.raw.get("needs_relogin").and_then(Value::as_bool) == Some(true)
+    }
+    fn credentials(&self) -> Result<Credentials, AuthError> {
+        let access_token = self
+            .s("access_token")
+            .filter(|t| !t.is_empty())
+            .ok_or_else(|| AuthError::Invalid("missing access_token".into()))?;
+        Ok(Credentials {
+            account: self.id.clone(),
+            access_token,
+            chatgpt_account_id: self.s("account_id"),
+        })
+    }
+}
+
+/// Build/merge a CPA-compatible codex auth JSON from a token response.
+/// Unknown fields of `prev` (priority, weight, ...) are kept; `disabled`/`needs_relogin` cleared.
+pub fn merge_tokens(prev: Option<&Value>, t: &TokenResponse) -> Value {
+    let mut v = prev.cloned().unwrap_or_else(|| serde_json::json!({}));
+    let now = Utc::now();
+    let obj = match v.as_object_mut() {
+        Some(o) => o,
+        None => return merge_tokens(None, t),
+    };
+    obj.insert("type".into(), "codex".into());
+    obj.insert("access_token".into(), t.access_token.clone().into());
+    if let Some(r) = t.refresh_token.as_ref().filter(|r| !r.is_empty()) {
+        obj.insert("refresh_token".into(), r.clone().into());
+    }
+    if let Some(i) = t.id_token.as_ref().filter(|r| !r.is_empty()) {
+        obj.insert("id_token".into(), i.clone().into());
+    }
+    let id_claims = t
+        .id_token
+        .as_deref()
+        .and_then(parse_jwt)
+        .unwrap_or_default();
+    let at_claims = parse_jwt(&t.access_token).unwrap_or_default();
+    let pick = |a: &Option<String>, b: &Option<String>| a.clone().or_else(|| b.clone());
+    if let Some(x) = pick(&id_claims.chatgpt_account_id, &at_claims.chatgpt_account_id) {
+        obj.insert("account_id".into(), x.into());
+    }
+    if let Some(x) = pick(&id_claims.email, &at_claims.email) {
+        obj.insert("email".into(), x.into());
+    }
+    if let Some(x) = pick(&id_claims.plan_type, &at_claims.plan_type) {
+        obj.insert("plan_type".into(), x.into());
+    }
+    let exp = t
+        .expires_in
+        .map(|s| now + chrono::Duration::seconds(s))
+        .or_else(|| at_claims.exp.and_then(|e| DateTime::from_timestamp(e, 0)));
+    if let Some(e) = exp {
+        obj.insert("expired".into(), rfc3339(e).into());
+    }
+    obj.insert("last_refresh".into(), rfc3339(now).into());
+    // A successful (re)login re-enables accounts that refresh had disabled; a manual
+    // `disabled: true` without `needs_relogin` is the user's choice and is kept.
+    if obj.remove("needs_relogin").and_then(|v| v.as_bool()) == Some(true) {
+        obj.remove("disabled");
+    }
+    v
+}
+pub(crate) fn rfc3339(t: DateTime<Utc>) -> String {
+    t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+/// CPA `CredentialFileName(email, plan, hash, true)`: `codex-<sha256(account_id)[:8]>-<email>-<plan>`
+/// (hash omitted when there is no account_id).
+pub fn account_id_for(v: &Value) -> String {
+    name_for(v, true)
+}
+/// Pre-hash name used by the first cpa-lite version (and old CPA): `codex-<email>-<plan>`.
+pub fn legacy_account_id_for(v: &Value) -> String {
+    name_for(v, false)
+}
+fn name_for(v: &Value, with_hash: bool) -> String {
+    use sha2::Digest;
+    let email = v
+        .get("email")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("unknown");
+    let plan: Vec<String> = v
+        .get("plan_type")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|p| !p.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+    let mut parts = vec!["codex".to_string()];
+    if let Some(acc) = v
+        .get("account_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|a| !a.is_empty() && with_hash)
+    {
+        let d = sha2::Sha256::digest(acc.as_bytes());
+        parts.push(d.iter().take(4).map(|b| format!("{b:02x}")).collect());
+    }
+    parts.push(email.to_string());
+    if !plan.is_empty() {
+        parts.push(plan.join("-"));
+    }
+    parts.join("-").replace(['/', '\\'], "_")
+}
+
+/// Read an existing record for `v`'s account (new or legacy name). Returns (id, prev, legacy_id_to_remove).
+pub(crate) fn existing_for(dir: &Path, v: &Value) -> (String, Option<Value>, Option<String>) {
+    let read = |id: &str| {
+        std::fs::read(dir.join(format!("{id}.json")))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+    };
+    let id = account_id_for(v);
+    if let Some(p) = read(&id) {
+        return (id, Some(p), None);
+    }
+    let legacy = legacy_account_id_for(v);
+    if legacy != id {
+        if let Some(p) = read(&legacy) {
+            let same = p
+                .get("account_id")
+                .and_then(Value::as_str)
+                .is_none_or(|a| Some(a) == v.get("account_id").and_then(Value::as_str));
+            if same {
+                return (id, Some(p), Some(legacy));
+            }
+        }
+    }
+    (id, None, None)
+}
+
+/// Rename legacy `codex-<email>-<plan>.json` files to the hashed CPA name. Returns renamed count.
+pub fn migrate_legacy_names(dir: &Path) -> Result<usize, AuthError> {
+    let mut n = 0;
+    for f in FileAccountStore::scan(dir)? {
+        if f.s("account_id").is_none() || f.id != legacy_account_id_for(&f.raw) {
+            continue;
+        }
+        let new_id = account_id_for(&f.raw);
+        let _g = FileLock::acquire(dir, &f.id)?;
+        if dir.join(format!("{new_id}.json")).exists() {
+            continue;
+        }
+        std::fs::rename(
+            dir.join(format!("{}.json", f.id)),
+            dir.join(format!("{new_id}.json")),
+        )?;
+        tracing::info!(from = %f.id, to = %new_id, "migrated auth file name");
+        n += 1;
+    }
+    Ok(n)
+}
+
+/// Cross-process advisory lock (`flock(LOCK_EX)` on `<dir>/.<id>.json.lock`), like CPA filelock_unix.go.
+/// Not re-entrant across fds: never nest two locks for the same id.
+pub struct FileLock {
+    f: std::fs::File,
+}
+impl FileLock {
+    pub fn acquire(dir: &Path, id: &str) -> Result<Self, AuthError> {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::create_dir_all(dir)?;
+        let f = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(dir.join(format!(".{id}.json.lock")))?;
+        // SAFETY: valid open fd owned by `f`.
+        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(Self { f })
+    }
+    pub async fn acquire_async(dir: &Path, id: &str) -> Result<Self, AuthError> {
+        let (dir, id) = (dir.to_path_buf(), id.to_string());
+        tokio::task::spawn_blocking(move || Self::acquire(&dir, &id))
+            .await
+            .map_err(|e| AuthError::Invalid(format!("lock task: {e}")))?
+    }
+}
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+        // SAFETY: fd still owned by self.f.
+        unsafe { libc::flock(self.f.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
+fn read_one(dir: &Path, id: &str) -> Option<Value> {
+    std::fs::read(dir.join(format!("{id}.json")))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+}
+
+type RefreshLock = Arc<tokio::sync::Mutex<Option<Instant>>>;
+
 pub struct FileAccountStore {
     dir: PathBuf,
     files: RwLock<Vec<AuthFile>>,
+    oauth: Option<OAuthClient>,
+    locks: std::sync::Mutex<HashMap<AccountId, RefreshLock>>,
+    force_dedup: Duration,
 }
 impl FileAccountStore {
+    /// Store without refresh capability (tests / read-only use).
     pub async fn open(dir: PathBuf) -> Result<Self, AuthError> {
+        Self::build(dir, None).await
+    }
+    /// Store that refreshes tokens through `oauth`.
+    pub async fn open_with(dir: PathBuf, oauth: OAuthClient) -> Result<Self, AuthError> {
+        Self::build(dir, Some(oauth)).await
+    }
+    async fn build(dir: PathBuf, oauth: Option<OAuthClient>) -> Result<Self, AuthError> {
         let s = Self {
             dir,
             files: RwLock::new(vec![]),
+            oauth,
+            locks: Default::default(),
+            force_dedup: FORCE_DEDUP,
         };
+        if let Err(e) = migrate_legacy_names(&s.dir) {
+            tracing::warn!(error = %e, "auth file name migration failed");
+        }
         s.reload().await?;
         Ok(s)
     }
+    /// Window in which a repeated `force_refresh` reuses the last refresh (tests shorten it).
+    pub fn with_force_dedup(mut self, d: Duration) -> Self {
+        self.force_dedup = d;
+        self
+    }
+    async fn get(&self, id: &AccountId) -> Result<AuthFile, AuthError> {
+        self.files
+            .read()
+            .await
+            .iter()
+            .find(|f| &f.id == id)
+            .cloned()
+            .ok_or_else(|| AuthError::NotFound(id.clone()))
+    }
+    async fn put(&self, f: AuthFile) -> Result<(), AuthError> {
+        write_auth_file(&self.dir, &f.id, &f.raw)?;
+        let mut files = self.files.write().await;
+        match files.iter_mut().find(|x| x.id == f.id) {
+            Some(x) => *x = f,
+            None => files.push(f),
+        }
+        Ok(())
+    }
+    fn lock_for(&self, id: &AccountId) -> RefreshLock {
+        let mut m = self.locks.lock().unwrap_or_else(|e| e.into_inner());
+        m.entry(id.clone()).or_default().clone()
+    }
+
+    /// Single-flight refresh per account.
+    async fn refresh(&self, id: &AccountId, force: bool) -> Result<Credentials, AuthError> {
+        let lock = self.lock_for(id);
+        let mut last = lock.lock().await;
+        // Cross-process: another cpa-lite / CPA may refresh the same file. Re-read under flock.
+        let _flock = FileLock::acquire_async(&self.dir, id).await?;
+        let mut f = self.get(id).await?;
+        if let Some(raw) = read_one(&self.dir, id) {
+            if raw != f.raw {
+                f = AuthFile {
+                    id: f.id.clone(),
+                    raw,
+                };
+                let mut files = self.files.write().await;
+                if let Some(x) = files.iter_mut().find(|x| x.id == f.id) {
+                    *x = f.clone();
+                }
+            }
+        }
+        if f.needs_relogin() {
+            return Err(AuthError::ReloginRequired);
+        }
+        let now = Utc::now();
+        if !force && !f.needs_refresh(now) {
+            return f.credentials(); // someone else refreshed while we waited
+        }
+        if force && last.is_some_and(|t| t.elapsed() < self.force_dedup) {
+            return f.credentials();
+        }
+        let oauth = self
+            .oauth
+            .as_ref()
+            .ok_or_else(|| AuthError::Refresh("refresh not configured".into()))?;
+        let rt = f
+            .s("refresh_token")
+            .filter(|r| !r.is_empty())
+            .ok_or(AuthError::ReloginRequired)?;
+        match oauth.refresh(&rt).await {
+            Ok(t) => {
+                let nf = AuthFile {
+                    id: f.id.clone(),
+                    raw: merge_tokens(Some(&f.raw), &t),
+                };
+                self.put(nf.clone()).await?;
+                *last = Some(Instant::now());
+                tracing::info!(account = %id, "token refreshed");
+                nf.credentials()
+            }
+            Err(RefreshFailure::Permanent(why)) => {
+                tracing::warn!(account = %id, %why, "refresh token rejected; account disabled, re-login required");
+                let mut raw = f.raw.clone();
+                if let Some(o) = raw.as_object_mut() {
+                    o.insert("disabled".into(), true.into());
+                    o.insert("needs_relogin".into(), true.into());
+                }
+                self.put(AuthFile { id: f.id, raw }).await?;
+                Err(AuthError::ReloginRequired)
+            }
+            Err(RefreshFailure::Transient(why)) => {
+                let still_valid = f.expires_at().is_some_and(|e| e > now);
+                if !force && still_valid {
+                    tracing::warn!(account = %id, %why, "proactive refresh failed; using current token");
+                    f.credentials()
+                } else {
+                    Err(AuthError::Refresh(why))
+                }
+            }
+        }
+    }
+
     fn scan(dir: &Path) -> Result<Vec<AuthFile>, AuthError> {
         let mut out = vec![];
         let rd = match std::fs::read_dir(dir) {
@@ -119,23 +470,17 @@ impl AccountStore for FileAccountStore {
             .collect()
     }
     async fn credentials(&self, id: &AccountId) -> Result<Credentials, AuthError> {
-        // TODO(auth, M1): refresh when exp < now+5min under a per-account lock.
-        let files = self.files.read().await;
-        let f = files
-            .iter()
-            .find(|f| &f.id == id)
-            .ok_or_else(|| AuthError::NotFound(id.clone()))?;
-        let access_token = f
-            .s("access_token")
-            .ok_or_else(|| AuthError::Invalid("missing access_token".into()))?;
-        Ok(Credentials {
-            account: id.clone(),
-            access_token,
-            chatgpt_account_id: f.s("account_id"),
-        })
+        let f = self.get(id).await?;
+        if f.needs_relogin() {
+            return Err(AuthError::ReloginRequired);
+        }
+        if f.needs_refresh(Utc::now()) && self.oauth.is_some() {
+            return self.refresh(id, false).await;
+        }
+        f.credentials()
     }
-    async fn force_refresh(&self, _id: &AccountId) -> Result<Credentials, AuthError> {
-        Err(AuthError::Unimplemented)
+    async fn force_refresh(&self, id: &AccountId) -> Result<Credentials, AuthError> {
+        self.refresh(id, true).await
     }
     async fn reload(&self) -> Result<(), AuthError> {
         let v = Self::scan(&self.dir)?;

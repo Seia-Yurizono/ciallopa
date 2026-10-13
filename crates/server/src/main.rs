@@ -21,10 +21,13 @@ struct Cli {
 enum Cmd {
     /// Run the proxy (default).
     Serve,
-    /// Login / import (M1, auth worker).
+    /// Add an account: device code (default), paste callback URL, PKCE on 127.0.0.1:1455, or import.
     Login {
         #[arg(long, value_parser = ["device", "paste", "pkce", "import"], default_value = "device")]
         method: String,
+        /// For `--method import`: Codex CLI auth.json path.
+        #[arg(long, default_value = "~/.codex/auth.json")]
+        from: PathBuf,
     },
 }
 
@@ -38,9 +41,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     logging::init(&cfg.log.level);
     match cli.cmd.unwrap_or(Cmd::Serve) {
-        Cmd::Login { method } => {
-            tracing::error!(%method, "login not implemented in M0");
-            std::process::exit(2);
+        Cmd::Login { method, from } => {
+            use cpa_lite_auth::login;
+            let dir = cfg.auth_dir.clone();
+            let oauth = cpa_lite_auth::OAuthClient::new(&cfg.proxy_url)?;
+            let id = match method.as_str() {
+                "paste" => login::paste_callback(&oauth, &dir).await,
+                "pkce" => login::pkce_localhost(&oauth, &dir).await,
+                "import" => {
+                    let from = match from.strip_prefix("~") {
+                        Ok(rest) => std::env::var_os("HOME")
+                            .map(PathBuf::from)
+                            .unwrap_or_default()
+                            .join(rest),
+                        Err(_) => from,
+                    };
+                    login::import_codex_auth_json(&from, &dir).await
+                }
+                _ => login::device_code(&oauth, &dir).await,
+            }?;
+            println!("saved account {id} in {}", dir.display());
+            return Ok(());
         }
         Cmd::Serve => {}
     }
@@ -51,7 +72,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::warn!("api_keys is empty: every proxied request will get 401");
     }
     let state = AppState {
-        accounts: Arc::new(cpa_lite_auth::FileAccountStore::open(cfg.auth_dir.clone()).await?),
+        accounts: Arc::new(
+            cpa_lite_auth::FileAccountStore::open_with(
+                cfg.auth_dir.clone(),
+                cpa_lite_auth::OAuthClient::new(&cfg.proxy_url)?,
+            )
+            .await?,
+        ),
         router: Arc::new(cpa_lite_routing::CpaRouter::new(cfg.routing.clone())),
         upstream: Arc::new(cpa_lite_upstream::UpstreamClient::new(&cfg)?),
         config: Arc::new(cfg),

@@ -15,7 +15,9 @@ Workers may add private code / new pub items inside their own crate freely.
 | `cpa-lite` (bin) | crates/server | lead | wiring, `/healthz`, static-key middleware (Bearer / x-api-key, constant-time), body limit, 404 fallback |
 
 Dependency direction: `core` ← `auth`, `routing`, `upstream` ← `forward` ← `server`.
-`auth` and `routing` never depend on each other or on reqwest/axum; `forward` talks to them only via traits.
+`auth` and `routing` never depend on each other; `forward` talks to them only via traits.
+`auth` depends on `upstream` **only** for `build_reqwest`/`ClientOptions` (pinned codex-rs stack + global egress proxy for OAuth calls) and on `reqwest` (approved by lead); `routing` stays free of reqwest/axum.
+Auth files are named like CPA `codex-<sha256(account_id)[:8]>-<email>-<plan>.json` (legacy unhashed names are migrated on open / re-login); refresh and login writes hold a cross-process `flock` on `<auth_dir>/.<id>.json.lock` (CPA filelock_unix.go).
 
 ## Shared types (crates/core/src/types.rs)
 - `AccountId = String` — auth file stem.
