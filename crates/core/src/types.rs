@@ -43,6 +43,8 @@ pub struct SessionInfo {
     pub key: Option<String>,
     pub parent_key: Option<String>,
     pub is_subagent: bool,
+    /// Codex fork (`forked_from_thread_id`): inherits parent binding but is not a subagent.
+    pub is_fork: bool,
 }
 
 /// Input to `Router::select`.
@@ -93,6 +95,12 @@ pub enum Outcome {
     Transient {
         status: Option<u16>,
     },
+    /// 404 / model not supported for this account (cooldown for that model: Retry-After else 12h).
+    ModelUnsupported {
+        retry_after: Option<Duration>,
+    },
+    /// Cloudflare challenge page (403 + challenge markers): >=10s exponential cooldown.
+    Challenge,
     /// 4xx caused by the request itself; not the account's fault.
     ClientError {
         status: u16,
