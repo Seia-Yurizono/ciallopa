@@ -33,6 +33,10 @@ pub(crate) struct Outbound {
     pub headers: HeaderMap,
     pub body: Bytes,
     pub route: RouteRequest,
+    /// The client asked for an SSE stream (`/responses` with `stream:true` or
+    /// `Accept: text/event-stream`). chatgpt.com sends SSE without any `Content-Type`, so this
+    /// hint decides SSE handling when the upstream omits it.
+    pub expect_sse: bool,
 }
 
 /// The upstream response chosen for the client (2xx, or a non-retryable / final error).
@@ -227,18 +231,27 @@ async fn send_inner(st: &AppState, ob: Outbound, info: &mut SendInfo) -> Result<
 /// Stream an upstream response downstream untouched, with a per-chunk idle timeout.
 /// In-stream `usage_limit_reached` (e.g. `response.failed`) is reported to the router.
 pub(crate) fn stream_back(st: &AppState, c: Chosen) -> Response {
-    stream_back_tracked(st, c, None)
+    stream_back_tracked(st, c, None, false)
 }
 
-pub(crate) fn stream_back_tracked(st: &AppState, c: Chosen, mut trk: Option<Tracker>) -> Response {
+pub(crate) fn stream_back_tracked(
+    st: &AppState,
+    c: Chosen,
+    mut trk: Option<Tracker>,
+    expect_sse: bool,
+) -> Response {
     let status = c.resp.status();
-    let headers = downstream_headers(c.resp.headers());
+    let sse = status.is_success() && is_sse(c.resp.headers(), expect_sse);
+    let mut headers = downstream_headers(c.resp.headers());
+    if sse {
+        ensure_sse_content_type(&mut headers);
+    }
     if let Some(t) = trk.as_mut() {
         t.status(status.as_u16());
         if status.as_u16() >= 400 {
             t.error_headers(c.resp.headers());
         }
-        if !is_event_stream(c.resp.headers()) {
+        if !sse {
             t.not_stream();
         }
     }
@@ -451,10 +464,40 @@ fn find_sep(b: &[u8]) -> Option<(usize, usize)> {
     }
 }
 
-fn is_event_stream(h: &HeaderMap) -> bool {
-    h.get(http::header::CONTENT_TYPE)
+/// SSE if the upstream says `text/event-stream`, or if it sent no / an unrecognised
+/// `Content-Type` and the client asked for a stream. chatgpt.com's Codex endpoint currently
+/// omits `Content-Type` on `/responses` SSE; an explicit JSON / text / HTML type always wins.
+pub(crate) fn is_sse(h: &HeaderMap, expect_sse: bool) -> bool {
+    let ct = h
+        .get(http::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.contains("text/event-stream"))
+        .map(|v| v.trim().to_ascii_lowercase());
+    match ct.as_deref() {
+        Some(v) if v.contains("text/event-stream") => true,
+        None | Some("") => expect_sse,
+        Some(v) => {
+            expect_sse
+                && !(v.contains("json")
+                    || v.starts_with("text/")
+                    || v.contains("html")
+                    || v.contains("xml"))
+        }
+    }
+}
+
+/// Clients other than Codex (browsers, SDKs) need the media type to parse a stream; Codex itself
+/// parses SSE regardless of `Content-Type`, so adding it is harmless.
+fn ensure_sse_content_type(h: &mut HeaderMap) {
+    let known = h
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.to_ascii_lowercase().contains("text/event-stream"));
+    if !known {
+        h.insert(
+            http::header::CONTENT_TYPE,
+            HeaderValue::from_static("text/event-stream"),
+        );
+    }
 }
 
 /// `send` + stream back, with an SSE bootstrap window: until the first meaningful event,
@@ -494,14 +537,15 @@ pub(crate) async fn send_streaming(
                 return Response::from_parts(parts, Body::from(b));
             }
         };
-        if !c.resp.status().is_success() || !is_event_stream(c.resp.headers()) {
+        if !c.resp.status().is_success() || !is_sse(c.resp.headers(), ob.expect_sse) {
             if let Some(t) = trk.as_mut() {
                 t.ttft();
             }
-            return stream_back_tracked(st, c, trk);
+            return stream_back_tracked(st, c, trk, ob.expect_sse);
         }
         let status = c.resp.status();
-        let headers = downstream_headers(c.resp.headers());
+        let mut headers = downstream_headers(c.resp.headers());
+        ensure_sse_content_type(&mut headers);
         let (route, account) = (c.route, c.account);
         let mut up: UpStream = c.resp.bytes_stream().boxed();
         let mut buf: Vec<u8> = Vec::new();

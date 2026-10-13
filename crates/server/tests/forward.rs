@@ -106,7 +106,17 @@ fn sse_resp(body: &'static str) -> Response {
         .unwrap()
 }
 
-async fn up_responses(State(m): State<Mock>, h: HeaderMap, b: Bytes) -> Response {
+/// `x-test-noct: 1` mimics chatgpt.com, which sends `/responses` SSE without `Content-Type`.
+async fn up_responses(st: State<Mock>, h: HeaderMap, b: Bytes) -> Response {
+    let noct = h.contains_key("x-test-noct");
+    let mut r = up_responses_inner(st, h, b).await;
+    if noct {
+        r.headers_mut().remove("content-type");
+    }
+    r
+}
+
+async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: Bytes) -> Response {
     let n = m.record(&h, &b);
     let auth = h
         .get("authorization")
@@ -1256,4 +1266,76 @@ async fn compression_can_be_disabled() {
     assert_eq!(b.as_ref(), body.as_bytes());
     assert!(hdr(h, "content-encoding").is_none());
     assert!(hdr(h, "accept-encoding").is_none());
+}
+
+async fn noct_post(e: &Env, path: &str, mode: &str, body: &str, accept: bool) -> (String, String) {
+    let mut rb = e
+        .post(path)
+        .header("x-test-mode", mode)
+        .header("x-test-noct", "1");
+    if accept {
+        rb = rb.header("accept", "text/event-stream");
+    }
+    let r = rb.body(body.to_string()).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    let ct = r
+        .headers()
+        .get("content-type")
+        .map(|v| v.to_str().unwrap().to_string())
+        .unwrap_or_default();
+    (ct, r.text().await.unwrap())
+}
+
+#[tokio::test]
+async fn sse_without_content_type_usage_and_failover() {
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    let stream = r#"{"model":"gpt-5.5","stream":true,"input":[]}"#;
+    // usage tokens: stream:true hint (v1) and Accept hint (backend-api, no stream field)
+    let (ct, t) = noct_post(&e, "/v1/responses", "usage", stream, false).await;
+    assert_eq!(ct, "text/event-stream", "content-type added downstream");
+    assert!(t.contains("r-u"));
+    let (_, t) = noct_post(
+        &e,
+        "/backend-api/codex/responses",
+        "usage",
+        r#"{"model":"gpt-5.5","input":[]}"#,
+        true,
+    )
+    .await;
+    assert!(t.contains("r-u"));
+    let rows = wait_rows(&e, 2).await;
+    for u in &rows {
+        assert_eq!(u["input_tokens"], 120, "{u}");
+        assert_eq!(u["output_tokens"], 30, "{u}");
+        assert!(u["ttft_ms"].is_u64(), "{u}");
+    }
+    // pre-output usage_limit_reached replays on the next account, both paths
+    for path in ["/v1/responses", "/backend-api/codex/responses"] {
+        let before = e.mock.seen.lock().unwrap().len();
+        let (_, t) = noct_post(&e, path, "midlimit", stream, false).await;
+        assert!(!t.contains("usage_limit_reached"), "{path}: {t}");
+        assert!(t.contains("r-b") && !t.contains("r-a"), "{path}: {t}");
+        assert_eq!(e.mock.seen.lock().unwrap().len(), before + 2, "{path}");
+    }
+    // compaction turn without content-type
+    let body = r#"{"model":"gpt-5.5","stream":true,"input":[{"type":"compaction_trigger"}]}"#;
+    let (ct, t) = noct_post(&e, "/v1/responses", "compact", body, false).await;
+    assert_eq!(ct, "text/event-stream");
+    assert!(t.contains("\"encrypted_content\":\"gAAA\""), "{t}");
+}
+
+#[tokio::test]
+async fn no_content_type_without_stream_hint_stays_passthrough() {
+    let e = env(300).await;
+    let (ct, t) = noct_post(
+        &e,
+        "/v1/responses",
+        "midlimit",
+        r#"{"model":"gpt-5.5","input":[]}"#,
+        false,
+    )
+    .await;
+    assert!(ct.is_empty(), "no hint: headers untouched");
+    assert!(t.contains("usage_limit_reached"), "{t}");
 }

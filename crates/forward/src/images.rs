@@ -446,6 +446,7 @@ async fn run(st: AppState, headers: HeaderMap, body: Bytes, kind: Kind) -> Respo
             headers: out_headers(&st.config.images, &headers, stream),
             body: Bytes::from(payload.to_string()),
             route,
+            expect_sse: false,
         };
         return match proxy::send(&st, ob).await {
             Ok(c) => proxy::stream_back(&st, c),
@@ -500,6 +501,7 @@ async fn run(st: AppState, headers: HeaderMap, body: Bytes, kind: Kind) -> Respo
         headers: out_headers(&st.config.images, &headers, true),
         body: Bytes::from(req.to_string()),
         route,
+        expect_sse: false,
     };
     let c = match proxy::send(&st, ob).await {
         Ok(c) if c.resp.status().is_success() => c,

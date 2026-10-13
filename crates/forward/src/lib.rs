@@ -153,6 +153,7 @@ async fn forward(
     } else {
         None
     };
+    let expect_sse = inspect && client_wants_sse(&path, &headers, parsed.as_ref());
     let (headers, body) = if inspect {
         prepare_responses_body(
             &path,
@@ -170,8 +171,31 @@ async fn forward(
         headers,
         body,
         route,
+        expect_sse,
     };
     proxy::send_streaming(&st, ob, trk).await
+}
+
+/// `/responses`-family request that asked for a stream (`"stream": true` or
+/// `Accept: text/event-stream`).
+pub(crate) fn client_wants_sse(
+    path: &str,
+    headers: &HeaderMap,
+    body: Option<&serde_json::Value>,
+) -> bool {
+    if !path.starts_with("/codex/responses") {
+        return false;
+    }
+    let accept = headers
+        .get_all(http::header::ACCEPT)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .any(|v| v.to_ascii_lowercase().contains("text/event-stream"));
+    accept
+        || body
+            .and_then(|b| b.get("stream"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
 }
 
 /// Official Codex compression level (`codex-rs/http-client/src/request.rs`).

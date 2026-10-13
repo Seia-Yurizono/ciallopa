@@ -43,3 +43,10 @@ Codex (needs a tool-call turn; covered by integration test + codex-rs reading), 
 when `upstream_opts.compress_requests = true`, default; pre-encoded passthrough, level-3 output, retry
 byte reuse, Accept-Encoding stripping and WS set-cookie filtering covered by mock tests), real
 chatgpt.com / Cloudflare behaviour, paste/PKCE login interactively.
+
+Note (live, 2026-10): chatgpt.com sends `/responses` SSE **without a `Content-Type` header**. ciallopa
+treats a response as SSE when it is `text/event-stream`, or when the type is missing/unrecognised and
+the client asked for a stream (`"stream": true` or `Accept: text/event-stream`); explicit JSON/text/HTML
+types always win. Usage parsing (tokens/TTFT/TPS) and pre-output quota replay then work, and the
+downstream response gets `Content-Type: text/event-stream` (Codex parses SSE regardless; other clients
+need it). Covered by mock tests with the content type stripped.
