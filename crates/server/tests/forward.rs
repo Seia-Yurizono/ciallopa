@@ -153,6 +153,13 @@ async fn up_responses(State(m): State<Mock>, h: HeaderMap, b: Bytes) -> Response
             });
             Response::builder().header("content-type", "text/event-stream").body(Body::from_stream(s)).unwrap()
         }
+        "compact" => sse_resp(concat!(
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-c\"}}\n\n",
+            "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"compaction\"}}\n\n",
+            "data: {\"type\":\"response.compaction.compacting\"}\n\n",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"compaction\",\"encrypted_content\":\"gAAA\"}}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r-c\"}}\n\n"
+        )),
         "image" => sse_resp(concat!(
             "data: {\"type\":\"response.image_generation_call.partial_image\",\"partial_image_b64\":\"UA==\",\"partial_image_index\":0}\n\n",
             "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"image_generation_call\",\"result\":\"SU1H\",\"output_format\":\"png\",\"size\":\"1024x1024\"}}\n\n",
@@ -596,4 +603,31 @@ async fn images_wrap_and_direct() {
         .0
         .iter()
         .any(|(k, v)| k == "originator" && v == "codex_exec"));
+}
+
+/// Codex 0.162 remote compaction v2: a normal `/responses` turn whose input ends with
+/// `{"type":"compaction_trigger"}`; reply carries one `compaction` output item.
+#[tokio::test]
+async fn compaction_v2_passthrough() {
+    let e = env(300).await;
+    let body = r#"{"model":"gpt-5.5","stream":true,"input":[{"type":"message","role":"user","content":[]},{"type":"compaction_trigger"}],"client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"compaction\"}"}}"#;
+    for path in ["/v1/responses", "/backend-api/codex/responses"] {
+        let r = e
+            .post(path)
+            .header("x-test-mode", "compact")
+            .header("x-codex-beta-features", "remote_compaction_v2")
+            .body(body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        let t = r.text().await.unwrap();
+        assert!(t.contains("response.compaction.compacting") && t.contains("\"encrypted_content\":\"gAAA\""), "{t}");
+    }
+    let seen = e.mock.seen.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    for (h, b) in seen.iter() {
+        assert_eq!(b.as_ref(), body.as_bytes(), "body byte-identical");
+        assert!(h.iter().any(|(k, v)| k == "x-codex-beta-features" && v == "remote_compaction_v2"));
+    }
 }

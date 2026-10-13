@@ -67,7 +67,17 @@ base_url = "https://cpa.example.com/v1"   # or http://127.0.0.1:8317/v1 locally
 env_key = "CPA_KEY"                       # export CPA_KEY=<one of api_keys>
 wire_api = "responses"
 supports_websockets = true                # false = HTTP SSE only
+
+[model_providers.cpa.capabilities]
+remote_compaction = "v2"                  # server-side compaction, same as the built-in openai provider
 ```
+Without `remote_compaction = "v2"` Codex treats a custom provider as unsupported and compacts
+locally (summarization prompt as a normal turn). With it (Codex >= 0.16x, `compact_remote_v2`),
+compaction is an ordinary `/responses` turn (SSE or WS) whose input ends with
+`{"type":"compaction_trigger"}`, header `x-codex-beta-features: remote_compaction_v2`; the reply
+streams `response.compaction.compacting` and one `{"type":"compaction","encrypted_content":…}`
+item. cpa-lite forwards it unchanged. The legacy `/responses/compact` route is kept but upstream
+now answers 404. Keep `session_affinity` on: compacted history is replayed to the bound account.
 Endpoints: `/backend-api/codex/{responses,responses/compact,models}` (+ WS on `responses`),
 `/backend-api/*` passthrough (`wham/*` …), `/api/codex/*`→`/wham/*`, `/v1/{responses,responses/compact,models}`,
 `/v1/images/{generations,edits}`, `/healthz` (no auth). Everything else 404.
