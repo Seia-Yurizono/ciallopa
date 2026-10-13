@@ -123,10 +123,10 @@ function renderCards(q){
     c.appendChild(meta);
     if(a.email)c.appendChild(el("div","mut",a.account));
     if(!qq){c.appendChild(el("div","mut","尚无额度数据（该账号还没有请求经过）"));box.appendChild(c);continue}
-    for(const [w,label] of [[qq.primary,"主"],[qq.secondary,"次"]]){
+    for(const w of [qq.primary,qq.secondary]){
       if(!w||w.used_pct===null||w.used_pct===undefined)continue;
       const d=el("div","win");const hh=el("div","winh");
-      hh.appendChild(el("span",null,label+" · "+winName(w.window_minutes)));
+      hh.appendChild(el("span",null,winName(w.window_minutes)));
       hh.appendChild(el("span",null,w.used_pct.toFixed(0)+"% 已用"));d.appendChild(hh);
       const b=el("div","bar"),i=el("i",w.used_pct>=90?"b":w.used_pct>=70?"w":"");i.style.width=Math.min(100,Math.max(0,w.used_pct))+"%";b.appendChild(i);d.appendChild(b);
       const info=el("div","mut");

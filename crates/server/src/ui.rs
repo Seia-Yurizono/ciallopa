@@ -104,5 +104,8 @@ mod tests {
         assert!(CSP.contains("script-src 'sha256-"));
         assert!(CSP.contains("default-src 'none'"));
         assert!(!CSP.contains("unsafe"));
+        // window cards are labeled only by window length (no 主/次 prefix)
+        assert!(PAGE.contains("\"5 小时窗口\"") && PAGE.contains("\"周窗口\"") && PAGE.contains("\" 天窗口\""));
+        assert!(!PAGE.contains("\"主\"") && !PAGE.contains("\"次\""));
     }
 }
