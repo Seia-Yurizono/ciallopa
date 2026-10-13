@@ -1,0 +1,13 @@
+listen = "127.0.0.1:8317"
+api_keys = ["sk-cpa-change-me-0123456789"]
+upstream = "https://chatgpt.com/backend-api"
+auth_dir = "~/.cpa-lite/auths"
+proxy_url = ""
+
+[routing]
+strategy = "round-robin"
+session_affinity = true
+session_affinity_ttl = "1h"
+session_affinity_subagents = true
+session_affinity_rebind_on = "quota"
+quota_avoid_threshold = 0.99

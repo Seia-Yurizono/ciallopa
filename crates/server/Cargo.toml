@@ -1,0 +1,24 @@
+[package]
+name = "cpa-lite"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+cpa-lite-core = { workspace = true }
+cpa-lite-auth = { workspace = true }
+cpa-lite-routing = { workspace = true }
+cpa-lite-upstream = { workspace = true }
+cpa-lite-forward = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+http = { workspace = true }
+subtle = { workspace = true }
+tracing = { workspace = true }
+clap = { workspace = true }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+
+[lints]
+workspace = true

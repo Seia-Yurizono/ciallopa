@@ -1,0 +1,24 @@
+[package]
+name = "cpa-lite-upstream"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+cpa-lite-core = { workspace = true }
+reqwest = { workspace = true }
+rustls = { workspace = true }
+hyper = { workspace = true }
+h2 = { workspace = true }
+tokio-tungstenite = { workspace = true }
+tokio = { workspace = true }
+http = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[[bin]]
+name = "fp-probe"
+path = "src/bin/fp_probe.rs"
+
+[lints]
+workspace = true
