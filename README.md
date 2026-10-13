@@ -39,12 +39,16 @@ session_affinity = true
 session_affinity_ttl = "1h"
 session_affinity_subagents = true
 session_affinity_rebind_on = "quota"    # | any
-quota_avoid_threshold = 0.99            # new sessions skip accounts at/over this used fraction
+quota_avoid_threshold = 0.0             # 0 = off (default): switch only on upstream quota errors; e.g. 0.95 = new sessions skip accounts at/over 95% used
 
 [upstream_opts]
 stream_idle_timeout_secs = 300
 max_attempts = 4    # RETRIES (Codex request_max_retries): transport/408/5xx before first byte ⇒ ≤5 requests.
                     # 401/403/404/429 fail over to another account and do not consume retries.
+                    # In-stream quota errors (usage_limit_reached etc.) before the first output
+                    # event: account cooled + request replayed on the next account (SSE and WS).
+                    # WS after output / incremental turn: frame withheld, close 1012 ⇒ Codex
+                    # reconnects with full input on another account.
 connect_timeout_secs = 30
 
 [images]

@@ -132,10 +132,7 @@ async fn forward(
         body,
         route,
     };
-    match proxy::send(&st, ob).await {
-        Ok(c) => proxy::stream_back(&st, c),
-        Err(r) => r,
-    }
+    proxy::send_streaming(&st, ob).await
 }
 
 #[cfg(test)]

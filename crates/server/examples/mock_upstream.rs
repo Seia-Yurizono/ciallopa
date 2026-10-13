@@ -1,6 +1,8 @@
 //! E2E mock of chatgpt.com/backend-api (Codex Responses SSE + WS, models, wham) and
 //! auth.openai.com device-code login. State dir ($MOCK_DIR, default /tmp/cpa-e2e):
 //!   limited      — account ids (one per line) that answer 429 usage_limit_reached
+//!   midlimited   — account ids that answer 200 + `response.created`, then an in-stream
+//!                  usage_limit_reached error (SSE `error` event / WS error frame)
 //!   quota-<acct> — value for x-codex-primary-used-percent
 //!   upstream.log — one JSON line per upstream request / WS frame
 //! Usage: cargo run --example mock_upstream -- 127.0.0.1:18080
@@ -26,22 +28,42 @@ struct St {
 }
 impl St {
     fn log(&self, v: Value) {
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(self.dir.join("upstream.log")).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.dir.join("upstream.log"))
+            .unwrap();
         writeln!(f, "{v}").unwrap();
     }
     fn limited(&self, acct: &str) -> bool {
-        std::fs::read_to_string(self.dir.join("limited")).unwrap_or_default().lines().any(|l| l.trim() == acct)
+        std::fs::read_to_string(self.dir.join("limited"))
+            .unwrap_or_default()
+            .lines()
+            .any(|l| l.trim() == acct)
+    }
+    fn midlimited(&self, acct: &str) -> bool {
+        std::fs::read_to_string(self.dir.join("midlimited"))
+            .unwrap_or_default()
+            .lines()
+            .any(|l| l.trim() == acct)
     }
     fn quota(&self, acct: &str) -> String {
-        std::fs::read_to_string(self.dir.join(format!("quota-{acct}"))).unwrap_or_else(|_| "10".into()).trim().to_string()
+        std::fs::read_to_string(self.dir.join(format!("quota-{acct}")))
+            .unwrap_or_else(|_| "10".into())
+            .trim()
+            .to_string()
     }
 }
 
 fn hv(h: &HeaderMap, k: &str) -> String {
-    h.get(k).and_then(|v| v.to_str().ok()).unwrap_or("").to_string()
+    h.get(k)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string()
 }
 
-const LIMIT: &str = r#"{"error":{"type":"usage_limit_reached","message":"limit","resets_in_seconds":3600}}"#;
+const LIMIT: &str =
+    r#"{"error":{"type":"usage_limit_reached","message":"limit","resets_in_seconds":3600}}"#;
 
 fn events(id: &str, text: &str) -> Vec<Value> {
     vec![
@@ -50,6 +72,13 @@ fn events(id: &str, text: &str) -> Vec<Value> {
         json!({"type":"response.output_text.delta","delta":text,"item_id":"msg_1","output_index":0,"content_index":0}),
         json!({"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1","role":"assistant","content":[{"type":"output_text","text":text}]}}),
         json!({"type":"response.completed","response":{"id":id,"status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}),
+    ]
+}
+
+fn mid_limit(id: &str) -> Vec<Value> {
+    vec![
+        json!({"type":"response.created","response":{"id":id,"status":"in_progress","output":[]}}),
+        json!({"type":"error","status":429,"error":{"type":"usage_limit_reached","message":"limit","resets_in_seconds":3600}}),
     ]
 }
 
@@ -63,8 +92,16 @@ async fn responses(State(s): State<St>, h: HeaderMap, b: Bytes) -> Response {
     let n = s.resp.fetch_add(1, Ordering::SeqCst);
     let id = format!("resp_{n}");
     let mut out = String::new();
-    for e in events(&id, &format!("ok from {acct}")) {
-        out.push_str(&format!("event: {}\ndata: {e}\n\n", e["type"].as_str().unwrap()));
+    let evs = if s.midlimited(&acct) {
+        mid_limit(&id)
+    } else {
+        events(&id, &format!("ok from {acct}"))
+    };
+    for e in evs {
+        out.push_str(&format!(
+            "event: {}\ndata: {e}\n\n",
+            e["type"].as_str().unwrap()
+        ));
     }
     Response::builder()
         .header("content-type", "text/event-stream")
@@ -91,14 +128,20 @@ async fn ws(State(s): State<St>, h: HeaderMap, up: WebSocketUpgrade) -> Response
                 continue;
             }
             let id = format!("resp_{}", s.resp.fetch_add(1, Ordering::SeqCst));
-            for e in events(&id, &format!("ok from {acct}")) {
+            let evs = if s.midlimited(&acct) {
+                mid_limit(&id)
+            } else {
+                events(&id, &format!("ok from {acct}"))
+            };
+            for e in evs {
                 if sock.send(Message::Text(e.to_string().into())).await.is_err() {
                     return;
                 }
             }
         }
     });
-    r.headers_mut().insert("x-codex-primary-used-percent", q.parse().unwrap());
+    r.headers_mut()
+        .insert("x-codex-primary-used-percent", q.parse().unwrap());
     r
 }
 
@@ -112,10 +155,18 @@ fn b64(v: &Value) -> String {
 }
 
 async fn usercode() -> Response {
-    ([("content-type", "application/json")], r#"{"device_auth_id":"dev-1","user_code":"ABCD-EFGH","interval":"1"}"#).into_response()
+    (
+        [("content-type", "application/json")],
+        r#"{"device_auth_id":"dev-1","user_code":"ABCD-EFGH","interval":"1"}"#,
+    )
+        .into_response()
 }
 async fn devtoken() -> Response {
-    ([("content-type", "application/json")], r#"{"authorization_code":"code-1","code_verifier":"ver-1"}"#).into_response()
+    (
+        [("content-type", "application/json")],
+        r#"{"authorization_code":"code-1","code_verifier":"ver-1"}"#,
+    )
+        .into_response()
 }
 async fn oauth_token(State(s): State<St>, b: Bytes) -> Response {
     let body = String::from_utf8_lossy(&b).to_string();
@@ -130,10 +181,16 @@ use axum::Json;
 
 #[tokio::main]
 async fn main() {
-    let addr = std::env::args().nth(1).unwrap_or_else(|| "127.0.0.1:18080".into());
+    let addr = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "127.0.0.1:18080".into());
     let dir = PathBuf::from(std::env::var("MOCK_DIR").unwrap_or_else(|_| "/tmp/cpa-e2e".into()));
     std::fs::create_dir_all(&dir).unwrap();
-    let st = St { dir, logins: Arc::default(), resp: Arc::default() };
+    let st = St {
+        dir,
+        logins: Arc::default(),
+        resp: Arc::default(),
+    };
     let app = Router::new()
         .route("/backend-api/codex/responses", post(responses).get(ws))
         .route("/backend-api/codex/models", get(models))

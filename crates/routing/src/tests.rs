@@ -793,7 +793,10 @@ fn quota_threshold_avoidance_only_for_new_sessions() {
 
 #[test]
 fn quota_threshold_ignores_expired_windows() {
-    let (r, clk) = router(cfg(Strategy::FillFirst));
+    let (r, clk) = router(RoutingConfig {
+        quota_avoid_threshold: 0.99,
+        ..cfg(Strategy::FillFirst)
+    });
     let q = QuotaSnapshot {
         primary: Some(cpa_lite_core::QuotaWindow {
             used_percent: 100.0,
@@ -1499,4 +1502,21 @@ fn canonical_model_key_strips_thinking_suffix() {
     ] {
         assert_eq!(canonical_model_key(i), o);
     }
+}
+
+#[test]
+fn quota_avoidance_off_by_default() {
+    assert_eq!(RoutingConfig::default().quota_avoid_threshold, 0.0);
+    let (r, _) = router(cfg(Strategy::FillFirst));
+    let q = QuotaSnapshot {
+        primary: Some(cpa_lite_core::QuotaWindow {
+            used_percent: 100.0,
+            window_minutes: None,
+            resets_at: None,
+        }),
+        secondary: None,
+    };
+    r.report(&rq("m"), &"a".into(), &Outcome::Success { quota: Some(q) });
+    // No proactive avoidance: a full-but-not-erroring account is still picked.
+    assert_eq!(pick(&r, &rq("m"), &[acct("a"), acct("b")]), "a");
 }

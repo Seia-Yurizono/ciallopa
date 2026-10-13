@@ -24,6 +24,7 @@ pub(crate) fn json_error(status: StatusCode, kind: &str, msg: &str) -> Response 
 }
 
 /// An outbound request, independent of the account it ends up on.
+#[derive(Clone)]
 pub(crate) struct Outbound {
     pub method: Method,
     /// Relative to `upstream.base_url`, with query.
@@ -198,12 +199,49 @@ pub(crate) async fn send(st: &AppState, ob: Outbound) -> Result<Chosen, Response
 pub(crate) fn stream_back(st: &AppState, c: Chosen) -> Response {
     let status = c.resp.status();
     let headers = downstream_headers(c.resp.headers());
+    let up = c.resp.bytes_stream().boxed();
+    stream_body(st, status, headers, c.route, c.account, Bytes::new(), up)
+}
+
+type UpStream = futures::stream::BoxStream<'static, reqwest::Result<Bytes>>;
+
+fn stream_body(
+    st: &AppState,
+    status: StatusCode,
+    headers: HeaderMap,
+    route: RouteRequest,
+    account: AccountId,
+    prefix: Bytes,
+    mut up: UpStream,
+) -> Response {
     let idle = Duration::from_secs(st.config.upstream_opts.stream_idle_timeout_secs.max(1));
     let router = Arc::clone(&st.router);
-    let (route, account) = (c.route, c.account);
-    let mut up = c.resp.bytes_stream();
     let mut reported = false;
     let body = async_stream(move |tx| async move {
+        let report_limit = |chunk: &[u8]| {
+            router.report(
+                &route,
+                &account,
+                &Outcome::RateLimited {
+                    retry_after: cpa_lite_routing::parse_codex_retry_after(
+                        429,
+                        chunk,
+                        SystemTime::now(),
+                    ),
+                    usage_limit: true,
+                    quota: None,
+                },
+            );
+        };
+        if !prefix.is_empty() {
+            if memfind(&prefix, b"usage_limit_reached") {
+                reported = true;
+                report_limit(&prefix);
+            }
+            if tx.send(Ok(prefix)).await.is_err() {
+                return;
+            }
+        }
         loop {
             match tokio::time::timeout(idle, up.next()).await {
                 Err(_) => {
@@ -226,15 +264,7 @@ pub(crate) fn stream_back(st: &AppState, c: Chosen) -> Response {
                 Ok(Some(Ok(chunk))) => {
                     if !reported && memfind(&chunk, b"usage_limit_reached") {
                         reported = true;
-                        router.report(
-                            &route,
-                            &account,
-                            &Outcome::RateLimited {
-                                retry_after: None,
-                                usage_limit: true,
-                                quota: None,
-                            },
-                        );
+                        report_limit(&chunk);
                     }
                     if tx.send(Ok(chunk)).await.is_err() {
                         return;
@@ -247,6 +277,180 @@ pub(crate) fn stream_back(st: &AppState, c: Chosen) -> Response {
     *r.status_mut() = status;
     *r.headers_mut() = headers;
     r
+}
+
+/// Max bytes held while waiting for the first meaningful SSE event.
+const BOOTSTRAP_MAX: usize = 1 << 20;
+
+/// What a Responses stream event means for bootstrap / failover.
+#[derive(Debug, PartialEq)]
+pub(crate) enum EventKind {
+    /// Envelope only (`response.created`, `in_progress`, rate-limit snapshots, keepalive).
+    Preamble,
+    /// Account-level quota / rate-limit failure: cool down and switch.
+    Quota(Outcome),
+    /// Anything else: real output (or a non-quota terminal event).
+    Content,
+}
+
+/// Quota-type error codes that justify switching accounts.
+pub(crate) fn is_quota_code(text: &str) -> bool {
+    [
+        "usage_limit_reached",
+        "insufficient_quota",
+        "usage_not_included",
+    ]
+    .iter()
+    .any(|c| text.contains(c))
+}
+
+/// Classify one Responses event JSON (`data:` payload of SSE, or a WS text frame).
+pub(crate) fn event_kind(text: &str) -> EventKind {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
+        return EventKind::Content;
+    };
+    let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    let quota_outcome = || {
+        let quota = cpa_lite_routing::parse_quota_event_headers(text.as_bytes())
+            .and_then(|h| parse_quota(&h));
+        Outcome::RateLimited {
+            retry_after: cpa_lite_routing::parse_codex_retry_after(
+                429,
+                text.as_bytes(),
+                SystemTime::now(),
+            ),
+            usage_limit: is_usage_limit(text.as_bytes()) || text.contains("usage_limit_reached"),
+            quota,
+        }
+    };
+    match ty {
+        "response.created" | "response.in_progress" | "codex.rate_limits" | "" => {
+            EventKind::Preamble
+        }
+        "error" => {
+            let status = v
+                .get("status")
+                .or_else(|| v.get("status_code"))
+                .and_then(|s| s.as_u64());
+            if status == Some(429) || is_quota_code(text) {
+                EventKind::Quota(quota_outcome())
+            } else {
+                EventKind::Content
+            }
+        }
+        "response.failed" if is_quota_code(text) => EventKind::Quota(quota_outcome()),
+        _ => EventKind::Content,
+    }
+}
+
+/// Split complete SSE events off the front of `buf`; yields each event's joined `data:`.
+fn sse_events(buf: &[u8], from: usize) -> (Vec<String>, usize) {
+    let mut out = Vec::new();
+    let mut pos = from;
+    loop {
+        let rest = &buf[pos..];
+        let Some((end, sep)) = find_sep(rest) else {
+            break;
+        };
+        let ev = String::from_utf8_lossy(&rest[..end]);
+        let data: Vec<&str> = ev
+            .lines()
+            .filter_map(|l| l.strip_prefix("data:"))
+            .map(|d| d.strip_prefix(' ').unwrap_or(d))
+            .collect();
+        out.push(data.join("\n"));
+        pos += end + sep;
+    }
+    (out, pos)
+}
+
+fn find_sep(b: &[u8]) -> Option<(usize, usize)> {
+    let a = b.windows(2).position(|w| w == b"\n\n").map(|i| (i, 2));
+    let c = b.windows(4).position(|w| w == b"\r\n\r\n").map(|i| (i, 4));
+    match (a, c) {
+        (Some(x), Some(y)) => Some(if x.0 <= y.0 { x } else { y }),
+        (x, y) => x.or(y),
+    }
+}
+
+fn is_event_stream(h: &HeaderMap) -> bool {
+    h.get(http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.contains("text/event-stream"))
+}
+
+/// `send` + stream back, with an SSE bootstrap window: until the first meaningful event,
+/// upstream bytes are held; a quota / usage-limit error inside that window cools the
+/// account down and transparently replays the same request on another account.
+pub(crate) async fn send_streaming(st: &AppState, mut ob: Outbound) -> Response {
+    let max_switches = st.accounts.list().await.len().max(1);
+    let idle = Duration::from_secs(st.config.upstream_opts.stream_idle_timeout_secs.max(1));
+    let mut switches = 0usize;
+    loop {
+        let c = match send(st, ob.clone()).await {
+            Ok(c) => c,
+            Err(r) => return r,
+        };
+        if !c.resp.status().is_success() || !is_event_stream(c.resp.headers()) {
+            return stream_back(st, c);
+        }
+        let status = c.resp.status();
+        let headers = downstream_headers(c.resp.headers());
+        let (route, account) = (c.route, c.account);
+        let mut up: UpStream = c.resp.bytes_stream().boxed();
+        let mut buf: Vec<u8> = Vec::new();
+        let mut parsed = 0usize;
+        let mut switch: Option<Outcome> = None;
+        let mut ended = false;
+        'boot: loop {
+            if buf.len() > BOOTSTRAP_MAX {
+                break;
+            }
+            match tokio::time::timeout(idle, up.next()).await {
+                Ok(Some(Ok(chunk))) => {
+                    buf.extend_from_slice(&chunk);
+                    let (evs, np) = sse_events(&buf, parsed);
+                    parsed = np;
+                    for e in evs {
+                        match event_kind(&e) {
+                            EventKind::Preamble => {}
+                            EventKind::Content => break 'boot,
+                            EventKind::Quota(o) => {
+                                switch = Some(o);
+                                break 'boot;
+                            }
+                        }
+                    }
+                }
+                Ok(None) => {
+                    ended = true;
+                    break;
+                }
+                // Timeouts / transport errors: hand over to the normal streamer which
+                // reports them; the held prefix is forwarded first.
+                Ok(Some(Err(_))) | Err(_) => break,
+            }
+        }
+        if let Some(o) = switch {
+            st.router.report(&route, &account, &o);
+            switches += 1;
+            if switches < max_switches {
+                tracing::info!(account = %account, "quota error before first output; switching account");
+                ob.route = route;
+                ob.route.exclude.push(account);
+                continue;
+            }
+            // Out of accounts: deliver what we have (the quota error) as-is.
+            let mut r = Response::new(Body::from(buf));
+            *r.status_mut() = status;
+            *r.headers_mut() = headers;
+            return r;
+        }
+        if ended {
+            up = futures::stream::empty().boxed();
+        }
+        return stream_body(st, status, headers, route, account, Bytes::from(buf), up);
+    }
 }
 
 /// Tiny channel-backed body stream (avoids an async-stream dependency).

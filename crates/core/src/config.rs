@@ -41,6 +41,8 @@ pub struct RoutingConfig {
     pub session_affinity_subagents: bool,
     pub session_affinity_rebind_on: RebindOn,
     /// Used fraction (0..=1) at/over which an account gets no *new* sessions.
+    /// 0 (default) disables proactive avoidance: accounts are switched only on
+    /// upstream errors (429 / usage_limit cooldown + transparent failover).
     pub quota_avoid_threshold: f64,
 }
 impl Default for RoutingConfig {
@@ -51,7 +53,7 @@ impl Default for RoutingConfig {
             session_affinity_ttl: "1h".into(),
             session_affinity_subagents: true,
             session_affinity_rebind_on: RebindOn::Quota,
-            quota_avoid_threshold: 0.99,
+            quota_avoid_threshold: 0.0,
         }
     }
 }

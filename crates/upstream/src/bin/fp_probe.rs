@@ -33,7 +33,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let mut h = http::HeaderMap::new();
     h.insert("authorization", "Bearer fake".parse()?);
-    h.insert("user-agent", "codex_exec/0.162.1 (Debian 13.0.0; x86_64) dumb".parse()?);
+    h.insert(
+        "user-agent",
+        "codex_exec/0.162.1 (Debian 13.0.0; x86_64) dumb".parse()?,
+    );
     h.insert("originator", "codex_exec".parse()?);
     match up.ws_connect("/codex/responses", h).await {
         Ok(_) => println!("ws -> connected"),

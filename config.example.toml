@@ -10,4 +10,4 @@ session_affinity = true
 session_affinity_ttl = "1h"
 session_affinity_subagents = true
 session_affinity_rebind_on = "quota"
-quota_avoid_threshold = 0.99
+quota_avoid_threshold = 0.0   # 0 = off (default); error-driven cooldown + switch only. e.g. 0.95 to also avoid near-full accounts for new sessions

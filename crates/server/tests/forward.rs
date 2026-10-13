@@ -1,5 +1,5 @@
 //! Forwarding integration tests against a mock upstream (SSE, retry, 429 failover, 401
-//! refresh, idle timeout, models cache, WebSocket relay + usage-limit close, Images API).
+//! refresh, idle timeout, models cache, WebSocket relay + quota replay/close, Images API).
 #![allow(clippy::unwrap_used)]
 use async_trait::async_trait;
 use axum::extract::ws::{Message, WebSocketUpgrade};
@@ -124,6 +124,23 @@ async fn up_responses(State(m): State<Mock>, h: HeaderMap, b: Bytes) -> Response
             .status(429)
             .body(Body::from(r#"{"error":{"type":"usage_limit_reached","resets_in_seconds":30}}"#))
             .unwrap(),
+        "midlimit" if auth.contains("tok-a") => sse_resp(concat!(
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-a\"}}\n\n",
+            "data: {\"type\":\"error\",\"status\":429,\"error\":{\"type\":\"usage_limit_reached\",\"resets_in_seconds\":45}}\n\n"
+        )),
+        "midlimit" | "latelimit" if !auth.contains("tok-a") || mode == "latelimit" => sse_resp(if mode == "latelimit" {
+            concat!(
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-a\"}}\n\n",
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n",
+                "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"usage_limit_reached\"}}}\n\n"
+            )
+        } else {
+            concat!(
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-b\"}}\n\n",
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n",
+                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r-b\"}}\n\n"
+            )
+        }),
         "unauth" if auth.ends_with("-1") => Response::builder().status(401).body(Body::empty()).unwrap(),
         "idle" => {
             let s = futures::stream::unfold(0, |i| async move {
@@ -163,11 +180,25 @@ async fn up_images(State(m): State<Mock>, h: HeaderMap, b: Bytes) -> Response {
 
 async fn up_ws(State(m): State<Mock>, h: HeaderMap, ws: WebSocketUpgrade) -> Response {
     m.record(&h, &Bytes::new());
-    let mut r = ws.on_upgrade(|mut s| async move {
+    let auth = h
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let mut r = ws.on_upgrade(move |mut s| async move {
         while let Some(Ok(msg)) = s.recv().await {
             if let Message::Text(t) = msg {
-                if t.as_str().contains("limit") {
-                    let _ = s.send(Message::Text(r#"{"type":"error","status":429,"error":{"type":"usage_limit_reached"}}"#.into())).await;
+                if t.as_str().contains("limit") && (auth.contains("tok-a") || t.as_str().contains("prevlimit")) {
+                    let _ = s.send(Message::Text(r#"{"type":"response.created","response":{"id":"r-a"}}"#.into())).await;
+                    let _ = s.send(Message::Text(r#"{"type":"error","status":429,"error":{"type":"usage_limit_reached","resets_in_seconds":45}}"#.into())).await;
+                } else if t.as_str().contains("limit") {
+                    for f in [
+                        r#"{"type":"response.created","response":{"id":"r-b"}}"#,
+                        r#"{"type":"response.output_text.delta","delta":"ok"}"#,
+                        r#"{"type":"response.completed","response":{"id":"r-b"}}"#,
+                    ] {
+                        let _ = s.send(Message::Text(f.into())).await;
+                    }
                 } else {
                     let _ = s.send(Message::Text(format!(r#"{{"type":"response.completed","echo":{t}}}"#).into())).await;
                 }
@@ -403,11 +434,36 @@ async fn websocket_relay_and_limit_close() {
         .unwrap();
     let m = ws.next().await.unwrap().unwrap();
     assert!(m.to_text().unwrap().contains("\"echo\""));
-    ws.send(M::text("limit")).await.unwrap();
-    let m = ws.next().await.unwrap().unwrap();
-    assert!(m.to_text().unwrap().contains("usage_limit_reached"));
+    // Quota error after response.created, before output: replayed on account b.
+    ws.send(M::text(r#"{"type":"response.create","tag":"limit"}"#))
+        .await
+        .unwrap();
+    let mut got = Vec::new();
+    loop {
+        let m = ws.next().await.unwrap().unwrap();
+        let t = m.to_text().unwrap().to_string();
+        assert!(
+            !t.contains("usage_limit_reached"),
+            "quota frame leaked: {t}"
+        );
+        got.push(t.clone());
+        if t.contains("response.completed") {
+            break;
+        }
+    }
+    assert_eq!(got.len(), 3, "{got:?}");
+    assert!(got[0].contains("r-b") && got[1].contains("delta"));
+    // Incremental request hits a quota error: no frame forwarded, close 1012 for replay.
+    ws.send(M::text(
+        r#"{"type":"response.create","previous_response_id":"r-b","tag":"prevlimit"}"#,
+    ))
+    .await
+    .unwrap();
     match ws.next().await.unwrap().unwrap() {
-        M::Close(Some(f)) => assert_eq!(u16::from(f.code), 1013),
+        M::Close(Some(f)) => {
+            assert_eq!(u16::from(f.code), 1012);
+            assert_eq!(f.reason.as_str(), "upstream requires HTTP replay");
+        }
         other => panic!("expected close, got {other:?}"),
     }
     let seen = e.mock.seen.lock().unwrap();
@@ -420,13 +476,63 @@ async fn websocket_relay_and_limit_close() {
         .clone();
     assert_eq!(auth, "Bearer tok-a-1");
     drop(seen);
-    assert!(e.outcomes().iter().any(|(_, o)| matches!(
+    assert!(e.outcomes().iter().any(|(a, o)| a == "a"
+        && matches!(
+            o,
+            Outcome::RateLimited {
+                usage_limit: true,
+                retry_after: Some(d),
+                ..
+            } if *d == Duration::from_secs(45)
+        )));
+}
+
+async fn sse_text(e: &Env, mode: &str) -> String {
+    let r = e
+        .post("/backend-api/codex/responses")
+        .header("x-test-mode", mode)
+        .body(r#"{"model":"gpt-5.5","input":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    r.text().await.unwrap()
+}
+
+#[tokio::test]
+async fn sse_quota_before_output_switches_transparently() {
+    let e = env(300).await;
+    let t = sse_text(&e, "midlimit").await;
+    assert!(!t.contains("usage_limit_reached"), "{t}");
+    assert!(t.contains("r-b") && t.contains("response.completed"), "{t}");
+    assert!(!t.contains("r-a"), "{t}");
+    let seen = e.mock.seen.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    assert_eq!(seen[0].1, seen[1].1, "same body replayed");
+    drop(seen);
+    assert!(e.outcomes().iter().any(|(a, o)| a == "a" && matches!(
         o,
-        Outcome::RateLimited {
-            usage_limit: true,
-            ..
-        }
+        Outcome::RateLimited { usage_limit: true, retry_after: Some(d), .. } if *d == Duration::from_secs(45)
     )));
+}
+
+#[tokio::test]
+async fn sse_quota_after_output_is_forwarded_and_cools() {
+    let e = env(300).await;
+    let t = sse_text(&e, "latelimit").await;
+    assert!(
+        t.contains("delta") && t.contains("usage_limit_reached"),
+        "{t}"
+    );
+    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 1);
+    assert!(e.outcomes().iter().any(|(a, o)| a == "a"
+        && matches!(
+            o,
+            Outcome::RateLimited {
+                usage_limit: true,
+                ..
+            }
+        )));
 }
 
 #[tokio::test]

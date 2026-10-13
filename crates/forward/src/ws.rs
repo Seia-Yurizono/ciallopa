@@ -5,7 +5,7 @@ use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{OriginalUri, State};
 use axum::response::Response;
 use cpa_lite_core::{AccountId, Outcome, RouteError, RouteRequest};
-use cpa_lite_routing::{is_usage_limit, parse_quota, parse_quota_event_headers};
+use cpa_lite_routing::{parse_quota, parse_quota_event_headers};
 use cpa_lite_upstream::retry::{delay_for, is_retryable_status};
 use cpa_lite_upstream::ws::handshake_status;
 use cpa_lite_upstream::{UpstreamWs, WsMessage};
@@ -18,8 +18,13 @@ mod tungstenite_close {
     pub use cpa_lite_upstream::ws_close::{CloseCode, CloseFrame as UpCloseFrame};
 }
 
-/// Close code used when the upstream account hit its limit; the client reconnects.
-const CLOSE_TRY_AGAIN: u16 = 1013;
+/// Close code used when the upstream account hit its limit mid-turn and the turn cannot be
+/// replayed here (incremental `previous_response_id`, or output already sent). Mirrors CPA's
+/// "upstream requires HTTP replay" (1012). Codex treats any Close before `response.completed`
+/// as a retryable stream error, reconnects, and resends the full input (its websocket session
+/// is reset on reconnect, so no `previous_response_id`).
+const CLOSE_REPLAY: u16 = 1012;
+const CLOSE_REPLAY_REASON: &str = "upstream requires HTTP replay";
 const CLOSE_INTERNAL: u16 = 1011;
 
 pub(crate) async fn handler(
@@ -38,7 +43,8 @@ pub(crate) async fn handler(
     };
     let idle = Duration::from_secs(st.config.upstream_opts.stream_idle_timeout_secs.max(1));
     let st2 = st.clone();
-    let mut resp = ws.on_upgrade(move |socket| relay(st2, route, account, socket, up, idle));
+    let ctx = Ctx { path, headers };
+    let mut resp = ws.on_upgrade(move |socket| relay(st2, ctx, route, account, socket, up, idle));
     for (k, v) in resp_headers.iter() {
         let n = k.as_str();
         if n.starts_with("sec-websocket-")
@@ -209,73 +215,71 @@ fn close(code: u16, reason: &str) -> Message {
     }))
 }
 
-/// Inspect an upstream text frame. Returns (limit outcome, request finished).
-fn classify(text: &str) -> (Option<Outcome>, bool) {
+/// What the relay needs to redial upstream on another account.
+struct Ctx {
+    path: String,
+    headers: HeaderMap,
+}
+
+/// Inspect an upstream text frame: (kind, request finished, quota snapshot outcome).
+fn classify(text: &str) -> (proxy::EventKind, bool, Option<Outcome>) {
     let looks = text.contains("\"error\"")
         || text.contains("response.")
         || text.contains("codex.rate_limits");
     if !looks {
-        return (None, false);
+        return (proxy::EventKind::Content, false, None);
     }
     let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
-        return (None, false);
+        return (proxy::EventKind::Content, false, None);
     };
     let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
-    let quota = parse_quota_event_headers(text.as_bytes()).and_then(|h| parse_quota(&h));
-    match ty {
-        "error" => {
-            let status = v
-                .get("status")
-                .or_else(|| v.get("status_code"))
-                .and_then(|s| s.as_u64());
-            let usage = is_usage_limit(text.as_bytes());
-            if usage || status == Some(429) {
-                let ra = cpa_lite_routing::parse_codex_retry_after(
-                    429,
-                    text.as_bytes(),
-                    std::time::SystemTime::now(),
-                );
-                return (
-                    Some(Outcome::RateLimited {
-                        retry_after: ra,
-                        usage_limit: usage,
-                        quota,
-                    }),
-                    true,
-                );
-            }
-            (None, true)
-        }
-        "codex.rate_limits" => (quota.map(|q| Outcome::Success { quota: Some(q) }), false),
-        "response.completed" | "response.failed" | "response.incomplete" | "response.done" => {
-            let usage = ty == "response.failed" && text.contains("usage_limit_reached");
-            (
-                usage.then_some(Outcome::RateLimited {
-                    retry_after: None,
-                    usage_limit: true,
-                    quota: None,
-                }),
-                true,
-            )
-        }
-        _ => (None, false),
-    }
+    let done = matches!(
+        ty,
+        "error"
+            | "response.completed"
+            | "response.failed"
+            | "response.incomplete"
+            | "response.done"
+    );
+    let snapshot = (ty == "codex.rate_limits")
+        .then(|| parse_quota_event_headers(text.as_bytes()).and_then(|h| parse_quota(&h)))
+        .flatten()
+        .map(|q| Outcome::Success { quota: Some(q) });
+    (proxy::event_kind(text), done, snapshot)
+}
+
+/// A client `response.create` that may be replayed on another account.
+fn replayable(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text).is_ok_and(|v| {
+        v.get("type").and_then(|t| t.as_str()) == Some("response.create")
+            && v.get("previous_response_id")
+                .and_then(|p| p.as_str())
+                .is_none_or(|p| p.trim().is_empty())
+    })
 }
 
 async fn relay(
     st: AppState,
-    route: RouteRequest,
-    account: AccountId,
+    ctx: Ctx,
+    mut route: RouteRequest,
+    mut account: AccountId,
     down: WebSocket,
     up: UpstreamWs,
     idle: Duration,
 ) {
     let (mut dtx, mut drx) = down.split();
     let (mut utx, mut urx) = up.split();
+    let max_switches = st.accounts.list().await.len().max(1);
+    let mut switches = 0usize;
     let mut awaiting = false;
+    // Current turn: the client request (if replayable), upstream preamble frames held back
+    // until the first meaningful event, and whether anything meaningful was sent.
+    let mut pending: Option<String> = None;
+    let mut held: Vec<Message> = Vec::new();
+    let mut started = false;
     let sleep = tokio::time::sleep(idle);
     tokio::pin!(sleep);
-    loop {
+    'outer: loop {
         tokio::select! {
             m = drx.next() => match m {
                 Some(Ok(m)) => {
@@ -283,7 +287,13 @@ async fn relay(
                     if matches!(m, Message::Text(_) | Message::Binary(_)) {
                         if !awaiting {
                             sleep.as_mut().reset(tokio::time::Instant::now() + idle);
+                            held.clear();
+                            started = false;
                         }
+                        pending = match &m {
+                            Message::Text(t) if !awaiting && replayable(t.as_str()) => Some(t.as_str().to_string()),
+                            _ => None,
+                        };
                         awaiting = true;
                     }
                     if let Some(u) = to_up(m) {
@@ -307,30 +317,64 @@ async fn relay(
                         if code != 1000 {
                             st.router.report(&route, &account, &Outcome::Transient { status: None });
                         }
+                        for h in held.drain(..) { let _ = dtx.send(h).await; }
                         if let Some(d) = to_down(WsMessage::Close(f)) {
                             let _ = dtx.send(d).await;
                         }
                         break;
                     }
                     Some(Ok(m)) => {
-                        let mut limit = None;
-                        if let WsMessage::Text(t) = &m {
-                            let (o, done) = classify(t.as_str());
-                            if done { awaiting = false; }
-                            limit = o;
+                        let (kind, done) = match &m {
+                            WsMessage::Text(t) => {
+                                let (k, d, snap) = classify(t.as_str());
+                                if let Some(o) = snap { st.router.report(&route, &account, &o); }
+                                (k, d)
+                            }
+                            _ => (proxy::EventKind::Preamble, false),
+                        };
+                        if let proxy::EventKind::Quota(o) = kind {
+                            // Never forward: Codex would end the turn (UsageLimitReached is fatal).
+                            st.router.report(&route, &account, &o);
+                            let _ = utx.send(WsMessage::Close(None)).await;
+                            switches += 1;
+                            if awaiting && !started && switches < max_switches {
+                                if let Some(req) = pending.clone() {
+                                    route.exclude.push(account.clone());
+                                    match connect(&st, &ctx.path, &ctx.headers, &mut route).await {
+                                        Ok((ws, _, id)) => {
+                                            tracing::info!(from = %account, to = %id, "ws quota error before output; replayed on another account");
+                                            account = id;
+                                            let (t, r) = ws.split();
+                                            utx = t;
+                                            urx = r;
+                                            held.clear();
+                                            if utx.send(WsMessage::text(req.as_str())).await.is_ok() {
+                                                continue 'outer;
+                                            }
+                                        }
+                                        Err(_) => tracing::warn!("ws redial after quota error failed"),
+                                    }
+                                }
+                            }
+                            tracing::info!(account = %account, "ws quota error mid-turn; closing for client replay");
+                            let _ = dtx.send(close(CLOSE_REPLAY, CLOSE_REPLAY_REASON)).await;
+                            break;
                         }
+                        let preamble = matches!(kind, proxy::EventKind::Preamble) && !done;
+                        if awaiting && !started && preamble {
+                            if let Some(d) = to_down(m) { held.push(d); }
+                            continue;
+                        }
+                        if awaiting { started = true; }
+                        for h in held.drain(..) {
+                            if dtx.send(h).await.is_err() { break 'outer; }
+                        }
+                        if done { awaiting = false; pending = None; }
                         if let Some(d) = to_down(m) {
                             if dtx.send(d).await.is_err() {
                                 let _ = utx.send(WsMessage::Close(None)).await;
                                 break;
                             }
-                        }
-                        if let Some(o) = limit {
-                            st.router.report(&route, &account, &o);
-                            if !matches!(o, Outcome::RateLimited { .. }) { continue; }
-                            let _ = dtx.send(close(CLOSE_TRY_AGAIN, "account rate limited; reconnect")).await;
-                            let _ = utx.send(WsMessage::Close(None)).await;
-                            break;
                         }
                     }
                     _ => {
@@ -356,12 +400,12 @@ mod tests {
     use super::*;
     #[test]
     fn classifies() {
-        let (o, d) = classify(
+        let (k, d, _) = classify(
             r#"{"type":"error","status":429,"error":{"type":"usage_limit_reached","resets_in_seconds":60},"headers":{"x-codex-primary-used-percent":"100"}}"#,
         );
         assert!(d);
-        match o {
-            Some(Outcome::RateLimited {
+        match k {
+            proxy::EventKind::Quota(Outcome::RateLimited {
                 usage_limit,
                 retry_after,
                 quota,
@@ -372,10 +416,25 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
-        assert_eq!(classify(r#"{"type":"response.completed"}"#), (None, true));
+        assert!(matches!(
+            classify(
+                r#"{"type":"response.failed","response":{"error":{"code":"insufficient_quota"}}}"#
+            )
+            .0,
+            proxy::EventKind::Quota(_)
+        ));
+        assert!(classify(r#"{"type":"response.completed"}"#).1);
         assert_eq!(
-            classify(r#"{"type":"response.output_text.delta"}"#),
-            (None, false)
+            classify(r#"{"type":"response.created"}"#).0,
+            proxy::EventKind::Preamble
         );
+        assert_eq!(
+            classify(r#"{"type":"response.output_text.delta"}"#).0,
+            proxy::EventKind::Content
+        );
+        assert!(replayable(r#"{"type":"response.create","input":[]}"#));
+        assert!(!replayable(
+            r#"{"type":"response.create","previous_response_id":"r1"}"#
+        ));
     }
 }
