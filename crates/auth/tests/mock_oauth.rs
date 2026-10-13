@@ -161,7 +161,8 @@ async fn force_refresh_and_invalid_grant_disables() {
     .unwrap();
     let s = FileAccountStore::open_with(d.path().into(), oauth)
         .await
-        .unwrap();
+        .unwrap()
+        .with_force_dedup(Duration::from_millis(200));
     let id = "acct".to_string();
     assert_eq!(s.credentials(&id).await.unwrap().access_token, "cur");
     assert_ne!(s.force_refresh(&id).await.unwrap().access_token, "cur");
@@ -169,7 +170,9 @@ async fn force_refresh_and_invalid_grant_disables() {
 
     // transient failure on force -> Refresh error, account untouched
     *m.mode.lock().unwrap() = "500".into();
-    tokio::time::sleep(Duration::from_secs(11)).await; // past force dedup window
+    tokio::time::sleep(Duration::from_millis(250)).await; // past force dedup window
+    let r = s.force_refresh(&id).await;
+    assert!(matches!(r, Err(AuthError::Refresh(_))), "{r:?}");
     assert!(matches!(
         s.force_refresh(&id).await,
         Err(AuthError::Refresh(_))
@@ -226,7 +229,7 @@ async fn device_code_login() {
     assert!(u.ends_with("/codex/device"));
     assert_eq!(c, "ABCD-EFGH");
     assert_eq!(m.polls.load(Ordering::SeqCst), 3);
-    assert_eq!(id, "codex-a@x.com-plus");
+    assert_eq!(id, "codex-cf9df9b9-a@x.com-plus");
     assert_eq!(
         *m.last_ct.lock().unwrap(),
         "application/x-www-form-urlencoded"
@@ -279,7 +282,7 @@ async fn paste_callback_login() {
     w.write_all(format!("http://localhost:1455/auth/callback?code=pc&state={st}\n").as_bytes())
         .await
         .unwrap();
-    assert_eq!(t.await.unwrap().unwrap(), "codex-a@x.com-plus");
+    assert_eq!(t.await.unwrap().unwrap(), "codex-cf9df9b9-a@x.com-plus");
     let body = m.last_body.lock().unwrap().clone();
     assert!(
         body.contains("code=pc")
@@ -333,7 +336,7 @@ async fn pkce_localhost_login_and_timeout() {
         .await
         .unwrap();
     assert_eq!(r.status(), 200);
-    assert_eq!(t.await.unwrap().unwrap(), "codex-a@x.com-plus");
+    assert_eq!(t.await.unwrap().unwrap(), "codex-cf9df9b9-a@x.com-plus");
 
     let e = login::pkce_localhost_with(&oauth, d.path(), port, Duration::from_millis(100), |_| {})
         .await;
@@ -351,7 +354,7 @@ async fn import_codex_auth() {
         "last_refresh":"2026-10-01T00:00:00Z"}).to_string()).unwrap();
     let dir = d.path().join("auths");
     let id = login::import_codex_auth_json(&src, &dir).await.unwrap();
-    assert_eq!(id, "codex-b@y.com-pro");
+    assert_eq!(id, "codex-82a524c4-b@y.com-pro");
     let s = FileAccountStore::open(dir).await.unwrap();
     let a = &s.list().await[0];
     assert_eq!(a.chatgpt_account_id.as_deref(), Some("acc-9"));
@@ -365,4 +368,96 @@ async fn import_codex_auth() {
     );
     std::fs::write(&src, r#"{"OPENAI_API_KEY":"sk-x"}"#).unwrap();
     assert!(login::import_codex_auth_json(&src, d.path()).await.is_err());
+}
+
+#[tokio::test]
+async fn eight_day_rule_refreshes_even_if_not_expired() {
+    let (m, oauth) = spawn().await;
+    let d = tempfile::tempdir().unwrap();
+    let old = (chrono::Utc::now() - chrono::Duration::days(9)).to_rfc3339();
+    cpa_lite_auth::file::write_auth_file(
+        d.path(),
+        "acct",
+        &json!({"access_token":"cur","refresh_token":"r",
+        "expired":"2999-01-01T00:00:00Z","last_refresh":old}),
+    )
+    .unwrap();
+    let s = FileAccountStore::open_with(d.path().into(), oauth)
+        .await
+        .unwrap();
+    assert_ne!(
+        s.credentials(&"acct".into()).await.unwrap().access_token,
+        "cur"
+    );
+    assert_eq!(m.refreshes.load(Ordering::SeqCst), 1);
+    s.credentials(&"acct".into()).await.unwrap();
+    assert_eq!(m.refreshes.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn legacy_names_migrate() {
+    let (_m, oauth) = spawn().await;
+    let d = tempfile::tempdir().unwrap();
+    // legacy file name from the first cpa-lite version, with a routing field
+    cpa_lite_auth::file::write_auth_file(
+        d.path(),
+        "codex-a@x.com-plus",
+        &json!({"access_token":"t","refresh_token":"r",
+        "account_id":"acc-1","email":"a@x.com","plan_type":"plus","weight":7}),
+    )
+    .unwrap();
+    // re-login merges into the hashed name and drops the legacy file
+    let id = login::save_tokens(d.path(), &serde_json::from_value(tokens(0)).unwrap()).unwrap();
+    assert_eq!(id, "codex-cf9df9b9-a@x.com-plus");
+    assert!(!d.path().join("codex-a@x.com-plus.json").exists());
+    let v: Value =
+        serde_json::from_slice(&std::fs::read(d.path().join(format!("{id}.json"))).unwrap())
+            .unwrap();
+    assert_eq!(v["weight"], 7);
+    // startup migration renames
+    cpa_lite_auth::file::write_auth_file(
+        d.path(),
+        "codex-b@y.com",
+        &json!({"access_token":"t","account_id":"acc-9","email":"b@y.com"}),
+    )
+    .unwrap();
+    let s = FileAccountStore::open_with(d.path().into(), oauth)
+        .await
+        .unwrap();
+    let ids: Vec<_> = s.list().await.into_iter().map(|a| a.id).collect();
+    assert!(
+        ids.contains(&"codex-82a524c4-b@y.com".to_string()),
+        "{ids:?}"
+    );
+    assert_eq!(ids.len(), 2);
+}
+
+#[tokio::test]
+async fn refresh_waits_for_cross_process_lock_and_rereads() {
+    let (m, oauth) = spawn().await;
+    let d = tempfile::tempdir().unwrap();
+    expired_file(d.path());
+    let s = Arc::new(
+        FileAccountStore::open_with(d.path().into(), oauth)
+            .await
+            .unwrap(),
+    );
+    // "other process": holds the flock, refreshes the file on disk, then releases.
+    let g = cpa_lite_auth::file::FileLock::acquire(d.path(), "acct").unwrap();
+    let t = tokio::spawn({
+        let s = s.clone();
+        async move { s.credentials(&"acct".into()).await.unwrap() }
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!t.is_finished());
+    let fresh = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+    cpa_lite_auth::file::write_auth_file(
+        d.path(),
+        "acct",
+        &json!({"access_token":"by-other","refresh_token":"rt-x","expired":fresh}),
+    )
+    .unwrap();
+    drop(g);
+    assert_eq!(t.await.unwrap().access_token, "by-other");
+    assert_eq!(m.refreshes.load(Ordering::SeqCst), 0);
 }

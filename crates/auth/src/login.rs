@@ -3,7 +3,7 @@
 //! - paste callback URL: print PKCE auth URL, user pastes `http://localhost:1455/auth/callback?code=..&state=..`
 //! - PKCE 1455: listener on 127.0.0.1 only, 5 min lifetime
 //! - import: `~/.codex/auth.json`
-use crate::file::{account_id_for, merge_tokens, write_auth_file};
+use crate::file::{account_id_for, existing_for, merge_tokens, write_auth_file, FileLock};
 use crate::oauth::{random_state, OAuthClient, Pkce, TokenResponse, LOCAL_REDIRECT_URI};
 use cpa_lite_core::AuthError;
 use serde::Deserialize;
@@ -20,12 +20,19 @@ pub const CALLBACK_PORT: u16 = 1455;
 pub fn save_tokens(auth_dir: &Path, t: &TokenResponse) -> Result<String, AuthError> {
     let fresh = merge_tokens(None, t);
     let id = account_id_for(&fresh);
-    let prev = std::fs::read(auth_dir.join(format!("{id}.json")))
-        .ok()
-        .and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+    let _g = FileLock::acquire(auth_dir, &id)?;
+    let (id, prev, legacy) = existing_for(auth_dir, &fresh);
     let v = merge_tokens(prev.as_ref(), t);
     write_auth_file(auth_dir, &id, &v)?;
+    remove_legacy(auth_dir, legacy);
     Ok(id)
+}
+
+fn remove_legacy(dir: &Path, legacy: Option<String>) {
+    if let Some(l) = legacy {
+        let _ = std::fs::remove_file(dir.join(format!("{l}.json")));
+        tracing::info!(from = %l, "migrated legacy auth file name");
+    }
 }
 
 // ---------- device code ----------
@@ -291,13 +298,12 @@ pub async fn import_codex_auth_json(src: &Path, auth_dir: &Path) -> Result<Strin
         o.insert("account_id".into(), acc.into());
     }
     let id = account_id_for(&fresh);
+    let _g = FileLock::acquire(auth_dir, &id)?;
+    let (id, prev, legacy) = existing_for(auth_dir, &fresh);
     if let Some(o) = fresh.as_object_mut() {
         if let Some(lr) = v.get("last_refresh").cloned() {
             o.insert("last_refresh".into(), lr);
         }
-        let prev = std::fs::read(auth_dir.join(format!("{id}.json")))
-            .ok()
-            .and_then(|b| serde_json::from_slice::<Value>(&b).ok());
         if let Some(Value::Object(p)) = prev {
             for (k, val) in p {
                 o.entry(k).or_insert(val);
@@ -305,5 +311,6 @@ pub async fn import_codex_auth_json(src: &Path, auth_dir: &Path) -> Result<Strin
         }
     }
     write_auth_file(auth_dir, &id, &fresh)?;
+    remove_legacy(auth_dir, legacy);
     Ok(id)
 }

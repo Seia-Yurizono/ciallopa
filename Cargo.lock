@@ -373,6 +373,7 @@ dependencies = [
  "chrono",
  "cpa-lite-core",
  "cpa-lite-upstream",
+ "libc",
  "rand",
  "reqwest",
  "serde",

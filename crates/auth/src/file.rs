@@ -72,7 +72,9 @@ pub fn write_auth_file(dir: &Path, id: &str, v: &Value) -> Result<PathBuf, AuthE
 /// Refresh when the access token expires within this window (INTERFACES: `exp < now+5m`).
 pub const REFRESH_SKEW: chrono::Duration = chrono::Duration::minutes(5);
 /// A `force_refresh` arriving within this window of a completed refresh reuses it (single-flight).
-const FORCE_DEDUP: Duration = Duration::from_secs(10);
+pub const FORCE_DEDUP: Duration = Duration::from_secs(10);
+/// codex-rs `TOKEN_REFRESH_INTERVAL` (days): refresh when `last_refresh` is older.
+pub const TOKEN_REFRESH_INTERVAL_DAYS: i64 = 8;
 
 impl AuthFile {
     /// `expired` (RFC3339, CPA) or else the access-token JWT `exp`.
@@ -90,6 +92,10 @@ impl AuthFile {
     }
     fn needs_refresh(&self, now: DateTime<Utc>) -> bool {
         self.expires_at().is_some_and(|e| e < now + REFRESH_SKEW)
+            || self
+                .s("last_refresh")
+                .and_then(|t| DateTime::parse_from_rfc3339(&t).ok())
+                .is_some_and(|t| t < now - chrono::Duration::days(TOKEN_REFRESH_INTERVAL_DAYS))
     }
     fn needs_relogin(&self) -> bool {
         self.raw.get("needs_relogin").and_then(Value::as_bool) == Some(true)
@@ -159,9 +165,22 @@ pub(crate) fn rfc3339(t: DateTime<Utc>) -> String {
     t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
-/// CPA `CredentialFileName` (without hash): `codex-<email>-<plan>`.
+/// CPA `CredentialFileName(email, plan, hash, true)`: `codex-<sha256(account_id)[:8]>-<email>-<plan>`
+/// (hash omitted when there is no account_id).
 pub fn account_id_for(v: &Value) -> String {
-    let email = v.get("email").and_then(Value::as_str).unwrap_or("unknown");
+    name_for(v, true)
+}
+/// Pre-hash name used by the first cpa-lite version (and old CPA): `codex-<email>-<plan>`.
+pub fn legacy_account_id_for(v: &Value) -> String {
+    name_for(v, false)
+}
+fn name_for(v: &Value, with_hash: bool) -> String {
+    use sha2::Digest;
+    let email = v
+        .get("email")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("unknown");
     let plan: Vec<String> = v
         .get("plan_type")
         .and_then(Value::as_str)
@@ -170,12 +189,113 @@ pub fn account_id_for(v: &Value) -> String {
         .filter(|p| !p.is_empty())
         .map(str::to_lowercase)
         .collect();
-    let base = if plan.is_empty() {
-        format!("codex-{email}")
-    } else {
-        format!("codex-{email}-{}", plan.join("-"))
+    let mut parts = vec!["codex".to_string()];
+    if let Some(acc) = v
+        .get("account_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|a| !a.is_empty() && with_hash)
+    {
+        let d = sha2::Sha256::digest(acc.as_bytes());
+        parts.push(d.iter().take(4).map(|b| format!("{b:02x}")).collect());
+    }
+    parts.push(email.to_string());
+    if !plan.is_empty() {
+        parts.push(plan.join("-"));
+    }
+    parts.join("-").replace(['/', '\\'], "_")
+}
+
+/// Read an existing record for `v`'s account (new or legacy name). Returns (id, prev, legacy_id_to_remove).
+pub(crate) fn existing_for(dir: &Path, v: &Value) -> (String, Option<Value>, Option<String>) {
+    let read = |id: &str| {
+        std::fs::read(dir.join(format!("{id}.json")))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
     };
-    base.replace(['/', '\\'], "_")
+    let id = account_id_for(v);
+    if let Some(p) = read(&id) {
+        return (id, Some(p), None);
+    }
+    let legacy = legacy_account_id_for(v);
+    if legacy != id {
+        if let Some(p) = read(&legacy) {
+            let same = p
+                .get("account_id")
+                .and_then(Value::as_str)
+                .is_none_or(|a| Some(a) == v.get("account_id").and_then(Value::as_str));
+            if same {
+                return (id, Some(p), Some(legacy));
+            }
+        }
+    }
+    (id, None, None)
+}
+
+/// Rename legacy `codex-<email>-<plan>.json` files to the hashed CPA name. Returns renamed count.
+pub fn migrate_legacy_names(dir: &Path) -> Result<usize, AuthError> {
+    let mut n = 0;
+    for f in FileAccountStore::scan(dir)? {
+        if f.s("account_id").is_none() || f.id != legacy_account_id_for(&f.raw) {
+            continue;
+        }
+        let new_id = account_id_for(&f.raw);
+        let _g = FileLock::acquire(dir, &f.id)?;
+        if dir.join(format!("{new_id}.json")).exists() {
+            continue;
+        }
+        std::fs::rename(
+            dir.join(format!("{}.json", f.id)),
+            dir.join(format!("{new_id}.json")),
+        )?;
+        tracing::info!(from = %f.id, to = %new_id, "migrated auth file name");
+        n += 1;
+    }
+    Ok(n)
+}
+
+/// Cross-process advisory lock (`flock(LOCK_EX)` on `<dir>/.<id>.json.lock`), like CPA filelock_unix.go.
+/// Not re-entrant across fds: never nest two locks for the same id.
+pub struct FileLock {
+    f: std::fs::File,
+}
+impl FileLock {
+    pub fn acquire(dir: &Path, id: &str) -> Result<Self, AuthError> {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::create_dir_all(dir)?;
+        let f = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(dir.join(format!(".{id}.json.lock")))?;
+        // SAFETY: valid open fd owned by `f`.
+        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(Self { f })
+    }
+    pub async fn acquire_async(dir: &Path, id: &str) -> Result<Self, AuthError> {
+        let (dir, id) = (dir.to_path_buf(), id.to_string());
+        tokio::task::spawn_blocking(move || Self::acquire(&dir, &id))
+            .await
+            .map_err(|e| AuthError::Invalid(format!("lock task: {e}")))?
+    }
+}
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+        // SAFETY: fd still owned by self.f.
+        unsafe { libc::flock(self.f.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
+fn read_one(dir: &Path, id: &str) -> Option<Value> {
+    std::fs::read(dir.join(format!("{id}.json")))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
 }
 
 type RefreshLock = Arc<tokio::sync::Mutex<Option<Instant>>>;
@@ -185,6 +305,7 @@ pub struct FileAccountStore {
     files: RwLock<Vec<AuthFile>>,
     oauth: Option<OAuthClient>,
     locks: std::sync::Mutex<HashMap<AccountId, RefreshLock>>,
+    force_dedup: Duration,
 }
 impl FileAccountStore {
     /// Store without refresh capability (tests / read-only use).
@@ -201,9 +322,18 @@ impl FileAccountStore {
             files: RwLock::new(vec![]),
             oauth,
             locks: Default::default(),
+            force_dedup: FORCE_DEDUP,
         };
+        if let Err(e) = migrate_legacy_names(&s.dir) {
+            tracing::warn!(error = %e, "auth file name migration failed");
+        }
         s.reload().await?;
         Ok(s)
+    }
+    /// Window in which a repeated `force_refresh` reuses the last refresh (tests shorten it).
+    pub fn with_force_dedup(mut self, d: Duration) -> Self {
+        self.force_dedup = d;
+        self
     }
     async fn get(&self, id: &AccountId) -> Result<AuthFile, AuthError> {
         self.files
@@ -232,7 +362,21 @@ impl FileAccountStore {
     async fn refresh(&self, id: &AccountId, force: bool) -> Result<Credentials, AuthError> {
         let lock = self.lock_for(id);
         let mut last = lock.lock().await;
-        let f = self.get(id).await?;
+        // Cross-process: another cpa-lite / CPA may refresh the same file. Re-read under flock.
+        let _flock = FileLock::acquire_async(&self.dir, id).await?;
+        let mut f = self.get(id).await?;
+        if let Some(raw) = read_one(&self.dir, id) {
+            if raw != f.raw {
+                f = AuthFile {
+                    id: f.id.clone(),
+                    raw,
+                };
+                let mut files = self.files.write().await;
+                if let Some(x) = files.iter_mut().find(|x| x.id == f.id) {
+                    *x = f.clone();
+                }
+            }
+        }
         if f.needs_relogin() {
             return Err(AuthError::ReloginRequired);
         }
@@ -240,7 +384,7 @@ impl FileAccountStore {
         if !force && !f.needs_refresh(now) {
             return f.credentials(); // someone else refreshed while we waited
         }
-        if force && last.is_some_and(|t| t.elapsed() < FORCE_DEDUP) {
+        if force && last.is_some_and(|t| t.elapsed() < self.force_dedup) {
             return f.credentials();
         }
         let oauth = self
