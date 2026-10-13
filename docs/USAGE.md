@@ -45,7 +45,9 @@ writer OS thread "usage-writer":  recv first msg → collect until batch_size or
 | `duration_ms` | request start → end of stream / turn |
 | `in_tok`, `out_tok`, `cached_tok`, `reasoning_tok` | from `response.usage` |
 | `cw_tok` | `input_tokens_details.cache_write_tokens` (part of `in_tok`) |
-| `tier` | `service_tier`: response's `response.service_tier`, else the request body's (`priority` = Fast mode, `flex`, `default`/`auto` = standard) |
+| `tier` | `service_tier` actually served: terminal event's `response.service_tier` (wins), else `response.created`'s, else the request body's; `auto` from a response is ignored (`priority` = Fast mode, `flex`, `default`/`auto` = standard). Pricing uses this. |
+| `req_tier` | v5: request body's `service_tier` (`fast` stored as `priority`), kept even when downgraded |
+| `resp_model`, `resp_effort` | v5: `response.model` / `response.reasoning.effort` (terminal event wins over `response.created`; SSE and WS) |
 | `thread`, `turn` | Codex thread / turn id from the `thread-id` header, `x-codex-turn-metadata` (JSON `thread_id`, `turn_id`) or body `client_metadata` (WS `response.create`). Stored for a future authoritative cost lookup; nothing queries upstream yet. Values > 128 chars are ignored. |
 | `key` | **label** of the client key that made the request (`[[api_keys]] label`, or `key-<sha256[..8]>` for plain keys). The raw key is never stored. |
 | `instance` | `instance_id` of the ciallopa that wrote the row (default: hostname) |
@@ -123,12 +125,14 @@ Filters on both list endpoints: `account=`, `model=`, `key=<label>`, `instance=`
 - `GET /usage/v1/records?limit=100&before=<ms>&since=<ms>&errors=1&<filters>`
   → `{"records":[…]}` newest first (limit ≤ 1000; `before` = pagination cursor). Rows include
   `key`, `instance`, `plan`, `primary_used_pct`, `primary_reset_at`, `secondary_*`,
-  `cache_write_tokens`, `service_tier`, `thread_id`, `turn_id`, `cost_usd`, `price_status`
+  `cache_write_tokens`, `service_tier`, `requested_service_tier`, `response_model`, `response_effort`,
+  `model_mismatch` (null = no response model; false = same ignoring case and a `-YYYY-MM-DD` snapshot
+  suffix; true = different), `thread_id`, `turn_id`, `cost_usd`, `price_status`
   (`ok` | `unknown_price` | `no_tokens`), `has_detail`.
 - `GET /usage/v1/records/{request_id}/detail` → `{request_id, ts_ms, message, body, body_len,
   truncated, headers:{…}}` (404 if none, 400 if the id is not 16 hex chars). See *Error details*.
 - `GET /usage/v1/summary?range=24h&group=key,instance&<filters>` (or `7d`, `30m`, …; or
-  `from=<ms>&to=<ms>`). `group` = comma list of `account,model,key,instance,effort,transport,endpoint,tier`
+  `from=<ms>&to=<ms>`). `group` = comma list of `account,model,key,instance,effort,transport,endpoint,tier,response_model`
   (default `account,model`; unknown → 400)
   → `{"summary":{"group_by":[…],"total":{…},"groups":[{group:{key:…,instance:…}, count, errors, error_rate,
   ttft_p50_ms, ttft_p90_ms, duration_p50_ms, duration_p90_ms, input_tokens, output_tokens,

@@ -128,8 +128,43 @@ async fn main() {
             r.ttft_ms = Some(300 + (next() % 2_500) as u32);
         }
         r.duration_ms = r.ttft_ms.unwrap_or(500) + (next() % 20_000) as u32;
-        if next() % 10 == 0 {
-            r.service_tier = Some("priority".into());
+        // Model / effort / tier variants (the newest rows cover every case).
+        let m = r.model.clone();
+        r.resp_model = m.clone();
+        r.resp_effort = r.effort.clone();
+        r.service_tier = Some("default".into());
+        match if i >= n - 8 {
+            (n - 1 - i) as u64
+        } else {
+            next() % 12
+        } {
+            // Fast served
+            0 => {
+                r.req_tier = Some("priority".into());
+                r.service_tier = Some("priority".into());
+            }
+            // Fast requested, downgraded
+            1 => r.req_tier = Some("priority".into()),
+            // Flex served
+            2 => {
+                r.req_tier = Some("flex".into());
+                r.service_tier = Some("flex".into());
+            }
+            // dated snapshot (variant)
+            3 => r.resp_model = m.map(|m| format!("{m}-2026-09-30")),
+            // real mismatch
+            4 => r.resp_model = Some("gpt-5.6-luna".into()),
+            // no request effort: fall back to the response's
+            5 => {
+                r.effort = None;
+                r.resp_effort = Some("medium".into());
+            }
+            // xhigh
+            6 => {
+                r.effort = Some("xhigh".into());
+                r.resp_effort = Some("xhigh".into());
+            }
+            _ => {}
         }
         let prog = i as f64 / n as f64;
         if a != "evil" {

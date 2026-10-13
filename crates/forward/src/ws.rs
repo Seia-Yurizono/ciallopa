@@ -437,6 +437,13 @@ async fn relay(
                             let _ = dtx.send(close(CLOSE_REPLAY, CLOSE_REPLAY_REASON)).await;
                             break;
                         }
+                        if let (Some(t), WsMessage::Text(txt)) = (turn.as_mut(), &m) {
+                            if !done && proxy::memfind(txt.as_bytes(), b"\"response.created\"") {
+                                if let Ok(v) = serde_json::from_str::<serde_json::Value>(txt.as_str()) {
+                                    t.created_event(&v);
+                                }
+                            }
+                        }
                         let preamble = matches!(kind, proxy::EventKind::Preamble) && !done;
                         if awaiting && !started && preamble {
                             if let Some(d) = to_down(m) { held.push(d); }

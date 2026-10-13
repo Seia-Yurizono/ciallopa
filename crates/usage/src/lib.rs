@@ -79,6 +79,12 @@ pub struct Record {
     pub cache_write_tokens: Option<i64>,
     /// Response `service_tier` (else the request's), e.g. `default`, `flex`, `priority`.
     pub service_tier: Option<String>,
+    /// `service_tier` the client asked for (`fast` ≡ `priority`), kept even when downgraded.
+    pub req_tier: Option<String>,
+    /// `response.model` reported by the upstream (terminal event wins over `response.created`).
+    pub resp_model: Option<String>,
+    /// `response.reasoning.effort` actually used.
+    pub resp_effort: Option<String>,
     /// Codex `thread-id` / `x-codex-turn-metadata` (for a future authoritative cost lookup).
     pub thread_id: Option<String>,
     pub turn_id: Option<String>,
@@ -103,6 +109,35 @@ pub struct QuotaObs {
     pub s_window_min: Option<i64>,
 }
 
+/// `gpt-5.5-2026-01-15` → `gpt-5.5` (a dated snapshot is the same model).
+fn strip_snapshot(m: &str) -> &str {
+    let b = m.as_bytes();
+    if b.len() > 11 && b[b.len() - 11] == b'-' {
+        let d = &b[b.len() - 10..];
+        let ok = d.iter().enumerate().all(|(i, c)| {
+            if i == 4 || i == 7 {
+                *c == b'-'
+            } else {
+                c.is_ascii_digit()
+            }
+        });
+        if ok {
+            return &m[..m.len() - 11];
+        }
+    }
+    m
+}
+
+/// Requested vs response model: `None` when the upstream reported no model; `Some(false)` when
+/// equal ignoring case and a `-YYYY-MM-DD` snapshot suffix; `Some(true)` otherwise.
+pub fn model_mismatch(requested: Option<&str>, response: Option<&str>) -> Option<bool> {
+    let resp = response.map(str::trim).filter(|s| !s.is_empty())?;
+    let Some(req) = requested.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Some(true);
+    };
+    Some(!strip_snapshot(req).eq_ignore_ascii_case(strip_snapshot(resp)))
+}
+
 impl Record {
     pub fn new(id: i64, transport: Transport, endpoint: &'static str) -> Self {
         Self {
@@ -125,6 +160,9 @@ impl Record {
             reasoning_tokens: None,
             cache_write_tokens: None,
             service_tier: None,
+            req_tier: None,
+            resp_model: None,
+            resp_effort: None,
             thread_id: None,
             turn_id: None,
             key: None,
@@ -697,6 +735,97 @@ mod tests {
             .unwrap();
         assert!(s.total.cost_usd.unwrap() > 0.0);
         r.shutdown();
+    }
+
+    #[test]
+    fn model_mismatch_rule() {
+        assert_eq!(model_mismatch(Some("gpt-5.5"), None), None);
+        assert_eq!(model_mismatch(Some("gpt-5.5"), Some("")), None);
+        assert_eq!(
+            model_mismatch(Some("gpt-5.5"), Some("gpt-5.5")),
+            Some(false)
+        );
+        assert_eq!(
+            model_mismatch(Some("GPT-5.5"), Some("gpt-5.5")),
+            Some(false)
+        );
+        assert_eq!(
+            model_mismatch(Some("gpt-5.5"), Some("gpt-5.5-2026-09-30")),
+            Some(false)
+        );
+        assert_eq!(
+            model_mismatch(Some("gpt-5.5"), Some("gpt-5.6-luna")),
+            Some(true)
+        );
+        assert_eq!(model_mismatch(None, Some("gpt-5.5")), Some(true));
+        assert_eq!(
+            model_mismatch(Some("gpt-5.5"), Some("gpt-5.5-mini")),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn migrates_v4_db_and_roundtrips_v5_fields() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("u.db");
+        let old_id = (now_ms() - 5_000) << SEQ_BITS;
+        {
+            let mut c = rusqlite::Connection::open(&p).unwrap();
+            store::migrate(&mut c).unwrap();
+            c.execute_batch(&format!(
+                "ALTER TABLE requests DROP COLUMN req_tier;
+                 ALTER TABLE requests DROP COLUMN resp_model;
+                 ALTER TABLE requests DROP COLUMN resp_effort;
+                 INSERT INTO labels VALUES(1,'old-acct'),(2,'gpt-5.5'),(3,'default');
+                 INSERT INTO requests(id,account,model,transport,status,retries,switches,duration_ms,out_tok,tier)
+                   VALUES({old_id},1,2,1,200,0,0,5,7,3);
+                 PRAGMA user_version=4;"
+            ))
+            .unwrap();
+        }
+        let r = Recorder::open_as(
+            &UsageConfig {
+                path: p.clone(),
+                ..UsageConfig::default()
+            },
+            "h",
+        )
+        .unwrap();
+        let mut x = Record::new(r.ids.next_at(now_ms()), Transport::Sse, "responses");
+        x.status = 200;
+        x.model = Some("gpt-5.5".into());
+        x.req_tier = Some("priority".into());
+        x.service_tier = Some("default".into());
+        x.resp_model = Some("gpt-5.5-2026-09-30".into());
+        x.resp_effort = Some("medium".into());
+        assert!(r.record(x));
+        r.flush_blocking().unwrap();
+        let c = store::open_ro(&p).unwrap();
+        let v: i64 = c
+            .query_row("PRAGMA user_version", [], |x| x.get(0))
+            .unwrap();
+        assert_eq!(v, store::SCHEMA_VERSION);
+        let rows = store::recent(
+            &c,
+            &RecentQuery {
+                limit: 10,
+                ..Default::default()
+            },
+            &PriceTable::default(),
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 2);
+        let (new, old) = (&rows[0], &rows[1]);
+        assert_eq!(old.account.as_deref(), Some("old-acct"));
+        assert_eq!(old.service_tier.as_deref(), Some("default"));
+        assert_eq!(old.requested_service_tier, None);
+        assert_eq!(old.response_model, None);
+        assert_eq!(old.model_mismatch, None);
+        assert_eq!(new.requested_service_tier.as_deref(), Some("priority"));
+        assert_eq!(new.service_tier.as_deref(), Some("default"));
+        assert_eq!(new.response_model.as_deref(), Some("gpt-5.5-2026-09-30"));
+        assert_eq!(new.response_effort.as_deref(), Some("medium"));
+        assert_eq!(new.model_mismatch, Some(false));
     }
 
     #[test]

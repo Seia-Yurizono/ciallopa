@@ -187,6 +187,14 @@ async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: Bytes) -> Re
             h.insert("x-codex-primary-reset-at", reset.parse().unwrap());
             r
         }
+        "meta" => sse_resp(concat!(
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-m\",\"model\":\"gpt-5.5\",\"service_tier\":\"auto\",\"reasoning\":{\"effort\":\"low\"}}}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r-m\",\"model\":\"gpt-5.5-2026-09-30\",\"service_tier\":\"default\",\"reasoning\":{\"effort\":\"medium\"},\"usage\":{\"input_tokens\":5,\"output_tokens\":2}}}\n\n"
+        )),
+        "meta_created_only" => sse_resp(
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-c\",\"model\":\"gpt-5.5\",\"service_tier\":\"auto\",\"reasoning\":{\"effort\":\"high\"}}}\n\n",
+        ),
         "compact" => sse_resp(concat!(
             "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-c\"}}\n\n",
             "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"compaction\"}}\n\n",
@@ -229,7 +237,15 @@ async fn up_ws(State(m): State<Mock>, h: HeaderMap, ws: WebSocketUpgrade) -> Res
     let mut r = ws.on_upgrade(move |mut s| async move {
         while let Some(Ok(msg)) = s.recv().await {
             if let Message::Text(t) = msg {
-                if t.as_str().contains("limit") && (auth.contains("tok-a") || t.as_str().contains("prevlimit")) {
+                if t.as_str().contains("\"meta\"") {
+                    for f in [
+                        r#"{"type":"response.created","response":{"id":"r-m","model":"gpt-5.5","service_tier":"auto","reasoning":{"effort":"high"}}}"#,
+                        r#"{"type":"response.output_text.delta","delta":"ok"}"#,
+                        r#"{"type":"response.completed","response":{"id":"r-m","model":"gpt-5.6-luna","service_tier":"flex","reasoning":{"effort":"high"},"usage":{"input_tokens":5,"output_tokens":2}}}"#,
+                    ] {
+                        let _ = s.send(Message::Text(f.into())).await;
+                    }
+                } else if t.as_str().contains("limit") && (auth.contains("tok-a") || t.as_str().contains("prevlimit")) {
                     let _ = s.send(Message::Text(r#"{"type":"response.created","response":{"id":"r-a"}}"#.into())).await;
                     let _ = s.send(Message::Text(r#"{"type":"error","status":429,"error":{"type":"usage_limit_reached","resets_in_seconds":45}}"#.into())).await;
                 } else if t.as_str().contains("limit") {
@@ -1338,4 +1354,96 @@ async fn no_content_type_without_stream_hint_stays_passthrough() {
     .await;
     assert!(ct.is_empty(), "no hint: headers untouched");
     assert!(t.contains("usage_limit_reached"), "{t}");
+}
+
+#[tokio::test]
+async fn usage_captures_response_model_effort_and_tier() {
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as M};
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    // SSE: Fast requested (legacy "fast"), downgraded; no request effort; dated snapshot.
+    let r = e
+        .post("/v1/responses")
+        .header("x-test-mode", "meta")
+        .body(r#"{"model":"gpt-5.5","service_tier":"fast","stream":true,"input":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    r.text().await.unwrap();
+    // created-only stream: auto never becomes the served tier
+    let r = e
+        .post("/backend-api/codex/responses")
+        .header("x-test-mode", "meta_created_only")
+        .body(r#"{"model":"gpt-5.5","stream":true,"input":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    r.text().await.unwrap();
+    // WS turn: real mismatch + flex
+    let mut req = format!("ws://{}/v1/responses", e.proxy)
+        .into_client_request()
+        .unwrap();
+    req.headers_mut()
+        .insert("authorization", format!("Bearer {KEY}").parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    ws.send(M::text(
+        r#"{"type":"response.create","model":"gpt-5.5","service_tier":"flex","reasoning":{"effort":"high"},"tag":"meta"}"#,
+    ))
+    .await
+    .unwrap();
+    loop {
+        let t = ws
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .to_text()
+            .unwrap()
+            .to_string();
+        if t.contains("response.completed") {
+            break;
+        }
+    }
+    drop(ws);
+    let rows = wait_rows(&e, 3).await;
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    let (w, created, sse) = (&rows[0], &rows[1], &rows[2]);
+    assert_eq!(sse["requested_service_tier"], "priority");
+    assert_eq!(sse["service_tier"], "default");
+    assert_eq!(sse["response_model"], "gpt-5.5-2026-09-30");
+    assert_eq!(
+        sse["response_effort"], "medium",
+        "completed wins over created"
+    );
+    assert!(sse["reasoning_effort"].is_null());
+    assert_eq!(sse["model_mismatch"], false);
+    assert_eq!(created["response_model"], "gpt-5.5");
+    assert_eq!(created["response_effort"], "high");
+    assert!(created["service_tier"].is_null(), "auto ignored: {created}");
+    assert!(created["requested_service_tier"].is_null());
+    assert_eq!(w["transport"], "ws");
+    assert_eq!(w["requested_service_tier"], "flex");
+    assert_eq!(w["service_tier"], "flex");
+    assert_eq!(w["response_model"], "gpt-5.6-luna");
+    assert_eq!(w["model_mismatch"], true);
+    // summary grouped by response model
+    let v: serde_json::Value = e
+        .http
+        .get(format!(
+            "http://{}/usage/v1/summary?range=1h&group=response_model",
+            e.proxy
+        ))
+        .bearer_auth(KEY)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let gs = v["summary"]["groups"].as_array().unwrap();
+    assert!(
+        gs.iter()
+            .any(|g| g["group"]["response_model"] == "gpt-5.6-luna"),
+        "{v}"
+    );
 }

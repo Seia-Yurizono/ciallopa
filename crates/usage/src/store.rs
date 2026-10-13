@@ -6,7 +6,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
 
-pub(crate) const SCHEMA_VERSION: i64 = 4;
+pub(crate) const SCHEMA_VERSION: i64 = 5;
 
 const CREATE_V3: &str = r#"
 CREATE TABLE IF NOT EXISTS labels(
@@ -43,7 +43,11 @@ CREATE TABLE IF NOT EXISTS requests(
   tier          INTEGER,               -- labels.id, service_tier
   cw_tok        INTEGER,               -- cache_write_tokens (part of in_tok)
   thread        INTEGER,               -- labels.id, Codex thread id
-  turn          TEXT                   -- Codex turn id
+  turn          TEXT,                  -- Codex turn id
+  -- v5
+  req_tier      INTEGER,               -- labels.id, requested service_tier
+  resp_model    INTEGER,               -- labels.id, response.model
+  resp_effort   INTEGER                -- labels.id, response.reasoning.effort
 );
 -- Quota snapshots, one row only when an account's values change. id = observing request id.
 CREATE TABLE IF NOT EXISTS quota_obs(
@@ -83,6 +87,12 @@ ALTER TABLE requests ADD COLUMN thread INTEGER;
 ALTER TABLE requests ADD COLUMN turn TEXT;
 "#;
 
+const MIGRATE_4_TO_5: &str = r#"
+ALTER TABLE requests ADD COLUMN req_tier INTEGER;
+ALTER TABLE requests ADD COLUMN resp_model INTEGER;
+ALTER TABLE requests ADD COLUMN resp_effort INTEGER;
+"#;
+
 fn pragmas(c: &Connection) -> rusqlite::Result<()> {
     c.busy_timeout(std::time::Duration::from_secs(5))?;
     c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA temp_store=MEMORY;")
@@ -108,6 +118,9 @@ pub(crate) fn migrate(c: &mut Connection) -> rusqlite::Result<()> {
     }
     if has_requests && (1..=2).contains(&v) {
         tx.execute_batch(MIGRATE_2_TO_3)?;
+    }
+    if has_requests && (1..=4).contains(&v) {
+        tx.execute_batch(MIGRATE_4_TO_5)?;
     }
     tx.execute_batch(CREATE_V3)?;
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
@@ -232,8 +245,8 @@ pub(crate) fn insert_batch(
         let mut st = tx.prepare_cached(
             "INSERT OR IGNORE INTO requests(id,account,first_account,model,effort,transport,endpoint,\
              status,error,retries,switches,ttft_ms,duration_ms,in_tok,out_tok,cached_tok,reasoning_tok,\
-             key,instance,plan,p_pct,p_reset,s_pct,s_reset,tier,cw_tok,thread,turn) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28)",
+             key,instance,plan,p_pct,p_reset,s_pct,s_reset,tier,cw_tok,thread,turn,req_tier,resp_model,resp_effort) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31)",
         )?;
         let mut qst = tx.prepare_cached(
             "INSERT OR IGNORE INTO quota_obs(id,account,instance,plan,p_pct,p_reset,p_win,s_pct,s_reset,s_win) \
@@ -256,6 +269,9 @@ pub(crate) fn insert_batch(
             let plan = ws.label(&tx, q.and_then(|q| q.plan.as_deref()))?;
             let tier = ws.label(&tx, r.service_tier.as_deref())?;
             let thread = ws.label(&tx, r.thread_id.as_deref())?;
+            let req_tier = ws.label(&tx, r.req_tier.as_deref())?;
+            let resp_model = ws.label(&tx, r.resp_model.as_deref())?;
+            let resp_effort = ws.label(&tx, r.resp_effort.as_deref())?;
             let n = st.execute(params![
                 r.id,
                 account,
@@ -285,6 +301,9 @@ pub(crate) fn insert_batch(
                 r.cache_write_tokens,
                 thread,
                 r.turn_id,
+                req_tier,
+                resp_model,
+                resp_effort,
             ])?;
             if let (1, Some(d)) = (n, r.detail.as_deref()) {
                 if r.status >= 400 || r.error.is_some() {
@@ -432,7 +451,16 @@ pub struct RecordRow {
     pub secondary_used_pct: Option<f64>,
     pub secondary_reset_at: Option<i64>,
     pub cache_write_tokens: Option<i64>,
+    /// Tier actually served (response; else the request's). Pricing uses this.
     pub service_tier: Option<String>,
+    /// Tier the client asked for (`fast` normalised to `priority`).
+    pub requested_service_tier: Option<String>,
+    /// `response.model` reported by the upstream.
+    pub response_model: Option<String>,
+    /// `response.reasoning.effort` reported by the upstream.
+    pub response_effort: Option<String>,
+    /// null: no response model; false: same (or a dated snapshot of it); true: different.
+    pub model_mismatch: Option<bool>,
     pub thread_id: Option<String>,
     pub turn_id: Option<String>,
     /// Notional USD from tokens × price table at query time; null when unpriced.
@@ -492,7 +520,8 @@ pub(crate) fn recent(
     let sql = format!(
         "SELECT id,account,first_account,model,effort,transport,endpoint,status,error,retries,switches,\
          ttft_ms,duration_ms,in_tok,out_tok,cached_tok,reasoning_tok,key,instance,plan,p_pct,p_reset,s_pct,s_reset,\
-         tier,cw_tok,thread,turn,EXISTS(SELECT 1 FROM error_detail d WHERE d.id = requests.id) \
+         tier,cw_tok,thread,turn,EXISTS(SELECT 1 FROM error_detail d WHERE d.id = requests.id),\
+         req_tier,resp_model,resp_effort \
          FROM requests WHERE id BETWEEN ? AND ?{fsql}{} ORDER BY id DESC LIMIT ?",
         if q.errors_only { " AND (error IS NOT NULL OR status >= 400)" } else { "" }
     );
@@ -519,7 +548,13 @@ pub(crate) fn recent(
             [inp, out, cached, reasoning],
             cw,
         );
+        let resp_model = name(r.get(30)?);
+        let model_mismatch = crate::model_mismatch(model.as_deref(), resp_model.as_deref());
         Ok(RecordRow {
+            requested_service_tier: name(r.get(29)?),
+            response_model: resp_model,
+            response_effort: name(r.get(31)?),
+            model_mismatch,
             request_id: format!("{id:016x}"),
             ts_ms: id >> SEQ_BITS,
             account: name(r.get(1)?),
@@ -569,6 +604,7 @@ pub enum Dim {
     Transport,
     Endpoint,
     Tier,
+    RespModel,
 }
 impl Dim {
     pub fn parse(s: &str) -> Option<Self> {
@@ -581,6 +617,7 @@ impl Dim {
             "transport" => Dim::Transport,
             "endpoint" => Dim::Endpoint,
             "tier" | "service_tier" => Dim::Tier,
+            "response_model" | "resp_model" => Dim::RespModel,
             _ => return None,
         })
     }
@@ -594,12 +631,14 @@ impl Dim {
             Dim::Transport => "transport",
             Dim::Endpoint => "endpoint",
             Dim::Tier => "tier",
+            Dim::RespModel => "resp_model",
         }
     }
     pub fn name(self) -> &'static str {
         match self {
             Dim::Effort => "reasoning_effort",
             Dim::Tier => "service_tier",
+            Dim::RespModel => "response_model",
             d => d.col(),
         }
     }

@@ -17,6 +17,10 @@ pub(crate) struct Tracker {
     terminal: bool,
     /// Bytes of a not-yet-complete SSE event (only the tail is kept).
     scan: Vec<u8>,
+    /// `response.created` already parsed.
+    created: bool,
+    /// A terminal event set the served tier (`response.created` must not override it).
+    tier_final: bool,
 }
 
 /// Map an upstream path (`/codex/responses/compact?..`) to a short endpoint label.
@@ -46,6 +50,8 @@ impl Tracker {
             start: Instant::now(),
             terminal: false,
             scan: Vec::new(),
+            created: false,
+            tier_final: false,
         })
     }
 
@@ -82,6 +88,12 @@ impl Tracker {
             .and_then(|v| v.as_str())
             .and_then(short)
         {
+            let t = if t.eq_ignore_ascii_case("fast") {
+                "priority".to_string()
+            } else {
+                t
+            };
+            self.rec.req_tier = Some(t.clone());
             self.rec.service_tier = Some(t);
         }
         if let Some(cm) = b.get("client_metadata") {
@@ -188,6 +200,43 @@ impl Tracker {
         self.detail().set_body(b);
     }
 
+    /// `response.created`: provisional response model / effort / tier (terminal events win).
+    pub(crate) fn created_event(&mut self, v: &Value) {
+        if self.created || self.terminal {
+            return;
+        }
+        self.created = true;
+        if let Some(r) = v.get("response") {
+            self.response_meta(r, false);
+        }
+    }
+
+    fn response_meta(&mut self, r: &Value, terminal: bool) {
+        let s = |k: &str| r.get(k).and_then(|v| v.as_str()).and_then(short);
+        if let Some(m) = s("model") {
+            if terminal || self.rec.resp_model.is_none() {
+                self.rec.resp_model = Some(m);
+            }
+        }
+        if let Some(e) = r
+            .get("reasoning")
+            .and_then(|x| x.get("effort"))
+            .and_then(|v| v.as_str())
+            .and_then(short)
+        {
+            if terminal || self.rec.resp_effort.is_none() {
+                self.rec.resp_effort = Some(e);
+            }
+        }
+        // `auto` is a request-side alias, never the served tier.
+        if let Some(t) = s("service_tier").filter(|t| !t.eq_ignore_ascii_case("auto")) {
+            if terminal || !self.tier_final {
+                self.rec.service_tier = Some(t);
+                self.tier_final |= terminal;
+            }
+        }
+    }
+
     /// A terminal Responses event (`response.completed` / `failed` / `incomplete` / `error`).
     pub(crate) fn terminal_event(&mut self, v: &Value) {
         self.terminal = true;
@@ -208,12 +257,8 @@ impl Tracker {
                 .and_then(|d| d.get("cache_write_tokens")));
         }
         // The tier actually used (e.g. `priority` may be downgraded) wins over the request's.
-        if let Some(t) = resp
-            .and_then(|r| r.get("service_tier"))
-            .and_then(|v| v.as_str())
-            .and_then(short)
-        {
-            self.rec.service_tier = Some(t);
+        if let Some(r) = resp {
+            self.response_meta(r, true);
         }
         match ty {
             "response.completed" | "response.done" => {}
@@ -258,6 +303,10 @@ impl Tracker {
             if is_terminal(ev) {
                 if let Some(v) = sse_data_json(ev) {
                     self.terminal_event(&v);
+                }
+            } else if !self.created && crate::proxy::memfind(ev, b"\"response.created\"") {
+                if let Some(v) = sse_data_json(ev) {
+                    self.created_event(&v);
                 }
             }
             start += end + sep;
