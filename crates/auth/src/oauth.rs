@@ -1,6 +1,6 @@
 //! OAuth constants and wire calls, mirroring codex-rs `login` (and CPA `internal/auth/codex`).
 use base64::Engine;
-use cpa_lite_core::AuthError;
+use ciallopa_core::AuthError;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::Digest;
@@ -27,7 +27,7 @@ pub struct OAuthClient {
 impl OAuthClient {
     /// Production endpoints via the pinned upstream client (honours the global egress proxy).
     pub fn new(proxy_url: &str) -> Result<Self, AuthError> {
-        let http = cpa_lite_upstream::build_reqwest(&cpa_lite_upstream::ClientOptions {
+        let http = ciallopa_upstream::build_reqwest(&ciallopa_upstream::ClientOptions {
             proxy_url: proxy_url.to_string(),
             connect_timeout: Some(Duration::from_secs(10)),
         })

@@ -1,6 +1,6 @@
 //! Session identity extraction — port of CPA `sdk/cliproxy/session/info.go`
 //! (`ExtractSessionInfo`) + `selector.go` (`extractSessionIDs`, message-hash fallback).
-use cpa_lite_core::SessionInfo;
+use ciallopa_core::SessionInfo;
 use http::HeaderMap;
 use serde_json::Value;
 use sha2::{Digest, Sha256};

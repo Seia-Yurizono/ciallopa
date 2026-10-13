@@ -5,19 +5,19 @@ use crate::{map_path, pq, proxy, session_route, AppState};
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{OriginalUri, State};
 use axum::response::Response;
-use cpa_lite_core::{AccountId, Outcome, RouteError, RouteRequest};
-use cpa_lite_routing::{parse_quota, parse_quota_event_headers};
-use cpa_lite_upstream::retry::{delay_for, is_retryable_status};
-use cpa_lite_upstream::ws::handshake_status;
-use cpa_lite_upstream::{UpstreamWs, WsMessage};
-use cpa_lite_usage::Transport;
+use ciallopa_core::{AccountId, Outcome, RouteError, RouteRequest};
+use ciallopa_routing::{parse_quota, parse_quota_event_headers};
+use ciallopa_upstream::retry::{delay_for, is_retryable_status};
+use ciallopa_upstream::ws::handshake_status;
+use ciallopa_upstream::{UpstreamWs, WsMessage};
+use ciallopa_usage::Transport;
 use futures::{SinkExt, StreamExt};
 use http::{HeaderMap, StatusCode};
 use std::time::Duration;
 use tungstenite_close::{CloseCode, UpCloseFrame};
 
 mod tungstenite_close {
-    pub use cpa_lite_upstream::ws_close::{CloseCode, CloseFrame as UpCloseFrame};
+    pub use ciallopa_upstream::ws_close::{CloseCode, CloseFrame as UpCloseFrame};
 }
 
 /// Close code used when the upstream account hit its limit mid-turn and the turn cannot be

@@ -1,7 +1,7 @@
 listen = "127.0.0.1:8317"
 api_keys = ["sk-cpa-change-me-0123456789"]
 upstream = "https://chatgpt.com/backend-api"
-auth_dir = "~/.cpa-lite/auths"
+auth_dir = "~/.ciallopa/auths"
 proxy_url = ""
 
 [routing]
@@ -14,5 +14,5 @@ quota_avoid_threshold = 0.0   # 0 = off (default); error-driven cooldown + switc
 
 [usage]
 enabled = true
-path = "~/.cpa-lite/usage.db"
+path = "~/.ciallopa/usage.db"
 retention_days = 90   # default 90; 0 = keep forever (requests + error details)

@@ -1,18 +1,19 @@
+use ciallopa_core::{logging, Config};
+use ciallopa_forward::AppState;
 use clap::{Parser, Subcommand};
-use cpa_lite_core::{logging, Config};
-use cpa_lite_forward::AppState;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(
-    name = "cpa-lite",
+    name = "ciallopa",
     version,
     about = "Minimal Codex multi-account proxy"
 )]
 struct Cli {
-    #[arg(short, long, env = "CPA_LITE_CONFIG", default_value = "config.toml")]
-    config: PathBuf,
+    /// Config file (env `CIALLOPA_CONFIG`, legacy `CPA_LITE_CONFIG`; default `config.toml`).
+    #[arg(short, long)]
+    config: Option<PathBuf>,
     #[command(subcommand)]
     cmd: Option<Cmd>,
 }
@@ -54,15 +55,27 @@ enum PricesCmd {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    let cfg = if cli.config.exists() {
-        Config::load(&cli.config)?
+    let env_cfg = ciallopa_core::config::env_var("CONFIG");
+    let config_path = cli
+        .config
+        .clone()
+        .or_else(|| env_cfg.as_ref().map(|(v, _)| PathBuf::from(v)))
+        .unwrap_or_else(|| PathBuf::from("config.toml"));
+    let cfg = if config_path.exists() {
+        Config::load(&config_path)?
     } else {
         Config::parse("")?
     };
     logging::init(&cfg.log.level);
+    if cli.config.is_none() && matches!(env_cfg, Some((_, true))) {
+        tracing::warn!("CPA_LITE_CONFIG is deprecated; rename it to CIALLOPA_CONFIG");
+    }
+    if let Some(old) = ciallopa_core::config::legacy_dir_in_use() {
+        tracing::warn!(dir = %old.display(), "~/.ciallopa not found; using legacy ~/.cpa-lite (move it to ~/.ciallopa)");
+    }
     match cli.cmd.unwrap_or(Cmd::Serve) {
         Cmd::Login { method, from } => {
-            use cpa_lite_auth::login;
+            use ciallopa_auth::login;
             let dir = cfg.auth_dir.clone();
             let oauth = oauth_client(&cfg)?;
             let id = match method.as_str() {
@@ -91,8 +104,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     write,
                 },
         } => {
-            let src = cpa_lite::prices_cli::fetch_source(&cfg, &from).await?;
-            let o = cpa_lite::prices_cli::sync_with(&cfg.usage.prices, &src, &provider, write)?;
+            let src = ciallopa::prices_cli::fetch_source(&cfg, &from).await?;
+            let o = ciallopa::prices_cli::sync_with(&cfg.usage.prices, &src, &provider, write)?;
             print!("{}", o.report);
             return Ok(());
         }
@@ -105,10 +118,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::warn!("api_keys is empty: every proxied request will get 401");
     }
     let usage = if cfg.usage.enabled {
-        match cpa_lite_usage::Recorder::open_as(&cfg.usage, &cfg.instance_id) {
+        match ciallopa_usage::Recorder::open_as(&cfg.usage, &cfg.instance_id) {
             Ok(r) => {
                 tracing::info!(path = %cfg.usage.path.display(), instance = %cfg.instance_id, "usage log enabled");
-                match cpa_lite_usage::PriceTable::load(&cfg.usage.prices) {
+                match ciallopa_usage::PriceTable::load(&cfg.usage.prices) {
                     Ok(p) if p.is_empty() => {
                         tracing::info!(path = %cfg.usage.prices.display(), "no price table; cost_usd stays null")
                     }
@@ -132,17 +145,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = AppState {
         usage: usage.clone(),
         accounts: Arc::new(
-            cpa_lite_auth::FileAccountStore::open_with(cfg.auth_dir.clone(), oauth_client(&cfg)?)
+            ciallopa_auth::FileAccountStore::open_with(cfg.auth_dir.clone(), oauth_client(&cfg)?)
                 .await?,
         ),
-        router: Arc::new(cpa_lite_routing::CpaRouter::new(cfg.routing.clone())),
-        upstream: Arc::new(cpa_lite_upstream::UpstreamClient::new(&cfg)?),
+        router: Arc::new(ciallopa_routing::CpaRouter::new(cfg.routing.clone())),
+        upstream: Arc::new(ciallopa_upstream::UpstreamClient::new(&cfg)?),
         config: Arc::new(cfg),
     };
     let listen = state.config.listen;
-    let app = cpa_lite::build_app(state);
+    let app = ciallopa::build_app(state);
     let ln = tokio::net::TcpListener::bind(listen).await?;
-    tracing::info!(%listen, "cpa-lite listening");
+    tracing::info!(%listen, "ciallopa listening");
     axum::serve(ln, app)
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
@@ -154,11 +167,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Production OAuth client; `CPA_LITE_OAUTH_ISSUER` overrides the issuer (tests / mocks only).
-fn oauth_client(cfg: &Config) -> Result<cpa_lite_auth::OAuthClient, Box<dyn std::error::Error>> {
-    let c = cpa_lite_auth::OAuthClient::new(&cfg.proxy_url)?;
-    Ok(match std::env::var("CPA_LITE_OAUTH_ISSUER") {
-        Ok(i) if !i.is_empty() => cpa_lite_auth::OAuthClient::with_issuer(&i, c.http),
+/// Production OAuth client; `CIALLOPA_OAUTH_ISSUER` (legacy `CPA_LITE_OAUTH_ISSUER`) overrides the issuer (tests / mocks only).
+fn oauth_client(cfg: &Config) -> Result<ciallopa_auth::OAuthClient, Box<dyn std::error::Error>> {
+    let c = ciallopa_auth::OAuthClient::new(&cfg.proxy_url)?;
+    Ok(match ciallopa_core::config::env_var("OAUTH_ISSUER") {
+        Some((i, _)) if !i.is_empty() => ciallopa_auth::OAuthClient::with_issuer(&i, c.http),
         _ => c,
     })
 }

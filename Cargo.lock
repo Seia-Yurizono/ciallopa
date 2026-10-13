@@ -252,6 +252,142 @@ dependencies = [
 ]
 
 [[package]]
+name = "ciallopa"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "axum",
+ "base64",
+ "bytes",
+ "ciallopa-auth",
+ "ciallopa-core",
+ "ciallopa-forward",
+ "ciallopa-routing",
+ "ciallopa-upstream",
+ "ciallopa-usage",
+ "clap",
+ "futures",
+ "http",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite",
+ "tower",
+ "tracing",
+ "zstd",
+]
+
+[[package]]
+name = "ciallopa-auth"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "axum",
+ "base64",
+ "chrono",
+ "ciallopa-core",
+ "ciallopa-upstream",
+ "libc",
+ "rand",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "ciallopa-core"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "http",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "ciallopa-forward"
+version = "0.0.1"
+dependencies = [
+ "axum",
+ "base64",
+ "bytes",
+ "ciallopa-core",
+ "ciallopa-routing",
+ "ciallopa-upstream",
+ "ciallopa-usage",
+ "futures",
+ "http",
+ "reqwest",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "zstd",
+]
+
+[[package]]
+name = "ciallopa-routing"
+version = "0.0.1"
+dependencies = [
+ "ciallopa-core",
+ "http",
+ "httpdate",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "ciallopa-upstream"
+version = "0.0.1"
+dependencies = [
+ "bytes",
+ "ciallopa-core",
+ "futures",
+ "h2",
+ "http",
+ "hyper",
+ "rand",
+ "reqwest",
+ "rustls",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "tungstenite",
+]
+
+[[package]]
+name = "ciallopa-usage"
+version = "0.0.1"
+dependencies = [
+ "ciallopa-core",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "toml",
+ "tracing",
+]
+
+[[package]]
 name = "clap"
 version = "4.5.58"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -350,142 +486,6 @@ name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
-
-[[package]]
-name = "cpa-lite"
-version = "0.0.1"
-dependencies = [
- "async-trait",
- "axum",
- "base64",
- "bytes",
- "clap",
- "cpa-lite-auth",
- "cpa-lite-core",
- "cpa-lite-forward",
- "cpa-lite-routing",
- "cpa-lite-upstream",
- "cpa-lite-usage",
- "futures",
- "http",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "subtle",
- "tempfile",
- "tokio",
- "tokio-tungstenite",
- "tower",
- "tracing",
- "zstd",
-]
-
-[[package]]
-name = "cpa-lite-auth"
-version = "0.0.1"
-dependencies = [
- "async-trait",
- "axum",
- "base64",
- "chrono",
- "cpa-lite-core",
- "cpa-lite-upstream",
- "libc",
- "rand",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "tokio",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "cpa-lite-core"
-version = "0.0.1"
-dependencies = [
- "async-trait",
- "http",
- "regex",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror",
- "toml",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "cpa-lite-forward"
-version = "0.0.1"
-dependencies = [
- "axum",
- "base64",
- "bytes",
- "cpa-lite-core",
- "cpa-lite-routing",
- "cpa-lite-upstream",
- "cpa-lite-usage",
- "futures",
- "http",
- "reqwest",
- "serde_json",
- "tokio",
- "tracing",
- "zstd",
-]
-
-[[package]]
-name = "cpa-lite-routing"
-version = "0.0.1"
-dependencies = [
- "cpa-lite-core",
- "http",
- "httpdate",
- "serde_json",
- "sha2",
-]
-
-[[package]]
-name = "cpa-lite-upstream"
-version = "0.0.1"
-dependencies = [
- "bytes",
- "cpa-lite-core",
- "futures",
- "h2",
- "http",
- "hyper",
- "rand",
- "reqwest",
- "rustls",
- "serde_json",
- "thiserror",
- "tokio",
- "tokio-tungstenite",
- "tracing",
- "tungstenite",
-]
-
-[[package]]
-name = "cpa-lite-usage"
-version = "0.0.1"
-dependencies = [
- "cpa-lite-core",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "tokio",
- "toml",
- "tracing",
-]
 
 [[package]]
 name = "cpufeatures"

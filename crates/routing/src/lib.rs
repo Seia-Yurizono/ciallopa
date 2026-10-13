@@ -14,8 +14,8 @@ pub use quota::{
 pub use session::{bound_session_identity, extract_session, normalize_explicit_id};
 
 use cache::SessionCache;
-use cpa_lite_core::config::{RebindOn, RoutingConfig, Strategy};
-use cpa_lite_core::{
+use ciallopa_core::config::{RebindOn, RoutingConfig, Strategy};
+use ciallopa_core::{
     Account, AccountId, Outcome, QuotaSnapshot, RouteError, RouteRequest, Router, Selection,
 };
 use std::collections::HashMap;

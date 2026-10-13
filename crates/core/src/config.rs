@@ -223,13 +223,13 @@ impl Default for UsageConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            path: PathBuf::from("~/.cpa-lite/usage.db"),
+            path: PathBuf::from("~/.ciallopa/usage.db"),
             retention_days: 90,
             queue_size: 8192,
             batch_size: 256,
             flush_ms: 50,
             quota_weights: QuotaWeights::default(),
-            prices: PathBuf::from("~/.cpa-lite/prices.toml"),
+            prices: PathBuf::from("~/.ciallopa/prices.toml"),
         }
     }
 }
@@ -262,7 +262,7 @@ impl Default for Config {
             api_keys: vec![],
             instance_id: String::new(),
             upstream: "https://chatgpt.com/backend-api".into(),
-            auth_dir: PathBuf::from("~/.cpa-lite/auths"),
+            auth_dir: PathBuf::from("~/.ciallopa/auths"),
             proxy_url: String::new(),
             max_body_mb: 16,
             routing: RoutingConfig::default(),
@@ -353,7 +353,7 @@ impl Config {
     }
 }
 
-/// `/proc/sys/kernel/hostname`, `$HOSTNAME`, else "cpa-lite".
+/// `/proc/sys/kernel/hostname`, `$HOSTNAME`, else "ciallopa".
 pub fn hostname() -> String {
     std::fs::read_to_string("/proc/sys/kernel/hostname")
         .ok()
@@ -361,7 +361,7 @@ pub fn hostname() -> String {
         .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
         .map(|h| h.trim().to_string())
         .filter(|h| !h.is_empty())
-        .unwrap_or_else(|| "cpa-lite".into())
+        .unwrap_or_else(|| "ciallopa".into())
 }
 
 pub fn parse_duration(s: &str) -> Result<Duration, ConfigError> {
@@ -378,16 +378,82 @@ pub fn parse_duration(s: &str) -> Result<Duration, ConfigError> {
     Ok(Duration::from_secs(secs))
 }
 
+/// Data dir of the old project name (`cpa-lite`), used as a fallback only.
+pub const LEGACY_DIR: &str = ".cpa-lite";
+/// Current data dir under `$HOME`.
+pub const DATA_DIR: &str = ".ciallopa";
+
+static LEGACY_USED: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// `Some(old dir)` when a `~/.ciallopa/…` path was redirected to the legacy `~/.cpa-lite`
+/// (log a hint after logging is up).
+pub fn legacy_dir_in_use() -> Option<&'static Path> {
+    LEGACY_USED.get().map(PathBuf::as_path)
+}
+
 fn expand_tilde(p: &Path) -> PathBuf {
     match (p.strip_prefix("~"), std::env::var_os("HOME")) {
-        (Ok(rest), Some(home)) => PathBuf::from(home).join(rest),
+        (Ok(rest), Some(home)) => {
+            let home = PathBuf::from(home);
+            let (out, legacy) = resolve_home(&home, rest, |d| d.exists());
+            if legacy {
+                let _ = LEGACY_USED.set(home.join(LEGACY_DIR));
+            }
+            out
+        }
         _ => p.to_path_buf(),
     }
+}
+
+/// `~/.ciallopa/x` → `$HOME/.cpa-lite/x` iff `~/.ciallopa` is missing and `~/.cpa-lite` exists.
+fn resolve_home(home: &Path, rest: &Path, exists: impl Fn(&Path) -> bool) -> (PathBuf, bool) {
+    if let Ok(sub) = rest.strip_prefix(DATA_DIR) {
+        let (new, old) = (home.join(DATA_DIR), home.join(LEGACY_DIR));
+        if !exists(&new) && exists(&old) {
+            return (old.join(sub), true);
+        }
+    }
+    (home.join(rest), false)
+}
+
+/// `CIALLOPA_<name>`, falling back to the legacy `CPA_LITE_<name>`; the bool says the old
+/// name was used.
+pub fn env_var(name: &str) -> Option<(String, bool)> {
+    if let Ok(v) = std::env::var(format!("CIALLOPA_{name}")) {
+        return Some((v, false));
+    }
+    std::env::var(format!("CPA_LITE_{name}"))
+        .ok()
+        .map(|v| (v, true))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_data_dir_fallback() {
+        let h = Path::new("/h");
+        let rest = Path::new(".ciallopa/usage.db");
+        let has =
+            |set: &'static [&'static str]| move |p: &Path| set.iter().any(|s| p == Path::new(s));
+        // only the old dir exists → use it
+        assert_eq!(
+            resolve_home(h, rest, has(&["/h/.cpa-lite"])),
+            (PathBuf::from("/h/.cpa-lite/usage.db"), true)
+        );
+        // new dir exists (or neither) → new dir
+        assert_eq!(
+            resolve_home(h, rest, has(&["/h/.ciallopa", "/h/.cpa-lite"])),
+            (PathBuf::from("/h/.ciallopa/usage.db"), false)
+        );
+        assert_eq!(
+            resolve_home(h, rest, has(&[])),
+            (PathBuf::from("/h/.ciallopa/usage.db"), false)
+        );
+        // unrelated paths untouched
+        assert!(!resolve_home(h, Path::new(".codex/auth.json"), has(&["/h/.cpa-lite"])).1);
+    }
 
     #[test]
     fn defaults_bind_loopback() {

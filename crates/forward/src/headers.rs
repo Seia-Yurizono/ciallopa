@@ -1,5 +1,5 @@
 //! Header policy: transparent passthrough, replace only `authorization` + `chatgpt-account-id`.
-use cpa_lite_core::Credentials;
+use ciallopa_core::Credentials;
 use http::header::{HeaderMap, HeaderName, HeaderValue};
 
 /// Request headers never forwarded upstream (hop-by-hop, local client key, proxy metadata,

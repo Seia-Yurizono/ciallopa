@@ -1,7 +1,7 @@
 //! Quota / retry-after parsing. Ports CPA `helps/codex_quota.go`
 //! (`ParseCodexQuotaEventHeaders`), `codex_retry_after.go` and
 //! `codex_executor_terminal.go` (`parseCodexRetryAfter`, `isCodexUsageLimitError`).
-use cpa_lite_core::{QuotaSnapshot, QuotaWindow};
+use ciallopa_core::{QuotaSnapshot, QuotaWindow};
 use http::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::Value;
 use std::time::{Duration, SystemTime};

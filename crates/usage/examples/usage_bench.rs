@@ -1,4 +1,4 @@
-//! Usage-log benchmarks with fake data. See <local-path>
+//! Usage-log benchmarks with fake data.
 //!   writer   <rows> <batch...>        — writer throughput per batch size
 //!   enqueue  <rows> <queue> <batch>   — producer try_send latency + drops under overload
 //!   gen      <db> <rows> <days> <accounts> <models>  — bulk fake rows spread over <days>
@@ -7,8 +7,8 @@
 //!   crashw   <db>                     — write forever (for kill -9 tests)
 //!   check    <db>                     — integrity_check + count
 #![allow(clippy::unwrap_used)]
-use cpa_lite_core::config::UsageConfig;
-use cpa_lite_usage::*;
+use ciallopa_core::config::UsageConfig;
+use ciallopa_usage::*;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -211,7 +211,7 @@ fn main() {
             let rows = rt
                 .block_on(r.recent(RecentQuery {
                     limit: 100,
-                    filters: cpa_lite_usage::Filters {
+                    filters: ciallopa_usage::Filters {
                         account: Some("codex-00000003-user3@example.com-plus".into()),
                         ..Default::default()
                     },

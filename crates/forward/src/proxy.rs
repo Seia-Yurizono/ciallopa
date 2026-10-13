@@ -5,9 +5,9 @@ use crate::AppState;
 use axum::body::Body;
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
-use cpa_lite_core::{AccountId, AuthError, Outcome, RouteError, RouteRequest};
-use cpa_lite_routing::{is_cloudflare_challenge, is_usage_limit, parse_quota, retry_after_for_429};
-use cpa_lite_upstream::retry::{delay_for, is_retryable_status};
+use ciallopa_core::{AccountId, AuthError, Outcome, RouteError, RouteRequest};
+use ciallopa_routing::{is_cloudflare_challenge, is_usage_limit, parse_quota, retry_after_for_429};
+use ciallopa_upstream::retry::{delay_for, is_retryable_status};
 use futures::StreamExt;
 use http::{HeaderMap, HeaderValue, Method, StatusCode};
 use std::sync::Arc;
@@ -277,7 +277,7 @@ fn stream_body(
                 &route,
                 &account,
                 &Outcome::RateLimited {
-                    retry_after: cpa_lite_routing::parse_codex_retry_after(
+                    retry_after: ciallopa_routing::parse_codex_retry_after(
                         429,
                         chunk,
                         SystemTime::now(),
@@ -389,10 +389,10 @@ pub(crate) fn event_kind(text: &str) -> EventKind {
     };
     let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
     let quota_outcome = || {
-        let quota = cpa_lite_routing::parse_quota_event_headers(text.as_bytes())
+        let quota = ciallopa_routing::parse_quota_event_headers(text.as_bytes())
             .and_then(|h| parse_quota(&h));
         Outcome::RateLimited {
-            retry_after: cpa_lite_routing::parse_codex_retry_after(
+            retry_after: ciallopa_routing::parse_codex_retry_after(
                 429,
                 text.as_bytes(),
                 SystemTime::now(),
@@ -642,7 +642,7 @@ pub(crate) fn classify_error(status: u16, h: &HeaderMap, body: &[u8]) -> Outcome
             retry_after: h
                 .get(http::header::RETRY_AFTER)
                 .and_then(|v| v.to_str().ok())
-                .and_then(|v| cpa_lite_routing::parse_retry_after_header(v, now)),
+                .and_then(|v| ciallopa_routing::parse_retry_after_header(v, now)),
         },
         _ => Outcome::AuthFailed,
     }

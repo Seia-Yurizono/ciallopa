@@ -1,14 +1,14 @@
 [package]
-name = "cpa-lite-forward"
+name = "ciallopa-forward"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 
 [dependencies]
-cpa-lite-core = { workspace = true }
-cpa-lite-upstream = { workspace = true }
-cpa-lite-routing = { workspace = true }
-cpa-lite-usage = { workspace = true }
+ciallopa-core = { workspace = true }
+ciallopa-upstream = { workspace = true }
+ciallopa-routing = { workspace = true }
+ciallopa-usage = { workspace = true }
 axum = { workspace = true }
 http = { workspace = true }
 bytes = { workspace = true }

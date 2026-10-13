@@ -12,8 +12,8 @@ use axum::{
     Router,
 };
 use bytes::Bytes;
-use cpa_lite_core::*;
-use cpa_lite_forward::AppState;
+use ciallopa_core::*;
+use ciallopa_forward::AppState;
 use futures::{SinkExt, StreamExt};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -64,7 +64,7 @@ impl AccountStore for Store {
 
 #[derive(Default)]
 struct Rec(Mutex<Vec<(String, Outcome)>>);
-impl cpa_lite_core::Router for Rec {
+impl ciallopa_core::Router for Rec {
     fn select(&self, req: &RouteRequest, accounts: &[Account]) -> Result<Selection, RouteError> {
         accounts
             .iter()
@@ -260,11 +260,11 @@ async fn env(idle: u64) -> Env {
     env_usage(idle, None).await
 }
 
-async fn env_usage(idle: u64, usage: Option<Arc<cpa_lite_usage::Recorder>>) -> Env {
+async fn env_usage(idle: u64, usage: Option<Arc<ciallopa_usage::Recorder>>) -> Env {
     env_cfg(idle, usage, "").await
 }
 
-async fn env_cfg(idle: u64, usage: Option<Arc<cpa_lite_usage::Recorder>>, extra: &str) -> Env {
+async fn env_cfg(idle: u64, usage: Option<Arc<ciallopa_usage::Recorder>>, extra: &str) -> Env {
     let mock = Mock::default();
     let up = Router::new()
         .route(
@@ -289,11 +289,11 @@ async fn env_cfg(idle: u64, usage: Option<Arc<cpa_lite_usage::Recorder>>, extra:
     let state = AppState {
         accounts: store.clone(),
         router: rec.clone(),
-        upstream: Arc::new(cpa_lite_upstream::UpstreamClient::new(&cfg).unwrap()),
+        upstream: Arc::new(ciallopa_upstream::UpstreamClient::new(&cfg).unwrap()),
         usage,
         config: Arc::new(cfg),
     };
-    let proxy = serve(cpa_lite::build_app(state)).await;
+    let proxy = serve(ciallopa::build_app(state)).await;
     Env {
         proxy,
         mock,
@@ -671,8 +671,8 @@ async fn compaction_v2_passthrough() {
     }
 }
 
-fn usage_recorder(dir: &std::path::Path) -> Arc<cpa_lite_usage::Recorder> {
-    cpa_lite_usage::Recorder::open(&cpa_lite_core::config::UsageConfig {
+fn usage_recorder(dir: &std::path::Path) -> Arc<ciallopa_usage::Recorder> {
+    ciallopa_usage::Recorder::open(&ciallopa_core::config::UsageConfig {
         path: dir.join("usage.db"),
         flush_ms: 5,
         ..Default::default()
@@ -860,7 +860,7 @@ async fn usage_key_label_instance_and_quota_api() {
     let d = tempfile::tempdir().unwrap();
     let recorder = usage_recorder(d.path());
     recorder.set_prices(
-        cpa_lite_usage::PriceTable::parse(
+        ciallopa_usage::PriceTable::parse(
             "[[model]]\nmodel=\"gpt-5.5\"\nin=5.0\ncache=0.5\nout=30.0\nfast_x=2.5\n",
         )
         .unwrap(),
@@ -882,9 +882,9 @@ async fn usage_key_label_instance_and_quota_api() {
     r.text().await.unwrap();
     let rows = wait_rows(&e, 1).await;
     let u = &rows[0];
-    let label = cpa_lite_core::config::default_key_label(KEY);
+    let label = ciallopa_core::config::default_key_label(KEY);
     assert_eq!(u["key"], label.as_str());
-    assert_eq!(u["instance"], cpa_lite_core::config::hostname().as_str());
+    assert_eq!(u["instance"], ciallopa_core::config::hostname().as_str());
     assert_eq!(u["plan"], "plus");
     assert_eq!(u["primary_used_pct"], 12.0);
     assert!(u["primary_reset_at"].is_i64());

@@ -55,7 +55,7 @@ pub(crate) async fn edits(
 async fn tracked(st: AppState, key: crate::Key, h: HeaderMap, b: Bytes, kind: Kind) -> Response {
     let mut trk = crate::usage::Tracker::start(
         &st,
-        cpa_lite_usage::Transport::Http,
+        ciallopa_usage::Transport::Http,
         "images",
         crate::key_label(&key),
     );
@@ -300,7 +300,7 @@ fn responses_request(
 }
 
 fn out_headers(
-    cfg: &cpa_lite_core::config::ImagesConfig,
+    cfg: &ciallopa_core::config::ImagesConfig,
     client: &HeaderMap,
     accept_sse: bool,
 ) -> HeaderMap {

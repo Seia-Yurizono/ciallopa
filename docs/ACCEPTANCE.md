@@ -1,12 +1,12 @@
-# cpa-lite M1 acceptance (2026-10-13, local only)
+# ciallopa M1 acceptance (2026-10-13, local only)
 
 Setup (`scripts/e2e/`): `crates/server/examples/mock_upstream.rs` on 127.0.0.1:18080 emulating
 chatgpt.com/backend-api (SSE + WS Responses, models, wham, quota headers, 429 usage_limit via
 `/tmp/cpa-e2e/limited`, in-stream usage_limit after `response.created` via `/tmp/cpa-e2e/midlimited`, quota via `quota-<acct>`) and auth.openai.com device-code/token
-(`CPA_LITE_OAUTH_ISSUER`, test-only override). cpa-lite on 127.0.0.1:18317. Client: **real Codex CLI
+(`CIALLOPA_OAUTH_ISSUER`, test-only override). ciallopa on 127.0.0.1:18317. Client: **real Codex CLI
 0.162.1** (`codex exec` / `codex exec resume --last`) with a custom provider
 `base_url=http://127.0.0.1:18317/v1`, `env_key` = local API key, `supports_websockets` true/false.
-3 fake accounts (acc-1..3) created through `cpa-lite login` (device code) against the mock.
+3 fake accounts (acc-1..3) created through `ciallopa login` (device code) against the mock.
 
 | # | Check | Result |
 |---|---|---|

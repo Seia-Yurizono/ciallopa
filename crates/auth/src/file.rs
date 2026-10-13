@@ -1,7 +1,7 @@
 use crate::oauth::{parse_jwt, OAuthClient, RefreshFailure, TokenResponse};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use cpa_lite_core::{Account, AccountId, AccountStore, AuthError, Credentials};
+use ciallopa_core::{Account, AccountId, AccountStore, AuthError, Credentials};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::Write;
@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
-/// On-disk format: CPA codex auth JSON (plain, 0600) + cpa-lite routing fields.
+/// On-disk format: CPA codex auth JSON (plain, 0600) + ciallopa routing fields.
 /// Unknown fields are preserved on rewrite.
 #[derive(Debug, Clone)]
 pub struct AuthFile {
@@ -178,7 +178,7 @@ pub(crate) fn rfc3339(t: DateTime<Utc>) -> String {
 pub fn account_id_for(v: &Value) -> String {
     name_for(v, true)
 }
-/// Pre-hash name used by the first cpa-lite version (and old CPA): `codex-<email>-<plan>`.
+/// Pre-hash name used by the first ciallopa version (and old CPA): `codex-<email>-<plan>`.
 pub fn legacy_account_id_for(v: &Value) -> String {
     name_for(v, false)
 }
@@ -370,7 +370,7 @@ impl FileAccountStore {
     async fn refresh(&self, id: &AccountId, force: bool) -> Result<Credentials, AuthError> {
         let lock = self.lock_for(id);
         let mut last = lock.lock().await;
-        // Cross-process: another cpa-lite / CPA may refresh the same file. Re-read under flock.
+        // Cross-process: another ciallopa / CPA may refresh the same file. Re-read under flock.
         let _flock = FileLock::acquire_async(&self.dir, id).await?;
         let mem_before = self.get(id).await?;
         let mut f = mem_before.clone();
@@ -393,7 +393,7 @@ impl FileAccountStore {
         if force && last.is_some_and(|t| t.elapsed() < self.force_dedup) {
             return f.credentials();
         }
-        // Another process (CPA, second cpa-lite) already wrote a newer, still-valid token:
+        // Another process (CPA, second ciallopa) already wrote a newer, still-valid token:
         // the 401 was against our stale copy, so use theirs instead of refreshing again.
         if force && f.s("access_token") != mem_before.s("access_token") && !f.needs_refresh(now) {
             tracing::info!(account = %id, "newer token on disk; adopted instead of refreshing");

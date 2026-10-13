@@ -1,6 +1,6 @@
 //! Schema (+ migrations), batch insert, purge and read queries.
 use crate::{QuotaObs, Record, Transport, UsageError, SEQ_BITS};
-use cpa_lite_core::config::QuotaWeights;
+use ciallopa_core::config::QuotaWeights;
 use rusqlite::{params, params_from_iter, Connection, OpenFlags, OptionalExtension};
 use serde::Serialize;
 use std::collections::HashMap;

@@ -3,7 +3,7 @@
 //! conductor cooldown tests (table-driven where CPA is).
 #![allow(clippy::unwrap_used, clippy::type_complexity)]
 use super::*;
-use cpa_lite_core::SessionInfo;
+use ciallopa_core::SessionInfo;
 use http::HeaderMap;
 use serde_json::json;
 use std::collections::HashMap;
@@ -763,7 +763,7 @@ fn quota_threshold_avoidance_only_for_new_sessions() {
     let bound = rq_s("m", "codex:bound");
     assert_eq!(pick(&r, &bound, &a), "a");
     let hot = QuotaSnapshot {
-        primary: Some(cpa_lite_core::QuotaWindow {
+        primary: Some(ciallopa_core::QuotaWindow {
             used_percent: 99.5,
             window_minutes: Some(300),
             resets_at: Some(t0() + Duration::from_secs(600)),
@@ -798,7 +798,7 @@ fn quota_threshold_ignores_expired_windows() {
         ..cfg(Strategy::FillFirst)
     });
     let q = QuotaSnapshot {
-        primary: Some(cpa_lite_core::QuotaWindow {
+        primary: Some(ciallopa_core::QuotaWindow {
             used_percent: 100.0,
             window_minutes: None,
             resets_at: Some(t0() + Duration::from_secs(5)),
@@ -1509,7 +1509,7 @@ fn quota_avoidance_off_by_default() {
     assert_eq!(RoutingConfig::default().quota_avoid_threshold, 0.0);
     let (r, _) = router(cfg(Strategy::FillFirst));
     let q = QuotaSnapshot {
-        primary: Some(cpa_lite_core::QuotaWindow {
+        primary: Some(ciallopa_core::QuotaWindow {
             used_percent: 100.0,
             window_minutes: None,
             resets_at: None,

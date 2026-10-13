@@ -1,7 +1,7 @@
 //! Fingerprint probe: issues the same requests through `build_reqwest` that
 //! Codex CLI issues at startup, so fpserver can record JA4 + Akamai h2.
 //! Usage: fp-probe [base_url]   (trust a custom CA with SSL_CERT_FILE)
-use cpa_lite_upstream::{build_reqwest, ClientOptions};
+use ciallopa_upstream::{build_reqwest, ClientOptions};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -26,7 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("{path} -> {} {:?}", r.status(), r.version());
     }
     // Responses WebSocket handshake through the same dialer the proxy uses.
-    let up = cpa_lite_upstream::UpstreamClient {
+    let up = ciallopa_upstream::UpstreamClient {
         base_url: base.trim_end_matches('/').to_string(),
         http: c,
         opts: ClientOptions::default(),

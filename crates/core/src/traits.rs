@@ -3,7 +3,7 @@ use crate::{
 };
 use async_trait::async_trait;
 
-/// Owned by the **auth** worker (crate `cpa-lite-auth`).
+/// Owned by the **auth** worker (crate `ciallopa-auth`).
 #[async_trait]
 pub trait AccountStore: Send + Sync + 'static {
     /// Snapshot of all known accounts (including disabled; router filters).
@@ -21,7 +21,7 @@ pub trait AccountStore: Send + Sync + 'static {
     }
 }
 
-/// Owned by the **routing** worker (crate `cpa-lite-routing`). Sync + cheap: no I/O.
+/// Owned by the **routing** worker (crate `ciallopa-routing`). Sync + cheap: no I/O.
 pub trait Router: Send + Sync + 'static {
     /// Pick an account among `accounts` honoring cooldown, priority, strategy,
     /// weights, session affinity and quota-threshold avoidance (new sessions only).

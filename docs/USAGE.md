@@ -1,7 +1,7 @@
 # Usage log (per-request records)
 
 Status: implemented on branch `usage-log` (crate `crates/usage`). Benchmarks with fake data:
-`<local-path>`.
+`crates/usage/examples/usage_bench.rs`.
 
 ## Goals / non-goals
 - One row per finished request (HTTP/SSE) or per turn (WS `response.create` → terminal event).
@@ -48,7 +48,7 @@ writer OS thread "usage-writer":  recv first msg → collect until batch_size or
 | `tier` | `service_tier`: response's `response.service_tier`, else the request body's (`priority` = Fast mode, `flex`, `default`/`auto` = standard) |
 | `thread`, `turn` | Codex thread / turn id from the `thread-id` header, `x-codex-turn-metadata` (JSON `thread_id`, `turn_id`) or body `client_metadata` (WS `response.create`). Stored for a future authoritative cost lookup; nothing queries upstream yet. Values > 128 chars are ignored. |
 | `key` | **label** of the client key that made the request (`[[api_keys]] label`, or `key-<sha256[..8]>` for plain keys). The raw key is never stored. |
-| `instance` | `instance_id` of the cpa-lite that wrote the row (default: hostname) |
+| `instance` | `instance_id` of the ciallopa that wrote the row (default: hostname) |
 | `plan`, `p_pct`, `p_reset`, `s_pct`, `s_reset` | upstream quota snapshot seen on this response: `x-codex-plan-type`, primary/secondary `used-percent` and `reset-at` (unix s). SSE: response headers; WS: handshake headers, updated by `codex.rate_limits` frames. A window without `window-minutes` whose reset is "now" (free plan's empty secondary) is treated as absent. |
 TPS is computed at query time: `out_tok / (duration_ms − ttft_ms)`.
 
@@ -146,7 +146,7 @@ Filters on both list endpoints: `account=`, `model=`, `key=<label>`, `instance=`
 
 ## Quota estimate
 **The used % comes from upstream and includes usage by other clients (Codex app, other
-proxies) and other cpa-lite instances on the same account.** The estimate only sees tokens
+proxies) and other ciallopa instances on the same account.** The estimate only sees tokens
 this DB recorded, so it is accurate only when this instance is (nearly) the only user, and
 when several instances share one DB path / account it under-counts their share unless they
 write to the same file.
@@ -170,7 +170,7 @@ cost on the OpenAI API at list price, not what is billed. Nothing is stored: row
 token counts and `cost_usd` is computed at query time from the price table, so a price fix
 re-prices history.
 
-Price table: `[usage] prices` (default `~/.cpa-lite/prices.toml`; missing ⇒ all costs null).
+Price table: `[usage] prices` (default `~/.ciallopa/prices.toml`; missing ⇒ all costs null).
 Start from `prices.example.toml` (official prices from developers.openai.com/api/docs/pricing,
 checked 2026-10-13). Entries are `[[model]]` with `model`, optional `tier`
 (`standard` | `flex` | `priority-fast`), `in`, `cache` (cache read), `write` (cache write),
@@ -194,7 +194,7 @@ cost = (in − cached − cache_write)·P_in + cached·P_cache + cache_write·P_
   it is a lower bound.
 - Model names match exactly (case-insensitive); add aliases as extra entries.
 
-`cpa-lite prices sync --from models.dev [--provider openai] [--write]` fetches
+`ciallopa prices sync --from models.dev [--provider openai] [--write]` fetches
 `https://models.dev/api.json` through the configured `proxy_url`, prints the diff against the
 local table (`+` new, `~` changed, `!` model has a dated/promo entry ⇒ never touched,
 `?` local model missing upstream ⇒ kept) and writes only with `--write` (backup
@@ -218,7 +218,7 @@ Key matching is constant time across all keys; only the label reaches the forwar
 ```toml
 [usage]
 enabled = true                      # default true
-path = "~/.cpa-lite/usage.db"       # + -wal / -shm siblings
+path = "~/.ciallopa/usage.db"       # + -wal / -shm siblings
 retention_days = 90                 # 0 = keep forever
 queue_size = 8192                   # in-memory records between proxy and writer
 batch_size = 256                    # rows per transaction (≈97% of max throughput)
@@ -230,7 +230,7 @@ cached = 0.1
 output = 4.0                        # output incl. reasoning
 min_delta_pct = 5.0                 # below → "insufficient_data"
 ```
-`[usage] prices = "~/.cpa-lite/prices.toml"` — price table (see "Cost").
+`[usage] prices = "~/.ciallopa/prices.toml"` — price table (see "Cost").
 
 ## Web UI (`/ui`)
 `[ui] enabled = true` (default). Static page, no data without the key; every call goes to the

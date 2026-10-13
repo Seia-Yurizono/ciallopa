@@ -2,8 +2,8 @@
 //! Mock OAuth server on 127.0.0.1 (no real network).
 use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::post, Json, Router};
 use base64::Engine;
-use cpa_lite_auth::{login, FileAccountStore, OAuthClient};
-use cpa_lite_core::{AccountStore, AuthError};
+use ciallopa_auth::{login, FileAccountStore, OAuthClient};
+use ciallopa_core::{AccountStore, AuthError};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -99,7 +99,7 @@ async fn spawn() -> (Arc<Mock>, OAuthClient) {
 }
 
 fn expired_file(dir: &std::path::Path) {
-    cpa_lite_auth::file::write_auth_file(
+    ciallopa_auth::file::write_auth_file(
         dir,
         "acct",
         &json!({"type":"codex","access_token":"old","refresh_token":"rt-0","account_id":"acc-1",
@@ -163,7 +163,7 @@ async fn proactive_refresh_single_flight_and_persist() {
 async fn force_refresh_and_invalid_grant_disables() {
     let (m, oauth) = spawn().await;
     let d = tempfile::tempdir().unwrap();
-    cpa_lite_auth::file::write_auth_file(
+    ciallopa_auth::file::write_auth_file(
         d.path(),
         "acct",
         &json!({"type":"codex","access_token":"cur","refresh_token":"rt-0","expired":"2999-01-01T00:00:00Z"}),
@@ -210,7 +210,7 @@ async fn proactive_transient_failure_keeps_valid_token() {
     *m.mode.lock().unwrap() = "500".into();
     let d = tempfile::tempdir().unwrap();
     let soon = (chrono::Utc::now() + chrono::Duration::minutes(2)).to_rfc3339();
-    cpa_lite_auth::file::write_auth_file(
+    ciallopa_auth::file::write_auth_file(
         d.path(),
         "acct",
         &json!({"access_token":"cur","refresh_token":"r","expired":soon}),
@@ -385,7 +385,7 @@ async fn eight_day_rule_refreshes_even_if_not_expired() {
     let (m, oauth) = spawn().await;
     let d = tempfile::tempdir().unwrap();
     let old = (chrono::Utc::now() - chrono::Duration::days(9)).to_rfc3339();
-    cpa_lite_auth::file::write_auth_file(
+    ciallopa_auth::file::write_auth_file(
         d.path(),
         "acct",
         &json!({"access_token":"cur","refresh_token":"r",
@@ -408,8 +408,8 @@ async fn eight_day_rule_refreshes_even_if_not_expired() {
 async fn legacy_names_migrate() {
     let (_m, oauth) = spawn().await;
     let d = tempfile::tempdir().unwrap();
-    // legacy file name from the first cpa-lite version, with a routing field
-    cpa_lite_auth::file::write_auth_file(
+    // legacy file name from the first ciallopa version, with a routing field
+    ciallopa_auth::file::write_auth_file(
         d.path(),
         "codex-a@x.com-plus",
         &json!({"access_token":"t","refresh_token":"r",
@@ -425,7 +425,7 @@ async fn legacy_names_migrate() {
             .unwrap();
     assert_eq!(v["weight"], 7);
     // startup migration renames
-    cpa_lite_auth::file::write_auth_file(
+    ciallopa_auth::file::write_auth_file(
         d.path(),
         "codex-b@y.com",
         &json!({"access_token":"t","account_id":"acc-9","email":"b@y.com"}),
@@ -453,7 +453,7 @@ async fn refresh_waits_for_cross_process_lock_and_rereads() {
             .unwrap(),
     );
     // "other process": holds the flock, refreshes the file on disk, then releases.
-    let g = cpa_lite_auth::file::FileLock::acquire(d.path(), "acct").unwrap();
+    let g = ciallopa_auth::file::FileLock::acquire(d.path(), "acct").unwrap();
     let t = tokio::spawn({
         let s = s.clone();
         async move { s.credentials(&"acct".into()).await.unwrap() }
@@ -461,7 +461,7 @@ async fn refresh_waits_for_cross_process_lock_and_rereads() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(!t.is_finished());
     let fresh = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
-    cpa_lite_auth::file::write_auth_file(
+    ciallopa_auth::file::write_auth_file(
         d.path(),
         "acct",
         &json!({"access_token":"by-other","refresh_token":"rt-x","expired":fresh}),
@@ -475,7 +475,7 @@ async fn refresh_waits_for_cross_process_lock_and_rereads() {
 fn valid_file(dir: &std::path::Path, at: &str, rt: &str) -> Value {
     let v = json!({"type":"codex","access_token":at,"refresh_token":rt,"account_id":"acc-1",
                    "expired":"2999-01-01T00:00:00Z","priority":2});
-    cpa_lite_auth::file::write_auth_file(dir, "acct", &v).unwrap();
+    ciallopa_auth::file::write_auth_file(dir, "acct", &v).unwrap();
     v
 }
 

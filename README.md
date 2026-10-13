@@ -1,10 +1,10 @@
-# cpa-lite
+# ciallopa
 
 Minimal Rust rewrite of CLIProxyAPI's Codex path: several ChatGPT-subscription accounts behind one
 endpoint for Codex clients (Codex CLI, plus OpenAI Images API clients), meant to sit behind Caddy.
 Network stack pinned to codex-rs (reqwest/rustls/hyper/h2/tokio-tungstenite fork), so upstream TLS,
 h2 and WebSocket fingerprints equal Codex CLI 0.162.1 (`scripts/fp-check.sh`).
-Design: `<local-path>` · interfaces: `docs/INTERFACES.md` · acceptance: `docs/ACCEPTANCE.md`.
+Interfaces: `docs/INTERFACES.md` · acceptance: `docs/ACCEPTANCE.md`.
 
 ## Build / gates
 ```
@@ -15,10 +15,10 @@ scripts/fp-check.sh     # JA4 + Akamai h2 + WS handshake == Codex CLI 0.162.1 (s
 
 ## Accounts
 ```
-cpa-lite -c config.toml login                     # device code (default; best for servers)
-cpa-lite -c config.toml login --method paste      # open URL, paste the redirected callback URL
-cpa-lite -c config.toml login --method pkce       # local browser, callback on 127.0.0.1:1455
-cpa-lite -c config.toml login --method import --from ~/.codex/auth.json
+ciallopa -c config.toml login                     # device code (default; best for servers)
+ciallopa -c config.toml login --method paste      # open URL, paste the redirected callback URL
+ciallopa -c config.toml login --method pkce       # local browser, callback on 127.0.0.1:1455
+ciallopa -c config.toml login --method import --from ~/.codex/auth.json
 ```
 Files land in `auth_dir` (plain JSON, 0600, CPA-compatible names). Optional per-account keys in the
 file: `"priority": 5` (higher tier used first), `"weight": 3` (weighted-round-robin; ≤0 excluded),
@@ -34,7 +34,7 @@ api_keys = ["sk-cpa-change-me-0123456789"]   # client keys (Bearer or x-api-key)
 # key = "sk-cpa-change-me-0123456789"
 instance_id = ""                        # default: hostname; stored per usage record
 upstream = "https://chatgpt.com/backend-api"
-auth_dir = "~/.cpa-lite/auths"
+auth_dir = "~/.ciallopa/auths"
 proxy_url = ""                          # global egress: http:// | socks5h:// (https:// = HTTP only, not WS)
 max_body_mb = 16
 
@@ -81,8 +81,8 @@ locally (summarization prompt as a normal turn). With it (Codex >= 0.16x, `compa
 compaction is an ordinary `/responses` turn (SSE or WS) whose input ends with
 `{"type":"compaction_trigger"}`, header `x-codex-beta-features: remote_compaction_v2`; the reply
 streams `response.compaction.compacting` and one `{"type":"compaction","encrypted_content":…}`
-item. cpa-lite forwards it unchanged. The legacy `/responses/compact` route is kept but upstream
-now answers 404. Keep `session_affinity` on: compacted history is replayed to the bound account.
+item. ciallopa forwards it unchanged. The `/responses/compact` route is also forwarded (upstream
+answers 404 for it). Keep `session_affinity` on: compacted history is replayed to the bound account.
 Endpoints: `/backend-api/codex/{responses,responses/compact,models}` (+ WS on `responses`),
 `/backend-api/*` passthrough (`wham/*` …), `/api/codex/*`→`/wham/*`, `/v1/{responses,responses/compact,models}`,
 `/v1/images/{generations,edits}`, `/healthz` (no auth). Everything else 404.
@@ -97,13 +97,13 @@ key's label (never the key), `instance_id` and the quota snapshot.
 ```toml
 [usage]
 enabled = true
-path = "~/.cpa-lite/usage.db"
+path = "~/.ciallopa/usage.db"
 retention_days = 90   # 0 = keep forever
 ```
-Notional cost: copy `prices.example.toml` to `~/.cpa-lite/prices.toml` (`[usage] prices`);
+Notional cost: copy `prices.example.toml` to `~/.ciallopa/prices.toml` (`[usage] prices`);
 records and summaries then carry `cost_usd` (null + `unknown_price` for unpriced models, never
 0). It is what the tokens would cost on the API, not what a subscription bills. Refresh with
-`cpa-lite prices sync --from models.dev` (dry run; `--write` to apply). Records also keep
+`ciallopa prices sync --from models.dev` (dry run; `--write` to apply). Records also keep
 `service_tier`, cache-write tokens and the Codex `thread_id` / `turn_id`.
 
 Read-only web page: `GET /ui` (`/` redirects; `[ui] enabled = true` by default). It is a
@@ -141,19 +141,19 @@ WebSocket upgrades are proxied by Caddy automatically.
 ## systemd (optional)
 ```
 [Unit]
-Description=cpa-lite
+Description=ciallopa
 After=network-online.target
 [Service]
-ExecStart=/usr/local/bin/cpa-lite -c /etc/cpa-lite/config.toml
-User=cpa-lite
+ExecStart=/usr/local/bin/ciallopa -c /etc/ciallopa/config.toml
+User=ciallopa
 Restart=on-failure
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/cpa-lite
+ReadWritePaths=/var/lib/ciallopa
 [Install]
 WantedBy=multi-user.target
 ```
-(set `auth_dir = "/var/lib/cpa-lite/auths"`). Docker: `FROM debian:13-slim`, copy the release
+(set `auth_dir = "/var/lib/ciallopa/auths"`). Docker: `FROM debian:13-slim`, copy the release
 binary, `ca-certificates`, mount the auth dir as a volume, run with `--network host` or publish 8317 on loopback.
 
 ## Disclaimer / 免责声明

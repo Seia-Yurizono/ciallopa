@@ -2,8 +2,8 @@
 //! The record is emitted when the tracker is dropped (stream end, client disconnect, error),
 //! via a non-blocking `try_send`; nothing here can stall a stream.
 use crate::AppState;
-use cpa_lite_core::AccountId;
-use cpa_lite_usage::{detail::keep_header, ErrorDetail, QuotaObs, Record, Recorder, Transport};
+use ciallopa_core::AccountId;
+use ciallopa_usage::{detail::keep_header, ErrorDetail, QuotaObs, Record, Recorder, Transport};
 use http::HeaderMap;
 use serde_json::Value;
 use std::sync::Arc;
@@ -310,13 +310,13 @@ fn sse_data_json(ev: &[u8]) -> Option<Value> {
 /// (free plans send `secondary-window-minutes: 0`, `reset-after-seconds: 0`) is treated as absent.
 pub(crate) fn quota_obs(h: &HeaderMap) -> Option<QuotaObs> {
     let now = std::time::SystemTime::now();
-    let snap = cpa_lite_routing::parse_quota_at(h, now)?;
+    let snap = ciallopa_routing::parse_quota_at(h, now)?;
     let secs = |t: std::time::SystemTime| {
         t.duration_since(std::time::UNIX_EPOCH)
             .ok()
             .map(|d| d.as_secs() as i64)
     };
-    let real = |w: &Option<cpa_lite_core::QuotaWindow>| {
+    let real = |w: &Option<ciallopa_core::QuotaWindow>| {
         w.clone().filter(|w| {
             w.window_minutes.is_some()
                 || w.resets_at

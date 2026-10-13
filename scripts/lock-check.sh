@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
+# Env: CODEX_LOCK = path to codex-rs Cargo.lock (required).
 # Every third-party crate version in our Cargo.lock must also exist in codex-rs Cargo.lock.
 set -euo pipefail
-CODEX_LOCK=${CODEX_LOCK:-<local-path>}
+CODEX_LOCK=${CODEX_LOCK:?set to codex-rs Cargo.lock}
 python3 - "$(dirname "$0")/../Cargo.lock" "$CODEX_LOCK" <<'PY'
 import re, sys
 def lock(p):
@@ -18,7 +19,7 @@ a, b = lock(sys.argv[1]), lock(sys.argv[2])
 # rsqlite-vfs are wasm32-only (never compiled on native targets).
 ALLOW = {"rusqlite", "fallible-iterator", "fallible-streaming-iterator", "rsqlite-vfs", "sqlite-wasm-rs"}
 bad = {k: v - b.get(k, set()) for k, v in a.items()
-       if not k.startswith("cpa-lite") and k not in ALLOW and not v <= b.get(k, set())}
+       if not k.startswith("ciallopa") and k not in ALLOW and not v <= b.get(k, set())}
 allowed = {k: sorted(a[k]) for k in sorted(ALLOW) if k in a}
 print("allowed (non-network):", allowed)
 for k in ["reqwest", "rustls", "hyper", "h2", "hyper-rustls", "aws-lc-rs", "tokio", "tokio-tungstenite", "tungstenite"]:

@@ -1,28 +1,28 @@
 #![allow(clippy::unwrap_used)]
 use axum::body::Body;
-use cpa_lite_core::Config;
-use cpa_lite_forward::AppState;
+use ciallopa_core::Config;
+use ciallopa_forward::AppState;
 use http::{Request, StatusCode};
 use std::sync::Arc;
 use tower::ServiceExt;
 
 async fn app() -> axum::Router {
     let cfg = Config::parse(
-        "api_keys = [\"sk-cpa-0123456789abcdef\"]\nauth_dir = \"/nonexistent-cpa-lite\"",
+        "api_keys = [\"sk-cpa-0123456789abcdef\"]\nauth_dir = \"/nonexistent-ciallopa\"",
     )
     .unwrap();
     let state = AppState {
         accounts: Arc::new(
-            cpa_lite_auth::FileAccountStore::open(cfg.auth_dir.clone())
+            ciallopa_auth::FileAccountStore::open(cfg.auth_dir.clone())
                 .await
                 .unwrap(),
         ),
-        router: Arc::new(cpa_lite_routing::CpaRouter::new(cfg.routing.clone())),
-        upstream: Arc::new(cpa_lite_upstream::UpstreamClient::new(&cfg).unwrap()),
+        router: Arc::new(ciallopa_routing::CpaRouter::new(cfg.routing.clone())),
+        upstream: Arc::new(ciallopa_upstream::UpstreamClient::new(&cfg).unwrap()),
         usage: None,
         config: Arc::new(cfg),
     };
-    cpa_lite::build_app(state)
+    ciallopa::build_app(state)
 }
 
 async fn status(req: Request<Body>) -> StatusCode {
@@ -87,7 +87,7 @@ fn key_compare() {
         "sk-cpa-0123456789abcdef".to_string(),
         "sk-cpa-zzzzzzzzzzzzzzzz".into(),
     ];
-    assert!(cpa_lite::key_matches(&k, "sk-cpa-zzzzzzzzzzzzzzzz"));
-    assert!(!cpa_lite::key_matches(&k, "sk-cpa-0123456789abcde"));
-    assert!(!cpa_lite::key_matches(&[], ""));
+    assert!(ciallopa::key_matches(&k, "sk-cpa-zzzzzzzzzzzzzzzz"));
+    assert!(!ciallopa::key_matches(&k, "sk-cpa-0123456789abcde"));
+    assert!(!ciallopa::key_matches(&[], ""));
 }

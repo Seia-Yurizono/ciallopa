@@ -1,18 +1,18 @@
-# cpa-lite interfaces & module ownership (M0)
+# ciallopa interfaces & module ownership (M0)
 
-Design spec: `<local-path>` (v3). This file is the contract between
-the three parallel workers. **Anything public in `cpa-lite-core` changes only via the lead.**
+This file is the contract between
+the three parallel workers. **Anything public in `ciallopa-core` changes only via the lead.**
 Workers may add private code / new pub items inside their own crate freely.
 
 ## Crates & owners
 | Crate | Path | Owner | M1 scope |
 |---|---|---|---|
-| `cpa-lite-core` | crates/core | lead | `Config`, shared types (`types.rs`), traits (`traits.rs`), errors, redacting logging |
-| `cpa-lite-auth` | crates/auth | **worker A (auth)** | `FileAccountStore: AccountStore` (refresh w/ per-account lock, atomic 0600 writes), `login::{device_code, paste_callback, pkce_localhost, import_codex_auth_json}`, `cpa-lite login` CLI |
-| `cpa-lite-routing` | crates/routing | **worker B (routing)** | `CpaRouter: Router` (RR / WRR / fill-first, priority tiers, weights, session affinity + TTL + subagents + rebind-on, cooldown/Retry-After, quota-threshold avoidance for *new* sessions only), `extract_session()` full CPA order, quota header parser `parse_quota(&HeaderMap) -> Option<QuotaSnapshot>` |
-| `cpa-lite-upstream` | crates/upstream | **worker C (forwarding)** | `build_reqwest` (**fp-sensitive, do not add h2/TLS tuning**), `UpstreamClient::ws_connect`, retries/backoff, idle timeout |
-| `cpa-lite-forward` | crates/forward | **worker C (forwarding)** | `routes(AppState)`: SSE `/responses`, `/responses/compact`, models (5 min cache), WS `/responses`, catch-all `/backend-api/*`, `/v1/images/{generations,edits}` |
-| `cpa-lite` (bin) | crates/server | lead | wiring, `/healthz`, static-key middleware (Bearer / x-api-key, constant-time), body limit, 404 fallback |
+| `ciallopa-core` | crates/core | lead | `Config`, shared types (`types.rs`), traits (`traits.rs`), errors, redacting logging |
+| `ciallopa-auth` | crates/auth | **worker A (auth)** | `FileAccountStore: AccountStore` (refresh w/ per-account lock, atomic 0600 writes), `login::{device_code, paste_callback, pkce_localhost, import_codex_auth_json}`, `ciallopa login` CLI |
+| `ciallopa-routing` | crates/routing | **worker B (routing)** | `CpaRouter: Router` (RR / WRR / fill-first, priority tiers, weights, session affinity + TTL + subagents + rebind-on, cooldown/Retry-After, quota-threshold avoidance for *new* sessions only), `extract_session()` full CPA order, quota header parser `parse_quota(&HeaderMap) -> Option<QuotaSnapshot>` |
+| `ciallopa-upstream` | crates/upstream | **worker C (forwarding)** | `build_reqwest` (**fp-sensitive, do not add h2/TLS tuning**), `UpstreamClient::ws_connect`, retries/backoff, idle timeout |
+| `ciallopa-forward` | crates/forward | **worker C (forwarding)** | `routes(AppState)`: SSE `/responses`, `/responses/compact`, models (5 min cache), WS `/responses`, catch-all `/backend-api/*`, `/v1/images/{generations,edits}` |
+| `ciallopa` (bin) | crates/server | lead | wiring, `/healthz`, static-key middleware (Bearer / x-api-key, constant-time), body limit, 404 fallback |
 
 Dependency direction: `core` ← `auth`, `routing`, `upstream` ← `forward` ← `server`.
 `auth` and `routing` never depend on each other; `forward` talks to them only via traits.

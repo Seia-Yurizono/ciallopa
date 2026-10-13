@@ -1,7 +1,7 @@
-//! `cpa-lite prices sync --from models.dev [--write]`: fetch standard prices, print the diff
+//! `ciallopa prices sync --from models.dev [--write]`: fetch standard prices, print the diff
 //! against the local `prices.toml`, write (with a `.bak`) only when `--write` is given.
-use cpa_lite_core::Config;
-use cpa_lite_usage::prices::{self, Change, PriceTable};
+use ciallopa_core::Config;
+use ciallopa_usage::prices::{self, Change, PriceTable};
 use std::path::Path;
 
 pub const MODELS_DEV_URL: &str = "https://models.dev/api.json";
@@ -15,7 +15,7 @@ pub async fn fetch_source(cfg: &Config, from: &str) -> Result<serde_json::Value,
         u if u.starts_with("http://") || u.starts_with("https://") => u,
         path => return Ok(serde_json::from_slice(&std::fs::read(path)?)?),
     };
-    let http = cpa_lite_upstream::build_reqwest(&cpa_lite_upstream::ClientOptions::from(cfg))?;
+    let http = ciallopa_upstream::build_reqwest(&ciallopa_upstream::ClientOptions::from(cfg))?;
     let r = http
         .get(url)
         .timeout(std::time::Duration::from_secs(60))
@@ -66,7 +66,7 @@ pub fn sync_with(
                 report.push_str(&format!("backup: {}\n", bak.display()));
             }
             let body = format!(
-                "# Written by `cpa-lite prices sync` (comments are not preserved; see the .bak).\n\
+                "# Written by `ciallopa prices sync` (comments are not preserved; see the .bak).\n\
                  # USD per 1M tokens; NOTIONAL for subscription traffic.\n{}",
                 next.to_toml()
             );

@@ -13,7 +13,7 @@ mod proxy;
 mod usage;
 mod ws;
 
-pub use cpa_lite_routing::parse_quota;
+pub use ciallopa_routing::parse_quota;
 pub use headers::{downstream_headers, upstream_headers};
 
 use axum::{
@@ -24,8 +24,8 @@ use axum::{
     routing::{any, get, post},
     Router,
 };
-use cpa_lite_core::{AccountStore, Config, RouteRequest, Router as AccountRouter};
-use cpa_lite_upstream::UpstreamClient;
+use ciallopa_core::{AccountStore, Config, RouteRequest, Router as AccountRouter};
+use ciallopa_upstream::UpstreamClient;
 use std::sync::Arc;
 
 /// Label of the client key that authenticated the request (inserted by the server's key
@@ -33,7 +33,7 @@ use std::sync::Arc;
 #[derive(Clone, Debug)]
 pub struct ClientKey(pub Arc<str>);
 
-/// Everything handlers need. Built once in `cpa-lite` (server) main.
+/// Everything handlers need. Built once in `ciallopa` (server) main.
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<Config>,
@@ -41,7 +41,7 @@ pub struct AppState {
     pub router: Arc<dyn AccountRouter>,
     pub upstream: Arc<UpstreamClient>,
     /// Per-request usage log; `None` = disabled.
-    pub usage: Option<Arc<cpa_lite_usage::Recorder>>,
+    pub usage: Option<Arc<ciallopa_usage::Recorder>>,
 }
 
 /// Routes mounted *behind* the client-key middleware.
@@ -92,7 +92,7 @@ pub(crate) fn session_route(headers: &HeaderMap, body: Option<&serde_json::Value
             .and_then(|m| m.as_str())
             .unwrap_or_default()
             .to_string(),
-        session: cpa_lite_routing::extract_session(headers, body),
+        session: ciallopa_routing::extract_session(headers, body),
         exclude: vec![],
     }
 }
@@ -145,7 +145,7 @@ async fn forward(
     let trk = if inspect {
         usage::endpoint_of(&path).and_then(|ep| {
             let mut t =
-                usage::Tracker::start(&st, cpa_lite_usage::Transport::Sse, ep, key_label(&key))?;
+                usage::Tracker::start(&st, ciallopa_usage::Transport::Sse, ep, key_label(&key))?;
             t.headers(&headers);
             t.meta(parsed.as_ref());
             Some(t)

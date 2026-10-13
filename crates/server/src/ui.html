@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
 <meta name="color-scheme" content="light dark">
-<title>cpa-lite 管理面板</title>
+<title>ciallopa 管理面板</title>
 <style>
 :root{--bg:#f6f7f9;--fg:#1d2330;--mut:#667085;--card:#fff;--line:#e3e6ea;--acc:#2f6fed;--ok:#1a9e5a;--warn:#d98a00;--bad:#d64545;--bar:#e9edf2}
 @media (prefers-color-scheme:dark){:root{--bg:#0f1218;--fg:#e6e9ef;--mut:#98a2b3;--card:#171b23;--line:#2a303b;--acc:#5b8cff;--ok:#3cc27e;--warn:#f0a930;--bad:#ff6b6b;--bar:#262c37}}
@@ -57,13 +57,13 @@ button{cursor:pointer}button.pri{background:var(--acc);border-color:var(--acc);c
 </head>
 <body>
 <div id="login" class="hide">
-  <h2>cpa-lite 管理面板</h2>
+  <h2>ciallopa 管理面板</h2>
   <div class="mut">请输入访问密钥（与代理的 API key 相同）。仅保存在本标签页的 sessionStorage 中，关闭即清除。</div>
   <form id="lf"><input id="key" type="password" autocomplete="current-password" placeholder="sk-..." required><button class="pri" type="submit">进入</button></form>
   <div id="lerr" class="mut"></div>
 </div>
 <div id="app" class="hide">
-<header><h1>cpa-lite 管理面板 <span class="mut">只读</span></h1>
+<header><h1>ciallopa 管理面板 <span class="mut">只读</span></h1>
   <label class="mut"><input type="checkbox" id="auto"> 自动刷新</label>
   <button id="refresh">刷新</button><button id="logout">退出</button></header>
 <main>
@@ -96,7 +96,7 @@ button{cursor:pointer}button.pri{background:var(--acc);border-color:var(--acc);c
 "use strict";
 (function(){
 const $=id=>document.getElementById(id);
-const KS="cpa_lite_key";
+const KS="ciallopa_key";
 let timer=null;
 // All dynamic text goes through textContent / createTextNode: never parsed as HTML.
 function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined&&text!==null)e.textContent=String(text);return e}

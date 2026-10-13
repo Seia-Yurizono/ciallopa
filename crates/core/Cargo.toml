@@ -1,5 +1,5 @@
 [package]
-name = "cpa-lite-core"
+name = "ciallopa-core"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

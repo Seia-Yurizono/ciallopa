@@ -9,7 +9,7 @@ use axum::{
     routing::get,
     Router,
 };
-use cpa_lite_forward::AppState;
+use ciallopa_forward::AppState;
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
 
@@ -18,7 +18,7 @@ pub mod ui;
 pub mod usage_api;
 
 #[derive(Clone)]
-struct Keys(Arc<Vec<cpa_lite_core::config::ApiKey>>);
+struct Keys(Arc<Vec<ciallopa_core::config::ApiKey>>);
 
 fn presented_key(h: &HeaderMap) -> Option<&str> {
     if let Some(v) = h.get("x-api-key").and_then(|v| v.to_str().ok()) {
@@ -37,7 +37,7 @@ pub fn key_matches(keys: &[String], got: &str) -> bool {
 }
 
 /// Index of the matching key; compares against every key (no early exit).
-pub fn key_index(keys: &[cpa_lite_core::config::ApiKey], got: &str) -> Option<usize> {
+pub fn key_index(keys: &[ciallopa_core::config::ApiKey], got: &str) -> Option<usize> {
     let mut found = None;
     for (i, k) in keys.iter().enumerate() {
         if bool::from(k.key.as_bytes().ct_eq(got.as_bytes())) {
@@ -53,7 +53,7 @@ async fn require_key(State(keys): State<Keys>, mut req: Request<Body>, next: Nex
             // Only the label travels with the request (usage log); never the key.
             let label: Arc<str> = Arc::from(keys.0[i].label.as_str());
             req.extensions_mut()
-                .insert(cpa_lite_forward::ClientKey(label));
+                .insert(ciallopa_forward::ClientKey(label));
             next.run(req).await
         }
         None => (StatusCode::UNAUTHORIZED, r#"{"error":"invalid api key"}"#).into_response(),
@@ -69,7 +69,7 @@ pub fn build_app(state: AppState) -> Router {
     let limit = (state.config.max_body_mb.max(20) as usize) * 1024 * 1024;
     let usage = usage_api::routes(state.usage.clone(), state.accounts.clone());
     let ui_on = state.config.ui.enabled;
-    let protected = cpa_lite_forward::routes(state)
+    let protected = ciallopa_forward::routes(state)
         .merge(usage)
         .layer(middleware::from_fn_with_state(keys, require_key));
     let mut app = Router::new().route("/healthz", get(healthz));

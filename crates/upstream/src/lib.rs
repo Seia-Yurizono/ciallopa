@@ -1,11 +1,11 @@
-//! Upstream HTTP/WS client. **Owner: forwarding worker** (with `cpa-lite-forward`).
+//! Upstream HTTP/WS client. **Owner: forwarding worker** (with `ciallopa-forward`).
 //!
 //! Construction mirrors codex-rs `http-client/src/client_builder.rs::base_reqwest_builder`
 //! and `utils/rustls-provider`: plain `reqwest::Client::builder()`, aws-lc-rs installed as
 //! the process-wide rustls provider, `use_rustls_tls()`, native roots, no h2/keepalive
 //! tuning (reqwest/hyper defaults). Anything that changes the ClientHello or the h2
 //! SETTINGS/WINDOW_UPDATE/pseudo-header order must keep scripts/fp-check.sh green.
-use cpa_lite_core::Config;
+use ciallopa_core::Config;
 use std::sync::Once;
 use std::time::Duration;
 

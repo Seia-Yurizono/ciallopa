@@ -1,4 +1,4 @@
-# cpa-lite price table — copy to the path in `[usage] prices` (default ~/.cpa-lite/prices.toml).
+# ciallopa price table — copy to the path in `[usage] prices` (default ~/.ciallopa/prices.toml).
 #
 # USD per 1M tokens. Costs are NOTIONAL for ChatGPT-subscription traffic: what the same tokens
 # would cost on the OpenAI API, not what you are billed.
@@ -11,7 +11,7 @@
 # effective_until (YYYY-MM-DD, inclusive, UTC; dated entries win over undated ones).
 # Unknown model / no entry for the date ⇒ cost null + `unknown_price` (never 0).
 #
-# Refresh standard prices: `cpa-lite prices sync --from models.dev` (diff), add `--write`.
+# Refresh standard prices: `ciallopa prices sync --from models.dev` (diff), add `--write`.
 
 [defaults]
 flex_x = 0.5          # Flex = 50% of standard

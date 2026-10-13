@@ -1,11 +1,11 @@
 [package]
-name = "cpa-lite-upstream"
+name = "ciallopa-upstream"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 
 [dependencies]
-cpa-lite-core = { workspace = true }
+ciallopa-core = { workspace = true }
 reqwest = { workspace = true }
 rustls = { workspace = true }
 hyper = { workspace = true }

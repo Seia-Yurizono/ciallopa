@@ -13,7 +13,7 @@ pub use store::{
     SummaryQuery, WindowQuota,
 };
 
-use cpa_lite_core::config::{QuotaWeights, UsageConfig};
+use ciallopa_core::config::{QuotaWeights, UsageConfig};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
@@ -207,7 +207,7 @@ pub struct Recorder {
 impl Recorder {
     /// Open/create the DB (schema + pragmas) and start the writer thread.
     pub fn open(cfg: &UsageConfig) -> Result<Arc<Self>, UsageError> {
-        Self::open_as(cfg, &cpa_lite_core::config::hostname())
+        Self::open_as(cfg, &ciallopa_core::config::hostname())
     }
 
     /// Like [`open`](Self::open) with an explicit `instance_id` stored on every record.

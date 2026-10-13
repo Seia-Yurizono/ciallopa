@@ -5,8 +5,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-use cpa_lite_core::AccountStore;
-use cpa_lite_usage::{now_ms, Dim, Filters, RecentQuery, Recorder, SummaryQuery};
+use ciallopa_core::AccountStore;
+use ciallopa_usage::{now_ms, Dim, Filters, RecentQuery, Recorder, SummaryQuery};
 use serde::Deserialize;
 use std::sync::Arc;
 

@@ -1,9 +1,9 @@
 //! Local demo for the /ui page: fake usage data (incl. XSS-looking names), mock accounts,
 //! no upstream traffic. `cargo run --example ui_demo -- 127.0.0.1:8399 /tmp/ui-demo`
 #![allow(clippy::unwrap_used)]
-use cpa_lite_core::Config;
-use cpa_lite_forward::AppState;
-use cpa_lite_usage::{now_ms, QuotaObs, Record, Recorder, Transport};
+use ciallopa_core::Config;
+use ciallopa_forward::AppState;
+use ciallopa_usage::{now_ms, QuotaObs, Record, Recorder, Transport};
 use std::sync::Arc;
 
 pub const DEMO_KEY: &str = "sk-demo-0123456789abcdef";
@@ -22,7 +22,7 @@ async fn main() {
         v.as_object_mut()
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
-        cpa_lite_auth::file::write_auth_file(&dir.join("auths"), id, &v).unwrap();
+        ciallopa_auth::file::write_auth_file(&dir.join("auths"), id, &v).unwrap();
     };
     acct("alice", serde_json::json!({"plan_type":"plus"}));
     acct("bob", serde_json::json!({"plan_type":"pro"}));
@@ -43,7 +43,7 @@ async fn main() {
     .unwrap();
     let rec = Recorder::open_as(&cfg.usage, &cfg.instance_id).unwrap();
     rec.set_prices(
-        cpa_lite_usage::PriceTable::load(std::path::Path::new(concat!(
+        ciallopa_usage::PriceTable::load(std::path::Path::new(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../prices.example.toml"
         )))
@@ -102,7 +102,7 @@ async fn main() {
             });
             r.status = 502;
             // Fake upstream error (redacted on write; XSS payload must render as text).
-            let mut d = cpa_lite_usage::ErrorDetail::default();
+            let mut d = ciallopa_usage::ErrorDetail::default();
             d.add_header("content-type", "application/json");
             d.add_header("cf-ray", "8c1f2e3d4b5a6978-NRT");
             d.add_header("x-request-id", "req_7f3a9c21e0b44d18");
@@ -151,15 +151,15 @@ async fn main() {
     let state = AppState {
         usage: Some(rec),
         accounts: Arc::new(
-            cpa_lite_auth::FileAccountStore::open(cfg.auth_dir.clone())
+            ciallopa_auth::FileAccountStore::open(cfg.auth_dir.clone())
                 .await
                 .unwrap(),
         ),
-        router: Arc::new(cpa_lite_routing::CpaRouter::new(cfg.routing.clone())),
-        upstream: Arc::new(cpa_lite_upstream::UpstreamClient::new(&cfg).unwrap()),
+        router: Arc::new(ciallopa_routing::CpaRouter::new(cfg.routing.clone())),
+        upstream: Arc::new(ciallopa_upstream::UpstreamClient::new(&cfg).unwrap()),
         config: Arc::new(cfg),
     };
     let ln = tokio::net::TcpListener::bind(&listen).await.unwrap();
     println!("ui demo on http://{listen}/ui");
-    axum::serve(ln, cpa_lite::build_app(state)).await.unwrap();
+    axum::serve(ln, ciallopa::build_app(state)).await.unwrap();
 }

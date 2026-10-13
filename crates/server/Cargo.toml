@@ -1,16 +1,16 @@
 [package]
-name = "cpa-lite"
+name = "ciallopa"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 
 [dependencies]
-cpa-lite-core = { workspace = true }
-cpa-lite-auth = { workspace = true }
-cpa-lite-routing = { workspace = true }
-cpa-lite-upstream = { workspace = true }
-cpa-lite-forward = { workspace = true }
-cpa-lite-usage = { workspace = true }
+ciallopa-core = { workspace = true }
+ciallopa-auth = { workspace = true }
+ciallopa-routing = { workspace = true }
+ciallopa-upstream = { workspace = true }
+ciallopa-forward = { workspace = true }
+ciallopa-usage = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 axum = { workspace = true }

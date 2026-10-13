@@ -7,7 +7,7 @@ edition = "2021"
 version = "0.0.1"
 license = "MIT"
 
-# Network stack pinned (=) to <local-path> so the TLS/h2
+# Network stack pinned (=) to codex-rs Cargo.lock so the TLS/h2
 # fingerprint matches Codex CLI. Bump only together with codex-rs + rerun scripts/fp-check.sh.
 [workspace.dependencies]
 reqwest = { version = "=0.12.28", default-features = false, features = ["json", "rustls-tls", "rustls-tls-native-roots", "stream", "http2", "socks", "cookies"] }
@@ -36,12 +36,12 @@ regex = "1"
 subtle = "2.6"
 tempfile = "3"
 clap = { version = "4", features = ["derive", "env"] }
-cpa-lite-core = { path = "crates/core" }
-cpa-lite-auth = { path = "crates/auth" }
-cpa-lite-routing = { path = "crates/routing" }
-cpa-lite-upstream = { path = "crates/upstream" }
-cpa-lite-forward = { path = "crates/forward" }
-cpa-lite-usage = { path = "crates/usage" }
+ciallopa-core = { path = "crates/core" }
+ciallopa-auth = { path = "crates/auth" }
+ciallopa-routing = { path = "crates/routing" }
+ciallopa-upstream = { path = "crates/upstream" }
+ciallopa-forward = { path = "crates/forward" }
+ciallopa-usage = { path = "crates/usage" }
 
 # Same forks codex-rs patches in (Cargo.toml [patch.crates-io]).
 [patch.crates-io]

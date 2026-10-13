@@ -5,7 +5,7 @@
 //! - import: `~/.codex/auth.json`
 use crate::file::{account_id_for, existing_for, merge_tokens, write_auth_file, FileLock};
 use crate::oauth::{random_state, OAuthClient, Pkce, TokenResponse, LOCAL_REDIRECT_URI};
-use cpa_lite_core::AuthError;
+use ciallopa_core::AuthError;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::Path;
@@ -252,7 +252,7 @@ pub async fn pkce_localhost_with(
                 let (st, msg) = if r.is_ok() {
                     (
                         "200 OK",
-                        "Signed in to cpa-lite. You can close this window.",
+                        "Signed in to ciallopa. You can close this window.",
                     )
                 } else {
                     (
@@ -280,7 +280,7 @@ pub async fn pkce_localhost_with(
 }
 
 async fn respond(sock: &mut tokio::net::TcpStream, status: &str, msg: &str) -> std::io::Result<()> {
-    let body = format!("<!doctype html><meta charset=utf-8><title>cpa-lite</title><p>{msg}</p>");
+    let body = format!("<!doctype html><meta charset=utf-8><title>ciallopa</title><p>{msg}</p>");
     let r = format!(
         "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()

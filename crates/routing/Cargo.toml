@@ -1,11 +1,11 @@
 [package]
-name = "cpa-lite-routing"
+name = "ciallopa-routing"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 
 [dependencies]
-cpa-lite-core = { workspace = true }
+ciallopa-core = { workspace = true }
 http = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "=0.10.9"

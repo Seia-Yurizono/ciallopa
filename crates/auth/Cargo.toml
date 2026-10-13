@@ -1,13 +1,13 @@
 [package]
-name = "cpa-lite-auth"
+name = "ciallopa-auth"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 
 [dependencies]
-cpa-lite-core = { workspace = true }
+ciallopa-core = { workspace = true }
 # Only for `build_reqwest` (pinned codex-rs network stack, global egress proxy).
-cpa-lite-upstream = { workspace = true }
+ciallopa-upstream = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 async-trait = { workspace = true }
