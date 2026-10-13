@@ -141,6 +141,17 @@ async fn up_responses(State(m): State<Mock>, h: HeaderMap, b: Bytes) -> Response
                 "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r-b\"}}\n\n"
             )
         }),
+        "errbody" => Response::builder()
+            .status(400)
+            .header("content-type", "application/json")
+            .header("cf-ray", "ray-123")
+            .header("x-request-id", "req_abc")
+            .header("set-cookie", "session=supersecret")
+            .header("x-codex-primary-used-percent", "40")
+            .body(Body::from(
+                r#"{"error":{"message":"bad input from alice@example.com <img src=x onerror=alert(1)>","auth":"Bearer sk-live-SECRETSECRETSECRET"},"refresh_token":"rt_SECRETSECRETSECRET"}"#,
+            ))
+            .unwrap(),
         "unauth" if auth.ends_with("-1") => Response::builder().status(401).body(Body::empty()).unwrap(),
         "idle" => {
             let s = futures::stream::unfold(0, |i| async move {
@@ -152,6 +163,19 @@ async fn up_responses(State(m): State<Mock>, h: HeaderMap, b: Bytes) -> Response
                 }
             });
             Response::builder().header("content-type", "text/event-stream").body(Body::from_stream(s)).unwrap()
+        }
+        "usage" => {
+            let mut r = sse_resp(concat!(
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-u\"}}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n",
+            "event: response.completed\r\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r-u\",\"usage\":{\"input_tokens\":120,\"input_tokens_details\":{\"cached_tokens\":100,\"cache_write_tokens\":10},\"output_tokens\":30,\"output_tokens_details\":{\"reasoning_tokens\":12}}}}\r\n\r\n"
+            ));
+            let reset = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() + 3600).to_string();
+            let h = r.headers_mut();
+            h.insert("x-codex-plan-type", "plus".parse().unwrap());
+            h.insert("x-codex-primary-window-minutes", "300".parse().unwrap());
+            h.insert("x-codex-primary-reset-at", reset.parse().unwrap());
+            r
         }
         "compact" => sse_resp(concat!(
             "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-c\"}}\n\n",
@@ -233,6 +257,14 @@ struct Env {
 }
 
 async fn env(idle: u64) -> Env {
+    env_usage(idle, None).await
+}
+
+async fn env_usage(idle: u64, usage: Option<Arc<cpa_lite_usage::Recorder>>) -> Env {
+    env_cfg(idle, usage, "").await
+}
+
+async fn env_cfg(idle: u64, usage: Option<Arc<cpa_lite_usage::Recorder>>, extra: &str) -> Env {
     let mock = Mock::default();
     let up = Router::new()
         .route(
@@ -246,7 +278,7 @@ async fn env(idle: u64) -> Env {
         .with_state(mock.clone());
     let up_addr = serve(up).await;
     let cfg = Config::parse(&format!(
-        "api_keys = [\"{KEY}\"]\nupstream = \"http://{up_addr}/backend-api\"\n[upstream_opts]\nstream_idle_timeout_secs = {idle}\n"
+        "api_keys = [\"{KEY}\"]\nupstream = \"http://{up_addr}/backend-api\"\n[upstream_opts]\nstream_idle_timeout_secs = {idle}\n{extra}"
     ))
     .unwrap();
     let rec = Arc::new(Rec::default());
@@ -258,6 +290,7 @@ async fn env(idle: u64) -> Env {
         accounts: store.clone(),
         router: rec.clone(),
         upstream: Arc::new(cpa_lite_upstream::UpstreamClient::new(&cfg).unwrap()),
+        usage,
         config: Arc::new(cfg),
     };
     let proxy = serve(cpa_lite::build_app(state)).await;
@@ -622,12 +655,481 @@ async fn compaction_v2_passthrough() {
             .unwrap();
         assert_eq!(r.status(), 200);
         let t = r.text().await.unwrap();
-        assert!(t.contains("response.compaction.compacting") && t.contains("\"encrypted_content\":\"gAAA\""), "{t}");
+        assert!(
+            t.contains("response.compaction.compacting")
+                && t.contains("\"encrypted_content\":\"gAAA\""),
+            "{t}"
+        );
     }
     let seen = e.mock.seen.lock().unwrap();
     assert_eq!(seen.len(), 2);
     for (h, b) in seen.iter() {
         assert_eq!(b.as_ref(), body.as_bytes(), "body byte-identical");
-        assert!(h.iter().any(|(k, v)| k == "x-codex-beta-features" && v == "remote_compaction_v2"));
+        assert!(h
+            .iter()
+            .any(|(k, v)| k == "x-codex-beta-features" && v == "remote_compaction_v2"));
     }
+}
+
+fn usage_recorder(dir: &std::path::Path) -> Arc<cpa_lite_usage::Recorder> {
+    cpa_lite_usage::Recorder::open(&cpa_lite_core::config::UsageConfig {
+        path: dir.join("usage.db"),
+        flush_ms: 5,
+        ..Default::default()
+    })
+    .unwrap()
+}
+
+async fn usage_rows(e: &Env) -> Vec<serde_json::Value> {
+    // the record is emitted when the stream task ends; poll the API
+    for _ in 0..100 {
+        let r = e
+            .http
+            .get(format!("http://{}/usage/v1/records?limit=50", e.proxy))
+            .bearer_auth(KEY)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        let v: serde_json::Value = r.json().await.unwrap();
+        let rows = v["records"].as_array().unwrap().clone();
+        if !rows.is_empty() {
+            return rows;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    vec![]
+}
+
+async fn wait_rows(e: &Env, n: usize) -> Vec<serde_json::Value> {
+    for _ in 0..100 {
+        let rows = usage_rows(e).await;
+        if rows.len() >= n {
+            return rows;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    usage_rows(e).await
+}
+
+#[tokio::test]
+async fn usage_sse_rows() {
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    let r = e
+        .post("/v1/responses")
+        .header("x-test-mode", "usage")
+        .body(r#"{"model":"gpt-5.5","reasoning":{"effort":"low"},"input":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert!(r.text().await.unwrap().contains("r-u"));
+    let rows = wait_rows(&e, 1).await;
+    let u = &rows[0];
+    assert_eq!(u["account"], "a");
+    assert_eq!(u["model"], "gpt-5.5");
+    assert_eq!(u["reasoning_effort"], "low");
+    assert_eq!(u["transport"], "sse");
+    assert_eq!(u["endpoint"], "responses");
+    assert_eq!(u["status"], 200);
+    assert!(u["error"].is_null(), "{u}");
+    assert_eq!(u["input_tokens"], 120);
+    assert_eq!(u["cached_tokens"], 100);
+    assert_eq!(u["output_tokens"], 30);
+    assert_eq!(u["reasoning_tokens"], 12);
+    assert!(u["ttft_ms"].is_u64());
+    assert_eq!(u["switches"], 0);
+
+    // quota before output → transparent switch a→b
+    sse_text(&e, "midlimit").await;
+    // quota after output → recorded as usage_limit
+    sse_text(&e, "latelimit").await;
+    // 429 on a → failover to b
+    let r = e
+        .post("/backend-api/codex/responses")
+        .header("x-test-mode", "limit")
+        .body(r#"{"model":"gpt-5.5","input":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    r.text().await.unwrap();
+    let rows = wait_rows(&e, 4).await;
+    assert_eq!(rows.len(), 4, "{rows:?}");
+    let (limit, late, mid) = (&rows[0], &rows[1], &rows[2]);
+    assert_eq!(mid["first_account"], "a");
+    assert_eq!(mid["account"], "b");
+    assert_eq!(mid["switches"], 1);
+    assert!(mid["error"].is_null(), "{mid}");
+    assert_eq!(late["error"], "usage_limit");
+    assert_eq!(limit["account"], "b");
+    assert_eq!(limit["switches"], 1);
+
+    let s: serde_json::Value = e
+        .http
+        .get(format!("http://{}/usage/v1/summary?range=1h", e.proxy))
+        .bearer_auth(KEY)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(s["summary"]["total"]["count"], 4);
+    assert_eq!(s["summary"]["total"]["errors"], 1);
+    assert_eq!(s["recorder"]["dropped"], 0);
+    // API is behind the key
+    let r = e
+        .http
+        .get(format!("http://{}/usage/v1/summary", e.proxy))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401);
+}
+
+#[tokio::test]
+async fn usage_counts_retries() {
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    sse_text(&e, "retry").await; // two 503s, then ok
+    let rows = wait_rows(&e, 1).await;
+    assert_eq!(rows[0]["retries"], 2, "{rows:?}");
+    assert!(rows[0]["error"].is_null());
+}
+
+#[tokio::test]
+async fn usage_ws_turn_rows() {
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as M};
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    let mut req = format!("ws://{}/v1/responses", e.proxy)
+        .into_client_request()
+        .unwrap();
+    req.headers_mut()
+        .insert("authorization", format!("Bearer {KEY}").parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    ws.send(M::text(
+        r#"{"type":"response.create","model":"gpt-5.5","reasoning":{"effort":"high"}}"#,
+    ))
+    .await
+    .unwrap();
+    ws.next().await.unwrap().unwrap();
+    ws.send(M::text(
+        r#"{"type":"response.create","model":"gpt-5.5","tag":"limit"}"#,
+    ))
+    .await
+    .unwrap();
+    loop {
+        let t = ws
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .to_text()
+            .unwrap()
+            .to_string();
+        if t.contains("response.completed") {
+            break;
+        }
+    }
+    ws.send(M::text(
+        r#"{"type":"response.create","previous_response_id":"r-b","tag":"prevlimit"}"#,
+    ))
+    .await
+    .unwrap();
+    let _ = ws.next().await; // 1012 close
+    let rows = wait_rows(&e, 3).await;
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    let (t3, t2, t1) = (&rows[0], &rows[1], &rows[2]);
+    assert_eq!(t1["transport"], "ws");
+    assert_eq!(t1["reasoning_effort"], "high");
+    assert_eq!(t1["account"], "a");
+    assert!(t1["error"].is_null(), "{t1}");
+    assert_eq!(t2["first_account"], "a");
+    assert_eq!(t2["account"], "b");
+    assert_eq!(t2["switches"], 1);
+    assert!(t2["error"].is_null(), "{t2}");
+    assert!(t2["ttft_ms"].is_u64());
+    assert_eq!(t3["error"], "usage_limit");
+}
+
+#[tokio::test]
+async fn usage_key_label_instance_and_quota_api() {
+    let d = tempfile::tempdir().unwrap();
+    let recorder = usage_recorder(d.path());
+    recorder.set_prices(
+        cpa_lite_usage::PriceTable::parse(
+            "[[model]]\nmodel=\"gpt-5.5\"\nin=5.0\ncache=0.5\nout=30.0\nfast_x=2.5\n",
+        )
+        .unwrap(),
+    );
+    let e = env_usage(300, Some(recorder)).await;
+    let r = e
+        .post("/v1/responses")
+        .header("x-test-mode", "usage")
+        .header("thread-id", "th-abc")
+        .header(
+            "x-codex-turn-metadata",
+            r#"{"turn_id":"turn-1","thread_id":"th-abc"}"#,
+        )
+        .body(r#"{"model":"gpt-5.5","service_tier":"priority","input":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    r.text().await.unwrap();
+    let rows = wait_rows(&e, 1).await;
+    let u = &rows[0];
+    let label = cpa_lite_core::config::default_key_label(KEY);
+    assert_eq!(u["key"], label.as_str());
+    assert_eq!(u["instance"], cpa_lite_core::config::hostname().as_str());
+    assert_eq!(u["plan"], "plus");
+    assert_eq!(u["primary_used_pct"], 12.0);
+    assert!(u["primary_reset_at"].is_i64());
+    assert_eq!(u["thread_id"], "th-abc");
+    assert_eq!(u["turn_id"], "turn-1");
+    assert_eq!(u["service_tier"], "priority");
+    assert_eq!(u["cache_write_tokens"], 10);
+    // (120-100-10)·5 + 100·0.5 + 10·5 (no write price ⇒ input) + 30·30, fast ×2.5
+    let want = (10.0 * 5.0 + 100.0 * 0.5 + 10.0 * 5.0 + 30.0 * 30.0) * 2.5 / 1e6;
+    assert!(
+        (u["cost_usd"].as_f64().unwrap() - want).abs() < 1e-12,
+        "{u}"
+    );
+    assert_eq!(u["price_status"], "ok");
+    let get = |path: String| {
+        let h = e.http.clone();
+        async move {
+            h.get(path)
+                .bearer_auth(KEY)
+                .send()
+                .await
+                .unwrap()
+                .json::<serde_json::Value>()
+                .await
+                .unwrap()
+        }
+    };
+    // raw key never stored or returned
+    assert!(!std::fs::read(d.path().join("usage.db"))
+        .unwrap()
+        .windows(KEY.len())
+        .any(|w| w == KEY.as_bytes()));
+    let all = get(format!("http://{}/usage/v1/records?key={label}", e.proxy)).await;
+    assert_eq!(all["records"].as_array().unwrap().len(), 1);
+    assert!(!all.to_string().contains(KEY));
+    let none = get(format!("http://{}/usage/v1/records?key=other", e.proxy)).await;
+    assert!(none["records"].as_array().unwrap().is_empty());
+    let s = get(format!(
+        "http://{}/usage/v1/summary?group=key,instance",
+        e.proxy
+    ))
+    .await;
+    assert_eq!(s["summary"]["groups"][0]["group"]["key"], label.as_str());
+    assert!((s["summary"]["groups"][0]["cost_usd"].as_f64().unwrap() - want).abs() < 1e-12);
+    assert_eq!(s["summary"]["total"]["unknown_price"], 0);
+    let s = get(format!(
+        "http://{}/usage/v1/summary?group=account,tier",
+        e.proxy
+    ))
+    .await;
+    assert_eq!(
+        s["summary"]["groups"][0]["group"]["service_tier"],
+        "priority"
+    );
+    let r = e
+        .http
+        .get(format!("http://{}/usage/v1/summary?group=bogus", e.proxy))
+        .bearer_auth(KEY)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
+
+    let q = get(format!("http://{}/usage/v1/quota", e.proxy)).await;
+    assert!(q["note"].as_str().unwrap().contains("other clients"));
+    let accts = q["accounts"].as_array().unwrap();
+    assert_eq!(accts.len(), 2, "{q}");
+    let a = accts.iter().find(|x| x["account"] == "a").unwrap();
+    assert_eq!(a["needs_relogin"], false);
+    assert_eq!(a["quota"]["primary"]["used_pct"], 12.0);
+    assert_eq!(
+        a["quota"]["primary"]["estimate"]["status"],
+        "insufficient_data"
+    );
+    let b = accts.iter().find(|x| x["account"] == "b").unwrap();
+    assert!(b["quota"].is_null());
+}
+
+#[tokio::test]
+async fn ui_page_csp_and_toggle() {
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    // static page needs no key and contains no data
+    let r = e
+        .http
+        .get(format!("http://{}/ui", e.proxy))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let csp = r.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        csp.contains("default-src 'none'")
+            && csp.contains("script-src 'sha256-")
+            && csp.contains("connect-src 'self'"),
+        "{csp}"
+    );
+    assert!(!csp.contains("unsafe-inline"));
+    assert_eq!(r.headers()["x-content-type-options"], "nosniff");
+    assert_eq!(r.headers()["cache-control"], "no-store");
+    let body = r.text().await.unwrap();
+    assert!(body.contains("管理面板") && !body.contains(KEY));
+    let r = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap()
+        .get(format!("http://{}/", e.proxy))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.headers()["location"], "/ui");
+    // APIs the page calls stay behind the key
+    let r = e
+        .http
+        .get(format!("http://{}/usage/v1/quota", e.proxy))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401);
+
+    let off = env_cfg(300, None, "[ui]\nenabled = false\n").await;
+    let r = off
+        .http
+        .get(format!("http://{}/ui", off.proxy))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
+}
+
+#[tokio::test]
+async fn summary_day_buckets_api() {
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    sse_text(&e, "usage").await;
+    wait_rows(&e, 1).await;
+    let get = |q: &str| {
+        let (h, u) = (
+            e.http.clone(),
+            format!("http://{}/usage/v1/summary?{q}", e.proxy),
+        );
+        async move { h.get(u).bearer_auth(KEY).send().await.unwrap() }
+    };
+    let v: serde_json::Value = get("range=7d&bucket=day&tz=480&group=account")
+        .await
+        .json()
+        .await
+        .unwrap();
+    let b = v["summary"]["buckets"].as_array().unwrap();
+    assert_eq!(b.len(), 1, "{v}");
+    assert_eq!(b[0]["count"], 1);
+    assert_eq!(b[0]["input_tokens"], 120);
+    assert!(b[0]["day"].as_str().unwrap().len() == 10);
+    let v: serde_json::Value = get("range=7d").await.json().await.unwrap();
+    assert!(v["summary"].get("buckets").is_none());
+    assert_eq!(get("bucket=hour").await.status(), 400);
+    assert_eq!(get("bucket=day&tz=9999").await.status(), 400);
+    // numeric params next to the flattened filters
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    let v: serde_json::Value = get(&format!("from={}&to={}", now - 60_000, now + 1000))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(v["summary"]["total"]["count"], 1, "{v}");
+}
+
+async fn detail_of(e: &Env, id: &str, auth: bool) -> reqwest::Response {
+    let r = e
+        .http
+        .get(format!("http://{}/usage/v1/records/{id}/detail", e.proxy));
+    let r = if auth { r.bearer_auth(KEY) } else { r };
+    r.send().await.unwrap()
+}
+
+#[tokio::test]
+async fn usage_error_detail_capture_and_api() {
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(1, Some(usage_recorder(d.path()))).await;
+    let r = e
+        .post("/backend-api/codex/responses")
+        .header("x-test-mode", "errbody")
+        .body(r#"{"model":"gpt-5.5","input":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
+    let t = r.text().await.unwrap();
+    assert!(t.contains("bad input"), "{t}"); // client still sees the raw upstream body
+    sse_text(&e, "latelimit").await; // in-stream response.failed
+    let r = e
+        .post("/backend-api/codex/responses")
+        .header("x-test-mode", "idle")
+        .body(r#"{"model":"gpt-5.5","input":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert!(r.text().await.is_err()); // local idle timeout (1s) aborts the stream
+    sse_text(&e, "usage").await; // success: no detail
+    let rows = wait_rows(&e, 4).await;
+    assert_eq!(rows.len(), 4, "{rows:?}");
+    let (ok, idle, late, bad) = (&rows[0], &rows[1], &rows[2], &rows[3]);
+    assert_eq!(ok["has_detail"], false);
+    assert_eq!(bad["status"], 400);
+    for r in [idle, late, bad] {
+        assert_eq!(r["has_detail"], true, "{r}");
+    }
+    let id = |r: &serde_json::Value| r["request_id"].as_str().unwrap().to_string();
+
+    // auth required; malformed / unknown ids
+    assert_eq!(detail_of(&e, &id(bad), false).await.status(), 401);
+    assert_eq!(detail_of(&e, "nothex", true).await.status(), 400);
+    assert_eq!(detail_of(&e, &id(ok), true).await.status(), 404);
+
+    let v: serde_json::Value = detail_of(&e, &id(bad), true).await.json().await.unwrap();
+    let raw = v.to_string();
+    for secret in ["SECRETSECRET", "alice@example.com", "supersecret"] {
+        assert!(!raw.contains(secret), "{secret} leaked: {raw}");
+    }
+    assert_eq!(v["headers"]["cf-ray"], "ray-123");
+    assert_eq!(v["headers"]["x-request-id"], "req_abc");
+    assert_eq!(v["headers"]["x-codex-primary-used-percent"], "40");
+    assert!(v["headers"].get("set-cookie").is_none());
+    assert_eq!(v["truncated"], false);
+    let body: serde_json::Value = serde_json::from_str(v["body"].as_str().unwrap()).unwrap();
+    assert_eq!(body["refresh_token"], "[REDACTED]");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("<img src=x"),
+        "stored as data, escaped by the UI"
+    );
+
+    let v: serde_json::Value = detail_of(&e, &id(late), true).await.json().await.unwrap();
+    assert!(
+        v["body"].as_str().unwrap().contains("usage_limit_reached"),
+        "{v}"
+    );
+    let v: serde_json::Value = detail_of(&e, &id(idle), true).await.json().await.unwrap();
+    assert!(v["message"].as_str().unwrap().contains("idle"), "{v}");
 }

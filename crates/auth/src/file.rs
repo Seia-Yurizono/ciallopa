@@ -42,9 +42,16 @@ impl AuthFile {
                 .raw
                 .get("disabled")
                 .and_then(Value::as_bool)
-                .unwrap_or(false),
+                .unwrap_or(false)
+                || self.needs_relogin(),
         }
     }
+}
+
+/// CPA `refresh_patch` credential identity.
+const VERSION_KEYS: [&str; 4] = ["access_token", "refresh_token", "id_token", "account_id"];
+fn version(v: &Value) -> [Option<&Value>; 4] {
+    VERSION_KEYS.map(|k| v.get(k))
 }
 
 /// Atomic write (tmp + fsync + rename), file mode 0600, dir 0700.
@@ -159,6 +166,7 @@ pub fn merge_tokens(prev: Option<&Value>, t: &TokenResponse) -> Value {
     if obj.remove("needs_relogin").and_then(|v| v.as_bool()) == Some(true) {
         obj.remove("disabled");
     }
+    obj.remove("relogin_reason");
     v
 }
 pub(crate) fn rfc3339(t: DateTime<Utc>) -> String {
@@ -364,17 +372,15 @@ impl FileAccountStore {
         let mut last = lock.lock().await;
         // Cross-process: another cpa-lite / CPA may refresh the same file. Re-read under flock.
         let _flock = FileLock::acquire_async(&self.dir, id).await?;
-        let mut f = self.get(id).await?;
+        let mem_before = self.get(id).await?;
+        let mut f = mem_before.clone();
         if let Some(raw) = read_one(&self.dir, id) {
             if raw != f.raw {
                 f = AuthFile {
                     id: f.id.clone(),
                     raw,
                 };
-                let mut files = self.files.write().await;
-                if let Some(x) = files.iter_mut().find(|x| x.id == f.id) {
-                    *x = f.clone();
-                }
+                self.cache(&f).await;
             }
         }
         if f.needs_relogin() {
@@ -387,6 +393,12 @@ impl FileAccountStore {
         if force && last.is_some_and(|t| t.elapsed() < self.force_dedup) {
             return f.credentials();
         }
+        // Another process (CPA, second cpa-lite) already wrote a newer, still-valid token:
+        // the 401 was against our stale copy, so use theirs instead of refreshing again.
+        if force && f.s("access_token") != mem_before.s("access_token") && !f.needs_refresh(now) {
+            tracing::info!(account = %id, "newer token on disk; adopted instead of refreshing");
+            return f.credentials();
+        }
         let oauth = self
             .oauth
             .as_ref()
@@ -395,11 +407,37 @@ impl FileAccountStore {
             .s("refresh_token")
             .filter(|r| !r.is_empty())
             .ok_or(AuthError::ReloginRequired)?;
-        match oauth.refresh(&rt).await {
+        let res = oauth.refresh(&rt).await;
+        // Re-read: writers that ignore our flock may have refreshed during the round-trip.
+        let disk = read_one(&self.dir, id);
+        match res {
             Ok(t) => {
+                let after = merge_tokens(Some(&f.raw), &t);
+                let dv = disk.as_ref().map(version);
+                let ok = match &dv {
+                    None => true,
+                    Some(d) => {
+                        *d == version(&mem_before.raw)
+                            || *d == version(&f.raw)
+                            || *d == version(&after)
+                    }
+                };
+                if !ok {
+                    // CPA refresh_patch: disk moved to a foreign version; don't clobber it.
+                    let df = AuthFile {
+                        id: f.id.clone(),
+                        raw: disk.unwrap_or_default(),
+                    };
+                    tracing::warn!(account = %id, "auth file changed during refresh; keeping disk version");
+                    self.cache(&df).await;
+                    *last = Some(Instant::now());
+                    return df.credentials();
+                }
+                // Patch only the refreshed keys onto the current disk content.
+                let raw = merge_tokens(disk.as_ref().or(Some(&f.raw)), &t);
                 let nf = AuthFile {
                     id: f.id.clone(),
-                    raw: merge_tokens(Some(&f.raw), &t),
+                    raw,
                 };
                 self.put(nf.clone()).await?;
                 *last = Some(Instant::now());
@@ -407,11 +445,28 @@ impl FileAccountStore {
                 nf.credentials()
             }
             Err(RefreshFailure::Permanent(why)) => {
-                tracing::warn!(account = %id, %why, "refresh token rejected; account disabled, re-login required");
-                let mut raw = f.raw.clone();
+                let base = disk.unwrap_or_else(|| f.raw.clone());
+                // Rejected because someone else rotated it? Then their token is the live one.
+                if base.get("refresh_token").and_then(Value::as_str) != Some(rt.as_str()) {
+                    let df = AuthFile {
+                        id: f.id.clone(),
+                        raw: base.clone(),
+                    };
+                    if !df.needs_relogin() {
+                        tracing::info!(account = %id, "refresh token rotated by another process; adopted");
+                        self.cache(&df).await;
+                        return df.credentials();
+                    }
+                }
+                tracing::warn!(account = %id, %why, "refresh token rejected; account needs_relogin (excluded from routing, no retry)");
+                let mut raw = base;
                 if let Some(o) = raw.as_object_mut() {
                     o.insert("disabled".into(), true.into());
                     o.insert("needs_relogin".into(), true.into());
+                    o.insert(
+                        "relogin_reason".into(),
+                        Value::String(why.chars().take(200).collect()),
+                    );
                 }
                 self.put(AuthFile { id: f.id, raw }).await?;
                 Err(AuthError::ReloginRequired)
@@ -425,6 +480,13 @@ impl FileAccountStore {
                     Err(AuthError::Refresh(why))
                 }
             }
+        }
+    }
+
+    async fn cache(&self, f: &AuthFile) {
+        let mut files = self.files.write().await;
+        if let Some(x) = files.iter_mut().find(|x| x.id == f.id) {
+            *x = f.clone();
         }
     }
 
@@ -481,6 +543,15 @@ impl AccountStore for FileAccountStore {
     }
     async fn force_refresh(&self, id: &AccountId) -> Result<Credentials, AuthError> {
         self.refresh(id, true).await
+    }
+    async fn relogin_required(&self) -> Vec<AccountId> {
+        self.files
+            .read()
+            .await
+            .iter()
+            .filter(|f| f.needs_relogin())
+            .map(|f| f.id.clone())
+            .collect()
     }
     async fn reload(&self) -> Result<(), AuthError> {
         let v = Self::scan(&self.dir)?;

@@ -17,6 +17,8 @@ struct Mock {
     mode: Mutex<String>,
     last_body: Mutex<String>,
     last_ct: Mutex<String>,
+    /// Simulates a writer that ignores our flock: written while the refresh is in flight.
+    foreign: Mutex<Option<(std::path::PathBuf, Value)>>,
 }
 
 fn jwt(v: Value) -> String {
@@ -48,7 +50,15 @@ async fn token(
     }
     tokio::time::sleep(Duration::from_millis(50)).await;
     let n = m.refreshes.fetch_add(1, Ordering::SeqCst) + 1;
+    if let Some((dir, v)) = m.foreign.lock().unwrap().take() {
+        std::fs::write(dir.join("acct.json"), v.to_string()).unwrap();
+    }
     match m.mode.lock().unwrap().as_str() {
+        "reused" => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":{"code":"refresh_token_reused","message":"x"}})),
+        )
+            .into_response(),
         "invalid_grant" => (
             StatusCode::BAD_REQUEST,
             Json(json!({"error":"invalid_grant"})),
@@ -460,4 +470,118 @@ async fn refresh_waits_for_cross_process_lock_and_rereads() {
     drop(g);
     assert_eq!(t.await.unwrap().access_token, "by-other");
     assert_eq!(m.refreshes.load(Ordering::SeqCst), 0);
+}
+
+fn valid_file(dir: &std::path::Path, at: &str, rt: &str) -> Value {
+    let v = json!({"type":"codex","access_token":at,"refresh_token":rt,"account_id":"acc-1",
+                   "expired":"2999-01-01T00:00:00Z","priority":2});
+    cpa_lite_auth::file::write_auth_file(dir, "acct", &v).unwrap();
+    v
+}
+
+#[tokio::test]
+async fn reused_refresh_token_needs_relogin_without_retry() {
+    let (m, oauth) = spawn().await;
+    *m.mode.lock().unwrap() = "reused".into();
+    let d = tempfile::tempdir().unwrap();
+    valid_file(d.path(), "cur", "rt-0");
+    let s = FileAccountStore::open_with(d.path().into(), oauth)
+        .await
+        .unwrap()
+        .with_force_dedup(Duration::ZERO);
+    let id = "acct".to_string();
+    assert!(s.relogin_required().await.is_empty());
+    assert!(matches!(
+        s.force_refresh(&id).await,
+        Err(AuthError::ReloginRequired)
+    ));
+    for _ in 0..3 {
+        assert!(matches!(
+            s.force_refresh(&id).await,
+            Err(AuthError::ReloginRequired)
+        ));
+        assert!(matches!(
+            s.credentials(&id).await,
+            Err(AuthError::ReloginRequired)
+        ));
+    }
+    assert_eq!(m.refreshes.load(Ordering::SeqCst), 1, "no retry loop");
+    assert_eq!(s.relogin_required().await, vec![id.clone()]);
+    assert!(s.list().await[0].disabled, "excluded from routing");
+    let v: Value =
+        serde_json::from_slice(&std::fs::read(d.path().join("acct.json")).unwrap()).unwrap();
+    assert_eq!(v["needs_relogin"], true);
+    assert_eq!(v["priority"], 2);
+    assert!(v["relogin_reason"]
+        .as_str()
+        .unwrap()
+        .contains("refresh_token_reused"));
+}
+
+#[tokio::test]
+async fn force_refresh_adopts_newer_disk_token() {
+    let (m, oauth) = spawn().await;
+    let d = tempfile::tempdir().unwrap();
+    valid_file(d.path(), "stale", "rt-0");
+    let s = FileAccountStore::open_with(d.path().into(), oauth)
+        .await
+        .unwrap();
+    // another process refreshed after we loaded the file
+    valid_file(d.path(), "disk-new", "rt-9");
+    let c = s.force_refresh(&"acct".to_string()).await.unwrap();
+    assert_eq!(c.access_token, "disk-new");
+    assert_eq!(m.refreshes.load(Ordering::SeqCst), 0, "no extra refresh");
+}
+
+#[tokio::test]
+async fn foreign_write_during_refresh_is_not_clobbered() {
+    let (m, oauth) = spawn().await;
+    let d = tempfile::tempdir().unwrap();
+    valid_file(d.path(), "cur", "rt-0");
+    let s = FileAccountStore::open_with(d.path().into(), oauth)
+        .await
+        .unwrap();
+    let mut foreign = valid_file(d.path(), "cur", "rt-0");
+    foreign["access_token"] = "foreign".into();
+    foreign["refresh_token"] = "rt-f".into();
+    *m.foreign.lock().unwrap() = Some((d.path().into(), foreign));
+    let c = s.force_refresh(&"acct".to_string()).await.unwrap();
+    assert_eq!(c.access_token, "foreign");
+    let v: Value =
+        serde_json::from_slice(&std::fs::read(d.path().join("acct.json")).unwrap()).unwrap();
+    assert_eq!(
+        (v["access_token"].as_str(), v["refresh_token"].as_str()),
+        (Some("foreign"), Some("rt-f"))
+    );
+    // normal case: disk unchanged during refresh → our tokens written, other keys kept
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    let s2 = FileAccountStore::open_with(d.path().into(), spawn().await.1)
+        .await
+        .unwrap()
+        .with_force_dedup(Duration::ZERO);
+    let c = s2.force_refresh(&"acct".to_string()).await.unwrap();
+    assert_ne!(c.access_token, "foreign");
+    let v: Value =
+        serde_json::from_slice(&std::fs::read(d.path().join("acct.json")).unwrap()).unwrap();
+    assert_eq!(v["refresh_token"], "rt-1");
+    assert_eq!(v["priority"], 2);
+}
+
+#[tokio::test]
+async fn rejected_but_rotated_elsewhere_adopts_disk() {
+    let (m, oauth) = spawn().await;
+    *m.mode.lock().unwrap() = "reused".into();
+    let d = tempfile::tempdir().unwrap();
+    valid_file(d.path(), "cur", "rt-0");
+    let s = FileAccountStore::open_with(d.path().into(), oauth)
+        .await
+        .unwrap();
+    let mut foreign = valid_file(d.path(), "cur", "rt-0");
+    foreign["access_token"] = "rotated".into();
+    foreign["refresh_token"] = "rt-r".into();
+    *m.foreign.lock().unwrap() = Some((d.path().into(), foreign));
+    let c = s.force_refresh(&"acct".to_string()).await.unwrap();
+    assert_eq!(c.access_token, "rotated");
+    assert!(s.relogin_required().await.is_empty());
+    assert!(!s.list().await[0].disabled);
 }

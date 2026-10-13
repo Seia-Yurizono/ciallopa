@@ -28,6 +28,11 @@ file: `"priority": 5` (higher tier used first), `"weight": 3` (weighted-round-ro
 ```toml
 listen = "127.0.0.1:8317"              # keep loopback; Caddy terminates TLS
 api_keys = ["sk-cpa-change-me-0123456789"]   # client keys (Bearer or x-api-key), ≥16 chars
+# or labeled (label shows up in the usage log instead of the key):
+# [[api_keys]]
+# label = "laptop"
+# key = "sk-cpa-change-me-0123456789"
+instance_id = ""                        # default: hostname; stored per usage record
 upstream = "https://chatgpt.com/backend-api"
 auth_dir = "~/.cpa-lite/auths"
 proxy_url = ""                          # global egress: http:// | socks5h:// (https:// = HTTP only, not WS)
@@ -81,6 +86,42 @@ now answers 404. Keep `session_affinity` on: compacted history is replayed to th
 Endpoints: `/backend-api/codex/{responses,responses/compact,models}` (+ WS on `responses`),
 `/backend-api/*` passthrough (`wham/*` …), `/api/codex/*`→`/wham/*`, `/v1/{responses,responses/compact,models}`,
 `/v1/images/{generations,edits}`, `/healthz` (no auth). Everything else 404.
+
+## Usage log
+Per-request records (account, model, effort, transport, status/error, retries/failover,
+TTFT, duration, tokens) go to a local SQLite file without ever blocking forwarding. Read-only
+API behind the client key: `GET /usage/v1/records`, `GET /usage/v1/summary?range=24h&group=key`,
+`GET /usage/v1/quota` (latest upstream used %, reset times, capacity estimate, `needs_relogin`
+flags; the % includes other clients/instances of the account). Records carry the client
+key's label (never the key), `instance_id` and the quota snapshot.
+```toml
+[usage]
+enabled = true
+path = "~/.cpa-lite/usage.db"
+retention_days = 90   # 0 = keep forever
+```
+Notional cost: copy `prices.example.toml` to `~/.cpa-lite/prices.toml` (`[usage] prices`);
+records and summaries then carry `cost_usd` (null + `unknown_price` for unpriced models, never
+0). It is what the tokens would cost on the API, not what a subscription bills. Refresh with
+`cpa-lite prices sync --from models.dev` (dry run; `--write` to apply). Records also keep
+`service_tier`, cache-write tokens and the Codex `thread_id` / `turn_id`.
+
+Read-only web page: `GET /ui` (`/` redirects; `[ui] enabled = true` by default). It is a
+single static HTML file embedded in the binary (inline CSS/JS, no external resources) that asks
+for the access key (kept in `sessionStorage`, sent as `Authorization: Bearer`, never in the
+URL) and shows account quota cards, a summary table (24h/7d/30d, by account/key/instance/model),
+a daily token/cost chart and recent requests. Strict CSP (`default-src 'none'`, script/style
+allowed by SHA-256 hash only, `connect-src 'self'`); all data rendered via `textContent`.
+Local demo with fake data: `cargo run --example ui_demo` → http://127.0.0.1:8399/ui
+(key `sk-demo-0123456789abcdef`).
+
+Details: docs/USAGE.md.
+
+Token refresh is cross-process safe: under the file lock the auth file is re-read; a newer
+token on disk is used instead of refreshing, and the write-back is skipped if another writer
+changed the credentials meanwhile (CPA `refresh_patch` semantics). `refresh_token_reused` /
+`invalid_grant` mark the account `needs_relogin` (excluded from routing, shown in
+`/usage/v1/quota`, logged once, no retry loop) until you log in again.
 
 ## Caddy
 ```

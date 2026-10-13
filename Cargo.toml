@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/auth", "crates/routing", "crates/upstream", "crates/forward", "crates/server"]
+members = ["crates/core", "crates/auth", "crates/routing", "crates/upstream", "crates/forward", "crates/server", "crates/usage"]
 
 [workspace.package]
 edition = "2021"
@@ -41,6 +41,7 @@ cpa-lite-auth = { path = "crates/auth" }
 cpa-lite-routing = { path = "crates/routing" }
 cpa-lite-upstream = { path = "crates/upstream" }
 cpa-lite-forward = { path = "crates/forward" }
+cpa-lite-usage = { path = "crates/usage" }
 
 # Same forks codex-rs patches in (Cargo.toml [patch.crates-io]).
 [patch.crates-io]

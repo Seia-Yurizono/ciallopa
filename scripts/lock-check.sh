@@ -13,7 +13,14 @@ def lock(p):
         if m and cur: d.setdefault(cur, set()).add(m.group(1)); cur = None
     return d
 a, b = lock(sys.argv[1]), lock(sys.argv[2])
-bad = {k: v - b.get(k, set()) for k, v in a.items() if not k.startswith("cpa-lite") and not v <= b.get(k, set())}
+# Usage-log storage stack (crates/usage): not on the network path, cannot affect TLS/h2/WS
+# fingerprints. libsqlite3-sys / hashlink themselves still match codex-rs. sqlite-wasm-rs and
+# rsqlite-vfs are wasm32-only (never compiled on native targets).
+ALLOW = {"rusqlite", "fallible-iterator", "fallible-streaming-iterator", "rsqlite-vfs", "sqlite-wasm-rs"}
+bad = {k: v - b.get(k, set()) for k, v in a.items()
+       if not k.startswith("cpa-lite") and k not in ALLOW and not v <= b.get(k, set())}
+allowed = {k: sorted(a[k]) for k in sorted(ALLOW) if k in a}
+print("allowed (non-network):", allowed)
 for k in ["reqwest", "rustls", "hyper", "h2", "hyper-rustls", "aws-lc-rs", "tokio", "tokio-tungstenite", "tungstenite"]:
     print(f"{k:18} {sorted(a.get(k, []))}")
 print("drift:", bad or "none")

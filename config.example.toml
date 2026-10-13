@@ -11,3 +11,8 @@ session_affinity_ttl = "1h"
 session_affinity_subagents = true
 session_affinity_rebind_on = "quota"
 quota_avoid_threshold = 0.0   # 0 = off (default); error-driven cooldown + switch only. e.g. 0.95 to also avoid near-full accounts for new sessions
+
+[usage]
+enabled = true
+path = "~/.cpa-lite/usage.db"
+retention_days = 90   # default 90; 0 = keep forever (requests + error details)

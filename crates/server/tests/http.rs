@@ -19,6 +19,7 @@ async fn app() -> axum::Router {
         ),
         router: Arc::new(cpa_lite_routing::CpaRouter::new(cfg.routing.clone())),
         upstream: Arc::new(cpa_lite_upstream::UpstreamClient::new(&cfg).unwrap()),
+        usage: None,
         config: Arc::new(cfg),
     };
     cpa_lite::build_app(state)
