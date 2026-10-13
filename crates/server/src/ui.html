@@ -22,8 +22,11 @@ section{margin-bottom:24px}
 h2{font-size:15px;margin:0 0 8px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
 .mut{color:var(--mut);font-size:12px}
 .toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0 0 16px;padding:8px 10px;background:var(--card);border:1px solid var(--line);border-radius:10px}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:12px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr));gap:12px;align-items:stretch}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;display:flex;flex-direction:column}
+.card .foot{margin-top:auto;padding-top:8px}
+.card .empty{flex:1;display:flex;align-items:center;justify-content:center;text-align:center;min-height:90px;border:1px dashed var(--line);border-radius:8px;margin-top:10px}
+.est{font-size:12px;margin-top:2px;text-wrap:pretty}.est .i{display:inline-block;margin-left:4px;cursor:help;color:var(--acc)}
 .card.w80{border:2px solid var(--warn)}.card.w95{border:2px solid var(--bad)}
 .card h3{font-size:14px;margin:0 0 6px;word-break:break-all}
 .badge{display:inline-block;font-size:11px;padding:1px 6px;border-radius:9px;border:1px solid var(--line);margin-right:4px;color:var(--mut)}
@@ -41,6 +44,10 @@ h2{font-size:15px;margin:0 0 8px;display:flex;align-items:baseline;gap:8px;flex-
 table{border-collapse:separate;border-spacing:0;width:100%;font-size:13px}
 th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;background:var(--card)}
 thead th{position:sticky;top:0;z-index:2;font-weight:600}
+#rw{max-height:none;overflow-x:auto;overflow-y:visible}
+#rw thead th{position:relative;top:auto;z-index:4;will-change:transform;box-shadow:0 1px 0 var(--line),0 -16px 0 var(--card)}
+#rw thead th:first-child{position:sticky;left:0}
+#rw td{padding-top:8px;padding-bottom:8px}
 th:first-child,td:first-child{position:sticky;left:0;z-index:1}
 thead th:first-child{z-index:3}
 th:first-child,td:first-child,td.l,th.l{text-align:left}
@@ -50,9 +57,10 @@ tr.err td:first-child{box-shadow:inset 3px 0 0 var(--bad)}
 tr.err td.ec{color:var(--bad)}
 tr.dt{cursor:pointer}
 tr.dt:hover td,tr.dt:focus-visible td{background:color-mix(in srgb,var(--acc) 9%,var(--card))}
-tr.dt:focus-visible{outline:2px solid var(--acc);outline-offset:-2px}
+tr.dt:focus-visible{outline:3px solid var(--acc);outline-offset:-3px}
+tr.dt:focus-visible td{background:color-mix(in srgb,var(--acc) 16%,var(--card))}
 :focus-visible{outline:2px solid var(--acc);outline-offset:2px}
-.more{font-size:11px;margin-left:6px;color:var(--acc);text-decoration:underline}
+.more{display:inline-flex;align-items:center;min-height:24px;font-size:12px;margin-left:8px;padding:2px 8px;border:1px solid var(--acc);border-radius:6px;color:var(--acc);background:color-mix(in srgb,var(--acc) 8%,var(--card))}
 .st{display:inline-block;min-width:34px;text-align:center;font-size:11.5px;padding:0 5px;border-radius:8px;border:1px solid var(--line)}
 .st.s4{color:var(--wfg);background:var(--wbg);border-color:var(--wbd)}
 .st.s5{color:var(--bfg);background:var(--bbg);border-color:var(--bad)}
@@ -81,7 +89,8 @@ button{cursor:pointer}button.pri{background:var(--acc);border-color:var(--acc);c
 .chip{display:inline-block;font-size:11px;line-height:1.35;padding:0 5px;border-radius:8px;border:1px solid var(--line);margin-left:4px;color:var(--mut);vertical-align:1px}
 .chip.fast{color:var(--wfg);background:var(--wbg);border-color:var(--wbd)}
 .chip.flex{color:var(--acc);border-color:var(--acc)}
-.chip.dg{background:transparent;color:var(--fg);border-style:dashed;border-color:var(--wbd)}
+.chip.dg{background:color-mix(in srgb,var(--wbg) 45%,var(--card));color:var(--wfg);font-weight:600;border-style:dashed;border-color:var(--wbd)}
+@media (prefers-color-scheme:dark){.chip.dg{background:transparent;color:#fcd34d;border-color:#fcd34d}}
 .rm{display:block;font-size:12px;color:var(--mut);overflow:hidden;text-overflow:ellipsis}
 .rm.mm{color:var(--bad)}
 .ef{display:block}.ef.fb{font-style:italic}.ef small{font-size:11px;color:var(--mut);margin-left:4px;font-style:normal}
@@ -195,7 +204,7 @@ function renderCards(q){
     if(a.configured===false)meta.appendChild(el("span","badge","未配置"));
     c.appendChild(meta);
     if(a.email){const m=el("div","mut",a.account);m.title=a.account;c.appendChild(m)}
-    if(!qq){c.appendChild(el("div","mut","尚无额度数据（该账号还没有请求经过本代理）"));box.appendChild(c);continue}
+    if(!qq){c.appendChild(el("div","mut empty","尚无额度数据（该账号还没有请求经过本代理）"));box.appendChild(c);continue}
     for(const w of [qq.primary,qq.secondary]){
       if(!w||w.used_pct===null||w.used_pct===undefined)continue;
       const d=el("div","win");const hh=el("div","winh");
@@ -210,11 +219,11 @@ function renderCards(q){
       else info.appendChild(document.createTextNode("无重置时间"));
       const e=w.estimate||{};
       if(e.status==="ok"){const s=el("div",null,"容量≈"+fmtN(e.capacity_tokens)+" 加权 token，剩余≈"+fmtN(e.remaining_tokens));s.title="容量 "+exact(e.capacity_tokens)+"，剩余 "+exact(e.remaining_tokens)+"（估算）";info.appendChild(s)}
-      else if(e.status==="insufficient_data"){const s=el("div",null,"容量估算：数据不足");s.title="本实例在两次额度快照之间的用量太少（已用百分比变化不足），还无法可靠估算窗口容量；多些请求后会出现。";s.appendChild(el("span","mut"," ⓘ 本实例两次快照间用量变化太小"));info.appendChild(s)}
+      else if(e.status==="insufficient_data"){const s=el("div","est","容量估算：数据不足");const i=el("span","i","ⓘ");i.tabIndex=0;i.setAttribute("role","note");const why="本实例在两次额度快照之间的用量太少（已用百分比变化不足），还无法可靠估算窗口容量；多些请求后会出现。";i.title=why;i.setAttribute("aria-label",why);s.appendChild(i);info.appendChild(s)}
       else if(e.status==="window_reset")info.appendChild(el("div",null,"窗口已重置，等待新快照"));
       d.appendChild(info);c.appendChild(d);
     }
-    if(qq.observed_at_ms){const old=Date.now()-qq.observed_at_ms>3600e3;const u=el("div","mut"+(old?" stale":""),"额度数据更新于 "+fmtTime(qq.observed_at_ms)+"（"+ago(qq.observed_at_ms)+(old?"，可能已过时":"")+"）"+(qq.observed_by?" · "+qq.observed_by:""));u.title=isoLocal(qq.observed_at_ms);c.appendChild(u)}
+    if(qq.observed_at_ms){const old=Date.now()-qq.observed_at_ms>3600e3;const u=el("div","mut foot"+(old?" stale":""),"额度数据更新于 "+fmtTime(qq.observed_at_ms)+"（"+ago(qq.observed_at_ms)+(old?"，可能已过时":"")+"）"+(qq.observed_by?" · "+qq.observed_by:""));u.title=isoLocal(qq.observed_at_ms);c.appendChild(u)}
     box.appendChild(c);
   }
   if(sel.querySelector("option[value='"+CSS.escape(cur)+"']"))sel.value=cur;
@@ -318,7 +327,7 @@ function recRow(r){
   return tr}
 function renderRecords(){
   const tb=$("rec");
-  keepScroll("rw",()=>{clear(tb);for(const r of recState.rows)tb.appendChild(recRow(r));if(!recState.rows.length)emptyRow(tb,"该时间段无请求")});
+  keepScroll("rw",()=>{clear(tb);for(const r of recState.rows)tb.appendChild(recRow(r));if(!recState.rows.length)emptyRow(tb,"该时间段无请求")});stickHead();
   $("rcount").textContent="共 "+exact(recState.total)+" 条（"+$("range").selectedOptions[0].textContent+"）";
   const more=recState.rows.length<recState.total;$("rmore").classList.toggle("hide",!more);
   $("rpage").textContent=recState.total?"已显示 "+exact(recState.rows.length)+" / "+exact(recState.total):"";
@@ -329,6 +338,11 @@ async function loadRecords(append){
   const t=$("ftier").value;
   const q=qs({limit:PAGE,offset:recState.offset,from:recState.to-RANGE_MS[$("range").value],to:recState.to,account:$("facct").value,key:$("fkey").value.trim(),errors:$("ferr").checked?1:"",tier:t==="dg"?"":t,downgraded:t==="dg"?1:""});
   await busy("sr",async()=>{const d=await api("/usage/v1/records?"+q);recState.total=d.total;recState.rows=append?recState.rows.concat(d.records):d.records;recState.offset=recState.rows.length;renderRecords()})}
+// Records table grows with the page; its header follows the viewport (below the page header)
+// while the wrapper only scrolls horizontally.
+function stickHead(){const w=$("rw"),th=w.querySelectorAll("thead th");if(!th.length)return;const top=document.querySelector("header").offsetHeight,r=w.getBoundingClientRect(),h=th[0].offsetHeight;
+  const off=Math.max(0,Math.min(top-r.top,r.height-2*h));const v=off>0?"translateY("+off+"px)":"";for(const t of th)t.style.transform=v}
+window.addEventListener("scroll",stickHead,{passive:true});window.addEventListener("resize",stickHead);
 $("rmore").addEventListener("click",async()=>{$("rmore").disabled=true;try{await loadRecords(true)}catch(e){fail(e)}finally{$("rmore").disabled=false}});
 
 // ---- detail dialog (rendered with textContent; focus trapped; focus returns to the row)
