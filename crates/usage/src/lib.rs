@@ -1,10 +1,12 @@
 //! Per-request usage log. **Never blocks forwarding**: `Recorder::record` is a non-blocking
 //! `try_send` into a bounded queue (full ⇒ drop + count); one dedicated OS thread batch-writes
 //! to SQLite (WAL). Reads open their own read-only connections. Design: docs/USAGE.md.
+pub mod detail;
 pub mod prices;
 mod store;
 mod writer;
 
+pub use detail::{DetailRow, ErrorDetail};
 pub use prices::{PriceTable, Tier};
 pub use store::{
     AccountQuota, DayBucket, Dim, Estimate, Filters, RecentQuery, RecordRow, Summary, SummaryGroup,
@@ -84,6 +86,8 @@ pub struct Record {
     pub key: Option<String>,
     /// Upstream quota snapshot seen on this response (headers / `codex.rate_limits`).
     pub quota: Option<QuotaObs>,
+    /// Only for failed requests (status ≥ 400 or `error`); redacted when written.
+    pub detail: Option<Box<ErrorDetail>>,
 }
 
 /// One upstream quota snapshot (`x-codex-{primary,secondary}-*`, `x-codex-plan-type`).
@@ -125,6 +129,7 @@ impl Record {
             turn_id: None,
             key: None,
             quota: None,
+            detail: None,
         }
     }
     pub fn ts_ms(&self) -> i64 {
@@ -315,6 +320,17 @@ impl Recorder {
     pub async fn summary(&self, q: SummaryQuery) -> Result<Summary, UsageError> {
         let (p, pr) = (self.path.clone(), self.prices());
         tokio::task::spawn_blocking(move || store::summary(&store::open_ro(&p)?, &q, &pr))
+            .await
+            .map_err(|_| UsageError::Gone)?
+    }
+
+    /// Error detail by request id (16 hex chars as shown in records).
+    pub async fn detail(&self, request_id: &str) -> Result<Option<DetailRow>, UsageError> {
+        let Ok(id) = i64::from_str_radix(request_id, 16) else {
+            return Ok(None);
+        };
+        let p = self.path.clone();
+        tokio::task::spawn_blocking(move || store::detail(&store::open_ro(&p)?, id))
             .await
             .map_err(|_| UsageError::Gone)?
     }
@@ -543,7 +559,7 @@ mod tests {
                 ..c.clone()
             })
             .unwrap();
-            let old = r.ids.next_at(now_ms() - 40 * 86_400_000);
+            let old = r.ids.next_at(now_ms() - 100 * 86_400_000);
             r.record(Record::new(old, Transport::Sse, "responses"));
             let new = r.ids.next();
             r.record(Record::new(new, Transport::Sse, "responses"));
@@ -901,5 +917,102 @@ mod tests {
             })
             .find(|s| prices::parse_date(s).is_some_and(|x| x == days) && p(s) == days)
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn error_detail_stored_redacted_and_purged() {
+        let d = tempfile::tempdir().unwrap();
+        let c = UsageConfig {
+            retention_days: 0,
+            ..cfg(d.path())
+        };
+        let r = Recorder::open(&c).unwrap();
+        let old_ms = now_ms() - 200 * 86_400_000;
+        let mk = |ms: i64, status: u16, err: Option<&str>| {
+            let mut x = Record::new(r.ids.next_at(ms), Transport::Sse, "responses");
+            x.status = status;
+            x.error = err.map(str::to_string);
+            let mut det = ErrorDetail {
+                message: Some("upstream 401 for me@corp.com".into()),
+                ..Default::default()
+            };
+            det.set_body(br#"{"error":{"message":"bad token Bearer abc123"},"access_token":"eyJx.eyJy.zzz"}"#);
+            det.add_header("cf-ray", "ray-1");
+            det.add_header("set-cookie", "s=1");
+            x.detail = Some(Box::new(det));
+            let id = x.id;
+            assert!(r.record(x));
+            id
+        };
+        let old = mk(old_ms, 500, Some("upstream_5xx")); // ids are monotonic: oldest first
+        let ok = mk(now_ms(), 200, None); // detail ignored for successes
+        let bad = mk(now_ms(), 401, Some("auth"));
+        r.flush_blocking().unwrap();
+        let rows = r
+            .recent(RecentQuery {
+                limit: 10,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let has = |id: i64| {
+            rows.iter()
+                .find(|x| x.request_id == format!("{id:016x}"))
+                .unwrap()
+                .has_detail
+        };
+        assert!(!has(ok) && has(bad) && has(old));
+        assert!(r.detail(&format!("{ok:016x}")).await.unwrap().is_none());
+        assert!(r.detail("zz").await.unwrap().is_none());
+        let dt = r.detail(&format!("{bad:016x}")).await.unwrap().unwrap();
+        assert_eq!(
+            dt.message.as_deref(),
+            Some("upstream 401 for [REDACTED_EMAIL]")
+        );
+        let body = dt.body.unwrap();
+        assert!(!body.contains("abc123") && !body.contains("eyJx"), "{body}");
+        assert_eq!(dt.headers["cf-ray"], "ray-1");
+        assert!(dt.headers.get("set-cookie").is_none());
+        assert!(!dt.truncated);
+        r.shutdown();
+        // retention 0 kept everything; 90 days purges the old row and its detail
+        let r = Recorder::open(&UsageConfig {
+            retention_days: 90,
+            ..c.clone()
+        })
+        .unwrap();
+        r.flush_blocking().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert_eq!(r.stats().purged, 1);
+        assert!(r.detail(&format!("{old:016x}")).await.unwrap().is_none());
+        assert!(r.detail(&format!("{bad:016x}")).await.unwrap().is_some());
+        r.shutdown();
+    }
+
+    #[test]
+    fn retention_zero_keeps_forever_and_default_is_90() {
+        assert_eq!(UsageConfig::default().retention_days, 90);
+        let d = tempfile::tempdir().unwrap();
+        let c = UsageConfig {
+            retention_days: 0,
+            ..cfg(d.path())
+        };
+        let r = Recorder::open(&c).unwrap();
+        r.record(Record::new(
+            r.ids.next_at(now_ms() - 3650 * 86_400_000),
+            Transport::Sse,
+            "responses",
+        ));
+        r.shutdown();
+        let r = Recorder::open(&c).unwrap();
+        r.flush_blocking().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert_eq!(r.stats().purged, 0);
+        let conn = store::open_ro(&d.path().join("u.db")).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT count(*) FROM requests", [], |x| x.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+        r.shutdown();
     }
 }

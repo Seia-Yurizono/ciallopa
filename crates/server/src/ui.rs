@@ -105,7 +105,15 @@ mod tests {
         assert!(CSP.contains("default-src 'none'"));
         assert!(!CSP.contains("unsafe"));
         // window cards are labeled only by window length (no 主/次 prefix)
-        assert!(PAGE.contains("\"5 小时窗口\"") && PAGE.contains("\"周窗口\"") && PAGE.contains("\" 天窗口\""));
+        assert!(
+            PAGE.contains("\"5 小时窗口\"")
+                && PAGE.contains("\"周窗口\"")
+                && PAGE.contains("\" 天窗口\"")
+        );
         assert!(!PAGE.contains("\"主\"") && !PAGE.contains("\"次\""));
+        // error detail panel: fetched by id, rendered via textContent only, copy button
+        assert!(PAGE.contains("/usage/v1/records/\"+r.request_id+\"/detail"));
+        assert!(PAGE.contains("$(\"dbody\").textContent="));
+        assert!(PAGE.contains("navigator.clipboard.writeText"));
     }
 }

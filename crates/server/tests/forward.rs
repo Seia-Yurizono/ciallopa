@@ -141,6 +141,17 @@ async fn up_responses(State(m): State<Mock>, h: HeaderMap, b: Bytes) -> Response
                 "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r-b\"}}\n\n"
             )
         }),
+        "errbody" => Response::builder()
+            .status(400)
+            .header("content-type", "application/json")
+            .header("cf-ray", "ray-123")
+            .header("x-request-id", "req_abc")
+            .header("set-cookie", "session=supersecret")
+            .header("x-codex-primary-used-percent", "40")
+            .body(Body::from(
+                r#"{"error":{"message":"bad input from alice@example.com <img src=x onerror=alert(1)>","auth":"Bearer sk-live-SECRETSECRETSECRET"},"refresh_token":"rt_SECRETSECRETSECRET"}"#,
+            ))
+            .unwrap(),
         "unauth" if auth.ends_with("-1") => Response::builder().status(401).body(Body::empty()).unwrap(),
         "idle" => {
             let s = futures::stream::unfold(0, |i| async move {
@@ -1045,4 +1056,80 @@ async fn summary_day_buckets_api() {
         .await
         .unwrap();
     assert_eq!(v["summary"]["total"]["count"], 1, "{v}");
+}
+
+async fn detail_of(e: &Env, id: &str, auth: bool) -> reqwest::Response {
+    let r = e
+        .http
+        .get(format!("http://{}/usage/v1/records/{id}/detail", e.proxy));
+    let r = if auth { r.bearer_auth(KEY) } else { r };
+    r.send().await.unwrap()
+}
+
+#[tokio::test]
+async fn usage_error_detail_capture_and_api() {
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(1, Some(usage_recorder(d.path()))).await;
+    let r = e
+        .post("/backend-api/codex/responses")
+        .header("x-test-mode", "errbody")
+        .body(r#"{"model":"gpt-5.5","input":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
+    let t = r.text().await.unwrap();
+    assert!(t.contains("bad input"), "{t}"); // client still sees the raw upstream body
+    sse_text(&e, "latelimit").await; // in-stream response.failed
+    let r = e
+        .post("/backend-api/codex/responses")
+        .header("x-test-mode", "idle")
+        .body(r#"{"model":"gpt-5.5","input":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert!(r.text().await.is_err()); // local idle timeout (1s) aborts the stream
+    sse_text(&e, "usage").await; // success: no detail
+    let rows = wait_rows(&e, 4).await;
+    assert_eq!(rows.len(), 4, "{rows:?}");
+    let (ok, idle, late, bad) = (&rows[0], &rows[1], &rows[2], &rows[3]);
+    assert_eq!(ok["has_detail"], false);
+    assert_eq!(bad["status"], 400);
+    for r in [idle, late, bad] {
+        assert_eq!(r["has_detail"], true, "{r}");
+    }
+    let id = |r: &serde_json::Value| r["request_id"].as_str().unwrap().to_string();
+
+    // auth required; malformed / unknown ids
+    assert_eq!(detail_of(&e, &id(bad), false).await.status(), 401);
+    assert_eq!(detail_of(&e, "nothex", true).await.status(), 400);
+    assert_eq!(detail_of(&e, &id(ok), true).await.status(), 404);
+
+    let v: serde_json::Value = detail_of(&e, &id(bad), true).await.json().await.unwrap();
+    let raw = v.to_string();
+    for secret in ["SECRETSECRET", "alice@example.com", "supersecret"] {
+        assert!(!raw.contains(secret), "{secret} leaked: {raw}");
+    }
+    assert_eq!(v["headers"]["cf-ray"], "ray-123");
+    assert_eq!(v["headers"]["x-request-id"], "req_abc");
+    assert_eq!(v["headers"]["x-codex-primary-used-percent"], "40");
+    assert!(v["headers"].get("set-cookie").is_none());
+    assert_eq!(v["truncated"], false);
+    let body: serde_json::Value = serde_json::from_str(v["body"].as_str().unwrap()).unwrap();
+    assert_eq!(body["refresh_token"], "[REDACTED]");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("<img src=x"),
+        "stored as data, escaped by the UI"
+    );
+
+    let v: serde_json::Value = detail_of(&e, &id(late), true).await.json().await.unwrap();
+    assert!(
+        v["body"].as_str().unwrap().contains("usage_limit_reached"),
+        "{v}"
+    );
+    let v: serde_json::Value = detail_of(&e, &id(idle), true).await.json().await.unwrap();
+    assert!(v["message"].as_str().unwrap().contains("idle"), "{v}");
 }

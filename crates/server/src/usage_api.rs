@@ -1,6 +1,6 @@
 //! Read-only usage API (behind the client key): `/usage/v1/records`, `/usage/v1/summary`,
-//! `/usage/v1/quota`.
-use axum::extract::{Query, State};
+//! `/usage/v1/quota`, `/usage/v1/records/{id}/detail`.
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -20,6 +20,7 @@ struct St {
 pub fn routes(rec: Rec, accounts: Arc<dyn AccountStore>) -> Router {
     Router::new()
         .route("/usage/v1/records", get(records))
+        .route("/usage/v1/records/{id}/detail", get(detail))
         .route("/usage/v1/summary", get(summary))
         .route("/usage/v1/quota", get(quota))
         .with_state(St { rec, accounts })
@@ -71,6 +72,21 @@ async fn records(State(St { rec, .. }): State<St>, Query(q): Query<RecordsQ>) ->
     };
     match rec.recent(q).await {
         Ok(rows) => Json(serde_json::json!({"records": rows})).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    }
+}
+
+/// Redacted error detail of one failed request (`id` = `request_id`, 16 hex chars).
+async fn detail(State(St { rec, .. }): State<St>, Path(id): Path<String>) -> Response {
+    let Some(rec) = rec else {
+        return err(StatusCode::NOT_FOUND, "usage log disabled");
+    };
+    if id.len() != 16 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return err(StatusCode::BAD_REQUEST, "invalid request id");
+    }
+    match rec.detail(&id).await {
+        Ok(Some(d)) => Json(d).into_response(),
+        Ok(None) => err(StatusCode::NOT_FOUND, "no detail for this request"),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     }
 }

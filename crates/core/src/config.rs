@@ -224,7 +224,7 @@ impl Default for UsageConfig {
         Self {
             enabled: true,
             path: PathBuf::from("~/.cpa-lite/usage.db"),
-            retention_days: 30,
+            retention_days: 90,
             queue_size: 8192,
             batch_size: 256,
             flush_ms: 50,

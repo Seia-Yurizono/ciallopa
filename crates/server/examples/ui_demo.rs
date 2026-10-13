@@ -92,14 +92,33 @@ async fn main() {
             "laptop".into()
         });
         r.status = 200;
-        let fail = next() % 25 == 0;
+        let fail = next() % 25 == 0 || i == n - 3;
         if fail {
-            r.error = Some(if next() % 2 == 0 {
+            let limit = next() % 2 == 0 && i != n - 3;
+            r.error = Some(if limit {
                 "usage_limit".into()
             } else {
                 "upstream_5xx".into()
             });
             r.status = 502;
+            // Fake upstream error (redacted on write; XSS payload must render as text).
+            let mut d = cpa_lite_usage::ErrorDetail::default();
+            d.add_header("content-type", "application/json");
+            d.add_header("cf-ray", "8c1f2e3d4b5a6978-NRT");
+            d.add_header("x-request-id", "req_7f3a9c21e0b44d18");
+            d.add_header("x-codex-primary-used-percent", "97");
+            d.add_header("retry-after", "120");
+            let body = serde_json::json!({
+                "error": {
+                    "type": if limit { "usage_limit_reached" } else { "server_error" },
+                    "message": format!("upstream failed for demo@example.com {EVIL}"),
+                    "debug": "Authorization: Bearer sk-demo-FAKEFAKEFAKEFAKEFAKE",
+                    "resets_in_seconds": 1800
+                },
+                "refresh_token": "rt_FAKEFAKEFAKEFAKEFAKEFAKE"
+            });
+            d.set_body(body.to_string().as_bytes());
+            r.detail = Some(Box::new(d));
         } else {
             let inp = 2_000 + (next() % 60_000) as i64;
             r.input_tokens = Some(inp);

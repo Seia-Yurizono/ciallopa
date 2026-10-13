@@ -50,6 +50,13 @@ pub(crate) async fn handler(
                 t.status(r.status().as_u16());
                 t.accounts(&route.exclude, None);
                 t.not_stream();
+                let (parts, body) = r.into_parts();
+                t.error_headers(&parts.headers);
+                let b = axum::body::to_bytes(body, 1 << 20)
+                    .await
+                    .unwrap_or_default();
+                t.error_body(&b);
+                return Response::from_parts(parts, axum::body::Body::from(b));
             }
             return r;
         }
@@ -362,7 +369,10 @@ async fn relay(
                 match m {
                     Some(Ok(WsMessage::Close(f))) => {
                         let code = f.as_ref().map(|f| u16::from(f.code)).unwrap_or(1000);
-                        if let Some(t) = turn.as_mut() { t.fail("upstream_closed"); }
+                        if let Some(t) = turn.as_mut() {
+                            let reason = f.as_ref().map(|f| f.reason.to_string()).unwrap_or_default();
+                            t.fail_msg("upstream_closed", format!("upstream websocket closed mid-turn (code {code}) {reason}").trim_end().to_string());
+                        }
                         if code != 1000 {
                             st.router.report(&route, &account, &Outcome::Transient { status: None });
                         }
@@ -387,6 +397,9 @@ async fn relay(
                             }
                             _ => (proxy::EventKind::Preamble, false),
                         };
+                        if let (proxy::EventKind::Quota(_), Some(t), WsMessage::Text(txt)) = (&kind, turn.as_mut(), &m) {
+                            t.error_text(txt.as_str().as_bytes());
+                        }
                         if let proxy::EventKind::Quota(o) = kind {
                             // Never forward: Codex would end the turn (UsageLimitReached is fatal).
                             st.router.report(&route, &account, &o);
@@ -414,7 +427,7 @@ async fn relay(
                                 }
                             }
                             tracing::info!(account = %account, "ws quota error mid-turn; closing for client replay");
-                            if let Some(t) = turn.as_mut() { t.fail("usage_limit"); }
+                            if let Some(t) = turn.as_mut() { t.fail_msg("usage_limit", "usage limit reached mid-turn; closed for client replay"); }
                             let _ = dtx.send(close(CLOSE_REPLAY, CLOSE_REPLAY_REASON)).await;
                             break;
                         }
@@ -448,7 +461,7 @@ async fn relay(
                         }
                     }
                     _ => {
-                        if let Some(t) = turn.as_mut() { t.fail("upstream_closed"); }
+                        if let Some(t) = turn.as_mut() { t.fail_msg("upstream_closed", "upstream websocket disconnected (transport error)"); }
                         st.router.report(&route, &account, &Outcome::Transient { status: None });
                         let _ = dtx.send(close(CLOSE_INTERNAL, "upstream disconnected")).await;
                         break;
@@ -457,7 +470,7 @@ async fn relay(
             },
             _ = &mut sleep, if awaiting => {
                 tracing::warn!(account = %account, "upstream websocket idle timeout");
-                if let Some(t) = turn.as_mut() { t.fail("idle_timeout"); }
+                if let Some(t) = turn.as_mut() { t.fail_msg("idle_timeout", format!("upstream websocket idle for {}s (timeout)", idle.as_secs())); }
                 st.router.report(&route, &account, &Outcome::Transient { status: None });
                 let _ = dtx.send(close(CLOSE_INTERNAL, "stream idle timeout")).await;
                 let _ = utx.send(WsMessage::Close(None)).await;

@@ -3,7 +3,7 @@
 //! via a non-blocking `try_send`; nothing here can stall a stream.
 use crate::AppState;
 use cpa_lite_core::AccountId;
-use cpa_lite_usage::{QuotaObs, Record, Recorder, Transport};
+use cpa_lite_usage::{detail::keep_header, ErrorDetail, QuotaObs, Record, Recorder, Transport};
 use http::HeaderMap;
 use serde_json::Value;
 use std::sync::Arc;
@@ -154,6 +154,40 @@ impl Tracker {
         }
     }
 
+    /// `fail` plus a human-readable message for the error detail (first message wins).
+    pub(crate) fn fail_msg(&mut self, kind: &str, msg: impl Into<String>) {
+        self.fail(kind);
+        let d = self.detail();
+        if d.message.is_none() {
+            d.message = Some(msg.into());
+        }
+    }
+
+    fn detail(&mut self) -> &mut ErrorDetail {
+        self.rec.detail.get_or_insert_with(Default::default)
+    }
+
+    /// Selected upstream response headers (only kept if the request ends up failed).
+    pub(crate) fn error_headers(&mut self, h: &HeaderMap) {
+        let d = self.detail();
+        d.headers.clear();
+        for (k, v) in h {
+            if keep_header(k.as_str()) {
+                d.add_header(k.as_str(), &String::from_utf8_lossy(v.as_bytes()));
+            }
+        }
+    }
+
+    /// Raw error body bytes (capped / redacted when written).
+    pub(crate) fn error_body(&mut self, b: &[u8]) {
+        self.detail().push_body(b);
+    }
+
+    /// A WS error frame / handshake failure body.
+    pub(crate) fn error_text(&mut self, b: &[u8]) {
+        self.detail().set_body(b);
+    }
+
     /// A terminal Responses event (`response.completed` / `failed` / `incomplete` / `error`).
     pub(crate) fn terminal_event(&mut self, v: &Value) {
         self.terminal = true;
@@ -186,6 +220,16 @@ impl Tracker {
             "response.incomplete" => self.fail("incomplete"),
             _ => {
                 let text = v.to_string();
+                let msg = v
+                    .pointer("/error/message")
+                    .or_else(|| v.pointer("/response/error/message"))
+                    .and_then(|m| m.as_str())
+                    .map(str::to_string);
+                let d = self.detail();
+                d.set_body(text.as_bytes());
+                if d.message.is_none() {
+                    d.message = msg.or_else(|| Some(format!("upstream event {ty}")));
+                }
                 if crate::proxy::is_quota_code(&text) {
                     self.fail("usage_limit");
                 } else if ty == "error" {
@@ -199,6 +243,9 @@ impl Tracker {
 
     /// Feed raw SSE bytes; parses only terminal events (cheap byte search first).
     pub(crate) fn feed_sse(&mut self, chunk: &[u8]) {
+        if self.rec.status >= 400 {
+            self.error_body(chunk);
+        }
         if self.terminal {
             return;
         }
@@ -315,8 +362,33 @@ impl Drop for Tracker {
         if self.rec.status >= 400 && self.rec.error.is_none() {
             self.rec.error = Some(error_for_status(self.rec.status).into());
         }
+        match self.rec.error.as_deref() {
+            None => self.rec.detail = None,
+            Some(kind) => {
+                let (kind, status) = (kind.to_string(), self.rec.status);
+                let d = self.detail();
+                if d.message.is_none() {
+                    d.message = Some(describe(&kind, status));
+                }
+            }
+        }
         let rec = std::mem::replace(&mut self.rec, Record::new(0, Transport::Http, ""));
         self.sink.record(rec);
+    }
+}
+
+/// Default message for an error kind (local errors have no upstream body).
+fn describe(kind: &str, status: u16) -> String {
+    match kind {
+        "client_closed" => "client disconnected before the response completed".into(),
+        "upstream_closed" => "upstream closed the connection before a terminal event".into(),
+        "idle_timeout" => "upstream stream idle timeout".into(),
+        "stream_error" => "upstream stream transport error".into(),
+        "incomplete" => "response.incomplete from upstream".into(),
+        "usage_limit" => "upstream usage limit reached".into(),
+        "no_account" => "no account available".into(),
+        _ if status > 0 => format!("HTTP {status} ({kind})"),
+        _ => kind.to_string(),
     }
 }
 

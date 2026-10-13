@@ -33,7 +33,12 @@ table{border-collapse:collapse;width:100%;font-size:13px}
 th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
 th:first-child,td:first-child,td.l,th.l{text-align:left}
 td.l{max-width:260px;overflow:hidden;text-overflow:ellipsis}
-tr.err td{color:var(--bad)}
+tr.err td{color:var(--bad)}tr.dt{cursor:pointer}tr.dt:hover td{background:var(--line)}
+#dp{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:flex-start;justify-content:center;padding:5vh 12px;z-index:10}
+#dpb{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;width:min(860px,100%);max-height:90vh;overflow:auto}
+#dpb h3{margin:0 0 6px;font-size:15px;display:flex;gap:8px;align-items:center}#dpb h3 span{flex:1}
+#dpb pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px;font-size:12px;white-space:pre-wrap;word-break:break-all;margin:4px 0 10px}
+#dmsg{color:var(--bad);font-size:13px;margin:4px 0 8px;word-break:break-all}
 select,input,button{font:inherit;color:inherit;background:var(--card);border:1px solid var(--line);border-radius:6px;padding:4px 8px}
 button{cursor:pointer}button.pri{background:var(--acc);border-color:var(--acc);color:#fff}
 .ctl{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px}
@@ -81,6 +86,12 @@ button{cursor:pointer}button.pri{background:var(--acc);border-color:var(--acc);c
     <div class="tablewrap"><table><thead><tr><th class="l">时间</th><th class="l">账号</th><th class="l">密钥</th><th class="l">模型</th><th>状态</th><th class="l">错误</th><th>TTFT</th><th>耗时</th><th>输入</th><th>输出</th><th>成本</th></tr></thead><tbody id="rec"></tbody></table></div>
   </section>
 </main></div>
+<div id="dp" class="hide" role="dialog" aria-modal="true" aria-labelledby="dtitle"><div id="dpb">
+  <h3><span id="dtitle">错误详情</span><button id="dcopy">复制</button><button id="dclose">关闭</button></h3>
+  <div class="mut" id="dmeta"></div><div id="dmsg"></div>
+  <div class="mut">响应头</div><pre id="dhdr"></pre>
+  <div class="mut" id="dblab">响应体</div><pre id="dbody"></pre>
+</div></div>
 <script>
 "use strict";
 (function(){
@@ -104,7 +115,7 @@ async function api(path){
   if(!r.ok)throw new Error(path.split("?")[0]+" → HTTP "+r.status);
   return r.json();
 }
-function show(app,err){$("app").classList.toggle("hide",!app);$("login").classList.toggle("hide",app);$("lerr").textContent=err||"";if(!app)stopAuto()}
+function show(app,err){$("app").classList.toggle("hide",!app);$("login").classList.toggle("hide",app);$("lerr").textContent=err||"";if(!app){stopAuto();closeDetail()}}
 function qs(o){const u=new URLSearchParams();for(const k in o)if(o[k]!==""&&o[k]!==null&&o[k]!==undefined)u.set(k,o[k]);return u.toString()}
 
 function renderCards(q){
@@ -178,11 +189,34 @@ function renderTrend(buckets,days){
 
 function renderRecords(rs){
   const tb=$("rec");clear(tb);
-  for(const r of rs){const tr=el("tr",(r.error||r.status>=400)?"err":"");
+  for(const r of rs){const tr=el("tr",((r.error||r.status>=400)?"err":"")+(r.has_detail?" dt":""));
+    if(r.has_detail){tr.title="点击查看错误详情";tr.addEventListener("click",()=>openDetail(r))}
     const cells=[[fmtTime(r.ts_ms),"l"],[r.account||"–","l"],[r.key||"–","l"],[(r.model||"–")+(r.reasoning_effort?" · "+r.reasoning_effort:"")+(r.service_tier&&r.service_tier!=="default"&&r.service_tier!=="auto"?" · "+r.service_tier:""),"l"],[r.status],[r.error||"","l"],[fmtMs(r.ttft_ms)],[fmtMs(r.duration_ms)],[fmtN(r.input_tokens)],[fmtN(r.output_tokens)],[r.price_status==="unknown_price"?"未定价":fmtUsd(r.cost_usd)]];
-    for(const [v,c] of cells){const t=td(v,c);if(c)t.title=String(v);tr.appendChild(t)}tb.appendChild(tr)}
+    for(const [v,c] of cells){const t=td(v,c);if(c&&!r.has_detail)t.title=String(v);tr.appendChild(t)}tb.appendChild(tr)}
   if(!rs.length){const tr=el("tr");const c=td("没有记录","l");c.colSpan=11;tr.appendChild(c);tb.appendChild(tr)}
 }
+
+// Detail panel: everything rendered with textContent (bodies are untrusted upstream data).
+let dtext="";
+function pretty(s){if(s===null||s===undefined)return"";try{return JSON.stringify(JSON.parse(s),null,2)}catch(_){return String(s)}}
+async function openDetail(r){
+  if(!/^[0-9a-f]{16}$/.test(r.request_id||""))return;
+  $("dtitle").textContent="错误详情 · "+(r.error||("HTTP "+r.status));
+  $("dmeta").textContent=fmtTime(r.ts_ms)+" · "+(r.account||"–")+" · "+(r.model||"–")+" · id "+r.request_id;
+  for(const id of ["dmsg","dhdr","dbody"])$(id).textContent="";$("dblab").textContent="响应体";
+  $("dp").classList.remove("hide");$("dclose").focus();
+  try{const d=await api("/usage/v1/records/"+r.request_id+"/detail");
+    $("dmsg").textContent=d.message||"";
+    $("dhdr").textContent=d.headers&&Object.keys(d.headers).length?JSON.stringify(d.headers,null,2):"（无）";
+    $("dblab").textContent="响应体（原始 "+d.body_len+" 字节"+(d.truncated?"，已截断":"")+"，已脱敏）";
+    $("dbody").textContent=d.body?pretty(d.body):"（无）";
+    dtext=JSON.stringify(Object.assign({},d,{body:d.body?pretty(d.body):d.body}),null,2);
+  }catch(err){if(err.message!=="401")$("dmsg").textContent="加载失败："+err.message}}
+function closeDetail(){$("dp").classList.add("hide");dtext=""}
+$("dclose").addEventListener("click",closeDetail);
+$("dp").addEventListener("click",e=>{if(e.target===$("dp"))closeDetail()});
+document.addEventListener("keydown",e=>{if(e.key==="Escape")closeDetail()});
+$("dcopy").addEventListener("click",async()=>{try{await navigator.clipboard.writeText(dtext);$("dcopy").textContent="已复制"}catch(_){$("dcopy").textContent="复制失败"}setTimeout(()=>{$("dcopy").textContent="复制"},1500)});
 
 async function loadRecords(){const q=qs({limit:50,account:$("facct").value,key:$("fkey").value.trim(),errors:$("ferr").checked?1:""});renderRecords((await api("/usage/v1/records?"+q)).records)}
 async function loadSummary(){const s=await api("/usage/v1/summary?"+qs({range:$("range").value,group:$("group").value}));renderSummary(s.summary)}

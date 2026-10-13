@@ -235,6 +235,9 @@ pub(crate) fn stream_back_tracked(st: &AppState, c: Chosen, mut trk: Option<Trac
     let headers = downstream_headers(c.resp.headers());
     if let Some(t) = trk.as_mut() {
         t.status(status.as_u16());
+        if status.as_u16() >= 400 {
+            t.error_headers(c.resp.headers());
+        }
         if !is_event_stream(c.resp.headers()) {
             t.not_stream();
         }
@@ -306,7 +309,12 @@ fn stream_body(
         loop {
             match tokio::time::timeout(idle, up.next()).await {
                 Err(_) => {
-                    fail(&mut trk, "idle_timeout");
+                    if let Some(t) = trk.as_mut() {
+                        t.fail_msg(
+                            "idle_timeout",
+                            format!("upstream stream idle for {}s (timeout)", idle.as_secs()),
+                        );
+                    }
                     tracing::warn!(account = %account, "upstream stream idle timeout");
                     router.report(&route, &account, &Outcome::Transient { status: None });
                     let _ = tx
@@ -319,7 +327,9 @@ fn stream_body(
                 }
                 Ok(None) => return,
                 Ok(Some(Err(e))) => {
-                    fail(&mut trk, "stream_error");
+                    if let Some(t) = trk.as_mut() {
+                        t.fail_msg("stream_error", format!("upstream stream error: {e}"));
+                    }
                     router.report(&route, &account, &Outcome::Transient { status: None });
                     let _ = tx.send(Err(std::io::Error::other(e))).await;
                     return;
@@ -471,11 +481,17 @@ pub(crate) async fn send_streaming(
         let c = match res {
             Ok(c) => c,
             Err(r) => {
-                if let Some(t) = trk.as_mut() {
-                    t.status(r.status().as_u16());
-                    t.not_stream();
-                }
-                return r;
+                let Some(t) = trk.as_mut() else { return r };
+                t.status(r.status().as_u16());
+                t.not_stream();
+                // Local / buffered upstream errors: the body is small and already in memory.
+                let (parts, body) = r.into_parts();
+                t.error_headers(&parts.headers);
+                let b = axum::body::to_bytes(body, 1 << 20)
+                    .await
+                    .unwrap_or_default();
+                t.error_body(&b);
+                return Response::from_parts(parts, Body::from(b));
             }
         };
         if !c.resp.status().is_success() || !is_event_stream(c.resp.headers()) {
@@ -538,8 +554,12 @@ pub(crate) async fn send_streaming(
             // Out of accounts: deliver what we have (the quota error) as-is.
             if let Some(t) = trk.as_mut() {
                 t.status(status.as_u16());
-                t.fail("usage_limit");
+                t.fail_msg(
+                    "usage_limit",
+                    "usage limit reached on every available account",
+                );
                 t.not_stream();
+                t.error_body(&buf);
             }
             let mut r = Response::new(Body::from(buf));
             *r.status_mut() = status;

@@ -54,6 +54,23 @@ TPS is computed at query time: `out_tok / (duration_ms − ttft_ms)`.
 
 Not recorded: `/models`, `/wham/*` and other passthrough, WS handshakes that succeed (only turns).
 
+## Error details
+Stored only for failed requests (status ≥ 400 or `error` set), in `error_detail`:
+- `body`: upstream error body (HTTP error response, in-stream `error` / `response.failed` /
+  `response.incomplete` event, WS error / quota frame, WS handshake failure, or the local
+  JSON error such as `no_account`). Capture stops at 64 KiB; the stored text is redacted and
+  then capped at **16 KiB** (`truncated = true`, `body_len` = original byte length).
+- `message`: upstream `error.message` or a descriptive local message (`upstream stream idle
+  for 300s (timeout)`, `no account available`, `upstream websocket closed mid-turn (code …)`, …).
+- `headers`: only `x-codex-*`, `cf-ray`, `retry-after`, `content-type`, `x-request-id`,
+  `x-oai-request-id`, `openai-*request-id`/`openai-processing-ms`; never cookies or auth.
+- Redaction (body, message, headers): `Bearer`/`Basic` credentials, JWT-like `eyJ…` tokens,
+  `sk-`/`rt_`/`sess-` style tokens, `cookie`/`set-cookie`/`authorization`/`*token*`/`api_key`/
+  `password`/`secret`/`session` values (JSON keys and `k=v` / `k: v` text) and e-mail
+  addresses become `[REDACTED…]`.
+- Purged with the same `retention_days` cutoff as `requests`.
+- `/ui`: click an error row to open the detail panel (pretty-printed JSON, copy button).
+
 ## Schema
 ```sql
 CREATE TABLE labels(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);  -- interned strings
@@ -69,18 +86,22 @@ CREATE TABLE requests(
 CREATE TABLE quota_obs(id INTEGER PRIMARY KEY, account INTEGER NOT NULL, instance INTEGER,
   plan INTEGER, p_pct REAL, p_reset INTEGER, p_win INTEGER, s_pct REAL, s_reset INTEGER, s_win INTEGER);
 CREATE INDEX quota_obs_account ON quota_obs(account, id);
+-- v4: failed requests only (status >= 400 or error set); id = requests.id
+CREATE TABLE error_detail(id INTEGER PRIMARY KEY, message TEXT, body TEXT,
+  body_len INTEGER NOT NULL, truncated INTEGER NOT NULL, headers TEXT NOT NULL);
 ```
-- v1 → v2 → v3 migrations are automatic (`ALTER TABLE ADD COLUMN` + new table, keyed on
+- v1 → v2 → v3 → v4 migrations are automatic (`ALTER TABLE ADD COLUMN` + new table, keyed on
   `user_version`); old rows keep NULL in the new columns (old rows: standard tier, no cache writes).
 - `quota_obs` gets a row only when used % / plan changes or a reset time moves by > 120 s
   (upstream reset times jitter by a few seconds). Purge keeps each account's latest row.
 - **No secondary index.** Time ranges are rowid range scans (`id BETWEEN from<<20 AND to<<20`),
   purge is a rowid range delete, "recent" is a reverse rowid scan. Strings (account e-mails,
   model names) are interned in `labels`, so a row is ~51 bytes on disk (1M rows ≈ 51 MB).
-- `PRAGMA user_version = 3`.
+- `PRAGMA user_version = 4`.
 
 ## Retention
-- `retention_days` (default 30, 0 = keep). The writer purges at startup and then hourly, in
+- `retention_days` (default 90; `0` = keep forever, no purge at all). Error details follow the
+  same cutoff. The writer purges at startup and then hourly, in
   chunks of 20 000 rows per transaction (~20 ms each) so a large backlog never stalls inserts.
 - Freed pages are reused; the file does not shrink (no VACUUM). Steady-state size ≈
   rows-per-retention-window × 51 B.
@@ -103,7 +124,9 @@ Filters on both list endpoints: `account=`, `model=`, `key=<label>`, `instance=`
   → `{"records":[…]}` newest first (limit ≤ 1000; `before` = pagination cursor). Rows include
   `key`, `instance`, `plan`, `primary_used_pct`, `primary_reset_at`, `secondary_*`,
   `cache_write_tokens`, `service_tier`, `thread_id`, `turn_id`, `cost_usd`, `price_status`
-  (`ok` | `unknown_price` | `no_tokens`).
+  (`ok` | `unknown_price` | `no_tokens`), `has_detail`.
+- `GET /usage/v1/records/{request_id}/detail` → `{request_id, ts_ms, message, body, body_len,
+  truncated, headers:{…}}` (404 if none, 400 if the id is not 16 hex chars). See *Error details*.
 - `GET /usage/v1/summary?range=24h&group=key,instance&<filters>` (or `7d`, `30m`, …; or
   `from=<ms>&to=<ms>`). `group` = comma list of `account,model,key,instance,effort,transport,endpoint,tier`
   (default `account,model`; unknown → 400)
@@ -196,7 +219,7 @@ Key matching is constant time across all keys; only the label reaches the forwar
 [usage]
 enabled = true                      # default true
 path = "~/.cpa-lite/usage.db"       # + -wal / -shm siblings
-retention_days = 30                 # 0 = keep forever
+retention_days = 90                 # 0 = keep forever
 queue_size = 8192                   # in-memory records between proxy and writer
 batch_size = 256                    # rows per transaction (≈97% of max throughput)
 flush_ms = 50                       # max wait before committing a partial batch

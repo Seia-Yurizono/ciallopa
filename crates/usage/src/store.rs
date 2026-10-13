@@ -6,7 +6,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
 
-pub(crate) const SCHEMA_VERSION: i64 = 3;
+pub(crate) const SCHEMA_VERSION: i64 = 4;
 
 const CREATE_V3: &str = r#"
 CREATE TABLE IF NOT EXISTS labels(
@@ -55,6 +55,15 @@ CREATE TABLE IF NOT EXISTS quota_obs(
   s_pct    REAL, s_reset INTEGER, s_win INTEGER
 );
 CREATE INDEX IF NOT EXISTS quota_obs_account ON quota_obs(account, id);
+-- v4: failed requests only (id = requests.id); body redacted + capped at 16 KiB.
+CREATE TABLE IF NOT EXISTS error_detail(
+  id        INTEGER PRIMARY KEY,
+  message   TEXT,
+  body      TEXT,
+  body_len  INTEGER NOT NULL,
+  truncated INTEGER NOT NULL,
+  headers   TEXT NOT NULL            -- JSON object
+);
 "#;
 
 const MIGRATE_1_TO_2: &str = r#"
@@ -230,6 +239,9 @@ pub(crate) fn insert_batch(
             "INSERT OR IGNORE INTO quota_obs(id,account,instance,plan,p_pct,p_reset,p_win,s_pct,s_reset,s_win) \
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
         )?;
+        let mut dst = tx.prepare_cached(
+            "INSERT OR IGNORE INTO error_detail(id,message,body,body_len,truncated,headers) VALUES (?1,?2,?3,?4,?5,?6)",
+        )?;
         let instance_name = ws.instance.clone();
         let instance = ws.label(&tx, Some(&instance_name))?;
         for r in rows {
@@ -274,6 +286,19 @@ pub(crate) fn insert_batch(
                 thread,
                 r.turn_id,
             ])?;
+            if let (1, Some(d)) = (n, r.detail.as_deref()) {
+                if r.status >= 400 || r.error.is_some() {
+                    let s = d.finish();
+                    dst.execute(params![
+                        r.id,
+                        s.message,
+                        s.body,
+                        s.body_len,
+                        s.truncated,
+                        s.headers
+                    ])?;
+                }
+            }
             if let (1, Some(q), Some(a)) = (n, q, account) {
                 if quota_changed(ws.last_quota.get(&a), q) {
                     qst.execute(params![
@@ -305,6 +330,10 @@ pub(crate) fn purge_before(
     let cut = cutoff_ms << SEQ_BITS;
     let n = c.execute(
         "DELETE FROM requests WHERE id IN (SELECT id FROM requests WHERE id < ?1 ORDER BY id LIMIT ?2)",
+        params![cut, chunk as i64],
+    )?;
+    c.execute(
+        "DELETE FROM error_detail WHERE id IN (SELECT id FROM error_detail WHERE id < ?1 ORDER BY id LIMIT ?2)",
         params![cut, chunk as i64],
     )?;
     if (n as u64) < chunk {
@@ -408,6 +437,8 @@ pub struct RecordRow {
     pub turn_id: Option<String>,
     /// Notional USD from tokens × price table at query time; null when unpriced.
     pub cost_usd: Option<f64>,
+    /// An `error_detail` row exists (`GET /usage/v1/records/{id}/detail`).
+    pub has_detail: bool,
     /// `ok`, `unknown_price` (model/tier/date not in the price table) or `no_tokens`.
     pub price_status: &'static str,
 }
@@ -461,7 +492,7 @@ pub(crate) fn recent(
     let sql = format!(
         "SELECT id,account,first_account,model,effort,transport,endpoint,status,error,retries,switches,\
          ttft_ms,duration_ms,in_tok,out_tok,cached_tok,reasoning_tok,key,instance,plan,p_pct,p_reset,s_pct,s_reset,\
-         tier,cw_tok,thread,turn \
+         tier,cw_tok,thread,turn,EXISTS(SELECT 1 FROM error_detail d WHERE d.id = requests.id) \
          FROM requests WHERE id BETWEEN ? AND ?{fsql}{} ORDER BY id DESC LIMIT ?",
         if q.errors_only { " AND (error IS NOT NULL OR status >= 400)" } else { "" }
     );
@@ -499,6 +530,7 @@ pub(crate) fn recent(
             service_tier: tier,
             thread_id: name(r.get(26)?),
             turn_id: r.get(27)?,
+            has_detail: r.get(28)?,
             model,
             reasoning_effort: name(r.get(4)?),
             transport: Transport::from_i64(r.get(5)?),
@@ -1055,4 +1087,27 @@ fn estimate(
     e.capacity_tokens = Some(tpp * 100.0);
     e.remaining_tokens = Some((100.0 - used).max(0.0) * tpp);
     Ok(e)
+}
+
+/// Error detail of one request (`id` = request id).
+pub(crate) fn detail(c: &Connection, id: i64) -> Result<Option<crate::DetailRow>, UsageError> {
+    let row = c
+        .query_row(
+            "SELECT message, body, body_len, truncated, headers FROM error_detail WHERE id = ?1",
+            [id],
+            |r| {
+                let h: String = r.get(4)?;
+                Ok(crate::DetailRow {
+                    request_id: format!("{id:016x}"),
+                    ts_ms: id >> SEQ_BITS,
+                    message: r.get(0)?,
+                    body: r.get(1)?,
+                    body_len: r.get(2)?,
+                    truncated: r.get(3)?,
+                    headers: serde_json::from_str(&h).unwrap_or(serde_json::Value::Null),
+                })
+            },
+        )
+        .optional()?;
+    Ok(row)
 }

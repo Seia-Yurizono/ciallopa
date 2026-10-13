@@ -98,7 +98,7 @@ key's label (never the key), `instance_id` and the quota snapshot.
 [usage]
 enabled = true
 path = "~/.cpa-lite/usage.db"
-retention_days = 30
+retention_days = 90   # 0 = keep forever
 ```
 Notional cost: copy `prices.example.toml` to `~/.cpa-lite/prices.toml` (`[usage] prices`);
 records and summaries then carry `cost_usd` (null + `unknown_price` for unpriced models, never
