@@ -19,6 +19,13 @@ clap = { workspace = true }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+tokio-tungstenite = { workspace = true }
+reqwest = { workspace = true }
+futures = { workspace = true }
+serde_json = { workspace = true }
+zstd = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
 
 [lints]
 workspace = true

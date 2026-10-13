@@ -13,8 +13,12 @@ use std::time::Duration;
 pub enum UpstreamError {
     #[error("build client: {0}")]
     Build(#[from] reqwest::Error),
-    #[error("not implemented")]
-    Unimplemented,
+    #[error("websocket: {0}")]
+    Ws(#[from] Box<tungstenite::Error>),
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("{0}")]
+    Other(String),
 }
 
 /// Same as codex-rs `ensure_rustls_crypto_provider` (aws-lc-rs ⇒ X25519MLKEM768 key share).
@@ -54,6 +58,11 @@ pub fn build_reqwest(opts: &ClientOptions) -> Result<reqwest::Client, UpstreamEr
     Ok(b.build()?)
 }
 
+pub mod retry;
+pub mod ws;
+
+pub use ws::{close as ws_close, UpstreamWs, WsMessage};
+
 /// Shared upstream handle placed in `AppState`.
 #[derive(Clone)]
 pub struct UpstreamClient {
@@ -70,14 +79,30 @@ impl UpstreamClient {
             opts,
         })
     }
-    /// TODO(forwarding, M1): tokio-tungstenite connect with the same rustls provider
-    /// (codex-rs codex-api websocket client) honoring `opts.proxy_url`.
+    /// `base_url` + `path` (path starts with `/`, may carry a query).
+    pub fn url(&self, path: &str) -> String {
+        format!("{}{}", self.base_url, path)
+    }
+    /// WebSocket connect mirroring codex-rs `codex-websocket-client` (tokio-tungstenite fork,
+    /// tungstenite default rustls connector on the aws-lc-rs provider, permessage-deflate
+    /// offered, TCP_NODELAY) through the global egress proxy (http / socks5 / socks5h).
     pub async fn ws_connect(
         &self,
-        _path: &str,
-        _headers: http::HeaderMap,
-    ) -> Result<(), UpstreamError> {
-        Err(UpstreamError::Unimplemented)
+        path: &str,
+        headers: http::HeaderMap,
+    ) -> Result<(UpstreamWs, http::Response<Option<Vec<u8>>>), UpstreamError> {
+        ensure_rustls_crypto_provider();
+        ws::connect(&self.ws_url(path), headers, &self.opts).await
+    }
+    pub fn ws_url(&self, path: &str) -> String {
+        let u = self.url(path);
+        if let Some(r) = u.strip_prefix("https://") {
+            format!("wss://{r}")
+        } else if let Some(r) = u.strip_prefix("http://") {
+            format!("ws://{r}")
+        } else {
+            u
+        }
     }
 }
 

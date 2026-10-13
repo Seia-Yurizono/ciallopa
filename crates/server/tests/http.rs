@@ -62,7 +62,7 @@ async fn health_and_auth() {
                 .unwrap()
         )
         .await,
-        StatusCode::NOT_IMPLEMENTED
+        StatusCode::SERVICE_UNAVAILABLE
     );
     assert_eq!(
         status(
@@ -72,7 +72,7 @@ async fn health_and_auth() {
                 .unwrap()
         )
         .await,
-        StatusCode::NOT_IMPLEMENTED
+        StatusCode::BAD_REQUEST
     );
     assert_eq!(
         status(get("/other").body(Body::empty()).unwrap()).await,
