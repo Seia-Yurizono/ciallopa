@@ -111,15 +111,25 @@ impl Default for ImagesConfig {
     }
 }
 
-/// Built-in read-only management page at `/ui`.
+/// Built-in management page at `/ui` (read-only except the opt-in reset-credit action).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct UiConfig {
     pub enabled: bool,
+    /// Allow `POST /admin/v1/accounts/{id}/reset-credits/consume` (spends a 重置卡; irreversible).
+    /// Default `false`: the API answers 403 and the page shows no button. Never automatic.
+    pub allow_reset_consume: bool,
+    /// Background refresh of each account's reset-credit list (read-only GET), minutes.
+    /// `0` = only on demand.
+    pub reset_credits_refresh_mins: u64,
 }
 impl Default for UiConfig {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            allow_reset_consume: false,
+            reset_credits_refresh_mins: 60,
+        }
     }
 }
 

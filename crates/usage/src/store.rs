@@ -6,7 +6,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
 
-pub(crate) const SCHEMA_VERSION: i64 = 5;
+pub(crate) const SCHEMA_VERSION: i64 = 6;
 
 const CREATE_V3: &str = r#"
 CREATE TABLE IF NOT EXISTS labels(
@@ -68,6 +68,24 @@ CREATE TABLE IF NOT EXISTS error_detail(
   truncated INTEGER NOT NULL,
   headers   TEXT NOT NULL            -- JSON object
 );
+-- v6: manual reset-credit (重置卡) consume attempts. status: pending | done | failed.
+-- A `pending` row (timeout / 5xx: outcome unknown) is retried with the same redeem_request_id.
+CREATE TABLE IF NOT EXISTS reset_consume(
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  account           TEXT NOT NULL,
+  credit_id         TEXT,
+  redeem_request_id TEXT NOT NULL,
+  key               TEXT,               -- client key label (never the key)
+  instance          TEXT,
+  started_ms        INTEGER NOT NULL,
+  finished_ms       INTEGER,
+  status            TEXT NOT NULL,
+  http_status       INTEGER,
+  code              TEXT,               -- reset | nothing_to_reset | no_credit | already_redeemed
+  windows_reset     INTEGER,
+  error             TEXT
+);
+CREATE INDEX IF NOT EXISTS reset_consume_account ON reset_consume(account, id);
 "#;
 
 const MIGRATE_1_TO_2: &str = r#"

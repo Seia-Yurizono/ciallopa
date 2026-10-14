@@ -14,6 +14,7 @@ use std::sync::Arc;
 use subtle::ConstantTimeEq;
 
 pub mod prices_cli;
+pub mod reset_credits;
 pub mod ui;
 pub mod usage_api;
 
@@ -69,8 +70,12 @@ pub fn build_app(state: AppState) -> Router {
     let limit = (state.config.max_body_mb.max(20) as usize) * 1024 * 1024;
     let usage = usage_api::routes(state.usage.clone(), state.accounts.clone());
     let ui_on = state.config.ui.enabled;
+    let rc = reset_credits::ResetCredits::default();
+    reset_credits::spawn_poller(state.clone(), rc.clone());
+    let resets = reset_credits::routes(state.clone(), rc);
     let protected = ciallopa_forward::routes(state)
         .merge(usage)
+        .merge(resets)
         .layer(middleware::from_fn_with_state(keys, require_key));
     let mut app = Router::new().route("/healthz", get(healthz));
     if ui_on {

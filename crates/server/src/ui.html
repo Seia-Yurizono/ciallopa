@@ -65,6 +65,13 @@ tr.dt:focus-visible td{background:color-mix(in srgb,var(--acc) 16%,var(--card))}
 .st.s4{color:var(--wfg);background:var(--wbg);border-color:var(--wbd)}
 .st.s5{color:var(--bfg);background:var(--bbg);border-color:var(--bad)}
 .st.s429{color:var(--wfg);background:var(--wbg);border-color:var(--wbd);border-style:dashed}
+#cp{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:flex-start;justify-content:center;padding:12vh 12px;z-index:11}
+#cpb{background:var(--card);border:2px solid var(--bad);border-radius:12px;padding:16px;width:min(520px,100%)}
+#cpb h3{margin:0 0 8px;font-size:15px}#cpb p{margin:6px 0;font-size:13px}#cpb .acct{font-weight:600;word-break:break-all}
+#cpb .acts{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}button.danger{background:var(--bad);border-color:var(--bad);color:#fff}
+#cpres{font-size:13px;margin-top:8px;white-space:pre-wrap;word-break:break-all}
+.rc{margin-top:10px;font-size:12px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;border-top:1px dashed var(--line);padding-top:8px}
+.rc .i{cursor:help;color:var(--acc)}.rc .n{font-weight:600}.rc button{font-size:12px;padding:2px 8px}.rc .sp{flex:1}
 #dp{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:flex-start;justify-content:center;padding:5vh 12px;z-index:10}
 #dpb{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;width:min(860px,100%);max-height:90vh;overflow:auto}
 #dpb h3{margin:0 0 6px;font-size:15px;display:flex;gap:8px;align-items:center}#dpb h3 span{flex:1}
@@ -110,7 +117,7 @@ td.cw{white-space:nowrap;padding-right:12px}.wi{display:inline-block;margin-left
   <div id="lerr" class="mut" role="alert"></div>
 </div>
 <div id="app" class="hide">
-<header><h1>ciallopa 管理面板 <span class="mut">只读</span></h1>
+<header><h1>ciallopa 管理面板 <span class="mut" id="ro">只读</span></h1>
   <span class="mut" id="tz"></span><span class="sp"></span>
   <span class="mut" id="upd" aria-live="polite"></span>
   <label class="mut"><input type="checkbox" id="auto"> 自动刷新 (15s)</label>
@@ -141,6 +148,14 @@ td.cw{white-space:nowrap;padding-right:12px}.wi{display:inline-block;margin-left
   </section>
 </main></div>
 <div id="tt" class="hide" role="tooltip"></div>
+<div id="cp" class="hide" role="alertdialog" aria-modal="true" aria-labelledby="cptitle" aria-describedby="cpdesc"><div id="cpb">
+  <h3 id="cptitle">使用重置卡</h3>
+  <div id="cpdesc"><p>账号：<span class="acct" id="cpacct"></span></p>
+  <p id="cpinfo"></p>
+  <p><b>此操作不可撤销。</b>确认后会向上游消耗该账号的 1 张重置卡，并重置其额度窗口；卡一旦用掉无法退回。</p></div>
+  <div id="cpres" role="status"></div>
+  <div class="acts"><button id="cpno">取消</button><button id="cpyes" class="danger">确认使用 1 张</button></div>
+</div></div>
 <div id="dp" class="hide" role="dialog" aria-modal="true" aria-labelledby="dtitle"><div id="dpb">
   <h3><span id="dtitle">错误详情</span><button id="dcopy">复制</button><button id="dclose">关闭</button></h3>
   <div class="mut" id="dmeta"></div><div id="dmsg"></div>
@@ -180,7 +195,14 @@ async function api(path){
   if(!r.ok)throw new Error(path.split("?")[0]+" → HTTP "+r.status);
   return r.json();
 }
-function show(app,err){$("app").classList.toggle("hide",!app);$("login").classList.toggle("hide",app);$("lerr").textContent=err||"";if(!app){stopAuto();closeDetail()}}
+async function apiPost(path,body){
+  const r=await fetch(path,{method:"POST",headers:{"Authorization":"Bearer "+key(),"Content-Type":"application/json"},body:JSON.stringify(body||{}),cache:"no-store",credentials:"omit",referrerPolicy:"no-referrer"});
+  if(r.status===401){sessionStorage.removeItem(KS);show(false,"密钥无效或已过期");throw new Error("401")}
+  let j=null;try{j=await r.json()}catch(_){}
+  if(!r.ok){const e=new Error((j&&j.error&&j.error.message)||("HTTP "+r.status));e.body=j;e.status=r.status;throw e}
+  return j;
+}
+function show(app,err){$("app").classList.toggle("hide",!app);$("login").classList.toggle("hide",app);$("lerr").textContent=err||"";if(!app){stopAuto();closeDetail();closeConsume()}}
 function qs(o){const u=new URLSearchParams();for(const k in o)if(o[k]!==""&&o[k]!==null&&o[k]!==undefined)u.set(k,o[k]);return u.toString()}
 async function busy(id,f){$(id).setAttribute("aria-busy","true");try{return await f()}finally{$(id).setAttribute("aria-busy","false")}}
 function emptyRow(tb,text){const tr=el("tr");const c=td(text,"l");c.colSpan=12;tr.appendChild(c);tb.appendChild(tr)}
@@ -191,7 +213,7 @@ function keepScroll(id,f){const w=$(id),x=w.scrollLeft;f();w.scrollLeft=x}
 function maxUsed(a){const q=a.quota;if(!q)return-1;return Math.max(-1,...[q.primary,q.secondary].filter(w=>w&&w.used_pct!==null&&w.used_pct!==undefined).map(w=>w.used_pct))}
 function renderCards(q){
   ttHide();
-  const box=$("cards");clear(box);
+  const box=$("cards");clear(box);const rcAcc={};if(RC)for(const x of RC.accounts||[])rcAcc[x.account]=x.reset_credits;
   $("qnote").textContent="已用百分比来自上游，包含其他客户端/实例的用量；容量为估算";
   const sel=$("facct"),cur=sel.value;while(sel.options.length>1)sel.remove(1);
   const accts=(q.accounts||[]).slice();
@@ -208,7 +230,7 @@ function renderCards(q){
     if(a.configured===false)meta.appendChild(el("span","badge","未配置"));
     c.appendChild(meta);
     if(a.email){const m=el("div","mut",a.account);m.title=a.account;c.appendChild(m)}
-    if(!qq){c.appendChild(el("div","mut empty","尚无额度数据（该账号还没有请求经过本代理）"));box.appendChild(c);continue}
+    if(!qq){c.appendChild(el("div","mut empty","尚无额度数据（该账号还没有请求经过本代理）"));if(RC&&a.configured!==false)c.appendChild(rcLine(a,rcAcc[a.account]));box.appendChild(c);continue}
     for(const w of [qq.primary,qq.secondary]){
       if(!w||w.used_pct===null||w.used_pct===undefined)continue;
       const d=el("div","win");const hh=el("div","winh");
@@ -227,12 +249,54 @@ function renderCards(q){
       else if(e.status==="window_reset")info.appendChild(el("div",null,"窗口已重置，等待新快照"));
       d.appendChild(info);c.appendChild(d);
     }
+    if(RC&&a.configured!==false)c.appendChild(rcLine(a,rcAcc[a.account]));
     if(qq.observed_at_ms){const old=Date.now()-qq.observed_at_ms>3600e3;const u=el("div","mut foot"+(old?" stale":""),"额度数据更新于 "+fmtTime(qq.observed_at_ms)+"（"+ago(qq.observed_at_ms)+(old?"，可能已过时":"")+"）"+(qq.observed_by?" · "+qq.observed_by:""));u.title=isoLocal(qq.observed_at_ms);c.appendChild(u)}
     box.appendChild(c);
   }
   if(sel.querySelector("option[value='"+CSS.escape(cur)+"']"))sel.value=cur;
   if(!accts.length)box.appendChild(el("div","mut","没有账号"));
 }
+
+// ---- reset credits (重置卡): read-only display; consume only via the confirm dialog
+let RC=null,cpFor=null,cpOpener=null;
+function credStatus(c){return !c.status||c.status==="available"}
+function rcLine(a,r){
+  const d=el("div","rc");d.appendChild(el("span",null,"重置卡"));
+  if(!r||r.available_count===null||r.available_count===undefined){
+    d.appendChild(el("span","mut",r&&r.error?"获取失败":"未获取"));
+    if(r&&r.error){const i=el("span","i","ⓘ");i.tabIndex=0;i.dataset.tt=r.error;i.setAttribute("aria-label",r.error);d.appendChild(i)}
+  }else{
+    const n=r.available_count;d.appendChild(el("span","n",n+" 张"));
+    if(r.nearest_expires_at){const t=Date.parse(r.nearest_expires_at);if(!isNaN(t)){const x=el("span","mut","最近到期 "+fmtTime(t,true)+"（"+fmtDur((t-Date.now())/1000)+"后）");x.title=isoLocal(t);d.appendChild(x)}}
+    else if(n>0)d.appendChild(el("span","mut","无到期时间"));
+    if(r.error){const i=el("span","i stale","⚠");i.tabIndex=0;const m="最近一次刷新失败（显示的是上次数据）："+r.error;i.dataset.tt=m;i.setAttribute("aria-label",m);d.appendChild(i)}
+  }
+  const last=(RC.attempts||[]).find(x=>x.account===a.account);
+  if(last){const m=el("span","mut","上次使用："+fmtTime(last.started_ms,true)+" "+(last.code?CODEN[last.code]||last.code:last.status));m.title=isoLocal(last.started_ms)+" · redeem_request_id "+last.redeem_request_id;d.appendChild(m)}
+  d.appendChild(el("span","sp"));
+  const rb=el("button",null,"刷新");rb.title="从上游重新获取该账号的重置卡列表（只读）";
+  rb.addEventListener("click",async()=>{rb.disabled=true;try{RC=await apiPost("/usage/v1/reset-credits/refresh",{account:a.account});await reloadCards()}catch(e){fail(e)}finally{rb.disabled=false}});d.appendChild(rb);
+  if(RC.consume_enabled&&r&&r.available_count>0){const b=el("button","danger","使用…");b.setAttribute("aria-haspopup","dialog");b.addEventListener("click",()=>openConsume(a,r,b));d.appendChild(b)}
+  return d;
+}
+const CODEN={reset:"已重置",nothing_to_reset:"无需重置（未扣卡）",no_credit:"没有可用的卡",already_redeemed:"该请求已兑换过（未重复扣卡）"};
+function openConsume(a,r,from){cpFor=a.account;cpOpener=from;$("cpacct").textContent=(a.email?a.email+"（"+a.account+"）":a.account);
+  const av=(r.credits||[]).filter(credStatus).length;
+  $("cpinfo").textContent="当前可用 "+r.available_count+" 张"+(r.nearest_expires_at?"，最近一张到期 "+fmtTime(Date.parse(r.nearest_expires_at),true):"")+(av&&av!==r.available_count?"（列表中 "+av+" 张可用）":"")+"。将由上游选择使用哪一张。";
+  $("cpres").textContent="";$("cpyes").textContent="确认使用 1 张";$("cpyes").disabled=false;$("cpyes").classList.remove("hide");$("cpno").textContent="取消";$("cp").classList.remove("hide");$("cpno").focus()}
+function closeConsume(){if($("cp").classList.contains("hide"))return;$("cp").classList.add("hide");cpFor=null;if(cpOpener&&document.contains(cpOpener))cpOpener.focus();cpOpener=null}
+$("cpno").addEventListener("click",closeConsume);
+$("cp").addEventListener("click",e=>{if(e.target===$("cp"))closeConsume()});
+document.addEventListener("keydown",e=>{if($("cp").classList.contains("hide"))return;
+  if(e.key==="Escape"){closeConsume();return}
+  if(e.key==="Tab"){const f=[$("cpno"),$("cpyes")].filter(x=>!x.disabled&&!x.classList.contains("hide"));const i=f.indexOf(document.activeElement);e.preventDefault();f[(i+(e.shiftKey?f.length-1:1))%f.length].focus()}});
+$("cpyes").addEventListener("click",async()=>{const acct=cpFor;if(!acct)return;$("cpyes").disabled=true;$("cpres").textContent="正在提交…";
+  try{const j=await apiPost("/admin/v1/accounts/"+encodeURIComponent(acct)+"/reset-credits/consume",{confirm:acct});
+    $("cpres").textContent="结果："+(CODEN[j.code]||j.code)+(j.code==="reset"?"，重置了 "+j.windows_reset+" 个窗口":"")+"\nredeem_request_id: "+j.redeem_request_id;
+    $("cpyes").classList.add("hide");$("cpno").textContent="关闭";$("cpno").focus();loadAll()}
+  catch(e){if(e.message==="401")return;const pend=e.body&&e.body.status==="pending";
+    $("cpres").textContent="失败："+e.message+(pend?"\n结果未知；再次点击会用同一个 redeem_request_id 重试，不会重复扣卡。":"");$("cpyes").disabled=false;if(pend)$("cpyes").textContent="用同一请求重试"}});
+async function reloadCards(){const q=await api("/usage/v1/quota");renderCards(q)}
 
 // ---- summary
 const GN={account:"账号",key:"密钥",instance:"实例",model:"模型",response_model:"实际模型"};
@@ -398,7 +462,7 @@ async function loadTrend(){const hourly=$("tmode").value==="hour",r=$("range").v
   $("trange").textContent=hourly?"（今日按小时）":"（最近 "+days+" 天，按天）";
   await busy("st",async()=>{const s=await api("/usage/v1/summary?"+qs({range:hourly?"24h":days+"d",group:"account",bucket:hourly?"hour":"day",tz}));renderTrend(s.summary.buckets,hourly,days)})}
 async function loadAll(){$("msg").textContent="";
-  const jobs=[busy("sq",()=>api("/usage/v1/quota").then(renderCards)),loadSummary(),loadTrend(),loadRecords(false)];
+  const jobs=[busy("sq",async()=>{const [q,r]=await Promise.all([api("/usage/v1/quota"),api("/usage/v1/reset-credits").catch(()=>null)]);RC=r;$("ro").textContent=r&&r.consume_enabled?"只读（重置卡可手动使用）":"只读";renderCards(q)}),loadSummary(),loadTrend(),loadRecords(false)];
   let ok=true;for(const r of await Promise.allSettled(jobs))if(r.status==="rejected"){ok=false;fail(r.reason)}
   if(ok||!$("msg").textContent)$("upd").textContent="更新于 "+hms(new Date())}
 function stopAuto(){if(timer){clearInterval(timer);timer=null}}

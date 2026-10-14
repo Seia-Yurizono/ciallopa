@@ -121,6 +121,24 @@ allowed by SHA-256 hash only, `connect-src 'self'`); all data rendered via `text
 Local demo with fake data: `cargo run --example ui_demo` → http://127.0.0.1:8399/ui
 (key `sk-demo-0123456789abcdef`).
 
+Reset credits (重置卡) — **manual only, never automatic**. Each account's cards are listed
+from upstream `GET /wham/rate-limit-reset-credits` (same headers as Codex CLI) every
+`[ui] reset_credits_refresh_mins` (default 60, `0` = only on demand) and shown on the quota card
+(count + nearest expiry). Read: `GET /usage/v1/reset-credits`; re-fetch:
+`POST /usage/v1/reset-credits/refresh` (`{"account": "..."}` optional). Spending a card is
+irreversible and is **off by default**; to enable the button / API:
+
+```toml
+[ui]
+allow_reset_consume = true   # default false → POST below answers 403
+```
+
+`POST /admin/v1/accounts/{id}/reset-credits/consume` with `Authorization: Bearer <client key>`,
+`Content-Type: application/json` and `{"confirm": "<id>"}` (optional `credit_id`,
+`redeem_request_id`). The page asks for confirmation in a dialog naming the account. Each attempt
+is logged in the usage DB (`reset_consume`); a timeout / 5xx stays `pending` and the next attempt
+reuses the same `redeem_request_id`, so a retry cannot spend twice. Needs `[usage] enabled`.
+
 Details: docs/USAGE.md.
 
 Token refresh is cross-process safe: under the file lock the auth file is re-read; a newer

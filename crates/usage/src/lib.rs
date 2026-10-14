@@ -3,6 +3,7 @@
 //! to SQLite (WAL). Reads open their own read-only connections. Design: docs/USAGE.md.
 pub mod detail;
 pub mod prices;
+pub mod reset;
 mod store;
 mod writer;
 

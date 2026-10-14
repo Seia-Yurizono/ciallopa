@@ -18,7 +18,8 @@ async fn main() {
     std::fs::create_dir_all(dir.join("auths")).unwrap();
     let acct = |id: &str, extra: serde_json::Value| {
         let mut v = serde_json::json!({"type":"codex","access_token":"x","refresh_token":"y",
-            "expired":"2999-01-01T00:00:00Z","email": format!("{id}@example.com")});
+            "expired":"2999-01-01T00:00:00Z","email": format!("{id}@example.com"),
+            "account_id": format!("acct-demo-{id}")});
         v.as_object_mut()
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
@@ -33,11 +34,13 @@ async fn main() {
     acct("evil", serde_json::json!({"email": EVIL}));
     // configured, never used: empty card
     acct("dave", serde_json::json!({"plan_type":"team"}));
+    let fake_up = fake_upstream().await;
     let cfg = Config::parse(&format!(
-        "listen = \"{listen}\"\ninstance_id = \"demo-vps\"\nauth_dir = \"{}\"\n\
+        "listen = \"{listen}\"\nupstream = \"http://{fake_up}/backend-api\"\ninstance_id = \"demo-vps\"\nauth_dir = \"{}\"\n\
          [[api_keys]]\nlabel = \"laptop\"\nkey = \"{DEMO_KEY}\"\n\
          [[api_keys]]\nlabel = \"{}\"\nkey = \"sk-demo-evil-0123456789\"\n\
-         [usage]\npath = \"{}\"\nretention_days = 0\n",
+         [usage]\npath = \"{}\"\nretention_days = 0\n\
+         [ui]\nallow_reset_consume = true\nreset_credits_refresh_mins = 0\n",
         dir.join("auths").display(),
         EVIL.replace('"', "\\\""),
         dir.join("usage.db").display()
@@ -212,6 +215,113 @@ async fn main() {
         config: Arc::new(cfg),
     };
     let ln = tokio::net::TcpListener::bind(&listen).await.unwrap();
-    println!("ui demo on http://{listen}/ui");
+    println!("ui demo on http://{listen}/ui (fake upstream {fake_up})");
+    let warm = listen.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let _ = reqwest::Client::new()
+            .post(format!("http://{warm}/usage/v1/reset-credits/refresh"))
+            .bearer_auth(DEMO_KEY)
+            .send()
+            .await;
+    });
     axum::serve(ln, ciallopa::build_app(state)).await.unwrap();
+}
+
+/// Fake chatgpt.com reset-credit endpoints (never the real upstream): per-account card
+/// counts that consume decrements; `evil` answers 500 to show the error state.
+async fn fake_upstream() -> std::net::SocketAddr {
+    use axum::extract::State;
+    use axum::http::HeaderMap;
+    use axum::routing::{get, post};
+    use axum::Json;
+    use serde_json::{json, Value};
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    type Cards = Arc<Mutex<HashMap<String, u32>>>;
+    fn who(h: &HeaderMap) -> String {
+        let t = h
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        h.get("chatgpt-account-id")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or(t)
+            .to_string()
+    }
+    let cards: Cards = Arc::new(Mutex::new(HashMap::new()));
+    fn start(w: &str) -> u32 {
+        if w.ends_with("bob") {
+            0
+        } else if w.ends_with("dave") {
+            1
+        } else {
+            2
+        }
+    }
+    let list = |State(c): State<Cards>, h: HeaderMap| async move {
+        let w = who(&h);
+        if w.ends_with("evil") {
+            return Err((
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "demo upstream error",
+            ));
+        }
+        let n = *c.lock().unwrap().entry(w.clone()).or_insert(start(&w));
+        let now = chrono_like(0);
+        let credits: Vec<Value> = (0..n)
+            .map(|i| {
+                json!({"id": format!("rc_demo_{i}"), "reset_type": "rate_limit", "status": "available",
+                       "granted_at": now, "expires_at": chrono_like(5 + 9 * i as i64)})
+            })
+            .collect();
+        Ok(Json(json!({"available_count": n, "credits": credits})))
+    };
+    let consume = |State(c): State<Cards>, h: HeaderMap| async move {
+        let mut m = c.lock().unwrap();
+        let w = who(&h);
+        let n = m.entry(w.clone()).or_insert(start(&w));
+        if *n == 0 {
+            return Json(json!({"code": "no_credit", "windows_reset": 0}));
+        }
+        *n -= 1;
+        Json(json!({"code": "reset", "windows_reset": 2}))
+    };
+    let app = axum::Router::new()
+        .route("/backend-api/wham/rate-limit-reset-credits", get(list))
+        .route(
+            "/backend-api/wham/rate-limit-reset-credits/consume",
+            post(consume),
+        )
+        .route(
+            "/backend-api/wham/usage",
+            get(|| async { Json(json!({"rate_limit": {"allowed": true}})) }),
+        )
+        .with_state(cards);
+    let ln = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let a = ln.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(ln, app).await.unwrap() });
+    a
+}
+
+/// RFC 3339 UTC `days` from now (no chrono dependency).
+fn chrono_like(days: i64) -> String {
+    let secs = now_ms() / 1000 + days * 86_400;
+    let (d, s) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    // civil-from-days (Howard Hinnant)
+    let z = d + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        s / 3600,
+        s % 3600 / 60,
+        s % 60
+    )
 }

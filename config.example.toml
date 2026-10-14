@@ -16,3 +16,8 @@ quota_avoid_threshold = 0.0   # 0 = off (default); error-driven cooldown + switc
 enabled = true
 path = "~/.ciallopa/usage.db"
 retention_days = 90   # default 90; 0 = keep forever (requests + error details)
+
+[ui]
+enabled = true
+reset_credits_refresh_mins = 60   # read-only listing refresh; 0 = on demand only
+allow_reset_consume = false       # true = allow manually spending a 重置卡 (irreversible)

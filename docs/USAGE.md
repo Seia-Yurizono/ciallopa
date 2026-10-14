@@ -238,9 +238,51 @@ min_delta_pct = 5.0                 # below → "insufficient_data"
 
 ## Web UI (`/ui`)
 `[ui] enabled = true` (default). Static page, no data without the key; every call goes to the
-endpoints above with the key from `sessionStorage`. Read-only: there are no write endpoints.
+endpoints above with the key from `sessionStorage`. Read-only, except the opt-in reset-credit
+consume action below (off unless `[ui] allow_reset_consume = true`).
 Headers: CSP `default-src 'none'; script-src 'sha256-…'; style-src 'sha256-…'; connect-src
 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
 `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`,
 `Cache-Control: no-store`. Hashes are computed from the embedded file at startup, so editing
 `crates/server/src/ui.html` needs no manual CSP update.
+
+## Reset credits (重置卡)
+Manual only: nothing in ciallopa consumes a credit by itself (no failover / quota path calls it;
+a test asserts the consume helper has a single caller, the admin handler).
+
+Upstream (mirrors codex-rs `backend-client/src/client/rate_limit_resets.rs`), per account with
+`Authorization: Bearer <access token>`, `ChatGPT-Account-Id`, `User-Agent: codex_cli_rs/<pinned>`,
+`originator: codex_cli_rs`:
+- `GET {upstream}/wham/rate-limit-reset-credits` (5 s) →
+  `{available_count, credits: [{id, reset_type, status, granted_at, expires_at?, title?, description?}]}`
+- `POST {upstream}/wham/rate-limit-reset-credits/consume` (10 s), body
+  `{redeem_request_id, credit_id?}` → `{code: reset | nothing_to_reset | no_credit | already_redeemed, windows_reset}`
+
+Config (`[ui]`):
+
+| key | default | |
+|---|---|---|
+| `allow_reset_consume` | `false` | enable the consume API + page button |
+| `reset_credits_refresh_mins` | `60` | background listing refresh (read-only); `0` = on demand only |
+
+API (client key):
+- `GET /usage/v1/reset-credits` → `{consume_enabled, refresh_mins, accounts: [{account, email,
+  disabled, reset_credits: {fetched_ms, available_count, credits, nearest_expires_at, error,
+  error_ms} | null}], attempts: [last 20 consume attempts]}`. Cache is in memory (re-fetched
+  after restart); `nearest_expires_at` = earliest expiry among `status == "available"`.
+- `POST /usage/v1/reset-credits/refresh` (optional `{"account": "<id>"}`) → same body.
+- `POST /admin/v1/accounts/{id}/reset-credits/consume` — `{"confirm": "<id>", "credit_id"?,
+  "redeem_request_id"?}`. Guards: switch off → 403; key only via header (middleware), JSON
+  content type (browser cross-origin forms cannot send it without a CORS preflight, which is
+  never granted), any `Cookie` header → 400, `confirm` must equal the path id → 400, unknown
+  account → 404, usage log disabled → 503. One consume per account at a time.
+  Response: `{account, redeem_request_id, reused_redeem_request_id, attempt, status, code,
+  windows_reset, reset_credits, rate_limit?}`; after `reset` the listing is re-fetched and
+  `/wham/usage` `rate_limit` is returned (quota cards update on the next proxied response).
+
+Idempotency: every attempt is a row in `reset_consume` (schema v6) with status `pending` →
+`done` (any of the 4 codes) / `failed` (definitive 4xx) / `superseded`. Unknown outcome (timeout,
+transport error, 5xx, 408/429, unparseable 2xx) stays `pending`; the next consume for the same
+account + `credit_id` within 24 h reuses that `redeem_request_id` (upstream answers
+`already_redeemed` if the first one went through). A new id is minted only after a definitive
+answer.
