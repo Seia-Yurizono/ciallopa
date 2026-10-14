@@ -75,7 +75,7 @@ tr.dt:focus-visible td{background:color-mix(in srgb,var(--acc) 16%,var(--card))}
 .rcl{list-style:none;margin:6px 0 0;padding:0;width:100%;font-size:12px}
 .rcl li{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;padding:5px 6px;border:1px solid var(--line);border-radius:6px;margin-top:4px}
 .rcl li.soon{border-color:var(--warn);background:var(--wbg)}.rcl li.gone{border-color:var(--bad);background:var(--bbg);color:var(--bfg)}
-.rcl .t{font-weight:600}.rcl .sp{flex:1}.rcl button{font-size:12px;padding:1px 8px}
+.rcl li.tg{border:0;padding:2px 0;justify-content:flex-end}.rcl .t{font-weight:600}.rcl .sp{flex:1}.rcl button{font-size:12px;padding:1px 8px}
 .rc .i{cursor:help;color:var(--acc)}.rc .n{font-weight:600}.rc button{font-size:12px;padding:2px 8px}.rc .sp{flex:1}
 #dp{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:flex-start;justify-content:center;padding:5vh 12px;z-index:10}
 #dpb{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;width:min(860px,100%);max-height:90vh;overflow:auto}
@@ -263,7 +263,7 @@ function renderCards(q){
 }
 
 // ---- reset credits (重置卡): read-only display; consume only via the confirm dialog
-let RC=null,cpFor=null,cpOpener=null,cpCredit=null;const RCOPEN=new Set();
+let RC=null,cpFor=null,cpOpener=null,cpCredit=null;const RCOPEN=new Set(),RCU="ciallopa_rc_used";
 function credStatus(c){return !c.status||c.status==="available"}
 function rcLine(a,r){
   const d=el("div","rc");d.appendChild(el("span",null,"重置卡"));
@@ -293,7 +293,9 @@ const RCST={available:"可用",redeemed:"已使用",consumed:"已使用",expired
 function rcList(a,r,cs,lid,open){
   const ul=el("ul","rcl"+(open?"":" hide"));ul.id=lid;ul.setAttribute("aria-label","重置卡列表");
   const ex=c=>{const t=c.expires_at?Date.parse(c.expires_at):NaN;return isNaN(t)?Infinity:t};
+  const used=c=>["redeemed","consumed","used"].includes(c.status),showU=localStorage.getItem(RCU)==="1",nU=cs.filter(used).length;
   for(const c of cs.slice().sort((x,y)=>ex(x)-ex(y))){
+    if(used(c)&&!showU)continue;
     const t=ex(c),left=(t-Date.now())/1000,av=credStatus(c);
     const li=el("li",(t!==Infinity&&left<=0)||c.status==="expired"?"gone":(av&&left<86400?"soon":""));
     if(c.title)li.appendChild(el("span","t",c.title));
@@ -306,6 +308,8 @@ function rcList(a,r,cs,lid,open){
     if(RC.consume_enabled&&av&&!(t!==Infinity&&left<=0)){const b=el("button","danger","使用");b.setAttribute("aria-haspopup","dialog");b.setAttribute("aria-label","使用这张重置卡"+(c.title?"：“"+c.title+"”":"")+(t===Infinity?"（永不过期）":"，到期 "+fmtTime(t,true)));b.addEventListener("click",()=>openConsume(a,r,b,c));li.appendChild(b)}
     ul.appendChild(li);
   }
+  if(nU){const li=el("li","tg");const b=el("button",null,showU?"隐藏已使用":"显示已使用 ("+nU+")");b.setAttribute("aria-pressed",showU?"true":"false");
+    b.addEventListener("click",()=>{localStorage.setItem(RCU,showU?"0":"1");const nl=rcList(a,r,cs,lid,true);ul.replaceWith(nl);const nb=nl.querySelector(".tg button");if(nb)nb.focus()});li.appendChild(b);ul.appendChild(li)}
   return ul;
 }
 const CODEN={reset:"已重置",nothing_to_reset:"无需重置（未扣卡）",no_credit:"没有可用的卡",already_redeemed:"该请求已兑换过（未重复扣卡）"};
