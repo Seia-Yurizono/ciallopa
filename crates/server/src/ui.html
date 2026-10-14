@@ -71,6 +71,11 @@ tr.dt:focus-visible td{background:color-mix(in srgb,var(--acc) 16%,var(--card))}
 #cpb .acts{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}button.danger{background:var(--bad);border-color:var(--bad);color:#fff}
 #cpres{font-size:13px;margin-top:8px;white-space:pre-wrap;word-break:break-all}
 .rc{margin-top:10px;font-size:12px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;border-top:1px dashed var(--line);padding-top:8px}
+.rc .cnt{font-weight:600;padding:1px 8px}.rc .cnt[aria-expanded="true"]{background:color-mix(in srgb,var(--acc) 12%,var(--card))}
+.rcl{list-style:none;margin:6px 0 0;padding:0;width:100%;font-size:12px}
+.rcl li{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;padding:5px 6px;border:1px solid var(--line);border-radius:6px;margin-top:4px}
+.rcl li.soon{border-color:var(--warn);background:var(--wbg)}.rcl li.gone{border-color:var(--bad);background:var(--bbg);color:var(--bfg)}
+.rcl .t{font-weight:600}.rcl .sp{flex:1}.rcl button{font-size:12px;padding:1px 8px}
 .rc .i{cursor:help;color:var(--acc)}.rc .n{font-weight:600}.rc button{font-size:12px;padding:2px 8px}.rc .sp{flex:1}
 #dp{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:flex-start;justify-content:center;padding:5vh 12px;z-index:10}
 #dpb{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;width:min(860px,100%);max-height:90vh;overflow:auto}
@@ -258,7 +263,7 @@ function renderCards(q){
 }
 
 // ---- reset credits (重置卡): read-only display; consume only via the confirm dialog
-let RC=null,cpFor=null,cpOpener=null;
+let RC=null,cpFor=null,cpOpener=null,cpCredit=null;const RCOPEN=new Set();
 function credStatus(c){return !c.status||c.status==="available"}
 function rcLine(a,r){
   const d=el("div","rc");d.appendChild(el("span",null,"重置卡"));
@@ -266,7 +271,11 @@ function rcLine(a,r){
     d.appendChild(el("span","mut",r&&r.error?"获取失败":"未获取"));
     if(r&&r.error){const i=el("span","i","ⓘ");i.tabIndex=0;i.dataset.tt=r.error;i.setAttribute("aria-label",r.error);d.appendChild(i)}
   }else{
-    const n=r.available_count;d.appendChild(el("span","n",n+" 张"));
+    const n=r.available_count,cs=r.credits||[];
+    if(cs.length){const b=el("button","cnt",n+" 张 ▾");const lid="rcl-"+a.account.replace(/[^A-Za-z0-9_-]/g,"_");const open=RCOPEN.has(a.account);b.setAttribute("aria-expanded",open?"true":"false");b.setAttribute("aria-controls",lid);b.title="展开/收起该账号的全部重置卡（"+cs.length+" 条）";
+      b.addEventListener("click",()=>{if(RCOPEN.has(a.account))RCOPEN.delete(a.account);else RCOPEN.add(a.account);const o=RCOPEN.has(a.account);b.setAttribute("aria-expanded",o?"true":"false");b.textContent=n+" 张 "+(o?"▴":"▾");$(lid).classList.toggle("hide",!o)});
+      if(open)b.textContent=n+" 张 ▴";d.appendChild(b);d._list=rcList(a,r,cs,lid,open)}
+    else d.appendChild(el("span","n",n+" 张"));
     if(r.nearest_expires_at){const t=Date.parse(r.nearest_expires_at);if(!isNaN(t)){const x=el("span","mut","最近到期 "+fmtTime(t,true)+"（"+fmtDur((t-Date.now())/1000)+"后）");x.title=isoLocal(t);d.appendChild(x)}}
     else if(n>0)d.appendChild(el("span","mut","无到期时间"));
     if(r.error){const i=el("span","i stale","⚠");i.tabIndex=0;const m="最近一次刷新失败（显示的是上次数据）："+r.error;i.dataset.tt=m;i.setAttribute("aria-label",m);d.appendChild(i)}
@@ -276,22 +285,42 @@ function rcLine(a,r){
   d.appendChild(el("span","sp"));
   const rb=el("button",null,"刷新");rb.title="从上游重新获取该账号的重置卡列表（只读）";
   rb.addEventListener("click",async()=>{rb.disabled=true;try{RC=await apiPost("/usage/v1/reset-credits/refresh",{account:a.account});await reloadCards()}catch(e){fail(e)}finally{rb.disabled=false}});d.appendChild(rb);
-  if(RC.consume_enabled&&r&&r.available_count>0){const b=el("button","danger","使用…");b.setAttribute("aria-haspopup","dialog");b.addEventListener("click",()=>openConsume(a,r,b));d.appendChild(b)}
+  if(RC.consume_enabled&&r&&r.available_count>0){const b=el("button","danger","使用…");b.setAttribute("aria-haspopup","dialog");b.title="由上游挑选一张使用";b.addEventListener("click",()=>openConsume(a,r,b,null));d.appendChild(b)}
+  if(d._list)d.appendChild(d._list);
   return d;
 }
+const RCST={available:"可用",redeemed:"已使用",consumed:"已使用",expired:"已过期"};
+function rcList(a,r,cs,lid,open){
+  const ul=el("ul","rcl"+(open?"":" hide"));ul.id=lid;ul.setAttribute("aria-label","重置卡列表");
+  const ex=c=>{const t=c.expires_at?Date.parse(c.expires_at):NaN;return isNaN(t)?Infinity:t};
+  for(const c of cs.slice().sort((x,y)=>ex(x)-ex(y))){
+    const t=ex(c),left=(t-Date.now())/1000,av=credStatus(c);
+    const li=el("li",(t!==Infinity&&left<=0)||c.status==="expired"?"gone":(av&&left<86400?"soon":""));
+    if(c.title)li.appendChild(el("span","t",c.title));
+    li.appendChild(el("span","badge"+(av?"":" warn"),RCST[c.status]||c.status||"未知"));
+    if(c.granted_at){const g=Date.parse(c.granted_at);const x=el("span","mut","发放 "+(isNaN(g)?c.granted_at:fmtTime(g,true)));if(!isNaN(g))x.title=isoLocal(g);li.appendChild(x)}
+    if(t===Infinity)li.appendChild(el("span",null,"永不过期"));
+    else{const x=el("span",null,(left<=0?"已到期 ":"到期 ")+fmtTime(t,true)+(left>0?"（"+fmtDur(left)+"后）":""));x.title=isoLocal(t);li.appendChild(x)}
+    if(c.description){li.title=c.description}
+    li.appendChild(el("span","sp"));
+    if(RC.consume_enabled&&av&&!(t!==Infinity&&left<=0)){const b=el("button","danger","使用");b.setAttribute("aria-haspopup","dialog");b.setAttribute("aria-label","使用这张重置卡"+(c.title?"：“"+c.title+"”":"")+(t===Infinity?"（永不过期）":"，到期 "+fmtTime(t,true)));b.addEventListener("click",()=>openConsume(a,r,b,c));li.appendChild(b)}
+    ul.appendChild(li);
+  }
+  return ul;
+}
 const CODEN={reset:"已重置",nothing_to_reset:"无需重置（未扣卡）",no_credit:"没有可用的卡",already_redeemed:"该请求已兑换过（未重复扣卡）"};
-function openConsume(a,r,from){cpFor=a.account;cpOpener=from;$("cpacct").textContent=(a.email?a.email+"（"+a.account+"）":a.account);
+function openConsume(a,r,from,card){cpFor=a.account;cpOpener=from;cpCredit=card?card.id:null;$("cpacct").textContent=(a.email?a.email+"（"+a.account+"）":a.account);
   const av=(r.credits||[]).filter(credStatus).length;
-  $("cpinfo").textContent="当前可用 "+r.available_count+" 张"+(r.nearest_expires_at?"，最近一张到期 "+fmtTime(Date.parse(r.nearest_expires_at),true):"")+(av&&av!==r.available_count?"（列表中 "+av+" 张可用）":"")+"。将由上游选择使用哪一张。";
+  $("cpinfo").textContent="当前可用 "+r.available_count+" 张"+(r.nearest_expires_at?"，最近一张到期 "+fmtTime(Date.parse(r.nearest_expires_at),true):"")+(av&&av!==r.available_count?"（列表中 "+av+" 张可用）":"")+"。"+(card?"将使用指定的这张："+(card.title?"“"+card.title+"”，":"")+(card.expires_at&&!isNaN(Date.parse(card.expires_at))?"到期 "+fmtTime(Date.parse(card.expires_at),true)+"（"+fmtDur((Date.parse(card.expires_at)-Date.now())/1000)+"后）":"永不过期")+"。":"将由上游选择使用哪一张。");
   $("cpres").textContent="";$("cpyes").textContent="确认使用 1 张";$("cpyes").disabled=false;$("cpyes").classList.remove("hide");$("cpno").textContent="取消";$("cp").classList.remove("hide");$("cpno").focus()}
-function closeConsume(){if($("cp").classList.contains("hide"))return;$("cp").classList.add("hide");cpFor=null;if(cpOpener&&document.contains(cpOpener))cpOpener.focus();cpOpener=null}
+function closeConsume(){if($("cp").classList.contains("hide"))return;$("cp").classList.add("hide");cpFor=null;cpCredit=null;if(cpOpener&&document.contains(cpOpener))cpOpener.focus();cpOpener=null}
 $("cpno").addEventListener("click",closeConsume);
 $("cp").addEventListener("click",e=>{if(e.target===$("cp"))closeConsume()});
 document.addEventListener("keydown",e=>{if($("cp").classList.contains("hide"))return;
   if(e.key==="Escape"){closeConsume();return}
   if(e.key==="Tab"){const f=[$("cpno"),$("cpyes")].filter(x=>!x.disabled&&!x.classList.contains("hide"));const i=f.indexOf(document.activeElement);e.preventDefault();f[(i+(e.shiftKey?f.length-1:1))%f.length].focus()}});
 $("cpyes").addEventListener("click",async()=>{const acct=cpFor;if(!acct)return;$("cpyes").disabled=true;$("cpres").textContent="正在提交…";
-  try{const j=await apiPost("/admin/v1/accounts/"+encodeURIComponent(acct)+"/reset-credits/consume",{confirm:acct});
+  try{const j=await apiPost("/admin/v1/accounts/"+encodeURIComponent(acct)+"/reset-credits/consume",Object.assign({confirm:acct},cpCredit?{credit_id:cpCredit}:{}));
     $("cpres").textContent="结果："+(CODEN[j.code]||j.code)+(j.code==="reset"?"，重置了 "+j.windows_reset+" 个窗口":"")+"\nredeem_request_id: "+j.redeem_request_id;
     $("cpyes").classList.add("hide");$("cpno").textContent="关闭";$("cpno").focus();loadAll()}
   catch(e){if(e.message==="401")return;const pend=e.body&&e.body.status==="pending";

@@ -228,8 +228,8 @@ async fn main() {
     axum::serve(ln, ciallopa::build_app(state)).await.unwrap();
 }
 
-/// Fake chatgpt.com reset-credit endpoints (never the real upstream): per-account card
-/// counts that consume decrements; `evil` answers 500 to show the error state.
+/// Fake chatgpt.com reset-credit endpoints (never the real upstream): per-account card lists
+/// that consume marks redeemed (chosen `credit_id` or the soonest-expiring); `evil` answers 500.
 async fn fake_upstream() -> std::net::SocketAddr {
     use axum::extract::State;
     use axum::http::HeaderMap;
@@ -238,26 +238,41 @@ async fn fake_upstream() -> std::net::SocketAddr {
     use serde_json::{json, Value};
     use std::collections::HashMap;
     use std::sync::Mutex;
-    type Cards = Arc<Mutex<HashMap<String, u32>>>;
+    type Cards = Arc<Mutex<HashMap<String, Vec<Value>>>>;
     fn who(h: &HeaderMap) -> String {
-        let t = h
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
         h.get("chatgpt-account-id")
             .and_then(|v| v.to_str().ok())
-            .unwrap_or(t)
+            .unwrap_or("")
             .to_string()
     }
-    let cards: Cards = Arc::new(Mutex::new(HashMap::new()));
-    fn start(w: &str) -> u32 {
-        if w.ends_with("bob") {
-            0
+    /// (title, status, granted days ago, expires in hours; None = never)
+    fn start(w: &str) -> Vec<Value> {
+        let spec: &[(Option<&str>, &str, i64, Option<i64>)] = if w.ends_with("alice") {
+            &[
+                (Some("Plus 月度重置"), "available", 20, Some(10 * 24)),
+                (None, "available", 3, Some(6)),
+                (Some("活动赠送"), "available", 1, None),
+                (Some("上月重置"), "redeemed", 40, Some(-48)),
+            ]
         } else if w.ends_with("dave") {
-            1
+            &[(None, "available", 2, Some(5 * 24))]
         } else {
-            2
-        }
+            &[]
+        };
+        spec.iter()
+            .enumerate()
+            .map(|(i, (t, st, g, ex))| {
+                let mut v = json!({"id": format!("rc_demo_{i}"), "reset_type": "rate_limit",
+                    "status": st, "granted_at": rfc3339_h(-g * 24)});
+                if let Some(t) = t {
+                    v["title"] = json!(t);
+                }
+                if let Some(e) = ex {
+                    v["expires_at"] = json!(rfc3339_h(*e));
+                }
+                v
+            })
+            .collect()
     }
     let list = |State(c): State<Cards>, h: HeaderMap| async move {
         let w = who(&h);
@@ -267,25 +282,31 @@ async fn fake_upstream() -> std::net::SocketAddr {
                 "demo upstream error",
             ));
         }
-        let n = *c.lock().unwrap().entry(w.clone()).or_insert(start(&w));
-        let now = chrono_like(0);
-        let credits: Vec<Value> = (0..n)
-            .map(|i| {
-                json!({"id": format!("rc_demo_{i}"), "reset_type": "rate_limit", "status": "available",
-                       "granted_at": now, "expires_at": chrono_like(5 + 9 * i as i64)})
-            })
-            .collect();
-        Ok(Json(json!({"available_count": n, "credits": credits})))
-    };
-    let consume = |State(c): State<Cards>, h: HeaderMap| async move {
         let mut m = c.lock().unwrap();
+        let v = m.entry(w.clone()).or_insert_with(|| start(&w)).clone();
+        let n = v.iter().filter(|c| c["status"] == "available").count();
+        Ok(Json(json!({"available_count": n, "credits": v})))
+    };
+    let consume = |State(c): State<Cards>, h: HeaderMap, Json(b): Json<Value>| async move {
         let w = who(&h);
-        let n = m.entry(w.clone()).or_insert(start(&w));
-        if *n == 0 {
-            return Json(json!({"code": "no_credit", "windows_reset": 0}));
+        let mut m = c.lock().unwrap();
+        let v = m.entry(w.clone()).or_insert_with(|| start(&w));
+        let want = b
+            .get("credit_id")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let hit = v
+            .iter_mut()
+            .filter(|c| c["status"] == "available")
+            .filter(|c| want.as_deref().is_none_or(|id| c["id"] == id))
+            .min_by_key(|c| c["expires_at"].as_str().unwrap_or("9999").to_string());
+        match hit {
+            Some(c) => {
+                c["status"] = json!("redeemed");
+                Json(json!({"code": "reset", "windows_reset": 2}))
+            }
+            None => Json(json!({"code": "no_credit", "windows_reset": 0})),
         }
-        *n -= 1;
-        Json(json!({"code": "reset", "windows_reset": 2}))
     };
     let app = axum::Router::new()
         .route("/backend-api/wham/rate-limit-reset-credits", get(list))
@@ -297,16 +318,26 @@ async fn fake_upstream() -> std::net::SocketAddr {
             "/backend-api/wham/usage",
             get(|| async { Json(json!({"rate_limit": {"allowed": true}})) }),
         )
-        .with_state(cards);
+        .with_state(cards_state());
     let ln = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let a = ln.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(ln, app).await.unwrap() });
     a
 }
 
-/// RFC 3339 UTC `days` from now (no chrono dependency).
-fn chrono_like(days: i64) -> String {
-    let secs = now_ms() / 1000 + days * 86_400;
+#[allow(clippy::type_complexity)]
+fn cards_state() -> Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<serde_json::Value>>>>
+{
+    Default::default()
+}
+
+fn rfc3339_h(hours: i64) -> String {
+    chrono_like_s(hours * 3600)
+}
+
+/// RFC 3339 UTC `delta` seconds from now (no chrono dependency).
+fn chrono_like_s(delta: i64) -> String {
+    let secs = now_ms() / 1000 + delta;
     let (d, s) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
     // civil-from-days (Howard Hinnant)
     let z = d + 719_468;
