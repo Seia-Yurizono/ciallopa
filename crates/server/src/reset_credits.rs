@@ -107,10 +107,11 @@ async fn upstream_req(
         .map_err(|e| format!("credentials: {e}"))?;
     // Latest learned Codex client fingerprint (built-in default until one is seen).
     let (ua, originator) = ciallopa_core::fingerprint::headers();
+    let url = st.upstream.url(path);
     let mut req = st
         .upstream
         .http_for(account)
-        .request(method, st.upstream.url(path))
+        .request(method, &url)
         .timeout(timeout)
         .header(reqwest::header::USER_AGENT, ua)
         .header("originator", originator)
@@ -124,7 +125,12 @@ async fn upstream_req(
     if let Some(b) = body {
         req = req.json(&b);
     }
+    // Optional per-account infrastructure cookies; reqwest would append its jar's Cookie last.
+    if let Some(c) = st.upstream.cookie_header(account, &url) {
+        req = req.header(reqwest::header::COOKIE, c);
+    }
     let r = req.send().await.map_err(|e| format!("send: {e}"))?;
+    st.upstream.store_cookies(account, &url, r.headers());
     let s = r.status().as_u16();
     let t = r.text().await.map_err(|e| format!("read body: {e}"))?;
     Ok((s, t))

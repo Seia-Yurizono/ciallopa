@@ -303,3 +303,22 @@ Forwarded requests themselves are never changed.
   restore. Fallback: `codex_cli_rs/0.162.1` + `codex_cli_rs`.
 - `GET /usage/v1/client-fingerprint` → `{user_agent, originator, source: learned|default,
   learned_at_ms, key}` (key = client key label). Shown in the `/ui` header.
+
+## Infrastructure cookies (`[upstream_opts] cloudflare_cookies`, default off)
+
+Official Codex keeps a jar of Cloudflare service cookies plus the `__oailb` routing cookie for
+ChatGPT hosts and replays them on HTTP and WebSocket requests. With `cloudflare_cookies = true`
+ciallopa does the same, but with **one in-memory jar per account** (attached to the account's own
+connection pool, dropped when the account disappears) so these cookies never link accounts.
+
+- Stored names: `__cf_bm`, `__cflb`, `__cfruid`, `__cfseq`, `__cfwaitingroom`, `__oailb`,
+  `_cfuvid`, `cf_clearance`, `cf_ob_info`, `cf_use_ob`, `cf_chl_*`. Everything else
+  (session/auth/account cookies) is discarded.
+- Only `https` ChatGPT hosts (`chatgpt.com`, `*.chatgpt.com`, `chat.openai.com`,
+  `chatgpt-staging.com`, `*.chatgpt-staging.com`); `wss` shares the https scope. Domain, path,
+  `Max-Age`/`Expires` are honoured (reqwest cookie jar). Nothing is persisted to disk.
+- Sources: forwarded HTTP responses, WS handshake responses (including rejected upgrades), and
+  internal requests (reset credits). Token refresh goes to `auth.openai.com` and never carries
+  cookies.
+- Always, regardless of the flag: the client's `Cookie` header is never forwarded upstream and
+  upstream `Set-Cookie` is never returned to clients.

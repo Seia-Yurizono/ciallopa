@@ -120,9 +120,24 @@ async fn up_responses(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    st.peers.lock().unwrap().push((auth, peer.port()));
+    st.peers.lock().unwrap().push((auth.clone(), peer.port()));
     let noct = h.contains_key("x-test-noct");
+    let cookies = h.contains_key("x-test-cookies");
     let mut r = up_responses_inner(st, h, b).await;
+    if cookies {
+        let set: &[&str] = if auth.contains("tok-a") {
+            &[
+                "__cf_bm=A; Path=/; Secure; HttpOnly",
+                "__oailb=A-lb; Path=/backend-api; Max-Age=1; Secure",
+                "chatgpt_session=evil; Path=/; Secure",
+            ]
+        } else {
+            &["__cf_bm=B; Path=/; Secure; HttpOnly"]
+        };
+        for c in set {
+            r.headers_mut().append("set-cookie", c.parse().unwrap());
+        }
+    }
     if noct {
         r.headers_mut().remove("content-type");
     }
@@ -353,7 +368,12 @@ async fn env_cfg(idle: u64, usage: Option<Arc<ciallopa_usage::Recorder>>, extra:
     let state = AppState {
         accounts: store.clone(),
         router: rec.clone(),
-        upstream: Arc::new(ciallopa_upstream::UpstreamClient::new(&cfg).unwrap()),
+        upstream: {
+            let up = ciallopa_upstream::UpstreamClient::new(&cfg).unwrap();
+            // mock upstream is plain http on 127.0.0.1, not an https ChatGPT host
+            up.pools.allow_any_cookie_host_for_tests();
+            Arc::new(up)
+        },
         usage,
         config: Arc::new(cfg),
     };
@@ -496,6 +516,113 @@ async fn accounts_use_separate_connections() {
         "account b reuses its own connection: {peers:?}"
     );
     assert_ne!(pa[0], pb[0], "accounts must not share a connection");
+}
+
+fn cookies_seen(e: &Env) -> Vec<(String, Option<String>)> {
+    e.mock
+        .seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(h, _)| {
+            let g = |k: &str| h.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+            (g("authorization").unwrap_or_default(), g("cookie"))
+        })
+        .collect()
+}
+
+async fn cookie_round(e: &Env, set: bool) {
+    let mut rb = e
+        .post("/backend-api/codex/responses")
+        .header("x-test-mode", "limit")
+        .header("cookie", "client=1; __cf_bm=client")
+        .body("{}");
+    if set {
+        rb = rb.header("x-test-cookies", "1");
+    }
+    let r = rb.send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    assert!(r.headers().get("set-cookie").is_none());
+    r.bytes().await.unwrap();
+}
+
+#[tokio::test]
+async fn cloudflare_cookies_disabled_sends_none() {
+    let e = env(300).await;
+    cookie_round(&e, true).await;
+    cookie_round(&e, true).await;
+    let seen = cookies_seen(&e);
+    assert_eq!(seen.len(), 4);
+    assert!(seen.iter().all(|(_, c)| c.is_none()), "{seen:?}");
+}
+
+#[tokio::test]
+async fn cloudflare_cookies_per_account_allowlist_and_expiry() {
+    let e = env_cfg(300, None, "cloudflare_cookies = true").await;
+    cookie_round(&e, true).await; // a: 429 + Set-Cookie A, b: Set-Cookie B
+    cookie_round(&e, true).await;
+    let seen = cookies_seen(&e);
+    assert_eq!(seen.len(), 4, "{seen:?}");
+    // First round: nothing stored yet, client Cookie never forwarded.
+    assert_eq!(seen[0].1, None);
+    assert_eq!(seen[1].1, None);
+    // Second round: each account replays only its own allowlisted cookies.
+    let a = seen[2].1.clone().unwrap();
+    assert!(seen[2].0.contains("tok-a"));
+    let mut parts: Vec<&str> = a.split("; ").collect();
+    parts.sort();
+    assert_eq!(parts, vec!["__cf_bm=A", "__oailb=A-lb"]);
+    assert!(seen[3].0.contains("tok-b"));
+    assert_eq!(seen[3].1.as_deref(), Some("__cf_bm=B"));
+    // Expiry: __oailb has Max-Age=1.
+    tokio::time::sleep(Duration::from_millis(2100)).await;
+    cookie_round(&e, false).await;
+    let seen = cookies_seen(&e);
+    assert_eq!(seen[4].1.as_deref(), Some("__cf_bm=A"));
+    assert_eq!(seen[5].1.as_deref(), Some("__cf_bm=B"));
+}
+
+#[tokio::test]
+async fn cloudflare_cookies_ws_handshake_shared_with_http() {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    for enabled in [false, true] {
+        let e = env_cfg(
+            300,
+            None,
+            if enabled {
+                "cloudflare_cookies = true"
+            } else {
+                ""
+            },
+        )
+        .await;
+        for _ in 0..2 {
+            let mut req = format!("ws://{}/backend-api/codex/responses", e.proxy)
+                .into_client_request()
+                .unwrap();
+            req.headers_mut()
+                .insert("authorization", format!("Bearer {KEY}").parse().unwrap());
+            req.headers_mut()
+                .insert("cookie", "client=1".parse().unwrap());
+            let (ws, resp) = tokio_tungstenite::connect_async(req).await.unwrap();
+            assert!(resp.headers().get("set-cookie").is_none());
+            drop(ws);
+        }
+        // WS handshake Set-Cookie (__cf_bm=secret) is replayed on HTTP for the same account.
+        let r = e
+            .post("/backend-api/codex/responses")
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+        r.bytes().await.unwrap();
+        let seen = cookies_seen(&e);
+        assert_eq!(seen.len(), 3);
+        assert_eq!(seen[0].1, None, "client Cookie never forwarded");
+        let want = enabled.then(|| "__cf_bm=secret".to_string());
+        assert_eq!(seen[1].1, want, "ws handshake (enabled={enabled})");
+        assert_eq!(seen[2].1, want, "http after ws (enabled={enabled})");
+    }
 }
 
 #[tokio::test]

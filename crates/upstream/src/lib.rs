@@ -34,12 +34,15 @@ pub struct ClientOptions {
     /// Empty = direct (environment proxies are ignored on purpose).
     pub proxy_url: String,
     pub connect_timeout: Option<Duration>,
+    /// Keep a per-account in-memory jar of ChatGPT infrastructure cookies (see [`cookies`]).
+    pub cloudflare_cookies: bool,
 }
 impl From<&Config> for ClientOptions {
     fn from(c: &Config) -> Self {
         Self {
             proxy_url: c.proxy_url.clone(),
             connect_timeout: Some(Duration::from_secs(c.upstream_opts.connect_timeout_secs)),
+            cloudflare_cookies: c.upstream_opts.cloudflare_cookies,
         }
     }
 }
@@ -65,24 +68,52 @@ pub fn build_reqwest(opts: &ClientOptions) -> Result<reqwest::Client, UpstreamEr
 #[derive(Debug)]
 pub struct ClientPool {
     opts: ClientOptions,
-    map: std::sync::Mutex<std::collections::HashMap<String, reqwest::Client>>,
+    map: std::sync::Mutex<std::collections::HashMap<String, PoolEntry>>,
+    any_cookie_host: std::sync::atomic::AtomicBool,
+}
+#[derive(Debug, Clone)]
+struct PoolEntry {
+    client: reqwest::Client,
+    jar: Option<std::sync::Arc<cookies::CookieJar>>,
 }
 impl ClientPool {
     pub fn new(opts: ClientOptions) -> Self {
         Self {
             opts,
             map: Default::default(),
+            any_cookie_host: Default::default(),
         }
+    }
+    /// Tests only: let the cookie jars accept a non-ChatGPT (mock) upstream host.
+    #[doc(hidden)]
+    pub fn allow_any_cookie_host_for_tests(&self) {
+        self.any_cookie_host
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn entry(&self, account: &str) -> Result<PoolEntry, UpstreamError> {
+        let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(e) = m.get(account) {
+            return Ok(e.clone());
+        }
+        let e = PoolEntry {
+            client: build_reqwest(&self.opts)?,
+            jar: self.opts.cloudflare_cookies.then(|| {
+                std::sync::Arc::new(cookies::CookieJar::new(
+                    self.any_cookie_host
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                ))
+            }),
+        };
+        m.insert(account.to_string(), e.clone());
+        Ok(e)
     }
     /// The account's own client, created on first use.
     pub fn get(&self, account: &str) -> Result<reqwest::Client, UpstreamError> {
-        let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(c) = m.get(account) {
-            return Ok(c.clone());
-        }
-        let c = build_reqwest(&self.opts)?;
-        m.insert(account.to_string(), c.clone());
-        Ok(c)
+        Ok(self.entry(account)?.client)
+    }
+    /// The account's cookie jar (`None` when `cloudflare_cookies` is off).
+    pub fn jar(&self, account: &str) -> Option<std::sync::Arc<cookies::CookieJar>> {
+        self.entry(account).ok()?.jar
     }
     /// Drop clients (and their idle connections) of accounts that no longer exist.
     pub fn retain<F: Fn(&str) -> bool>(&self, keep: F) {
@@ -101,6 +132,7 @@ impl ClientPool {
     }
 }
 
+pub mod cookies;
 pub mod retry;
 pub mod ws;
 
@@ -136,6 +168,42 @@ impl UpstreamClient {
     /// `base_url` + `path` (path starts with `/`, may carry a query).
     pub fn url(&self, path: &str) -> String {
         format!("{}{}", self.base_url, path)
+    }
+    /// `Cookie` header for `account`'s request to `url` (None when disabled / empty).
+    pub fn cookie_header(&self, account: &str, url: &str) -> Option<http::HeaderValue> {
+        self.pools.jar(account)?.header_for(url)
+    }
+    /// Remember allowlisted `Set-Cookie`s from `account`'s upstream response.
+    pub fn store_cookies(&self, account: &str, url: &str, headers: &http::HeaderMap) {
+        if let Some(j) = self.pools.jar(account) {
+            j.store_from(url, headers);
+        }
+    }
+    /// Account-scoped WS connect: adds the account's cookies to the handshake (if enabled and
+    /// the caller sent none) and stores `Set-Cookie` from the handshake response, including a
+    /// rejected upgrade (codex-rs `websocket-client` behaviour).
+    pub async fn ws_connect_as(
+        &self,
+        account: &str,
+        path: &str,
+        mut headers: http::HeaderMap,
+    ) -> Result<(UpstreamWs, http::Response<Option<Vec<u8>>>), UpstreamError> {
+        let url = self.ws_url(path);
+        if !headers.contains_key(http::header::COOKIE) {
+            if let Some(c) = self.cookie_header(account, &url) {
+                headers.insert(http::header::COOKIE, c);
+            }
+        }
+        let res = self.ws_connect(path, headers).await;
+        match &res {
+            Ok((_, r)) => self.store_cookies(account, &url, r.headers()),
+            Err(e) => {
+                if let Some((_, h, _)) = ws::handshake_status(e) {
+                    self.store_cookies(account, &url, &h);
+                }
+            }
+        }
+        res
     }
     /// WebSocket connect mirroring codex-rs `codex-websocket-client` (tokio-tungstenite fork,
     /// tungstenite default rustls connector on the aws-lc-rs provider, permessage-deflate

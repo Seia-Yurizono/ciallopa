@@ -139,10 +139,16 @@ async fn send_inner(st: &AppState, ob: Outbound, info: &mut SendInfo) -> Result<
                 .upstream
                 .http_for(&id)
                 .request(ob.method.clone(), &url)
-                .headers(upstream_headers(
-                    &crate::turn_state::scope(&ob.headers, &id, !route.exclude.is_empty()),
-                    &creds,
-                ))
+                .headers({
+                    let mut h = upstream_headers(
+                        &crate::turn_state::scope(&ob.headers, &id, !route.exclude.is_empty()),
+                        &creds,
+                    );
+                    if let Some(c) = st.upstream.cookie_header(&id, &url) {
+                        h.insert(http::header::COOKIE, c);
+                    }
+                    h
+                })
                 .body(ob.body.clone())
                 .send()
                 .await;
@@ -165,6 +171,7 @@ async fn send_inner(st: &AppState, ob: Outbound, info: &mut SendInfo) -> Result<
                     break;
                 }
             };
+            st.upstream.store_cookies(&id, &url, r.headers());
             let status = r.status().as_u16();
             match status {
                 s if s < 400 => {

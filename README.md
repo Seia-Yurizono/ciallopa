@@ -61,6 +61,12 @@ compress_requests = true   # zstd level 3 on plaintext HTTP POST /responses bodi
                            # Client Accept-Encoding is always stripped on /responses so upstream
                            # SSE stays identity (usage/TTFT parsing). Upstream set-cookie is never
                            # returned to clients (HTTP and WS handshake).
+cloudflare_cookies = false # true = per-account in-memory jar of ChatGPT infrastructure cookies
+                           # (__cf_bm, __cflb, _cfuvid, cf_clearance, cf_chl_*, __oailb …, the
+                           # official Codex allowlist), replayed on that account's HTTP, WS
+                           # handshake and internal requests to https ChatGPT hosts only, expiry
+                           # respected, never shared between accounts. Client Cookie headers are
+                           # never forwarded upstream, enabled or not.
 
 [images]
 enabled = true

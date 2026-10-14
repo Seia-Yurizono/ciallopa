@@ -23,6 +23,8 @@ fn drop_request(name: &str) -> bool {
             | "via"
             | "x-real-ip"
             | "cdn-loop"
+            // client cookies never go upstream (optional per-account jar is added separately)
+            | "cookie"
     ) || name.starts_with("x-forwarded-")
         || name.starts_with("sec-websocket-")
         || name.starts_with("cf-")

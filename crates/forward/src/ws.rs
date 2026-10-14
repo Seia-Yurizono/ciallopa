@@ -140,7 +140,8 @@ async fn connect(
         loop {
             match st
                 .upstream
-                .ws_connect(
+                .ws_connect_as(
+                    &id,
                     path,
                     upstream_headers(
                         &crate::turn_state::scope(headers, &id, !route.exclude.is_empty()),

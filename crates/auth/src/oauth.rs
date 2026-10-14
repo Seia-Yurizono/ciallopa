@@ -46,6 +46,8 @@ impl OAuthClient {
         let opts = ciallopa_upstream::ClientOptions {
             proxy_url: proxy_url.to_string(),
             connect_timeout: Some(Duration::from_secs(10)),
+            // auth.openai.com is not a ChatGPT cookie host (codex-rs keeps none for it).
+            cloudflare_cookies: false,
         };
         let http = ciallopa_upstream::build_reqwest(&opts)
             .map_err(|e| AuthError::Refresh(format!("http client: {e}")))?;

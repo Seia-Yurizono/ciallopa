@@ -76,6 +76,11 @@ pub struct UpstreamOpts {
     /// official Codex does with ChatGPT auth. Bodies that already carry a `Content-Encoding`
     /// are forwarded untouched; models / images / passthrough / WebSocket are never compressed.
     pub compress_requests: bool,
+    /// Keep an in-memory, per-account jar of ChatGPT infrastructure cookies (Cloudflare
+    /// `__cf_bm`/`__cflb`/`_cfuvid`/`cf_clearance`/`cf_chl_*`… and the `__oailb` routing
+    /// cookie) and replay them like official Codex. Off by default. Client `Cookie` headers are
+    /// never forwarded and upstream `Set-Cookie` never reaches clients either way.
+    pub cloudflare_cookies: bool,
 }
 impl Default for UpstreamOpts {
     fn default() -> Self {
@@ -84,6 +89,7 @@ impl Default for UpstreamOpts {
             max_attempts: 4,
             connect_timeout_secs: 30,
             compress_requests: true,
+            cloudflare_cookies: false,
         }
     }
 }

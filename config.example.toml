@@ -21,3 +21,9 @@ retention_days = 90   # default 90; 0 = keep forever (requests + error details)
 enabled = true
 reset_credits_refresh_mins = 60   # read-only listing refresh; 0 = on demand only
 allow_reset_consume = false       # true = allow manually spending a 重置卡 (irreversible)
+
+[upstream_opts]
+# Per-account in-memory jar for ChatGPT infrastructure cookies (Cloudflare + __oailb only,
+# official Codex allowlist; https ChatGPT hosts only; never shared across accounts).
+# Client Cookie headers are never forwarded upstream and upstream Set-Cookie never reaches clients.
+cloudflare_cookies = false
