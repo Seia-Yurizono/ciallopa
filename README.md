@@ -22,7 +22,9 @@ ciallopa -c config.toml login --method import --from ~/.codex/auth.json
 ```
 Files land in `auth_dir` (plain JSON, 0600, CPA-compatible names). Optional per-account keys in the
 file: `"priority": 5` (higher tier used first), `"weight": 3` (weighted-round-robin; ≤0 excluded),
-`"disabled": true`. Restart (or reload) after editing.
+`"disabled": true`. Changes in `auth_dir` are picked up automatically; the management page
+(`/ui/accounts`) can do the same edits, delete accounts, import an `auth.json` or run the
+device-code login when writes are enabled (see below).
 
 ## Config (`config.toml`)
 ```toml
@@ -118,8 +120,8 @@ records and summaries then carry `cost_usd` (null + `unknown_price` for unpriced
 `ciallopa prices sync --from models.dev` (dry run; `--write` to apply). Records also keep
 `service_tier`, cache-write tokens and the Codex `thread_id` / `turn_id`.
 
-Read-only web page: `GET /ui` (`/` redirects; `[ui] enabled = true` by default). It is a
-single static HTML file embedded in the binary (inline CSS/JS, no external resources) that asks
+Web pages: `GET /ui` overview (`/` redirects), `/ui/settings` and `/ui/accounts`
+(`[ui] enabled = true` by default). Each is a single static HTML file embedded in the binary (inline CSS/JS, no external resources) that asks
 for the access key (kept in `sessionStorage`, sent as `Authorization: Bearer`, never in the
 URL) and shows account quota cards, a summary table (24h/7d/30d, by account/key/instance/model),
 a daily token/cost chart and recent requests. Strict CSP (`default-src 'none'`, script/style
@@ -156,6 +158,31 @@ token on disk is used instead of refreshing, and the write-back is skipped if an
 changed the credentials meanwhile (CPA `refresh_patch` semantics). `refresh_token_reused` /
 `invalid_grant` mark the account `needs_relogin` (excluded from routing, shown in
 `/usage/v1/quota`, logged once, no retry loop) until you log in again.
+
+## Live settings
+
+`config.toml` is the source of truth and is applied without a restart: edits to the file (and to
+the price table and `auth_dir`) are picked up automatically, and `SIGHUP` /
+`POST /admin/v1/config/reload` do the same on demand. A file that fails validation is rejected
+and the running config stays as it was. Keys that only work at startup (`listen`, paths,
+`instance_id`, `upstream`, `max_body_mb`, usage writer sizing, `ui.enabled`) are reported as
+pending until the next restart.
+
+`/ui/settings` shows every setting with its running value and a 热更新 / 需重启 badge, the
+pending-restart list, the client keys (label + last 4 characters) and the audit log.
+`/ui/accounts` lists accounts with status, weight, priority and last-24h usage. Both pages are
+read-only unless the file says:
+
+```toml
+[ui]
+allow_config_write = true   # default false; file only, the page cannot turn it on
+```
+
+Then the settings page edits the file (preview diff → `PUT` with `If-Match`, comments kept,
+`<file>.bak` written), generates or deletes client keys (a new key is shown once), and the
+accounts page enables / disables, sets weight and priority, deletes (with confirmation), imports
+and logs in accounts and refreshes tokens. Every change is audited in
+`<config file>.audit.jsonl`. Details: docs/SETTINGS.md.
 
 ## Caddy
 ```

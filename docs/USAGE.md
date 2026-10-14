@@ -238,14 +238,16 @@ min_delta_pct = 5.0                 # below → "insufficient_data"
 `[usage] prices = "~/.ciallopa/prices.toml"` — price table (see "Cost").
 
 ## Web UI (`/ui`)
-`[ui] enabled = true` (default). Static page, no data without the key; every call goes to the
-endpoints above with the key from `sessionStorage`. Read-only, except the opt-in reset-credit
-consume action below (off unless `[ui] allow_reset_consume = true`).
+`[ui] enabled = true` (default). Static pages (`/ui`, `/ui/settings`, `/ui/accounts`), no data
+without the key; every call goes to the endpoints above (and `/admin/v1/*`, see
+docs/SETTINGS.md) with the key from `sessionStorage`. Read-only, except the opt-in reset-credit
+consume action below (off unless `[ui] allow_reset_consume = true`) and settings / account changes
+(off unless `[ui] allow_config_write = true`).
 Headers: CSP `default-src 'none'; script-src 'sha256-…'; style-src 'sha256-…'; connect-src
 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
 `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`,
-`Cache-Control: no-store`. Hashes are computed from the embedded file at startup, so editing
-`crates/server/src/ui.html` needs no manual CSP update.
+`Cache-Control: no-store`. Hashes are computed per page from the embedded files at startup, so
+editing `crates/server/src/{ui,settings,accounts}.html` needs no manual CSP update.
 
 ## Reset credits (重置卡)
 Manual only: nothing in ciallopa consumes a credit by itself (no failover / quota path calls it;

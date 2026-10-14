@@ -27,6 +27,7 @@ Auth files are named like CPA `codex-<sha256(account_id)[:8]>-<email>-<plan>.jso
 - `RouteRequest { model, session: SessionInfo, exclude: Vec<AccountId> }`
 - `Selection { account, from_binding }`
 - `QuotaSnapshot { primary, secondary: Option<QuotaWindow{used_percent, window_minutes, resets_at}> }`
+- `AccountPatch { disabled, weight, priority }` (all optional).
 - `Outcome = Success{quota} | RateLimited{retry_after, usage_limit, quota} | AuthFailed | Transient{status} | ClientError{status}`
 - Errors: `AuthError {NotFound, ReloginRequired, Refresh, Io, Invalid, Unimplemented}`, `RouteError {NoAccounts, AllCoolingDown{retry_after}, Unimplemented}`.
 
@@ -37,12 +38,22 @@ Auth files are named like CPA `codex-<sha256(account_id)[:8]>-<email>-<plan>.jso
     async fn credentials(&self, id: &AccountId) -> Result<Credentials, AuthError>; // refresh if exp < now+5m
     async fn force_refresh(&self, id: &AccountId) -> Result<Credentials, AuthError>; // after upstream 401
     async fn reload(&self) -> Result<(), AuthError>;
+    async fn relogin_required(&self) -> Vec<AccountId>;                                // default: none
+    async fn update_account(&self, id: &AccountId, p: &AccountPatch) -> Result<Account, AuthError>; // refresh locks
+    async fn remove_account(&self, id: &AccountId) -> Result<(), AuthError>;          // refresh locks
+    async fn import_account(&self, doc: &serde_json::Value) -> Result<AccountId, AuthError>;
 }
 pub trait Router: Send + Sync + 'static {               // sync, no I/O, internal Mutex ok
     fn select(&self, req: &RouteRequest, accounts: &[Account]) -> Result<Selection, RouteError>;
     fn report(&self, req: &RouteRequest, account: &AccountId, outcome: &Outcome);
+    fn update_config(&self, cfg: &RoutingConfig);       // hot reload; runtime state kept
+    fn forget_account(&self, id: &AccountId);           // account removed
+    fn cooling_until(&self, id: &AccountId) -> Option<SystemTime>;
 }
 ```
+Live config: `AppState.config: Arc<core::settings::SharedConfig>` — `load()` once per request;
+the schema (`hot` / `restart`, editable, secret) is `core::settings::SCHEMA` (see docs/SETTINGS.md).
+
 Routing also exports free fns (worker B): `extract_session(&HeaderMap, Option<&serde_json::Value>) -> SessionInfo`
 and (to add) `parse_quota(&HeaderMap) -> Option<QuotaSnapshot>`.
 

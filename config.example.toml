@@ -21,6 +21,7 @@ retention_days = 90   # default 90; 0 = keep forever (requests + error details)
 enabled = true
 reset_credits_refresh_mins = 60   # read-only listing refresh; 0 = on demand only
 allow_reset_consume = false       # true = allow manually spending a 重置卡 (irreversible)
+allow_config_write = false        # true = allow settings / key / account changes from /ui/settings and /ui/accounts (file only)
 
 [upstream_opts]
 # Per-account in-memory jar for ChatGPT infrastructure cookies (Cloudflare + __oailb only,
