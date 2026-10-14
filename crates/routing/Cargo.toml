@@ -10,6 +10,7 @@ http = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "=0.10.9"
 httpdate = "=1.0.3"
+arc-swap = { workspace = true }
 
 [lints]
 workspace = true

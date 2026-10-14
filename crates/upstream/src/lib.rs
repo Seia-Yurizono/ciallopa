@@ -29,7 +29,7 @@ pub fn ensure_rustls_crypto_provider() {
     });
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ClientOptions {
     /// Empty = direct (environment proxies are ignored on purpose).
     pub proxy_url: String,
@@ -67,7 +67,7 @@ pub fn build_reqwest(opts: &ClientOptions) -> Result<reqwest::Client, UpstreamEr
 /// fingerprint stay identical.
 #[derive(Debug)]
 pub struct ClientPool {
-    opts: ClientOptions,
+    opts: std::sync::Mutex<ClientOptions>,
     map: std::sync::Mutex<std::collections::HashMap<String, PoolEntry>>,
     any_cookie_host: std::sync::atomic::AtomicBool,
 }
@@ -79,7 +79,7 @@ struct PoolEntry {
 impl ClientPool {
     pub fn new(opts: ClientOptions) -> Self {
         Self {
-            opts,
+            opts: std::sync::Mutex::new(opts),
             map: Default::default(),
             any_cookie_host: Default::default(),
         }
@@ -95,9 +95,10 @@ impl ClientPool {
         if let Some(e) = m.get(account) {
             return Ok(e.clone());
         }
+        let opts = self.options();
         let e = PoolEntry {
-            client: build_reqwest(&self.opts)?,
-            jar: self.opts.cloudflare_cookies.then(|| {
+            client: build_reqwest(&opts)?,
+            jar: opts.cloudflare_cookies.then(|| {
                 std::sync::Arc::new(cookies::CookieJar::new(
                     self.any_cookie_host
                         .load(std::sync::atomic::Ordering::SeqCst),
@@ -106,6 +107,32 @@ impl ClientPool {
         };
         m.insert(account.to_string(), e.clone());
         Ok(e)
+    }
+    pub fn options(&self) -> ClientOptions {
+        self.opts.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+    /// Hot-reload. Proxy or connect-timeout changes drop every cached client (rebuilt lazily
+    /// on next use; requests and WebSockets in flight keep the client they already hold).
+    /// A cookie toggle only adds empty jars or drops all jars; connections are kept.
+    /// Fails (and changes nothing) when a client cannot be built with `new`.
+    pub fn reconfigure(&self, new: ClientOptions) -> Result<(), UpstreamError> {
+        build_reqwest(&new)?;
+        let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
+        let mut o = self.opts.lock().unwrap_or_else(|e| e.into_inner());
+        if o.proxy_url != new.proxy_url || o.connect_timeout != new.connect_timeout {
+            m.clear();
+        } else if o.cloudflare_cookies != new.cloudflare_cookies {
+            let any = self
+                .any_cookie_host
+                .load(std::sync::atomic::Ordering::SeqCst);
+            for e in m.values_mut() {
+                e.jar = new
+                    .cloudflare_cookies
+                    .then(|| std::sync::Arc::new(cookies::CookieJar::new(any)));
+            }
+        }
+        *o = new;
+        Ok(())
     }
     /// The account's own client, created on first use.
     pub fn get(&self, account: &str) -> Result<reqwest::Client, UpstreamError> {
@@ -144,7 +171,8 @@ pub struct UpstreamClient {
     pub base_url: String,
     /// Account-less client (not used for account traffic).
     pub http: reqwest::Client,
-    pub opts: ClientOptions,
+    /// Current options (swapped by [`Self::reconfigure`]); WebSocket connects read them.
+    pub opts: std::sync::Arc<arc_swap::ArcSwap<ClientOptions>>,
     /// Per-account clients; all account-authenticated HTTP goes through [`Self::http_for`].
     pub pools: std::sync::Arc<ClientPool>,
 }
@@ -155,8 +183,15 @@ impl UpstreamClient {
             base_url: cfg.upstream.trim_end_matches('/').to_string(),
             http: build_reqwest(&opts)?,
             pools: std::sync::Arc::new(ClientPool::new(opts.clone())),
-            opts,
+            opts: std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(opts)),
         })
+    }
+    /// Hot-reload of `proxy_url` / `connect_timeout_secs` / `cloudflare_cookies`.
+    pub fn reconfigure(&self, cfg: &Config) -> Result<(), UpstreamError> {
+        let o = ClientOptions::from(cfg);
+        self.pools.reconfigure(o.clone())?;
+        self.opts.store(std::sync::Arc::new(o));
+        Ok(())
     }
     /// The account's own client/connection pool (lazy). Falls back to the shared client only
     /// if building fails, which cannot happen for a config that already built `http`.
@@ -214,7 +249,7 @@ impl UpstreamClient {
         headers: http::HeaderMap,
     ) -> Result<(UpstreamWs, http::Response<Option<Vec<u8>>>), UpstreamError> {
         ensure_rustls_crypto_provider();
-        ws::connect(&self.ws_url(path), headers, &self.opts).await
+        ws::connect(&self.ws_url(path), headers, &self.opts.load()).await
     }
     pub fn ws_url(&self, path: &str) -> String {
         let u = self.url(path);
@@ -259,5 +294,33 @@ mod tests {
         assert_eq!(p.len(), 1);
         p.remove("a");
         assert!(p.is_empty());
+    }
+
+    #[test]
+    fn reconfigure_rebuilds_only_when_needed() {
+        let p = ClientPool::new(ClientOptions::default());
+        let held = p.get("a").unwrap();
+        p.reconfigure(ClientOptions {
+            cloudflare_cookies: true,
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(p.len(), 1, "cookie toggle keeps connections");
+        assert!(p.jar("a").is_some());
+        p.reconfigure(ClientOptions {
+            proxy_url: "http://127.0.0.1:3128".into(),
+            cloudflare_cookies: true,
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(p.is_empty(), "proxy change drops cached clients");
+        assert!(p
+            .reconfigure(ClientOptions {
+                proxy_url: "http://[::1".into(),
+                ..Default::default()
+            })
+            .is_err());
+        assert_eq!(p.options().proxy_url, "http://127.0.0.1:3128");
+        drop(held);
     }
 }

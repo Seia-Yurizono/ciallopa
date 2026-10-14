@@ -29,7 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let up = ciallopa_upstream::UpstreamClient {
         base_url: base.trim_end_matches('/').to_string(),
         http: c,
-        opts: ClientOptions::default(),
+        opts: std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(ClientOptions::default())),
         pools: std::sync::Arc::new(ciallopa_upstream::ClientPool::new(ClientOptions::default())),
     };
     let mut h = http::HeaderMap::new();

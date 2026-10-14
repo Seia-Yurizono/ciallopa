@@ -23,6 +23,8 @@ reqwest = { workspace = true }
 sha2 = "=0.10.9"
 base64 = { workspace = true }
 rand = { workspace = true }
+notify = { workspace = true }
+toml_edit = { workspace = true }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

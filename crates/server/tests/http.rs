@@ -20,7 +20,7 @@ async fn app() -> axum::Router {
         router: Arc::new(ciallopa_routing::CpaRouter::new(cfg.routing.clone())),
         upstream: Arc::new(ciallopa_upstream::UpstreamClient::new(&cfg).unwrap()),
         usage: None,
-        config: Arc::new(cfg),
+        config: Arc::new(cfg.into()),
     };
     ciallopa::build_app(state)
 }

@@ -19,6 +19,15 @@ pub struct Account {
     pub disabled: bool,
 }
 
+/// Management change of an account's routing fields (stored in its auth file).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AccountPatch {
+    pub disabled: Option<bool>,
+    pub weight: Option<i64>,
+    pub priority: Option<i32>,
+}
+
 /// What forwarding needs to call upstream on behalf of an account.
 #[derive(Clone, PartialEq)]
 pub struct Credentials {

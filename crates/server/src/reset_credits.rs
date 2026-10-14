@@ -70,6 +70,17 @@ pub struct ResetCredits {
 }
 
 impl ResetCredits {
+    /// Drop the cached listing of a removed account.
+    pub fn forget(&self, account: &str) {
+        self.cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(account);
+        self.locks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(account);
+    }
     fn snapshot(&self) -> HashMap<String, Entry> {
         self.cache.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
@@ -191,18 +202,24 @@ async fn refresh_all(st: &AppState, rc: &ResetCredits) {
     }
 }
 
-/// Periodic read-only refresh. Never consumes.
+/// Periodic read-only refresh. Never consumes. The interval is read from the live config on
+/// every pass (`0` = on demand only), so a reload takes effect within 30 s.
 pub fn spawn_poller(st: AppState, rc: ResetCredits) {
-    let mins = st.config.ui.reset_credits_refresh_mins;
-    if mins == 0 || tokio::runtime::Handle::try_current().is_err() {
+    if tokio::runtime::Handle::try_current().is_err() {
         return;
     }
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(20)).await;
-        let mut iv = tokio::time::interval(Duration::from_secs(mins.saturating_mul(60)));
+        let mut last: Option<std::time::Instant> = None;
         loop {
-            iv.tick().await;
-            refresh_all(&st, &rc).await;
+            let mins = st.config.load().ui.reset_credits_refresh_mins;
+            let due = mins > 0
+                && last.is_none_or(|t| t.elapsed() >= Duration::from_secs(mins.saturating_mul(60)));
+            if due {
+                last = Some(std::time::Instant::now());
+                refresh_all(&st, &rc).await;
+            }
+            tokio::time::sleep(Duration::from_secs(30)).await;
         }
     });
 }
@@ -231,6 +248,7 @@ fn err(status: StatusCode, msg: &str) -> Response {
 }
 
 async fn list_body(s: &S) -> Value {
+    let cfg = s.st.config.load();
     let snap = s.rc.snapshot();
     let mut out = vec![];
     for a in s.st.accounts.list().await {
@@ -246,8 +264,8 @@ async fn list_body(s: &S) -> Value {
         None => vec![],
     };
     json!({
-        "consume_enabled": s.st.config.ui.allow_reset_consume && s.st.usage.is_some(),
-        "refresh_mins": s.st.config.ui.reset_credits_refresh_mins,
+        "consume_enabled": cfg.ui.allow_reset_consume && s.st.usage.is_some(),
+        "refresh_mins": cfg.ui.reset_credits_refresh_mins,
         "accounts": out,
         "attempts": attempts,
     })
@@ -339,7 +357,7 @@ async fn consume(
     headers: HeaderMap,
     body: Option<Json<ConsumeReq>>,
 ) -> Response {
-    if !s.st.config.ui.allow_reset_consume {
+    if !s.st.config.load().ui.allow_reset_consume {
         return err(
             StatusCode::FORBIDDEN,
             "reset-credit consume is disabled; set [ui] allow_reset_consume = true",
@@ -400,7 +418,7 @@ async fn consume(
             credit,
             &rid,
             label.as_deref(),
-            &s.st.config.instance_id,
+            &s.st.config.load().instance_id,
         )
         .await
     {

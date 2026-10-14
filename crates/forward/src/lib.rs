@@ -16,6 +16,7 @@ mod ws;
 
 pub use ciallopa_routing::parse_quota;
 pub use headers::{downstream_headers, upstream_headers};
+pub use turn_state::forget_account as forget_turn_state;
 
 use axum::{
     body::Bytes,
@@ -25,7 +26,8 @@ use axum::{
     routing::{any, get, post},
     Router,
 };
-use ciallopa_core::{AccountStore, Config, RouteRequest, Router as AccountRouter};
+use ciallopa_core::settings::SharedConfig;
+use ciallopa_core::{AccountStore, RouteRequest, Router as AccountRouter};
 use ciallopa_upstream::UpstreamClient;
 use std::sync::Arc;
 
@@ -37,7 +39,8 @@ pub struct ClientKey(pub Arc<str>);
 /// Everything handlers need. Built once in `ciallopa` (server) main.
 #[derive(Clone)]
 pub struct AppState {
-    pub config: Arc<Config>,
+    /// Live configuration; call `config.load()` once per request (hot-reloadable).
+    pub config: Arc<SharedConfig>,
     pub accounts: Arc<dyn AccountStore>,
     pub router: Arc<dyn AccountRouter>,
     pub upstream: Arc<UpstreamClient>,
@@ -161,7 +164,7 @@ async fn forward(
             &method,
             headers,
             body,
-            st.config.upstream_opts.compress_requests,
+            st.config.load().upstream_opts.compress_requests,
         )
     } else {
         (headers, body)

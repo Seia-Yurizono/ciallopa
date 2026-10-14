@@ -124,7 +124,7 @@ async fn learned_fingerprint_end_to_end() {
         router: Arc::new(ciallopa_routing::CpaRouter::new(cfg.routing.clone())),
         upstream: Arc::new(ciallopa_upstream::UpstreamClient::new(&cfg).unwrap()),
         usage: Some(usage.clone()),
-        config: Arc::new(cfg.clone()),
+        config: Arc::new(cfg.clone().into()),
     };
     let p = serve(ciallopa::build_app(state)).await;
     let http = reqwest::Client::new();

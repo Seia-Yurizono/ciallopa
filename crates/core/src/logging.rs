@@ -70,14 +70,44 @@ impl<'a> MakeWriter<'a> for MakeRedacting {
     }
 }
 
-/// `RUST_LOG` overrides `level`.
+type ReloadHandle = tracing_subscriber::reload::Handle<EnvFilter, tracing_subscriber::Registry>;
+static HANDLE: OnceLock<ReloadHandle> = OnceLock::new();
+
+/// `RUST_LOG` overrides `level` (then [`set_level`] leaves the filter alone).
 pub fn init(level: &str) {
+    use tracing_subscriber::prelude::*;
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
+    let (layer, handle) = tracing_subscriber::reload::Layer::new(filter);
+    let fmt = tracing_subscriber::fmt::layer()
         .with_writer(MakeRedacting)
-        .with_ansi(false)
-        .try_init();
+        .with_ansi(false);
+    if tracing_subscriber::registry()
+        .with(layer)
+        .with(fmt)
+        .try_init()
+        .is_ok()
+    {
+        let _ = HANDLE.set(handle);
+    }
+}
+
+/// Valid `[log] level` (an EnvFilter directive such as `info` or `ciallopa=debug`).
+pub fn validate_level(level: &str) -> Result<(), String> {
+    EnvFilter::try_new(level)
+        .map(|_| ())
+        .map_err(|e| format!("log.level: {e}"))
+}
+
+/// Hot-reload the log level. No-op when `RUST_LOG` is set or logging was not initialised here.
+pub fn set_level(level: &str) -> Result<(), String> {
+    if std::env::var_os("RUST_LOG").is_some() {
+        return Ok(());
+    }
+    let f = EnvFilter::try_new(level).map_err(|e| format!("log.level: {e}"))?;
+    match HANDLE.get() {
+        Some(h) => h.reload(f).map_err(|e| e.to_string()),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]

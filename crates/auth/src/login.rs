@@ -298,7 +298,15 @@ async fn respond(sock: &mut tokio::net::TcpStream, status: &str, msg: &str) -> s
 pub async fn import_codex_auth_json(src: &Path, auth_dir: &Path) -> Result<String, AuthError> {
     let v: Value = serde_json::from_slice(&tokio::fs::read(src).await?)
         .map_err(|e| AuthError::Invalid(format!("{}: {e}", src.display())))?;
-    let tok = v.get("tokens").unwrap_or(&v);
+    let dir = auth_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || import_auth_value(&v, &dir))
+        .await
+        .map_err(|e| AuthError::Invalid(format!("import task: {e}")))?
+}
+
+/// [`import_codex_auth_json`] for an already parsed document (blocking: takes the file lock).
+pub fn import_auth_value(v: &Value, auth_dir: &Path) -> Result<String, AuthError> {
+    let tok = v.get("tokens").unwrap_or(v);
     let s = |k: &str| tok.get(k).and_then(Value::as_str).map(str::to_owned);
     let t = TokenResponse {
         access_token: s("access_token").filter(|x| !x.is_empty()).ok_or_else(|| {

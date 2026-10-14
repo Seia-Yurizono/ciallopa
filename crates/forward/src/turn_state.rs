@@ -36,6 +36,12 @@ pub(crate) fn learn(resp: &HeaderMap, account: &str) {
     m.insert(v.to_string(), (account.to_string(), Instant::now()));
 }
 
+/// Drop every turn state issued to `account` (account removed).
+pub fn forget_account(account: &str) {
+    let mut m = OWNERS.lock().unwrap_or_else(|e| e.into_inner());
+    m.retain(|_, (a, _)| a != account);
+}
+
 fn owner(v: &str) -> Option<String> {
     let m = OWNERS.lock().unwrap_or_else(|e| e.into_inner());
     m.get(v)

@@ -1,5 +1,5 @@
 //! TOML config (see README "Config example (v3)").
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -14,7 +14,7 @@ pub enum ConfigError {
     Invalid(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum Strategy {
     #[default]
@@ -23,7 +23,7 @@ pub enum Strategy {
     FillFirst,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum RebindOn {
     Any,
@@ -31,7 +31,7 @@ pub enum RebindOn {
     Quota,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RoutingConfig {
     pub strategy: Strategy,
@@ -63,7 +63,7 @@ impl RoutingConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct UpstreamOpts {
     pub stream_idle_timeout_secs: u64,
@@ -94,7 +94,7 @@ impl Default for UpstreamOpts {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ImagesConfig {
     pub enabled: bool,
@@ -118,7 +118,7 @@ impl Default for ImagesConfig {
 }
 
 /// Built-in management page at `/ui` (read-only except the opt-in reset-credit action).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct UiConfig {
     pub enabled: bool,
@@ -128,6 +128,10 @@ pub struct UiConfig {
     /// Background refresh of each account's reset-credit list (read-only GET), minutes.
     /// `0` = only on demand.
     pub reset_credits_refresh_mins: u64,
+    /// Allow configuration and account changes from the management page / admin API
+    /// (`PUT /admin/v1/config`, key and account management). Default `false`: read-only.
+    /// Like `allow_reset_consume`, it can only be turned on in the config file.
+    pub allow_config_write: bool,
 }
 impl Default for UiConfig {
     fn default() -> Self {
@@ -135,11 +139,12 @@ impl Default for UiConfig {
             enabled: true,
             allow_reset_consume: false,
             reset_credits_refresh_mins: 60,
+            allow_config_write: false,
         }
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LogConfig {
     pub level: String,
@@ -154,7 +159,7 @@ impl Default for LogConfig {
 
 /// One client key. Config accepts a plain string (label = `key-<sha256(key)[:8]>`) or a
 /// table `{ label = "laptop", key = "sk-..." }`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum ApiKeyEntry {
     Plain(String),
@@ -200,7 +205,7 @@ impl ApiKeyEntry {
 
 /// Weights for estimating "tokens per 1% of quota" (see docs/USAGE.md). `output` covers
 /// reasoning tokens too (they are part of output_tokens upstream).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct QuotaWeights {
     /// Uncached input tokens.
@@ -222,7 +227,7 @@ impl Default for QuotaWeights {
 }
 
 /// Per-request usage log (SQLite, see docs/USAGE.md).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct UsageConfig {
     pub enabled: bool,
@@ -255,7 +260,7 @@ impl Default for UsageConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub listen: SocketAddr,
@@ -358,6 +363,7 @@ impl Config {
                 "usage.queue_size and usage.batch_size must be >= 1".into(),
             ));
         }
+        crate::logging::validate_level(&self.log.level).map_err(ConfigError::Invalid)?;
         if self.upstream_opts.max_attempts == 0 {
             return Err(ConfigError::Invalid(
                 "upstream_opts.max_attempts must be >= 1".into(),

@@ -356,7 +356,7 @@ fn sse(event: &str, data: &Value) -> Bytes {
 }
 
 async fn run(st: AppState, headers: HeaderMap, body: Bytes, kind: Kind) -> Response {
-    if !st.config.images.enabled {
+    if !st.config.load().images.enabled {
         return json_error(StatusCode::NOT_FOUND, "not_found", "images API disabled");
     }
     let ct = headers
@@ -443,7 +443,7 @@ async fn run(st: AppState, headers: HeaderMap, body: Bytes, kind: Kind) -> Respo
         let ob = Outbound {
             method: Method::POST,
             path: path.into(),
-            headers: out_headers(&st.config.images, &headers, stream),
+            headers: out_headers(&st.config.load().images, &headers, stream),
             body: Bytes::from(payload.to_string()),
             route,
             expect_sse: false,
@@ -491,14 +491,14 @@ async fn run(st: AppState, headers: HeaderMap, body: Bytes, kind: Kind) -> Respo
             _ => {}
         }
     }
-    let main_model = st.config.images.main_model.clone();
+    let main_model = st.config.load().images.main_model.clone();
     let req = responses_request(&main_model, &prompt, &images, tool);
     let mut route = session_route(&headers, None);
     route.model = main_model;
     let ob = Outbound {
         method: Method::POST,
         path: "/codex/responses".into(),
-        headers: out_headers(&st.config.images, &headers, true),
+        headers: out_headers(&st.config.load().images, &headers, true),
         body: Bytes::from(req.to_string()),
         route,
         expect_sse: false,
@@ -513,8 +513,13 @@ async fn run(st: AppState, headers: HeaderMap, body: Bytes, kind: Kind) -> Respo
     } else {
         "image_generation"
     };
-    let idle =
-        std::time::Duration::from_secs(st.config.upstream_opts.stream_idle_timeout_secs.max(1));
+    let idle = std::time::Duration::from_secs(
+        st.config
+            .load()
+            .upstream_opts
+            .stream_idle_timeout_secs
+            .max(1),
+    );
     let events = sse_events(c.resp, idle);
     if stream {
         let rf = response_format;

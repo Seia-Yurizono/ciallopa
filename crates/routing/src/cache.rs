@@ -75,6 +75,13 @@ impl SessionCache {
         }
     }
 
+    /// New TTL for bindings written from now on (existing deadlines are kept).
+    pub fn set_ttl(&mut self, ttl: Duration) {
+        if !ttl.is_zero() {
+            self.ttl = ttl;
+        }
+    }
+
     fn remove_group(&mut self, seq: u64) -> Option<Group> {
         let g = self.groups.remove(&seq)?;
         for a in &g.aliases {

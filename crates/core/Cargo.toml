@@ -15,6 +15,7 @@ tracing-subscriber = { workspace = true }
 regex = { workspace = true }
 http = { workspace = true }
 sha2 = "=0.10.9"
+arc-swap = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

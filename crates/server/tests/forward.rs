@@ -375,7 +375,7 @@ async fn env_cfg(idle: u64, usage: Option<Arc<ciallopa_usage::Recorder>>, extra:
             Arc::new(up)
         },
         usage,
-        config: Arc::new(cfg),
+        config: Arc::new(cfg.into()),
     };
     let proxy = serve(ciallopa::build_app(state)).await;
     Env {

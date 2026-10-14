@@ -1,7 +1,7 @@
 use crate::oauth::{parse_jwt, OAuthClient, RefreshFailure, TokenResponse};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use ciallopa_core::{Account, AccountId, AccountStore, AuthError, Credentials};
+use ciallopa_core::{Account, AccountId, AccountPatch, AccountStore, AuthError, Credentials};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::Write;
@@ -557,6 +557,75 @@ impl AccountStore for FileAccountStore {
         let v = Self::scan(&self.dir)?;
         *self.files.write().await = v;
         Ok(())
+    }
+    async fn update_account(&self, id: &AccountId, p: &AccountPatch) -> Result<Account, AuthError> {
+        if let Some(w) = p.weight {
+            if !(0..=1_000_000).contains(&w) {
+                return Err(AuthError::Invalid("weight must be 0..=1000000".into()));
+            }
+        }
+        let lock = self.lock_for(id);
+        let _g = lock.lock().await;
+        let _flock = FileLock::acquire_async(&self.dir, id).await?;
+        let mut raw = read_one(&self.dir, id).unwrap_or(self.get(id).await?.raw);
+        let o = raw
+            .as_object_mut()
+            .ok_or_else(|| AuthError::Invalid("auth file is not an object".into()))?;
+        if let Some(d) = p.disabled {
+            if d {
+                o.insert("disabled".into(), true.into());
+            } else {
+                // Re-enabling cannot revive a revoked refresh token.
+                if o.get("needs_relogin").and_then(Value::as_bool) == Some(true) {
+                    return Err(AuthError::ReloginRequired);
+                }
+                o.remove("disabled");
+            }
+        }
+        if let Some(w) = p.weight {
+            o.insert("weight".into(), w.into());
+        }
+        if let Some(pr) = p.priority {
+            o.insert("priority".into(), pr.into());
+        }
+        let f = AuthFile {
+            id: id.clone(),
+            raw,
+        };
+        let acct = f.to_account();
+        self.put(f).await?;
+        Ok(acct)
+    }
+    async fn remove_account(&self, id: &AccountId) -> Result<(), AuthError> {
+        self.get(id).await?;
+        let lock = self.lock_for(id);
+        let _g = lock.lock().await;
+        {
+            let _flock = FileLock::acquire_async(&self.dir, id).await?;
+            match std::fs::remove_file(self.dir.join(format!("{id}.json"))) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        let _ = std::fs::remove_file(self.dir.join(format!(".{id}.json.lock")));
+        self.files.write().await.retain(|f| &f.id != id);
+        self.locks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(id);
+        if let Some(p) = self.oauth.as_ref().and_then(|o| o.pools.as_ref()) {
+            p.remove(id);
+        }
+        Ok(())
+    }
+    async fn import_account(&self, doc: &Value) -> Result<AccountId, AuthError> {
+        let (doc, dir) = (doc.clone(), self.dir.clone());
+        let id = tokio::task::spawn_blocking(move || crate::login::import_auth_value(&doc, &dir))
+            .await
+            .map_err(|e| AuthError::Invalid(format!("import task: {e}")))??;
+        self.reload().await?;
+        Ok(id)
     }
 }
 

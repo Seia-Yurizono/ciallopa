@@ -94,7 +94,7 @@ pub(crate) async fn send_info(
 }
 
 async fn send_inner(st: &AppState, ob: Outbound, info: &mut SendInfo) -> Result<Chosen, Response> {
-    let retries = u64::from(st.config.upstream_opts.max_attempts);
+    let retries = u64::from(st.config.load().upstream_opts.max_attempts);
     let mut route = ob.route;
     let mut transient: u64 = 0;
     let mut last: Option<Response> = None;
@@ -295,7 +295,13 @@ fn stream_body(
     mut up: UpStream,
     mut trk: Option<Tracker>,
 ) -> Response {
-    let idle = Duration::from_secs(st.config.upstream_opts.stream_idle_timeout_secs.max(1));
+    let idle = Duration::from_secs(
+        st.config
+            .load()
+            .upstream_opts
+            .stream_idle_timeout_secs
+            .max(1),
+    );
     let router = Arc::clone(&st.router);
     let mut reported = false;
     let body = async_stream(move |tx| async move {
@@ -523,7 +529,13 @@ pub(crate) async fn send_streaming(
     mut trk: Option<Tracker>,
 ) -> Response {
     let max_switches = st.accounts.list().await.len().max(1);
-    let idle = Duration::from_secs(st.config.upstream_opts.stream_idle_timeout_secs.max(1));
+    let idle = Duration::from_secs(
+        st.config
+            .load()
+            .upstream_opts
+            .stream_idle_timeout_secs
+            .max(1),
+    );
     let mut switches = 0usize;
     loop {
         let mut info = SendInfo::default();

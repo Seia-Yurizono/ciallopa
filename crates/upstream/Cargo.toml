@@ -20,6 +20,7 @@ tokio = { workspace = true }
 http = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+arc-swap = { workspace = true }
 
 [[bin]]
 name = "fp-probe"

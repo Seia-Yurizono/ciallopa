@@ -1,5 +1,6 @@
 use crate::{
-    Account, AccountId, AuthError, Credentials, Outcome, RouteError, RouteRequest, Selection,
+    Account, AccountId, AccountPatch, AuthError, Credentials, Outcome, RouteError, RouteRequest,
+    Selection,
 };
 use async_trait::async_trait;
 
@@ -19,6 +20,22 @@ pub trait AccountStore: Send + Sync + 'static {
     async fn relogin_required(&self) -> Vec<AccountId> {
         vec![]
     }
+    /// Change `disabled` / `weight` / `priority` (same locks as token refresh).
+    async fn update_account(
+        &self,
+        _id: &AccountId,
+        _p: &AccountPatch,
+    ) -> Result<Account, AuthError> {
+        Err(AuthError::Unimplemented)
+    }
+    /// Delete the account's auth file (same locks as token refresh).
+    async fn remove_account(&self, _id: &AccountId) -> Result<(), AuthError> {
+        Err(AuthError::Unimplemented)
+    }
+    /// Import a Codex CLI `auth.json` (or CPA codex auth file) document; returns the account id.
+    async fn import_account(&self, _doc: &serde_json::Value) -> Result<AccountId, AuthError> {
+        Err(AuthError::Unimplemented)
+    }
 }
 
 /// Owned by the **routing** worker (crate `ciallopa-routing`). Sync + cheap: no I/O.
@@ -28,4 +45,12 @@ pub trait Router: Send + Sync + 'static {
     fn select(&self, req: &RouteRequest, accounts: &[Account]) -> Result<Selection, RouteError>;
     /// Feed back the result of an attempt (cooldown, quota, rebind-on).
     fn report(&self, req: &RouteRequest, account: &AccountId, outcome: &Outcome);
+    /// Hot-reload of `[routing]`; runtime state (cooldowns, bindings) is kept.
+    fn update_config(&self, _cfg: &crate::config::RoutingConfig) {}
+    /// Forget everything about a removed account (bindings, cooldowns, quota).
+    fn forget_account(&self, _id: &AccountId) {}
+    /// When the account is usable again for any model (None = not cooling down).
+    fn cooling_until(&self, _id: &AccountId) -> Option<std::time::SystemTime> {
+        None
+    }
 }

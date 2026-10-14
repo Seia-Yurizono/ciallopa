@@ -13,14 +13,16 @@ use ciallopa_forward::AppState;
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
 
+pub mod accounts_api;
 pub mod client_fp;
 pub mod prices_cli;
 pub mod reset_credits;
+pub mod settings;
 pub mod ui;
 pub mod usage_api;
 
 #[derive(Clone)]
-struct Keys(Arc<Vec<ciallopa_core::config::ApiKey>>);
+struct Keys(Arc<ciallopa_core::settings::SharedConfig>);
 
 fn presented_key(h: &HeaderMap) -> Option<&str> {
     if let Some(v) = h.get("x-api-key").and_then(|v| v.to_str().ok()) {
@@ -50,10 +52,12 @@ pub fn key_index(keys: &[ciallopa_core::config::ApiKey], got: &str) -> Option<us
 }
 
 async fn require_key(State(keys): State<Keys>, mut req: Request<Body>, next: Next) -> Response {
-    match presented_key(req.headers()).and_then(|k| key_index(&keys.0, k)) {
+    // Current snapshot on every request: added / removed keys apply immediately.
+    let keys = keys.0.keys();
+    match presented_key(req.headers()).and_then(|k| key_index(&keys, k)) {
         Some(i) => {
             // Only the label travels with the request (usage log); never the key.
-            let label: Arc<str> = Arc::from(keys.0[i].label.as_str());
+            let label: Arc<str> = Arc::from(keys[i].label.as_str());
             // Learn the Codex client fingerprint (validated UA + originator pair; HTTP and WS).
             ciallopa_core::fingerprint::observe(req.headers(), Some(&label));
             req.extensions_mut()
@@ -68,18 +72,49 @@ async fn healthz() -> &'static str {
     "ok\n"
 }
 
+/// Production OAuth client for `proxy_url`; `CIALLOPA_OAUTH_ISSUER` (legacy
+/// `CPA_LITE_OAUTH_ISSUER`) overrides the issuer (tests / mocks only).
+pub fn oauth_client(
+    proxy_url: &str,
+) -> Result<ciallopa_auth::OAuthClient, ciallopa_core::AuthError> {
+    let c = ciallopa_auth::OAuthClient::new(proxy_url)?;
+    Ok(match ciallopa_core::config::env_var("OAUTH_ISSUER") {
+        Some((i, _)) if !i.is_empty() => {
+            let mut o = ciallopa_auth::OAuthClient::with_issuer(&i, c.http.clone());
+            o.pools = c.pools.clone();
+            o
+        }
+        _ => c,
+    })
+}
+
+/// App without a config file (built-in defaults; reload and writes unavailable).
 pub fn build_app(state: AppState) -> Router {
-    let keys = Keys(Arc::new(state.config.keys()));
-    let limit = (state.config.max_body_mb.max(20) as usize) * 1024 * 1024;
+    let s = settings::Settings::new(state, None, None);
+    build_app_with(s)
+}
+
+/// App with live settings (config file, reload pipeline, admin config / account API).
+pub fn build_app_with(s: Arc<settings::Settings>) -> Router {
+    let state = s.st.clone();
+    let cfg = state.config.load();
+    let keys = Keys(state.config.clone());
+    let limit = (cfg.max_body_mb.max(20) as usize) * 1024 * 1024;
     let usage = usage_api::routes(state.usage.clone(), state.accounts.clone());
-    let ui_on = state.config.ui.enabled;
-    let rc = reset_credits::ResetCredits::default();
+    let ui_on = cfg.ui.enabled;
+    let rc = s.rc.clone();
+    if tokio::runtime::Handle::try_current().is_ok() {
+        let s2 = s.clone();
+        tokio::spawn(async move { s2.init_known_accounts().await });
+    }
     reset_credits::spawn_poller(state.clone(), rc.clone());
     let resets = reset_credits::routes(state.clone(), rc);
     let protected = ciallopa_forward::routes(state)
         .merge(usage)
         .merge(resets)
         .merge(client_fp::routes())
+        .merge(settings::routes(s.clone()))
+        .merge(accounts_api::routes(s))
         .layer(middleware::from_fn_with_state(keys, require_key));
     let mut app = Router::new().route("/healthz", get(healthz));
     if ui_on {

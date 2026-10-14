@@ -61,7 +61,13 @@ pub(crate) async fn handler(
             return r;
         }
     };
-    let idle = Duration::from_secs(st.config.upstream_opts.stream_idle_timeout_secs.max(1));
+    let idle = Duration::from_secs(
+        st.config
+            .load()
+            .upstream_opts
+            .stream_idle_timeout_secs
+            .max(1),
+    );
     let st2 = st.clone();
     let ctx = Ctx {
         path,
@@ -98,7 +104,7 @@ async fn connect(
     headers: &HeaderMap,
     route: &mut RouteRequest,
 ) -> Result<(UpstreamWs, HeaderMap, AccountId), Response> {
-    let retries = u64::from(st.config.upstream_opts.max_attempts);
+    let retries = u64::from(st.config.load().upstream_opts.max_attempts);
     let mut transient = 0u64;
     let mut last: Option<Response> = None;
     loop {

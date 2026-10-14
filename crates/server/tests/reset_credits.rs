@@ -145,7 +145,7 @@ async fn env(allow: bool) -> Env {
         router: Arc::new(NoRoute),
         upstream: Arc::new(ciallopa_upstream::UpstreamClient::new(&cfg).unwrap()),
         usage,
-        config: Arc::new(cfg),
+        config: Arc::new(cfg.into()),
     };
     let p = serve(ciallopa::build_app(state)).await;
     Env {

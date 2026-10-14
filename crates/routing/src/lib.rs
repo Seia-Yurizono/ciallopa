@@ -82,7 +82,7 @@ struct State {
 }
 
 pub struct CpaRouter {
-    cfg: RoutingConfig,
+    cfg: arc_swap::ArcSwap<RoutingConfig>,
     clock: Clock,
     st: Mutex<State>,
 }
@@ -145,7 +145,7 @@ impl CpaRouter {
             .filter(|d| !d.is_zero())
             .unwrap_or(Duration::from_secs(3600));
         Self {
-            cfg,
+            cfg: arc_swap::ArcSwap::from_pointee(cfg),
             clock,
             st: Mutex::new(State {
                 rr_last: HashMap::new(),
@@ -173,6 +173,38 @@ impl CpaRouter {
         blocked(&self.lock(), id, &canonical_model_key(model), now)
     }
 
+    /// Hot-reload: new strategy / affinity / threshold. Cooldowns, quota snapshots, session
+    /// bindings and round-robin cursors are kept; a new TTL applies to bindings written from now.
+    pub fn set_config(&self, cfg: RoutingConfig) {
+        if let Some(ttl) = cfg.ttl().ok().filter(|d| !d.is_zero()) {
+            self.lock().cache.set_ttl(ttl);
+        }
+        self.cfg.store(Arc::new(cfg));
+    }
+
+    /// Everything kept about an account (bindings, cooldowns, quota) — account removed.
+    pub fn forget(&self, id: &AccountId) {
+        let mut st = self.lock();
+        st.cache.invalidate_auth(id);
+        st.account.remove(id);
+        st.model.retain(|(a, _), _| a != id);
+        st.quota.remove(id);
+        st.rr_last.retain(|_, v| v != id);
+    }
+
+    /// Latest time the account is cooling down for any reason (account- or model-level).
+    pub fn cooling_until_any(&self, id: &AccountId) -> Option<SystemTime> {
+        let now = (self.clock)();
+        let st = self.lock();
+        let a = st.account.get(id).and_then(|s| s.live_until(now));
+        st.model
+            .iter()
+            .filter(|((x, _), _)| x == id)
+            .filter_map(|(_, s)| s.live_until(now))
+            .chain(a)
+            .max()
+    }
+
     /// Drop all session bindings of an account (e.g. account removed).
     pub fn invalidate_account(&self, id: &AccountId) {
         self.lock().cache.invalidate_auth(id);
@@ -183,7 +215,7 @@ impl CpaRouter {
             return None;
         }
         let key = format!("{PROVIDER}:{model}");
-        match self.cfg.strategy {
+        match self.cfg.load().strategy {
             Strategy::FillFirst => Some(avail[0].id.clone()),
             Strategy::RoundRobin => {
                 if !st.rr_last.contains_key(&key) && st.rr_last.len() >= MAX_KEYS {
@@ -284,11 +316,20 @@ fn blocked_by_quota_or_auth(st: &State, a: &Account, model: &str, now: SystemTim
 }
 
 impl Router for CpaRouter {
+    fn update_config(&self, cfg: &RoutingConfig) {
+        self.set_config(cfg.clone());
+    }
+    fn forget_account(&self, id: &AccountId) {
+        self.forget(id);
+    }
+    fn cooling_until(&self, id: &AccountId) -> Option<SystemTime> {
+        self.cooling_until_any(id)
+    }
     fn select(&self, req: &RouteRequest, accounts: &[Account]) -> Result<Selection, RouteError> {
         let now = (self.clock)();
         let model = canonical_model_key(&req.model);
         let mut st = self.lock();
-        let weighted = self.cfg.strategy == Strategy::WeightedRoundRobin;
+        let weighted = self.cfg.load().strategy == Strategy::WeightedRoundRobin;
 
         let mut cands: Vec<&Account> = accounts
             .iter()
@@ -320,7 +361,7 @@ impl Router for CpaRouter {
         }
 
         // Cold pick: quota-threshold avoidance (new bindings only), then highest priority tier.
-        let thr = self.cfg.quota_avoid_threshold;
+        let thr = self.cfg.load().quota_avoid_threshold;
         let cold = |st: &mut State| -> Option<AccountId> {
             let mut pool: Vec<&Account> = available.clone();
             if thr > 0.0 {
@@ -348,7 +389,7 @@ impl Router for CpaRouter {
             })
         };
 
-        let primary = match (&req.session.key, self.cfg.session_affinity) {
+        let primary = match (&req.session.key, self.cfg.load().session_affinity) {
             (Some(k), true) if !k.is_empty() => k.clone(),
             _ => {
                 return cold(&mut st)
@@ -362,7 +403,7 @@ impl Router for CpaRouter {
         let cache_key = format!("{PROVIDER}::{primary}::{model}");
         let fallback_key = (!fallback.is_empty() && fallback != primary)
             .then(|| format!("{PROVIDER}::{fallback}::{model}"));
-        let preserve_quota = self.cfg.session_affinity_rebind_on == RebindOn::Quota;
+        let preserve_quota = self.cfg.load().session_affinity_rebind_on == RebindOn::Quota;
         let bind = |st: &mut State, id: &str| match (&fallback_key, is_sub || is_fork) {
             (Some(fk), false) => st
                 .cache
@@ -398,7 +439,7 @@ impl Router for CpaRouter {
         }
         if let Some(fk) = &fallback_key {
             if let Some(cached) = st.cache.get(fk, now) {
-                if in_avail(&cached) && (!is_sub || self.cfg.session_affinity_subagents) {
+                if in_avail(&cached) && (!is_sub || self.cfg.load().session_affinity_subagents) {
                     bind(&mut st, &cached);
                     return Ok(Selection {
                         account: cached,
@@ -525,11 +566,11 @@ impl Router for CpaRouter {
         };
 
         // ---- session binding (SessionAffinitySelector.OnResult) ----
-        if !self.cfg.session_affinity {
+        if !self.cfg.load().session_affinity {
             return;
         }
         if let Some(k) = kind {
-            if self.cfg.session_affinity_rebind_on == RebindOn::Quota && !k.rebinds() {
+            if self.cfg.load().session_affinity_rebind_on == RebindOn::Quota && !k.rebinds() {
                 return;
             }
         }

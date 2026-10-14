@@ -212,7 +212,7 @@ async fn main() {
         ),
         router: Arc::new(ciallopa_routing::CpaRouter::new(cfg.routing.clone())),
         upstream: Arc::new(ciallopa_upstream::UpstreamClient::new(&cfg).unwrap()),
-        config: Arc::new(cfg),
+        config: Arc::new(cfg.into()),
     };
     let ln = tokio::net::TcpListener::bind(&listen).await.unwrap();
     println!("ui demo on http://{listen}/ui (fake upstream {fake_up})");

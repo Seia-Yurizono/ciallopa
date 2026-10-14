@@ -147,18 +147,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
     ciallopa::client_fp::install(&cfg, usage.clone());
+    let oauth = oauth_client(&cfg)?;
+    let oauth_pools = oauth.pools.clone();
     let state = AppState {
         usage: usage.clone(),
         accounts: Arc::new(
-            ciallopa_auth::FileAccountStore::open_with(cfg.auth_dir.clone(), oauth_client(&cfg)?)
-                .await?,
+            ciallopa_auth::FileAccountStore::open_with(cfg.auth_dir.clone(), oauth).await?,
         ),
         router: Arc::new(ciallopa_routing::CpaRouter::new(cfg.routing.clone())),
         upstream: Arc::new(ciallopa_upstream::UpstreamClient::new(&cfg)?),
-        config: Arc::new(cfg),
+        config: Arc::new(cfg.into()),
     };
-    let listen = state.config.listen;
-    let app = ciallopa::build_app(state);
+    let listen = state.config.load().listen;
+    // Live settings: file watch (debounced) + SIGHUP + admin API share one apply pipeline.
+    let settings = ciallopa::settings::Settings::new(state, Some(config_path), oauth_pools);
+    settings.init_known_accounts().await;
+    let _watcher = ciallopa::settings::spawn_watcher(settings.clone());
+    ciallopa::settings::spawn_sighup(settings.clone());
+    let app = ciallopa::build_app_with(settings);
     let ln = tokio::net::TcpListener::bind(listen).await?;
     tracing::info!(%listen, "ciallopa listening");
     axum::serve(ln, app)
@@ -172,15 +178,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Production OAuth client; `CIALLOPA_OAUTH_ISSUER` (legacy `CPA_LITE_OAUTH_ISSUER`) overrides the issuer (tests / mocks only).
 fn oauth_client(cfg: &Config) -> Result<ciallopa_auth::OAuthClient, Box<dyn std::error::Error>> {
-    let c = ciallopa_auth::OAuthClient::new(&cfg.proxy_url)?;
-    Ok(match ciallopa_core::config::env_var("OAUTH_ISSUER") {
-        Some((i, _)) if !i.is_empty() => {
-            let mut o = ciallopa_auth::OAuthClient::with_issuer(&i, c.http.clone());
-            o.pools = c.pools.clone();
-            o
-        }
-        _ => c,
-    })
+    Ok(ciallopa::oauth_client(&cfg.proxy_url)?)
 }

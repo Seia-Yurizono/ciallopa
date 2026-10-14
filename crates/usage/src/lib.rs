@@ -239,7 +239,8 @@ pub enum UsageError {
 pub struct Recorder {
     fast: SyncSender<Msg>,
     path: PathBuf,
-    weights: QuotaWeights,
+    weights: std::sync::RwLock<QuotaWeights>,
+    retention_days: Arc<std::sync::atomic::AtomicU32>,
     prices: std::sync::RwLock<Arc<PriceTable>>,
     pub ids: RequestIds,
     counters: Arc<Counters>,
@@ -260,12 +261,13 @@ impl Recorder {
         let conn = store::open_rw(&cfg.path)?;
         let (tx, rx) = sync_channel(cfg.queue_size.max(1));
         let counters = Arc::new(Counters::default());
+        let retention_days = Arc::new(std::sync::atomic::AtomicU32::new(cfg.retention_days));
         let w = writer::Writer {
             conn,
             rx,
             batch_size: cfg.batch_size.max(1),
             flush: std::time::Duration::from_millis(cfg.flush_ms),
-            retention_days: cfg.retention_days,
+            retention_days: retention_days.clone(),
             counters: counters.clone(),
             state: store::WriterState::new(instance.to_string()),
         };
@@ -275,7 +277,8 @@ impl Recorder {
         Ok(Arc::new(Self {
             fast: tx,
             path: cfg.path.clone(),
-            weights: cfg.quota_weights.clone(),
+            weights: std::sync::RwLock::new(cfg.quota_weights.clone()),
+            retention_days,
             prices: Default::default(),
             ids: RequestIds::default(),
             counters,
@@ -342,6 +345,17 @@ impl Recorder {
     }
 
     /// Install / replace the price table (cost hook).
+    /// Hot-reload: quota-capacity estimation weights.
+    pub fn set_weights(&self, w: QuotaWeights) {
+        *self.weights.write().unwrap_or_else(|e| e.into_inner()) = w;
+    }
+    /// Hot-reload: raw-row retention (0 = keep forever); the writer picks it up within a minute.
+    pub fn set_retention_days(&self, days: u32) {
+        self.retention_days.store(days, Ordering::Relaxed);
+    }
+    pub fn retention_days(&self) -> u32 {
+        self.retention_days.load(Ordering::Relaxed)
+    }
     pub fn set_prices(&self, p: PriceTable) {
         *self.prices.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(p);
     }
@@ -388,7 +402,13 @@ impl Recorder {
     /// Latest quota snapshot + capacity estimate per observed account. Snapshots come from
     /// upstream and include usage by *other* clients / instances of the same account.
     pub async fn quota(&self) -> Result<Vec<AccountQuota>, UsageError> {
-        let (p, w) = (self.path.clone(), self.weights.clone());
+        let (p, w) = (
+            self.path.clone(),
+            self.weights
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+        );
         tokio::task::spawn_blocking(move || store::quota(&store::open_ro(&p)?, &w, now_ms()))
             .await
             .map_err(|_| UsageError::Gone)?

@@ -14,7 +14,7 @@ pub(crate) struct Writer {
     pub rx: Receiver<Msg>,
     pub batch_size: usize,
     pub flush: Duration,
-    pub retention_days: u32,
+    pub retention_days: Arc<std::sync::atomic::AtomicU32>,
     pub counters: Arc<Counters>,
     pub state: store::WriterState,
 }
@@ -25,7 +25,12 @@ impl Writer {
         let mut acks = Vec::new();
         let mut next_purge = Instant::now();
         loop {
-            if self.retention_days > 0 && Instant::now() >= next_purge {
+            let days = self.retention_days.load(Ordering::Relaxed);
+            if days == 0 && Instant::now() >= next_purge {
+                // Retention off (hot-reloadable): look again in a minute instead of spinning.
+                next_purge = Instant::now() + Duration::from_secs(60);
+            }
+            if days > 0 && Instant::now() >= next_purge {
                 // One bounded chunk per pass so a large backlog never stalls inserts.
                 next_purge = if self.purge() {
                     Instant::now() + Duration::from_millis(5)
@@ -101,7 +106,8 @@ impl Writer {
 
     /// Returns true when more rows may remain.
     fn purge(&mut self) -> bool {
-        let cutoff = crate::now_ms() - i64::from(self.retention_days) * 86_400_000;
+        let cutoff =
+            crate::now_ms() - i64::from(self.retention_days.load(Ordering::Relaxed)) * 86_400_000;
         match store::purge_before(&mut self.conn, cutoff, PURGE_CHUNK) {
             Ok(n) => {
                 if n > 0 {
