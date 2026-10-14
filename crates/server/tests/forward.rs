@@ -191,6 +191,10 @@ async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: Bytes) -> Re
             ))
             .unwrap(),
         "unauth" if auth.ends_with("-1") => Response::builder().status(401).body(Body::empty()).unwrap(),
+        "instrlimit" => sse_resp(concat!(
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-i\"}}\n\n",
+            "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_error\"},\"instructions\":\"see usage_limit_reached\"}}\n\n"
+        )),
         "textlimit" => sse_resp(concat!(
             "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-t\"}}\n\n",
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"grep usage_limit_reached in proxy.rs\"}\n\n",
@@ -1876,4 +1880,82 @@ async fn bootstrap_idle_timeout_not_doubled() {
     assert!(r.bytes().await.is_err());
     let el = t0.elapsed();
     assert!(el < Duration::from_millis(3500), "took {el:?}");
+}
+
+#[tokio::test]
+async fn response_failed_instructions_mention_is_not_quota() {
+    let e = env(300).await;
+    let t = sse_text(&e, "instrlimit").await;
+    assert!(
+        t.contains("server_error") && t.contains("usage_limit_reached"),
+        "{t}"
+    );
+    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 1, "must not failover");
+    assert!(
+        !e.outcomes()
+            .iter()
+            .any(|(_, o)| matches!(o, Outcome::RateLimited { .. })),
+        "{:?}",
+        e.outcomes()
+    );
+}
+
+struct RefreshFail;
+#[async_trait]
+impl AccountStore for RefreshFail {
+    async fn list(&self) -> Vec<Account> {
+        vec![Account {
+            id: "a".into(),
+            email: None,
+            chatgpt_account_id: Some("acc-a".into()),
+            plan_type: None,
+            priority: 0,
+            weight: 1,
+            disabled: false,
+        }]
+    }
+    async fn credentials(&self, _: &AccountId) -> Result<Credentials, AuthError> {
+        Err(AuthError::Refresh("timeout".into()))
+    }
+    async fn force_refresh(&self, id: &AccountId) -> Result<Credentials, AuthError> {
+        self.credentials(id).await
+    }
+    async fn reload(&self) -> Result<(), AuthError> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn http_refresh_error_must_not_authfail() {
+    let mock = Mock::default();
+    let up = Router::new()
+        .route("/backend-api/codex/responses", post(up_responses))
+        .with_state(mock.clone());
+    let up_addr = serve(up).await;
+    let cfg = Config::parse(&format!(
+        "api_keys = [\"{KEY}\"]\nupstream = \"http://{up_addr}/backend-api\"\n[upstream_opts]\nstream_idle_timeout_secs = 30\n"
+    ))
+    .unwrap();
+    let rec = Arc::new(Rec::default());
+    let state = AppState {
+        accounts: Arc::new(RefreshFail),
+        router: rec.clone(),
+        upstream: Arc::new(ciallopa_upstream::UpstreamClient::new(&cfg).unwrap()),
+        usage: None,
+        config: Arc::new(cfg.into()),
+    };
+    let proxy = serve(ciallopa::build_app(state)).await;
+    let r = reqwest::Client::new()
+        .post(format!("http://{proxy}/backend-api/codex/responses"))
+        .bearer_auth(KEY)
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().as_u16() >= 400 || r.status().as_u16() == 503 || r.status().as_u16() == 429);
+    let o = rec.0.lock().unwrap().clone();
+    assert!(
+        !o.iter().any(|(_, x)| matches!(x, Outcome::AuthFailed)),
+        "{o:?}"
+    );
 }

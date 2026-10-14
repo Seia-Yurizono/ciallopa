@@ -182,11 +182,14 @@ admin — set `admin = true` in the file for management), and the accounts page 
 sets weight and priority, deletes (with confirmation), imports and logs in accounts and refreshes
 tokens. Every change is audited in `<config file>.audit.jsonl`. Details: docs/SETTINGS.md.
 
-**Migration:** existing plain / labeled keys without `admin = true` can still forward requests,
-but `/admin/v1/*` (settings, accounts, key management, reset-credit consume) answers 403 until
-you add `admin = true` on at least one `[[api_keys]]` entry in the config file. If no key is
-admin, nobody can manage (there is no fallback to “any key”). Reload does **not** need
+Management (`/admin/v1/*`: settings, accounts, keys, reset-credit consume and on-demand
+reset-credit refresh) requires a client key with `admin = true`. Plain / labeled keys without
+that flag may only forward and call `/usage/v1/*` reads. If no admin key is configured, every
+management call answers 403 (there is no fallback to “any key”). Reload does **not** need
 `allow_config_write`, but it does need an admin key.
+
+Authentication headers: when both `X-Api-Key` and `Authorization: Bearer` are present, ciallopa
+uses `X-Api-Key`. Send only one.
 
 ## Caddy
 ```

@@ -69,6 +69,8 @@ pub fn build_reqwest(opts: &ClientOptions) -> Result<reqwest::Client, UpstreamEr
 pub struct ClientPool {
     opts: std::sync::Mutex<ClientOptions>,
     map: std::sync::Mutex<std::collections::HashMap<String, PoolEntry>>,
+    /// Cookie jars preserved across a proxy / timeout rebuild (clients are dropped).
+    jars: std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<cookies::CookieJar>>>,
     any_cookie_host: std::sync::atomic::AtomicBool,
 }
 #[derive(Debug, Clone)]
@@ -81,6 +83,7 @@ impl ClientPool {
         Self {
             opts: std::sync::Mutex::new(opts),
             map: Default::default(),
+            jars: Default::default(),
             any_cookie_host: Default::default(),
         }
     }
@@ -100,15 +103,23 @@ impl ClientPool {
         // Build outside the map lock: `build_reqwest` is fallible and may block briefly
         // on crypto / DNS resolver init; other accounts must keep serving.
         let opts = self.options();
-        let fresh = PoolEntry {
-            client: build_reqwest(&opts)?,
-            jar: opts.cloudflare_cookies.then(|| {
-                std::sync::Arc::new(cookies::CookieJar::new(
-                    self.any_cookie_host
-                        .load(std::sync::atomic::Ordering::SeqCst),
-                ))
-            }),
+        let client = build_reqwest(&opts)?;
+        let jar = if opts.cloudflare_cookies {
+            let mut jars = self.jars.lock().unwrap_or_else(|e| e.into_inner());
+            Some(
+                jars.entry(account.to_string())
+                    .or_insert_with(|| {
+                        std::sync::Arc::new(cookies::CookieJar::new(
+                            self.any_cookie_host
+                                .load(std::sync::atomic::Ordering::SeqCst),
+                        ))
+                    })
+                    .clone(),
+            )
+        } else {
+            None
         };
+        let fresh = PoolEntry { client, jar };
         let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
         Ok(m.entry(account.to_string()).or_insert(fresh).clone())
     }
@@ -125,32 +136,33 @@ impl ClientPool {
         build_reqwest(&new)?;
         let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
         let mut o = self.opts.lock().unwrap_or_else(|e| e.into_inner());
+        let mut jars = self.jars.lock().unwrap_or_else(|e| e.into_inner());
         if o.proxy_url != new.proxy_url || o.connect_timeout != new.connect_timeout {
-            // Keep jars (when cookies stay on); drop only the reqwest Clients.
+            // Preserve jars (if cookies stay on), drop clients; next `entry()` rebuilds
+            // outside this lock.
             if new.cloudflare_cookies {
-                for e in m.values_mut() {
-                    // Force next `entry()` to rebuild the client; jar survives via a
-                    // side map below — simplest: replace client with a fresh one now
-                    // while keeping the Arc jar.
-                    e.client = build_reqwest(&new)?;
-                    if e.jar.is_none() {
-                        e.jar = Some(std::sync::Arc::new(cookies::CookieJar::new(
-                            self.any_cookie_host
-                                .load(std::sync::atomic::Ordering::SeqCst),
-                        )));
+                for (k, e) in m.drain() {
+                    if let Some(j) = e.jar {
+                        jars.insert(k, j);
                     }
                 }
             } else {
                 m.clear();
+                jars.clear();
             }
         } else if o.cloudflare_cookies != new.cloudflare_cookies {
-            let any = self
-                .any_cookie_host
-                .load(std::sync::atomic::Ordering::SeqCst);
-            for e in m.values_mut() {
-                e.jar = new
-                    .cloudflare_cookies
-                    .then(|| std::sync::Arc::new(cookies::CookieJar::new(any)));
+            jars.clear();
+            if new.cloudflare_cookies {
+                let any = self
+                    .any_cookie_host
+                    .load(std::sync::atomic::Ordering::SeqCst);
+                for e in m.values_mut() {
+                    e.jar = Some(std::sync::Arc::new(cookies::CookieJar::new(any)));
+                }
+            } else {
+                for e in m.values_mut() {
+                    e.jar = None;
+                }
             }
         }
         *o = new;
@@ -168,10 +180,16 @@ impl ClientPool {
     pub fn retain<F: Fn(&str) -> bool>(&self, keep: F) {
         let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
         m.retain(|k, _| keep(k));
+        let mut jars = self.jars.lock().unwrap_or_else(|e| e.into_inner());
+        jars.retain(|k, _| keep(k));
     }
     pub fn remove(&self, account: &str) {
         let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
         m.remove(account);
+        self.jars
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(account);
     }
     pub fn len(&self) -> usize {
         self.map.lock().unwrap_or_else(|e| e.into_inner()).len()
@@ -335,8 +353,8 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
-        assert_eq!(p.len(), 1, "proxy change rebuilds clients but keeps jar");
-        assert!(p.jar("a").is_some());
+        assert!(p.is_empty(), "proxy change drops clients (rebuilt lazily)");
+        assert!(p.jar("a").is_some(), "jar preserved across rebuild");
         assert!(p
             .reconfigure(ClientOptions {
                 proxy_url: "http://[::1".into(),

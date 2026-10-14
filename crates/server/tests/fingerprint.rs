@@ -112,7 +112,7 @@ async fn learned_fingerprint_end_to_end() {
     let upa = serve(up).await;
     let dir = tempfile::tempdir().unwrap();
     let cfg = Config::parse(&format!(
-        "api_keys = [{{label = \"laptop\", key = \"{KEY}\"}}]\nupstream = \"http://{upa}/backend-api\"\n\
+        "api_keys = [{{label = \"laptop\", key = \"{KEY}\", admin = true}}]\nupstream = \"http://{upa}/backend-api\"\n\
          [usage]\npath = \"{}\"\n[ui]\nreset_credits_refresh_mins = 0\n",
         dir.path().join("u.db").display()
     ))
@@ -143,6 +143,7 @@ async fn learned_fingerprint_end_to_end() {
     let refresh_list = || async {
         http.post(format!("http://{p}/usage/v1/reset-credits/refresh"))
             .bearer_auth(KEY)
+            .json(&json!({}))
             .send()
             .await
             .unwrap();

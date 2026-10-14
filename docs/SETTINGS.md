@@ -75,10 +75,11 @@ All routes sit behind the client-key middleware.
 
 ## Write rules
 
-- Every `/admin/v1/*` call needs an **admin** client key (`admin = true` on its `[[api_keys]]`
-  entry). Plain keys and labeled keys without the flag get 403. If no admin key is configured,
-  management is unavailable for everyone (no fallback to “any key”). Page-generated keys are
-  never admin — set the flag in the file.
+- Every `/admin/v1/*` call (and `POST /usage/v1/reset-credits/refresh`) needs an **admin**
+  client key (`admin = true` on its `[[api_keys]]` entry). Plain keys and labeled keys without
+  the flag get 403. If no admin key is configured, management is unavailable for everyone (no
+  fallback to “any key”). Page-generated keys are never admin — set the flag in the file.
+  Auth header precedence: `X-Api-Key` over `Authorization: Bearer` when both are present.
 - Writes (config PUT, keys, account actions, reset-credit consume) also need the matching
   `[ui] allow_*` switch, which can only be set in the file — the page cannot grant itself
   permissions. Without the switch the API answers 403 and the pages are read-only. Validate and

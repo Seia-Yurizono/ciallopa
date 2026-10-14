@@ -139,10 +139,7 @@ async fn connect(
             Err(e) => {
                 tracing::warn!(account = %id, error = %e, "credentials unavailable");
                 // IO / transient refresh failures are not a revoked token: skip without cooldown.
-                if !matches!(
-                    e,
-                    ciallopa_core::AuthError::Io(_) | ciallopa_core::AuthError::Refresh(_)
-                ) {
+                if proxy::cools_on_credentials_error(&e) {
                     st.router.report(route, &id, &Outcome::AuthFailed);
                 }
                 route.exclude.push(id);
@@ -431,19 +428,6 @@ async fn relay(
                             // Never forward: Codex would end the turn (UsageLimitReached is fatal).
                             st.router.report(&route, &account, &o);
                             let _ = utx.send(WsMessage::Close(None)).await;
-                            // Finish the close handshake on the old socket before dropping it
-                            // (L7): drain until Close / disconnect, briefly bounded.
-                            {
-                                let deadline = tokio::time::Instant::now()
-                                    + std::time::Duration::from_secs(2);
-                                loop {
-                                    match tokio::time::timeout_at(deadline, urx.next()).await {
-                                        Ok(Some(Ok(WsMessage::Close(_)))) | Ok(None) | Err(_) => break,
-                                        Ok(Some(Ok(_))) => continue,
-                                        Ok(Some(Err(_))) => break,
-                                    }
-                                }
-                            }
                             switches += 1;
                             if awaiting && !started && switches < max_switches {
                                 if let Some(req) = pending.clone() {
@@ -455,8 +439,11 @@ async fn relay(
                                             if let Some(t) = turn.as_mut() { t.switch_to(&id); t.quota(&quota_h); }
                                             account = id;
                                             let (t, r) = ws.split();
-                                            utx = t;
-                                            urx = r;
+                                            // Finish the old socket's close handshake in the
+                                            // background so the replay is not delayed.
+                                            let old_tx = std::mem::replace(&mut utx, t);
+                                            let old_rx = std::mem::replace(&mut urx, r);
+                                            tokio::spawn(drain_close(old_tx, old_rx));
                                             held.clear();
                                             if utx.send(WsMessage::text(req.as_str())).await.is_ok() {
                                                 continue 'outer;
@@ -533,6 +520,20 @@ async fn relay(
         let _ = utx.close().await;
     })
     .await;
+}
+
+/// Wait (bounded) for the peer's Close after we sent ours, then drop both halves.
+async fn drain_close<T, R, E>(tx: T, mut rx: R)
+where
+    R: futures::Stream<Item = Result<WsMessage, E>> + Unpin,
+{
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    while let Ok(Some(Ok(m))) = tokio::time::timeout_at(deadline, rx.next()).await {
+        if matches!(m, WsMessage::Close(_)) {
+            break;
+        }
+    }
+    drop(tx);
 }
 
 #[cfg(test)]

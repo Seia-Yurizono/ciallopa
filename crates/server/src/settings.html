@@ -68,10 +68,10 @@ input.chg,select.chg{border-color:var(--acc);outline:1px solid var(--acc)}
     <table><thead><tr><th>设置项</th><th>当前值</th><th>生效方式</th></tr></thead><tbody id="rows"></tbody></table>
   </section>
   <section><h2>客户端密钥</h2>
-    <div class="mut">只显示标签和末 4 位。新密钥由服务端生成，只显示一次。</div>
+    <div class="mut">只显示标签和末 4 位。新密钥由服务端生成，只显示一次；默认只能转发和查看用量，不能管理。要开通管理权限，请在配置文件对应的 [[api_keys]] 条目里加上 admin = true。</div>
     <table><thead><tr><th>标签</th><th>密钥</th><th></th></tr></thead><tbody id="keys"></tbody></table>
     <form id="kf" class="row hide"><input id="klabel" placeholder="新密钥标签，如 phone" maxlength="64" required aria-label="新密钥标签"><button class="pri" type="submit">生成新密钥</button></form>
-    <div id="newkey" class="hide" role="status"><div>新密钥（只显示这一次，请立即保存）：</div><code id="nkv"></code> <button id="nkc">复制</button> <button id="nkx">我已保存</button></div>
+    <div id="newkey" class="hide" role="status"><div>新密钥（只显示这一次，请立即保存；默认非管理员，管理权限需在配置文件中设置 admin = true）：</div><code id="nkv"></code> <button id="nkc">复制</button> <button id="nkx">我已保存</button></div>
   </section>
   <section><h2>变更记录 <span class="mut">最近 20 条</span></h2><table><thead><tr><th>时间</th><th>操作者</th><th>操作</th><th>内容</th></tr></thead><tbody id="audit"></tbody></table></section>
 </main></div>
@@ -94,10 +94,11 @@ async function call(method,path,body,extra){
   const r=await fetch(path,{method,headers:h,body:body===undefined?undefined:JSON.stringify(body),cache:"no-store",credentials:"omit",referrerPolicy:"no-referrer"});
   if(r.status===401){sessionStorage.removeItem(KS);show(false,"密钥无效或已过期");throw new Error("401")}
   let j=null;try{j=await r.json()}catch(_){}
-  if(!r.ok){const e=new Error((j&&j.error&&j.error.message)||("HTTP "+r.status));e.status=r.status;e.body=j;throw e}
+  if(!r.ok){const e=new Error(adminMsg(j)||(j&&j.error&&j.error.message)||("HTTP "+r.status));e.status=r.status;e.body=j;throw e}
   return {j,r};
 }
-function fail(e){if(e&&e.message==="401")return;$("msg").className="banner err";$("msg").textContent=(e.status===412?"配置文件已被修改（可能是手动编辑），已重新读取，请重新确认改动。":"")+(e.message||String(e));if(e.status===412)load()}
+function adminMsg(j){return j&&j.error&&j.error.type==="admin_required"?"当前密钥没有管理权限。请用带 admin = true 的密钥登录，或在配置文件的 [[api_keys]] 里给该密钥加上 admin = true。":null}
+function fail(e){if(e&&e.message==="401")return;$("msg").className="banner err";const m=adminMsg(e&&e.body)||(e.status===412?"配置文件已被修改（可能是手动编辑），已重新读取，请重新确认改动。":"")+(e.message||String(e));$("msg").textContent=m;if(e.status===412)load()}
 function ok(t){$("msg").className="banner";$("msg").textContent=t}
 function fmt(v){if(v===null||v===undefined)return"（默认）";if(typeof v==="object")return JSON.stringify(v);if(v==="")return"（空）";return String(v)}
 function p2(x){return String(x).padStart(2,"0")}

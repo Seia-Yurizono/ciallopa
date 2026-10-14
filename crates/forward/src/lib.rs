@@ -31,10 +31,13 @@ use ciallopa_core::{AccountStore, RouteRequest, Router as AccountRouter};
 use ciallopa_upstream::UpstreamClient;
 use std::sync::Arc;
 
-/// Label of the client key that authenticated the request (inserted by the server's key
-/// middleware as a request extension). Never the key itself.
+/// Label (and admin flag) of the client key that authenticated the request (inserted by the
+/// server's key middleware as a request extension). Never the key itself.
 #[derive(Clone, Debug)]
-pub struct ClientKey(pub Arc<str>);
+pub struct ClientKey {
+    pub label: Arc<str>,
+    pub admin: bool,
+}
 
 /// Everything handlers need. Built once in `ciallopa` (server) main.
 #[derive(Clone)]
@@ -104,7 +107,7 @@ pub(crate) fn session_route(headers: &HeaderMap, body: Option<&serde_json::Value
 pub(crate) type Key = Option<axum::Extension<ClientKey>>;
 
 pub(crate) fn key_label(k: &Key) -> Option<&str> {
-    k.as_ref().map(|e| &*e.0 .0)
+    k.as_ref().map(|e| &*e.0.label)
 }
 
 async fn responses(

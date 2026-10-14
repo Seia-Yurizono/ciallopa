@@ -48,7 +48,7 @@ writer OS thread "usage-writer":  recv first msg → collect until batch_size or
 | `tier` | `service_tier` actually served: terminal event's `response.service_tier` (wins), else `response.created`'s, else the request body's; `auto` from a response is ignored (`priority` = Fast mode, `flex`, `default`/`auto` = standard). Pricing uses this. |
 | `req_tier` | v5: request body's `service_tier` (`fast` stored as `priority`), kept even when downgraded |
 | `resp_model`, `resp_effort` | v5: `response.model` / `response.reasoning.effort` (terminal event wins over `response.created`; SSE and WS) |
-| `incomplete` | v7: `response.incomplete` reason (`incomplete_details.reason`, else `unknown`). Passed through untouched, tokens recorded, **not** an error and never a cooldown (Codex treats it as terminal since bc9cad3 / counts its tokens since #53670) |
+| `incomplete` | `response.incomplete` reason (`incomplete_details.reason`, else `unknown`). Passed through untouched, tokens recorded, **not** an error and never a cooldown (Codex treats it as a terminal turn and still counts its tokens) |
 | `thread`, `turn` | Codex thread / turn id from the `thread-id` header, `x-codex-turn-metadata` (JSON `thread_id`, `turn_id`) or body `client_metadata` (WS `response.create`). Stored for a future authoritative cost lookup; nothing queries upstream yet. Values > 128 chars are ignored. |
 | `key` | **label** of the client key that made the request (`[[api_keys]] label`, or `key-<sha256[..8]>` for plain keys). The raw key is never stored. |
 | `instance` | `instance_id` of the ciallopa that wrote the row (default: hostname) |
@@ -93,14 +93,13 @@ CREATE INDEX quota_obs_account ON quota_obs(account, id);
 CREATE TABLE error_detail(id INTEGER PRIMARY KEY, message TEXT, body TEXT,
   body_len INTEGER NOT NULL, truncated INTEGER NOT NULL, headers TEXT NOT NULL);
 ```
-- v1 → v2 → v3 → v4 migrations are automatic (`ALTER TABLE ADD COLUMN` + new table, keyed on
-  `user_version`); old rows keep NULL in the new columns (old rows: standard tier, no cache writes).
+- Schema is at `user_version = 8`. Opening an older file upgrades it in place (`ALTER TABLE` /
+  new tables); columns that did not exist yet stay NULL on old rows.
 - `quota_obs` gets a row only when used % / plan changes or a reset time moves by > 120 s
   (upstream reset times jitter by a few seconds). Purge keeps each account's latest row.
 - **No secondary index.** Time ranges are rowid range scans (`id BETWEEN from<<20 AND to<<20`),
   purge is a rowid range delete, "recent" is a reverse rowid scan. Strings (account e-mails,
   model names) are interned in `labels`, so a row is ~51 bytes on disk (1M rows ≈ 51 MB).
-- `PRAGMA user_version = 4`.
 
 ## Retention
 - `retention_days` (default 90; `0` = keep forever, no purge at all). Error details follow the
@@ -220,9 +219,10 @@ admin = true                        # optional; required for /admin/v1/* and res
 ```
 Key matching is constant time across all keys; only the label reaches the forwarder / log.
 Plain string keys and labeled keys without `admin = true` may only call the proxy and
-`/usage/v1/*` (read). Management (`/admin/v1/*`, including config reload, settings writes,
-account management and reset-credit consume) needs at least one admin key; if none is
-configured those routes answer 403 for every key.
+`/usage/v1/*` reads. Management (`/admin/v1/*` and `POST /usage/v1/reset-credits/refresh`,
+including config reload, settings writes, account management and reset-credit consume) needs
+at least one admin key; if none is configured those routes answer 403 for every key.
+When both `X-Api-Key` and `Authorization: Bearer` are sent, `X-Api-Key` wins — send only one.
 
 ## Config
 ```toml
@@ -274,11 +274,13 @@ Config (`[ui]`):
 | `reset_credits_refresh_mins` | `60` | background listing refresh (read-only); `0` = on demand only |
 
 API (client key):
-- `GET /usage/v1/reset-credits` → `{consume_enabled, refresh_mins, accounts: [{account, email,
+- `GET /usage/v1/reset-credits` → `{consume_enabled, can_consume, is_admin, refresh_mins, accounts: [{account, email,
   disabled, reset_credits: {fetched_ms, available_count, credits, nearest_expires_at, error,
   error_ms} | null}], attempts: [last 20 consume attempts]}`. Cache is in memory (re-fetched
   after restart); `nearest_expires_at` = earliest expiry among `status == "available"`.
-- `POST /usage/v1/reset-credits/refresh` (optional `{"account": "<id>"}`) → same body.
+  `can_consume` = consume switch on **and** the calling key is admin (the page shows the button
+  only then).
+- `POST /usage/v1/reset-credits/refresh` — admin-only, JSON + no cookies (optional `{"account": "<id>"}`) → same body.
 - `POST /admin/v1/accounts/{id}/reset-credits/consume` — `{"confirm": "<id>", "credit_id"?,
   "redeem_request_id"?}`. Guards: switch off → 403; key only via header (middleware), JSON
   content type (browser cross-origin forms cannot send it without a CORS preflight, which is

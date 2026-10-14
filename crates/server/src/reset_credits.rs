@@ -247,7 +247,7 @@ fn err(status: StatusCode, msg: &str) -> Response {
     (status, Json(json!({"error": {"message": msg}}))).into_response()
 }
 
-async fn list_body(s: &S) -> Value {
+async fn list_body(s: &S, admin: bool) -> Value {
     let cfg = s.st.config.load();
     let snap = s.rc.snapshot();
     let mut out = vec![];
@@ -263,16 +263,21 @@ async fn list_body(s: &S) -> Value {
         Some(r) => r.reset_attempts(20).await.unwrap_or_default(),
         None => vec![],
     };
+    let consume_enabled = cfg.ui.allow_reset_consume && s.st.usage.is_some();
     json!({
-        "consume_enabled": cfg.ui.allow_reset_consume && s.st.usage.is_some(),
+        "consume_enabled": consume_enabled,
+        // UI: only show the consume button when this key is actually allowed to call it.
+        "can_consume": consume_enabled && admin,
+        "is_admin": admin,
         "refresh_mins": cfg.ui.reset_credits_refresh_mins,
         "accounts": out,
         "attempts": attempts,
     })
 }
 
-async fn list(State(s): State<S>) -> Response {
-    Json(list_body(&s).await).into_response()
+async fn list(State(s): State<S>, key: Option<axum::Extension<ClientKey>>) -> Response {
+    let admin = key.as_ref().is_some_and(|k| k.0.admin);
+    Json(list_body(&s, admin).await).into_response()
 }
 
 #[derive(Deserialize, Default)]
@@ -280,8 +285,29 @@ struct RefreshQ {
     account: Option<String>,
 }
 
-/// On-demand re-fetch (all accounts, or `{"account": "..."}`). Read-only upstream.
-async fn refresh(State(s): State<S>, body: Option<Json<RefreshQ>>) -> Response {
+/// On-demand re-fetch (all accounts, or `{"account": "..."}`). Hits upstream; admin-only,
+/// same CSRF rules as other management POSTs (JSON + no cookies).
+async fn refresh(
+    State(s): State<S>,
+    key: Option<axum::Extension<ClientKey>>,
+    headers: HeaderMap,
+    body: Option<Json<RefreshQ>>,
+) -> Response {
+    // Admin is also enforced by middleware for /admin/*, but this route is under /usage/v1 —
+    // so check here and apply CSRF.
+    if !key.as_ref().is_some_and(|k| k.0.admin) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": {
+                "type": "admin_required",
+                "message": "this client key is not an admin key; set admin = true on its [[api_keys]] entry in the config file"
+            }})),
+        )
+            .into_response();
+    }
+    if let Some(r) = crate::settings::csrf(&headers) {
+        return r;
+    }
     let q = body.map(|b| b.0).unwrap_or_default();
     match q.account {
         Some(a) => {
@@ -292,7 +318,8 @@ async fn refresh(State(s): State<S>, body: Option<Json<RefreshQ>>) -> Response {
         }
         None => refresh_all(&s.st, &s.rc).await,
     }
-    Json(list_body(&s).await).into_response()
+    let admin = true;
+    Json(list_body(&s, admin).await).into_response()
 }
 
 #[derive(Deserialize)]
@@ -436,7 +463,7 @@ async fn consume(
         (Some(r), None) => (r.clone(), true),
         (None, None) => (uuid_v4(), false),
     };
-    let label = key.as_ref().map(|k| k.0 .0.to_string());
+    let label = key.as_ref().map(|k| k.0.label.to_string());
     let row = match rec
         .reset_begin(
             &account,

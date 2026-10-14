@@ -127,7 +127,7 @@ async fn send_inner(st: &AppState, ob: Outbound, info: &mut SendInfo) -> Result<
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!(account = %id, error = %e, "credentials unavailable");
-                if !matches!(e, AuthError::Io(_)) {
+                if cools_on_credentials_error(&e) {
                     st.router.report(&route, &id, &Outcome::AuthFailed);
                 }
                 route.exclude.push(id);
@@ -425,15 +425,49 @@ pub(crate) enum EventKind {
     Content,
 }
 
+/// Whether a `credentials()` failure should cool the account down (shared by HTTP and WS).
+/// Disk IO and transient refresh failures (network / auth 5xx) are not a bad token.
+pub(crate) fn cools_on_credentials_error(e: &AuthError) -> bool {
+    !matches!(e, AuthError::Io(_) | AuthError::Refresh(_))
+}
+
 /// Quota-type error codes that justify switching accounts.
-pub(crate) fn is_quota_code(text: &str) -> bool {
-    [
-        "usage_limit_reached",
-        "insufficient_quota",
-        "usage_not_included",
-    ]
-    .iter()
-    .any(|c| text.contains(c))
+const QUOTA_CODES: [&str; 3] = [
+    "usage_limit_reached",
+    "insufficient_quota",
+    "usage_not_included",
+];
+
+fn quota_code(v: Option<&serde_json::Value>) -> bool {
+    let Some(o) = v else { return false };
+    ["type", "code"].iter().any(|k| {
+        o.get(*k)
+            .and_then(|t| t.as_str())
+            .is_some_and(|t| QUOTA_CODES.contains(&t.trim()))
+    })
+}
+
+/// Structured quota check shared by HTTP SSE, WS and the usage tracker. Only these fields
+/// count (never free text such as instructions / messages):
+/// `error` event: `status`/`status_code == 429`, `error.type|code`, top-level `type|code`;
+/// `response.failed`: `response.error.type|code`.
+/// Returns `(is_quota, has_quota_code)`.
+pub(crate) fn quota_event(v: &serde_json::Value) -> (bool, bool) {
+    match v.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+        "error" => {
+            let status = v
+                .get("status")
+                .or_else(|| v.get("status_code"))
+                .and_then(|s| s.as_u64());
+            let code = quota_code(v.get("error"));
+            (status == Some(429) || code, code)
+        }
+        "response.failed" => {
+            let code = quota_code(v.pointer("/response/error"));
+            (code, code)
+        }
+        _ => (false, false),
+    }
 }
 
 /// Classify one Responses event JSON (`data:` payload of SSE, or a WS text frame).
@@ -442,37 +476,27 @@ pub(crate) fn event_kind(text: &str) -> EventKind {
         return EventKind::Content;
     };
     let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
-    let quota_outcome = || {
-        let quota = ciallopa_routing::parse_quota_event_headers(text.as_bytes())
-            .and_then(|h| parse_quota(&h));
-        Outcome::RateLimited {
-            retry_after: ciallopa_routing::parse_codex_retry_after(
-                429,
-                text.as_bytes(),
-                SystemTime::now(),
-            ),
-            usage_limit: is_usage_limit(text.as_bytes()) || is_quota_code(text),
-            quota,
-        }
-    };
-    match ty {
-        "response.created" | "response.in_progress" | "codex.rate_limits" | "" => {
-            EventKind::Preamble
-        }
-        "error" => {
-            let status = v
-                .get("status")
-                .or_else(|| v.get("status_code"))
-                .and_then(|s| s.as_u64());
-            if status == Some(429) || is_quota_code(text) {
-                EventKind::Quota(quota_outcome())
-            } else {
-                EventKind::Content
-            }
-        }
-        "response.failed" if is_quota_code(text) => EventKind::Quota(quota_outcome()),
-        _ => EventKind::Content,
+    if matches!(
+        ty,
+        "response.created" | "response.in_progress" | "codex.rate_limits" | ""
+    ) {
+        return EventKind::Preamble;
     }
+    let (quota, code) = quota_event(&v);
+    if !quota {
+        return EventKind::Content;
+    }
+    let quota_h =
+        ciallopa_routing::parse_quota_event_headers(text.as_bytes()).and_then(|h| parse_quota(&h));
+    EventKind::Quota(Outcome::RateLimited {
+        retry_after: ciallopa_routing::parse_codex_retry_after(
+            429,
+            text.as_bytes(),
+            SystemTime::now(),
+        ),
+        usage_limit: code || is_usage_limit(text.as_bytes()),
+        quota: quota_h,
+    })
 }
 
 /// Split complete SSE events off the front of `buf`; yields each event's joined `data:`.
@@ -787,5 +811,42 @@ pub(crate) fn classify_error(status: u16, h: &HeaderMap, body: &[u8]) -> Outcome
                 .and_then(|v| ciallopa_routing::parse_retry_after_header(v, now)),
         },
         _ => Outcome::AuthFailed,
+    }
+}
+
+#[cfg(test)]
+mod quota_tests {
+    use super::*;
+    #[test]
+    fn quota_only_from_structured_fields() {
+        let q = |t: &str| matches!(event_kind(t), EventKind::Quota(_));
+        assert!(!q(
+            r#"{"type":"response.failed","response":{"error":{"code":"server_error"},"instructions":"usage_limit_reached"}}"#
+        ));
+        assert!(!q(
+            r#"{"type":"error","status":500,"error":{"message":"see usage_limit_reached docs"}}"#
+        ));
+        assert!(q(
+            r#"{"type":"response.failed","response":{"error":{"code":"usage_limit_reached"}}}"#
+        ));
+        assert!(q(
+            r#"{"type":"error","error":{"type":"insufficient_quota"}}"#
+        ));
+        assert!(q(
+            r#"{"type":"error","status":429,"error":{"message":"x"}}"#
+        ));
+        assert!(!q(
+            r#"{"type":"response.output_text.delta","delta":"usage_limit_reached"}"#
+        ));
+    }
+    #[test]
+    fn credential_errors_that_cool() {
+        assert!(!cools_on_credentials_error(&AuthError::Refresh(
+            "timeout".into()
+        )));
+        assert!(!cools_on_credentials_error(&AuthError::Io(
+            std::io::Error::other("x")
+        )));
+        assert!(cools_on_credentials_error(&AuthError::ReloginRequired));
     }
 }

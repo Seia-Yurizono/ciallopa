@@ -78,8 +78,10 @@ async fn require_key(State(keys): State<Keys>, mut req: Request<Body>, next: Nex
             }
             // Learn the Codex client fingerprint (validated UA + originator pair; HTTP and WS).
             ciallopa_core::fingerprint::observe(req.headers(), Some(&label));
-            req.extensions_mut()
-                .insert(ciallopa_forward::ClientKey(label));
+            req.extensions_mut().insert(ciallopa_forward::ClientKey {
+                label,
+                admin: keys[i].admin,
+            });
             next.run(req).await
         }
         None => (StatusCode::UNAUTHORIZED, r#"{"error":"invalid api key"}"#).into_response(),

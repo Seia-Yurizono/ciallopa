@@ -283,7 +283,7 @@ impl Tracker {
                 if d.message.is_none() {
                     d.message = msg.or_else(|| Some(format!("upstream event {ty}")));
                 }
-                if crate::proxy::is_quota_code(&text) {
+                if crate::proxy::quota_event(v).0 {
                     self.fail("usage_limit");
                 } else if ty == "error" {
                     self.fail("upstream_error_event");

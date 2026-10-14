@@ -177,10 +177,10 @@ async fn reload_applies_hot_keeps_live_ws_and_records_pending() {
     assert!(!j.to_string().contains(k2), "secret in response: {j}");
     assert_eq!(
         e.upstream.pools.len(),
-        1,
-        "timeout change keeps jar, rebuilds client in place"
+        0,
+        "timeout change drops clients (rebuilt lazily)"
     );
-    assert!(e.upstream.pools.jar("a").is_some());
+    assert!(e.upstream.pools.jar("a").is_some(), "jar preserved");
     let (c, _) = e.config().await;
     assert_eq!(c["running"]["routing.strategy"], "fill-first");
     assert_eq!(c["running"]["listen"], "127.0.0.1:8317");
@@ -562,6 +562,18 @@ async fn admin_api_needs_admin_key() {
         .await
         .unwrap();
     assert_eq!(r.status(), 200);
+    let v: Value = e
+        .http
+        .get(e.url("/usage/v1/reset-credits"))
+        .bearer_auth(&phone)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(v["can_consume"], false);
+    assert_eq!(v["is_admin"], false);
     // admin key still works
     assert!(e.config().await.0.is_object());
 }

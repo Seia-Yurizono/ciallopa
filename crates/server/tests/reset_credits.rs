@@ -198,6 +198,7 @@ async fn list_refresh_and_headers() {
         .http
         .post(format!("{}/usage/v1/reset-credits/refresh", e.base))
         .bearer_auth(KEY)
+        .json(&json!({}))
         .send()
         .await
         .unwrap()
@@ -414,6 +415,29 @@ async fn pending_blocks_a_different_spend() {
     let c = e.mock.consumes.lock().unwrap().clone();
     assert_eq!(c.len(), 2);
     assert_eq!(c[0].1["redeem_request_id"], c[1].1["redeem_request_id"]);
+}
+
+#[tokio::test]
+async fn refresh_admin_csrf_and_can_consume() {
+    let e = env(true).await;
+    let v = e.get("/usage/v1/reset-credits").await;
+    assert_eq!(v["can_consume"], true);
+    let url = format!("{}/usage/v1/reset-credits/refresh", e.base);
+    // no JSON content type
+    let r = e.http.post(&url).bearer_auth(KEY).send().await.unwrap();
+    assert_eq!(r.status(), 400);
+    // cookie
+    let r = e
+        .http
+        .post(&url)
+        .bearer_auth(KEY)
+        .header("cookie", "x=1")
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
+    assert!(e.mock.lists.lock().unwrap().is_empty());
 }
 
 #[test]

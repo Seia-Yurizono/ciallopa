@@ -335,21 +335,27 @@ pub fn import_auth_value(v: &Value, auth_dir: &Path) -> Result<String, AuthError
         if let Some(lr) = v.get("last_refresh").cloned() {
             o.insert("last_refresh".into(), lr);
         }
+        let was_relogin = prev
+            .as_ref()
+            .and_then(|p| p.get("needs_relogin"))
+            .and_then(Value::as_bool)
+            == Some(true);
         if let Some(Value::Object(p)) = prev {
             for (k, val) in p {
-                // Keep routing fields (priority / weight / …); never keep a revoked-token
-                // marker across a fresh import — that is what reimport is for.
-                if matches!(k.as_str(), "needs_relogin" | "disabled" | "relogin_reason") {
+                // Never keep a revoked-token marker; `disabled` is handled below.
+                if matches!(k.as_str(), "needs_relogin" | "relogin_reason") {
                     continue;
                 }
                 o.entry(k).or_insert(val);
             }
         }
-        // Explicit: a successful import always clears the relogin gate even when `prev` was
-        // missing those keys (and even if the imported document itself carried them).
         o.remove("needs_relogin");
-        o.remove("disabled");
         o.remove("relogin_reason");
+        // Match `merge_tokens`: only clear a disable that came from a revoked refresh.
+        // A manual `disabled: true` (no needs_relogin) is the user's choice and is kept.
+        if was_relogin {
+            o.remove("disabled");
+        }
     }
     write_auth_file(auth_dir, &id, &fresh)?;
     remove_legacy(auth_dir, legacy);
@@ -399,5 +405,28 @@ mod import_tests {
         assert!(raw.get("needs_relogin").is_none());
         assert!(raw.get("disabled").is_none());
         assert!(raw.get("relogin_reason").is_none());
+    }
+
+    #[test]
+    fn reimport_keeps_manual_disable() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path();
+        let v = serde_json::json!({
+            "type":"codex","email":"a@x","account_id":"acc",
+            "access_token":"at1","refresh_token":"rt1",
+            "disabled":true,"priority":2
+        });
+        let id = account_id_for(&v);
+        write_auth_file(dir, &id, &v).unwrap();
+        let flat = serde_json::json!({
+            "access_token":"at2","refresh_token":"rt2","account_id":"acc","email":"a@x"
+        });
+        assert_eq!(import_auth_value(&flat, dir).unwrap(), id);
+        let raw: Value =
+            serde_json::from_slice(&std::fs::read(dir.join(format!("{id}.json"))).unwrap())
+                .unwrap();
+        assert_eq!(raw["access_token"], "at2");
+        assert_eq!(raw["disabled"], true);
+        assert!(raw.get("needs_relogin").is_none());
     }
 }

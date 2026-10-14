@@ -91,15 +91,16 @@ function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className
 function clear(e){while(e.firstChild)e.removeChild(e.firstChild)}
 function key(){return sessionStorage.getItem(KS)||""}
 function show(app,err){$("app").classList.toggle("hide",!app);$("login").classList.toggle("hide",app);$("lerr").textContent=err||""}
+function adminMsg(j){return j&&j.error&&j.error.type==="admin_required"?"当前密钥没有管理权限。请用带 admin = true 的密钥登录，或在配置文件的 [[api_keys]] 里给该密钥加上 admin = true。":null}
 async function call(method,path,body){
   const h={"Authorization":"Bearer "+key()};if(body!==undefined)h["Content-Type"]="application/json";
   const r=await fetch(path,{method,headers:h,body:body===undefined?undefined:JSON.stringify(body),cache:"no-store",credentials:"omit",referrerPolicy:"no-referrer"});
   if(r.status===401){sessionStorage.removeItem(KS);show(false,"密钥无效或已过期");throw new Error("401")}
   let j=null;try{j=await r.json()}catch(_){}
-  if(!r.ok)throw new Error((j&&j.error&&j.error.message)||("HTTP "+r.status));
+  if(!r.ok){const e=new Error(adminMsg(j)||(j&&j.error&&j.error.message)||("HTTP "+r.status));e.body=j;e.status=r.status;throw e}
   return j;
 }
-function fail(e){if(e&&e.message==="401")return;$("msg").className="banner err";$("msg").textContent=e.message||String(e)}
+function fail(e){if(e&&e.message==="401")return;$("msg").className="banner err";$("msg").textContent=adminMsg(e&&e.body)||e.message||String(e)}
 function ok(t){$("msg").className="banner";$("msg").textContent=t}
 const NF=new Intl.NumberFormat("zh-CN");
 function fmtN(n){n=Number(n||0);if(n>=1e6)return(n/1e6).toFixed(2)+"M";if(n>=1e3)return(n/1e3).toFixed(1)+"k";return String(n)}

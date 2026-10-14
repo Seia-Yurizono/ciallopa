@@ -406,14 +406,18 @@ pub fn parse_retry_after_header(raw: &str, now: SystemTime) -> Option<Duration> 
 }
 
 fn usage_limit_objs(body: &Value) -> impl Iterator<Item = &Value> {
-    [body.get("error"), Some(body)]
-        .into_iter()
-        .flatten()
-        .filter(|q| {
-            q.get("type")
-                .and_then(Value::as_str)
-                .is_some_and(|t| t.trim().eq_ignore_ascii_case("usage_limit_reached"))
-        })
+    [
+        body.get("error"),
+        body.pointer("/response/error"),
+        Some(body),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|q| {
+        q.get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|t| t.trim().eq_ignore_ascii_case("usage_limit_reached"))
+    })
 }
 
 /// CPA `isCodexUsageLimitError`: `error.type` or `type` == usage_limit_reached.

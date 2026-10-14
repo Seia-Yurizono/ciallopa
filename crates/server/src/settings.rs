@@ -790,7 +790,7 @@ impl Settings {
 }
 
 pub(crate) fn actor(k: &Option<axum::Extension<ClientKey>>) -> Option<String> {
-    k.as_ref().map(|k| k.0 .0.to_string())
+    k.as_ref().map(|k| k.0.label.to_string())
 }
 
 fn if_match(h: &HeaderMap) -> Option<String> {

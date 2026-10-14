@@ -169,7 +169,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(%listen, "ciallopa listening");
     axum::serve(ln, app)
         .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut term = signal(SignalKind::terminate()).expect("SIGTERM handler");
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = term.recv() => {}
+            }
         })
         .await?;
     ciallopa::client_fp::flush();
