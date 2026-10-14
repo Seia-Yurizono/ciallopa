@@ -139,6 +139,10 @@ allow_reset_consume = true   # default false → POST below answers 403
 is logged in the usage DB (`reset_consume`); a timeout / 5xx stays `pending` and the next attempt
 reuses the same `redeem_request_id`, so a retry cannot spend twice. Needs `[usage] enabled`.
 
+Internal upstream calls (token refresh, `/wham/*`, reset credits) reuse the `User-Agent` +
+`originator` of the latest validated Codex client request (`GET /usage/v1/client-fingerprint`;
+default `codex_cli_rs/0.162.1`). See docs/USAGE.md.
+
 Details: docs/USAGE.md.
 
 Token refresh is cross-process safe: under the file lock the auth file is re-read; a newer

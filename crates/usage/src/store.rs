@@ -6,7 +6,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
 
-pub(crate) const SCHEMA_VERSION: i64 = 7;
+pub(crate) const SCHEMA_VERSION: i64 = 8;
 
 const CREATE_V3: &str = r#"
 CREATE TABLE IF NOT EXISTS labels(
@@ -88,6 +88,11 @@ CREATE TABLE IF NOT EXISTS reset_consume(
   error             TEXT
 );
 CREATE INDEX IF NOT EXISTS reset_consume_account ON reset_consume(account, id);
+-- v8: small key/value state (e.g. learned client fingerprint).
+CREATE TABLE IF NOT EXISTS kv(
+  k TEXT PRIMARY KEY,
+  v TEXT NOT NULL
+);
 "#;
 
 const MIGRATE_1_TO_2: &str = r#"

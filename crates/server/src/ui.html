@@ -92,7 +92,8 @@ button{cursor:pointer}button.pri{background:var(--acc);border-color:var(--acc);c
 #chart svg{width:100%;height:auto;display:block}
 .ax{fill:var(--mut);font-size:11px}.tb{fill:var(--acc);opacity:.75}.tb.now{opacity:.4;stroke:var(--acc);stroke-dasharray:3 2}.cl{fill:none;stroke:var(--warn);stroke-width:2}.cd{fill:var(--warn)}.gl{stroke:var(--line)}
 .hit{fill:transparent}.hit:hover{fill:color-mix(in srgb,var(--acc) 8%,transparent)}
-#tt{position:fixed;z-index:20;max-width:min(360px,calc(100vw - 16px));pointer-events:none;background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:5px 8px;font-size:12px;line-height:1.4;white-space:pre-line;box-shadow:0 2px 10px rgba(0,0,0,.18)}
+#cfp{max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:help}
+#tt{white-space:pre-line;overflow-wrap:anywhere;position:fixed;z-index:20;max-width:min(360px,calc(100vw - 16px));pointer-events:none;background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:5px 8px;font-size:12px;line-height:1.4;white-space:pre-line;box-shadow:0 2px 10px rgba(0,0,0,.18)}
 #ctip{position:absolute;pointer-events:none;background:var(--card);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12px;white-space:pre;box-shadow:0 2px 8px rgba(0,0,0,.15)}
 .legend{display:flex;gap:12px;font-size:12px;color:var(--mut);padding:0 4px;flex-wrap:wrap}
 .sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
@@ -123,7 +124,7 @@ td.cw{white-space:nowrap;padding-right:12px}.wi{display:inline-block;margin-left
 </div>
 <div id="app" class="hide">
 <header><h1>ciallopa 管理面板 <span class="mut" id="ro">只读</span></h1>
-  <span class="mut" id="tz"></span><span class="sp"></span>
+  <span class="mut" id="tz"></span><span class="mut" id="cfp" tabindex="0"></span><span class="sp"></span>
   <span class="mut" id="upd" aria-live="polite"></span>
   <label class="mut"><input type="checkbox" id="auto"> 自动刷新 (15s)</label>
   <button id="refresh">刷新</button><button id="logout">退出登录</button></header>
@@ -496,7 +497,12 @@ async function loadSummary(){await busy("ss",async()=>{const s=await api("/usage
 async function loadTrend(){const hourly=$("tmode").value==="hour",r=$("range").value,days=r==="30d"?30:7,tz=-new Date().getTimezoneOffset();
   $("trange").textContent=hourly?"（今日按小时）":"（最近 "+days+" 天，按天）";
   await busy("st",async()=>{const s=await api("/usage/v1/summary?"+qs({range:hourly?"24h":days+"d",group:"account",bucket:hourly?"hour":"day",tz}));renderTrend(s.summary.buckets,hourly,days)})}
-async function loadAll(){$("msg").textContent="";
+function renderFp(f){const e=$("cfp");if(!f){e.textContent="";delete e.dataset.tt;return}
+  const m=/^[^/]+\/(\S+)/.exec(f.user_agent||"");const learned=f.source==="learned";
+  e.textContent="· 内部请求 UA："+(f.originator||"")+" "+(m?m[1]:"")+(learned?"":"（默认）");
+  const t=learned&&f.learned_at_ms?"最近学习于 "+fmtTime(f.learned_at_ms)+"（"+ago(f.learned_at_ms)+"）"+(f.key?" · 密钥 "+f.key:""):"尚未从客户端学到，使用内置默认值";
+  e.dataset.tt="ciallopa 自己发往上游的请求（刷新 token、额度、重置卡）使用的指纹\nUser-Agent: "+f.user_agent+"\noriginator: "+f.originator+"\n"+t;e.setAttribute("aria-label",e.dataset.tt)}
+async function loadAll(){$("msg").textContent="";api("/usage/v1/client-fingerprint").then(renderFp).catch(()=>renderFp(null));
   const jobs=[busy("sq",async()=>{const [q,r]=await Promise.all([api("/usage/v1/quota"),api("/usage/v1/reset-credits").catch(()=>null)]);RC=r;$("ro").textContent=r&&r.consume_enabled?"只读（重置卡可手动使用）":"只读";renderCards(q)}),loadSummary(),loadTrend(),loadRecords(false)];
   let ok=true;for(const r of await Promise.allSettled(jobs))if(r.status==="rejected"){ok=false;fail(r.reason)}
   if(ok||!$("msg").textContent)$("upd").textContent="更新于 "+hms(new Date())}

@@ -73,6 +73,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(old) = ciallopa_core::config::legacy_dir_in_use() {
         tracing::warn!(dir = %old.display(), "~/.ciallopa not found; using legacy ~/.cpa-lite (move it to ~/.ciallopa)");
     }
+    let serving = matches!(cli.cmd, None | Some(Cmd::Serve));
+    if !serving {
+        ciallopa::client_fp::restore_only(&cfg);
+    }
     match cli.cmd.unwrap_or(Cmd::Serve) {
         Cmd::Login { method, from } => {
             use ciallopa_auth::login;
@@ -142,6 +146,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
+    ciallopa::client_fp::install(&cfg, usage.clone());
     let state = AppState {
         usage: usage.clone(),
         accounts: Arc::new(

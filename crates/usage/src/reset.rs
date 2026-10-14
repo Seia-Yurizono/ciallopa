@@ -56,6 +56,23 @@ const COLS: &str = "id, account, credit_id, redeem_request_id, key, instance, st
                     finished_ms, status, http_status, code, windows_reset, error";
 
 impl Recorder {
+    /// Small persistent state (blocking; startup / rare writes only).
+    pub fn kv_get(&self, k: &str) -> Result<Option<String>, UsageError> {
+        let c = store::open_rw(&self.path)?;
+        Ok(
+            c.query_row("SELECT v FROM kv WHERE k=?1", params![k], |r| r.get(0))
+                .optional()?,
+        )
+    }
+    pub fn kv_set(&self, k: &str, v: &str) -> Result<(), UsageError> {
+        let c = store::open_rw(&self.path)?;
+        c.execute(
+            "INSERT INTO kv(k, v) VALUES (?1, ?2) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+            params![k, v],
+        )?;
+        Ok(())
+    }
+
     /// Latest recent `pending` attempt for (account, credit_id): its id must be reused.
     pub async fn reset_pending(
         &self,

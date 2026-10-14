@@ -13,6 +13,7 @@ use ciallopa_forward::AppState;
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
 
+pub mod client_fp;
 pub mod prices_cli;
 pub mod reset_credits;
 pub mod ui;
@@ -53,6 +54,8 @@ async fn require_key(State(keys): State<Keys>, mut req: Request<Body>, next: Nex
         Some(i) => {
             // Only the label travels with the request (usage log); never the key.
             let label: Arc<str> = Arc::from(keys.0[i].label.as_str());
+            // Learn the Codex client fingerprint (validated UA + originator pair; HTTP and WS).
+            ciallopa_core::fingerprint::observe(req.headers(), Some(&label));
             req.extensions_mut()
                 .insert(ciallopa_forward::ClientKey(label));
             next.run(req).await
@@ -76,6 +79,7 @@ pub fn build_app(state: AppState) -> Router {
     let protected = ciallopa_forward::routes(state)
         .merge(usage)
         .merge(resets)
+        .merge(client_fp::routes())
         .layer(middleware::from_fn_with_state(keys, require_key));
     let mut app = Router::new().route("/healthz", get(healthz));
     if ui_on {

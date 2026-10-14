@@ -78,6 +78,7 @@ pub async fn device_code_with(
     let resp = oauth
         .http
         .post(format!("{api}/deviceauth/usercode"))
+        .headers(crate::oauth::client_headers())
         .header("Content-Type", "application/json")
         .body(json!({ "client_id": oauth.client_id }).to_string())
         .send()
@@ -105,6 +106,7 @@ pub async fn device_code_with(
         let r = oauth
             .http
             .post(format!("{api}/deviceauth/token"))
+            .headers(crate::oauth::client_headers())
             .header("Content-Type", "application/json")
             .body(
                 json!({ "device_auth_id": uc.device_auth_id, "user_code": uc.user_code })
@@ -121,7 +123,8 @@ pub async fn device_code_with(
                     return Err(err(format!("device auth poll: {}", e.without_url())));
                 }
                 tracing::debug!("device auth poll transient error: {}", e.without_url());
-                tokio::time::sleep(Duration::from_secs(uc.interval.max(1)).min(max_wait - el)).await;
+                tokio::time::sleep(Duration::from_secs(uc.interval.max(1)).min(max_wait - el))
+                    .await;
                 continue;
             }
         };

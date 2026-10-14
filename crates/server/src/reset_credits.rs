@@ -3,14 +3,13 @@
 //! of [`consume_upstream`] is the admin handler below, reached by an explicit client request.
 //!
 //! Upstream calls mirror codex-rs `backend-client` (`client/rate_limit_resets.rs`): same paths,
-//! `User-Agent` + `originator` of the default Codex client, `Authorization: Bearer`,
+//! `User-Agent` + `originator` of the latest learned Codex client (`ciallopa_core::fingerprint`), `Authorization: Bearer`,
 //! `ChatGPT-Account-Id`; 5 s timeout for the listing, 10 s for consume.
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use ciallopa_core::config::PINNED_CODEX_VERSION;
 use ciallopa_forward::{AppState, ClientKey};
 use ciallopa_usage::now_ms;
 use ciallopa_usage::reset::ConsumeOutcome;
@@ -25,7 +24,6 @@ const CONSUME_PATH: &str = "/wham/rate-limit-reset-credits/consume";
 const USAGE_PATH: &str = "/wham/usage";
 const LIST_TIMEOUT: Duration = Duration::from_secs(5);
 const CONSUME_TIMEOUT: Duration = Duration::from_secs(10);
-const ORIGINATOR: &str = "codex_cli_rs";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Credit {
@@ -94,10 +92,6 @@ fn nearest(credits: &[Credit]) -> Option<String> {
         .min()
 }
 
-fn user_agent() -> String {
-    format!("{ORIGINATOR}/{PINNED_CODEX_VERSION}")
-}
-
 async fn upstream_req(
     st: &AppState,
     account: &str,
@@ -111,13 +105,15 @@ async fn upstream_req(
         .credentials(&account.to_string())
         .await
         .map_err(|e| format!("credentials: {e}"))?;
+    // Latest learned Codex client fingerprint (built-in default until one is seen).
+    let (ua, originator) = ciallopa_core::fingerprint::headers();
     let mut req = st
         .upstream
         .http
         .request(method, st.upstream.url(path))
         .timeout(timeout)
-        .header(reqwest::header::USER_AGENT, user_agent())
-        .header("originator", ORIGINATOR)
+        .header(reqwest::header::USER_AGENT, ua)
+        .header("originator", originator)
         .header(
             reqwest::header::AUTHORIZATION,
             format!("Bearer {}", creds.access_token),

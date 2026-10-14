@@ -287,3 +287,19 @@ transport error, 5xx, 408/429, unparseable 2xx) stays `pending`; the next consum
 account + `credit_id` within 24 h reuses that `redeem_request_id` (upstream answers
 `already_redeemed` if the first one went through). A new id is minted only after a definitive
 answer.
+
+## Client fingerprint for internal requests
+ciallopa's own upstream calls (token refresh / code exchange / device login, `/wham/usage`,
+reset-credit list / consume) send the `User-Agent` + `originator` of the **latest Codex client
+seen** on an authenticated forwarded request (HTTP or WS handshake), instead of a fixed value.
+Forwarded requests themselves are never changed.
+
+- Accepted only as a matching pair, as built by codex-rs `get_codex_user_agent()`:
+  `originator` ∈ {`codex_cli_rs`, `codex-tui`} and UA = `{originator}/{MAJOR.MINOR.PATCH[-pre]}…`
+  (printable ASCII, ≤ 512 bytes, not `0.0.0`). curl, browsers, third-party clients,
+  `codex_exec`, IDE/desktop originators and unauthenticated requests are ignored.
+- Latest valid one wins (one global value). Persisted in the usage DB (`kv`, schema v8) or, with
+  `[usage] enabled = false`, `client_fingerprint.json` next to the usage path; re-validated on
+  restore. Fallback: `codex_cli_rs/0.162.1` + `codex_cli_rs`.
+- `GET /usage/v1/client-fingerprint` → `{user_agent, originator, source: learned|default,
+  learned_at_ms, key}` (key = client key label). Shown in the `/ui` header.

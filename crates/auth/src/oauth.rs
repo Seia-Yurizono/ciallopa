@@ -24,6 +24,20 @@ pub struct OAuthClient {
     pub http: reqwest::Client,
 }
 
+/// `User-Agent` + `originator` of the latest learned Codex client (codex-rs sends both as
+/// default headers of its HTTP client, including for token refresh).
+pub fn client_headers() -> reqwest::header::HeaderMap {
+    let (ua, orig) = ciallopa_core::fingerprint::headers();
+    let mut h = reqwest::header::HeaderMap::new();
+    if let Ok(v) = reqwest::header::HeaderValue::from_str(&ua) {
+        h.insert(reqwest::header::USER_AGENT, v);
+    }
+    if let Ok(v) = reqwest::header::HeaderValue::from_str(&orig) {
+        h.insert("originator", v);
+    }
+    h
+}
+
 impl OAuthClient {
     /// Production endpoints via the pinned upstream client (honours the global egress proxy).
     pub fn new(proxy_url: &str) -> Result<Self, AuthError> {
@@ -81,6 +95,7 @@ impl OAuthClient {
         let resp = self
             .http
             .post(self.token_url())
+            .headers(client_headers())
             .header("Content-Type", "application/x-www-form-urlencoded")
             .body(body)
             .send()
@@ -102,6 +117,7 @@ impl OAuthClient {
         let resp = self
             .http
             .post(self.token_url())
+            .headers(client_headers())
             .header("Content-Type", "application/json")
             .json(&json!({
                 "client_id": self.client_id,
