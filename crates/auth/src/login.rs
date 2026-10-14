@@ -41,8 +41,12 @@ struct UserCodeResp {
     device_auth_id: String,
     #[serde(alias = "usercode")]
     user_code: String,
-    #[serde(default, deserialize_with = "de_interval")]
+    #[serde(default = "default_interval", deserialize_with = "de_interval")]
     interval: u64,
+}
+/// codex-rs polls every 5 s when the server gives no interval.
+fn default_interval() -> u64 {
+    5
 }
 fn de_interval<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
     let v = Value::deserialize(d)?;
@@ -140,7 +144,7 @@ pub async fn device_code_with(
             if el >= max_wait {
                 return Err(err("device auth timed out".into()));
             }
-            tokio::time::sleep(Duration::from_secs(uc.interval).min(max_wait - el)).await;
+            tokio::time::sleep(Duration::from_secs(uc.interval.max(1)).min(max_wait - el)).await;
             continue;
         }
         return Err(err(format!("device auth failed: {st}")));
@@ -317,8 +321,12 @@ pub fn import_auth_value(v: &Value, auth_dir: &Path) -> Result<String, AuthError
         expires_in: None,
     };
     let mut fresh = merge_tokens(None, &t);
-    if let (Some(o), Some(acc)) = (fresh.as_object_mut(), s("account_id")) {
-        o.insert("account_id".into(), acc.into());
+    if let Some(o) = fresh.as_object_mut() {
+        for k in ["account_id", "email", "plan_type"] {
+            if let Some(x) = s(k) {
+                o.insert(k.into(), x.into());
+            }
+        }
     }
     let id = account_id_for(&fresh);
     let _g = FileLock::acquire(auth_dir, &id)?;
@@ -329,11 +337,67 @@ pub fn import_auth_value(v: &Value, auth_dir: &Path) -> Result<String, AuthError
         }
         if let Some(Value::Object(p)) = prev {
             for (k, val) in p {
+                // Keep routing fields (priority / weight / …); never keep a revoked-token
+                // marker across a fresh import — that is what reimport is for.
+                if matches!(k.as_str(), "needs_relogin" | "disabled" | "relogin_reason") {
+                    continue;
+                }
                 o.entry(k).or_insert(val);
             }
         }
+        // Explicit: a successful import always clears the relogin gate even when `prev` was
+        // missing those keys (and even if the imported document itself carried them).
+        o.remove("needs_relogin");
+        o.remove("disabled");
+        o.remove("relogin_reason");
     }
     write_auth_file(auth_dir, &id, &fresh)?;
     remove_legacy(auth_dir, legacy);
     Ok(id)
+}
+
+#[cfg(test)]
+mod interval_tests {
+    use super::*;
+    #[test]
+    fn missing_interval_defaults_to_5() {
+        let u: UserCodeResp =
+            serde_json::from_str(r#"{"device_auth_id":"d","user_code":"u"}"#).unwrap();
+        assert_eq!(u.interval, 5);
+        let u: UserCodeResp =
+            serde_json::from_str(r#"{"device_auth_id":"d","user_code":"u","interval":"7"}"#)
+                .unwrap();
+        assert_eq!(u.interval, 7);
+    }
+}
+
+#[cfg(test)]
+mod import_tests {
+    use super::*;
+    #[test]
+    fn reimport_clears_needs_relogin_and_disabled() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path();
+        let v = serde_json::json!({
+            "type":"codex","email":"a@x","account_id":"acc",
+            "access_token":"at1","refresh_token":"rt1",
+            "disabled":true,"needs_relogin":true,"relogin_reason":"revoked",
+            "priority":2,"weight":3
+        });
+        let id = account_id_for(&v);
+        write_auth_file(dir, &id, &v).unwrap();
+        let flat = serde_json::json!({
+            "access_token":"at2","refresh_token":"rt2","account_id":"acc","email":"a@x"
+        });
+        assert_eq!(import_auth_value(&flat, dir).unwrap(), id);
+        let raw: Value =
+            serde_json::from_slice(&std::fs::read(dir.join(format!("{id}.json"))).unwrap())
+                .unwrap();
+        assert_eq!(raw["access_token"], "at2");
+        assert_eq!(raw["priority"], 2);
+        assert_eq!(raw["weight"], 3);
+        assert!(raw.get("needs_relogin").is_none());
+        assert!(raw.get("disabled").is_none());
+        assert!(raw.get("relogin_reason").is_none());
+    }
 }

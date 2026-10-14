@@ -332,7 +332,7 @@ pub fn mask(key: &str, v: &Value, c: Option<&Config>) -> Value {
             Some(c) => Value::Array(
                 c.keys()
                     .iter()
-                    .map(|k| serde_json::json!({"label": k.label, "hint": key_hint(&k.key)}))
+                    .map(|k| serde_json::json!({"label": k.label, "hint": key_hint(&k.key), "admin": k.admin}))
                     .collect(),
             ),
             None => Value::String("<set>".into()),

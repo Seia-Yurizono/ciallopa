@@ -402,13 +402,38 @@ async fn consume(
     let lock = s.rc.lock_for(&account);
     let _g = lock.lock().await;
 
-    let pending = match rec.reset_pending(&account, credit).await {
+    let pending = match rec.reset_pending(&account).await {
         Ok(p) => p,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     };
+    // An earlier attempt on this account has an unknown outcome: the only allowed action is
+    // retrying that exact attempt (same redeem id + credit), never a second spend.
+    if let Some(p) = &pending {
+        let same_credit = p.credit_id.as_deref() == credit;
+        let same_rid = req
+            .redeem_request_id
+            .as_deref()
+            .is_none_or(|r| r == p.redeem_request_id);
+        if !same_credit || !same_rid {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": {"type": "pending_consume", "message": "an earlier consume on this account has an unknown outcome; retry it with the same redeem_request_id and credit_id"},
+                    "status": "pending",
+                    "pending": {
+                        "redeem_request_id": p.redeem_request_id,
+                        "credit_id": p.credit_id,
+                        "attempt": p.id,
+                        "started_ms": p.started_ms,
+                    }
+                })),
+            )
+                .into_response();
+        }
+    }
     let (rid, reused) = match (&req.redeem_request_id, &pending) {
-        (Some(r), _) => (r.clone(), true),
-        (None, Some(p)) => (p.redeem_request_id.clone(), true),
+        (_, Some(p)) => (p.redeem_request_id.clone(), true),
+        (Some(r), None) => (r.clone(), true),
         (None, None) => (uuid_v4(), false),
     };
     let label = key.as_ref().map(|k| k.0 .0.to_string());

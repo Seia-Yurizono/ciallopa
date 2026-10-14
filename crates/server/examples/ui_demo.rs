@@ -37,7 +37,7 @@ async fn main() {
     let fake_up = fake_upstream().await;
     let cfg = Config::parse(&format!(
         "listen = \"{listen}\"\nupstream = \"http://{fake_up}/backend-api\"\ninstance_id = \"demo-vps\"\nauth_dir = \"{}\"\n\
-         [[api_keys]]\nlabel = \"laptop\"\nkey = \"{DEMO_KEY}\"\n\
+         [[api_keys]]\nlabel = \"laptop\"\nkey = \"{DEMO_KEY}\"\nadmin = true\n\
          [[api_keys]]\nlabel = \"{}\"\nkey = \"sk-demo-evil-0123456789\"\n\
          [usage]\npath = \"{}\"\nretention_days = 0\n\
          [ui]\nallow_reset_consume = true\nreset_credits_refresh_mins = 0\n",

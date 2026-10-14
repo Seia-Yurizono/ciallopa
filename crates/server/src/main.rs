@@ -172,6 +172,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let _ = tokio::signal::ctrl_c().await;
         })
         .await?;
+    ciallopa::client_fp::flush();
     if let Some(u) = usage {
         u.shutdown();
     }

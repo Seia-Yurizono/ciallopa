@@ -134,7 +134,7 @@ async fn env(allow: bool) -> Env {
     let up = serve(up).await;
     let dir = tempfile::tempdir().unwrap();
     let cfg = Config::parse(&format!(
-        "instance_id = \"inst\"\napi_keys = [{{label = \"admin\", key = \"{KEY}\"}}]\nupstream = \"http://{up}/backend-api\"\n\
+        "instance_id = \"inst\"\napi_keys = [{{label = \"admin\", key = \"{KEY}\", admin = true}}]\nupstream = \"http://{up}/backend-api\"\n\
          [usage]\npath = \"{}\"\n[ui]\nallow_reset_consume = {allow}\nreset_credits_refresh_mins = 0\n",
         dir.path().join("u.db").display()
     ))
@@ -377,6 +377,43 @@ async fn idempotent_retry_reuses_id() {
             .0,
         400
     );
+}
+
+#[tokio::test]
+async fn pending_blocks_a_different_spend() {
+    // Core #2: account-level attempt with unknown outcome, then a card-level click must not
+    // create a second redeem id (would spend two cards).
+    let e = env(true).await;
+    {
+        let mut r = e.mock.replies.lock().unwrap();
+        r.push_back((502, json!({"error": "bad gateway"})));
+        r.push_back((200, json!({"code": "reset", "windows_reset": 1})));
+    }
+    let (s1, v1) = e.consume("a", json!({"confirm": "a"})).await;
+    assert_eq!(s1, 502, "{v1}");
+    let rid = v1["redeem_request_id"].clone();
+    // different credit → 409 with the pending attempt, upstream untouched
+    let (s2, v2) = e
+        .consume("a", json!({"confirm": "a", "credit_id": "rc_1"}))
+        .await;
+    assert_eq!(s2, 409, "{v2}");
+    assert_eq!(v2["pending"]["redeem_request_id"], rid);
+    assert!(v2["pending"]["credit_id"].is_null());
+    // a foreign explicit id is refused too
+    let (s3, _) = e
+        .consume("a", json!({"confirm": "a", "redeem_request_id": "other-1"}))
+        .await;
+    assert_eq!(s3, 409);
+    assert_eq!(e.n_consumes(), 1);
+    // retrying the same attempt is allowed and reuses the id
+    let (s4, v4) = e
+        .consume("a", json!({"confirm": "a", "redeem_request_id": rid}))
+        .await;
+    assert_eq!(s4, 200, "{v4}");
+    assert_eq!(v4["redeem_request_id"], rid);
+    let c = e.mock.consumes.lock().unwrap().clone();
+    assert_eq!(c.len(), 2);
+    assert_eq!(c[0].1["redeem_request_id"], c[1].1["redeem_request_id"]);
 }
 
 #[test]

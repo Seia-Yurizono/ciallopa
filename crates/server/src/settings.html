@@ -143,7 +143,7 @@ function render(){
       d.appendChild(badge(f));r.append(a,b,d);tb.appendChild(r)}
   }
   const kt=$("keys");clear(kt);
-  for(const k of (c.running.api_keys||[])){const r=el("tr");r.appendChild(el("td",null,k.label));r.appendChild(el("td","mono",k.hint));const t=el("td");
+  for(const k of (c.running.api_keys||[])){const r=el("tr");r.appendChild(el("td",null,k.label+(k.admin?"（管理员）":"")));r.appendChild(el("td","mono",k.hint));const t=el("td");
     if(c.write_enabled){const b=el("button","danger","删除");b.addEventListener("click",()=>delKey(k.label));t.appendChild(b)}r.appendChild(t);kt.appendChild(r)}
   if(!(c.running.api_keys||[]).length){const r=el("tr");const t=el("td","mut","没有密钥：所有代理请求都会被拒绝");t.colSpan=3;r.appendChild(t);kt.appendChild(r)}
   $("kf").classList.toggle("hide",!c.write_enabled);

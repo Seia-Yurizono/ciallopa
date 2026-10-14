@@ -29,11 +29,8 @@ device-code login when writes are enabled (see below).
 ## Config (`config.toml`)
 ```toml
 listen = "127.0.0.1:8317"              # keep loopback; Caddy terminates TLS
-api_keys = ["sk-cpa-change-me-0123456789"]   # client keys (Bearer or x-api-key), ≥16 chars
-# or labeled (label shows up in the usage log instead of the key):
-# [[api_keys]]
-# label = "laptop"
-# key = "sk-cpa-change-me-0123456789"
+# Plain string keys can only forward. Management needs a table with admin = true:
+api_keys = [{ label = "laptop", key = "sk-cpa-change-me-0123456789", admin = true }]
 instance_id = ""                        # default: hostname; stored per usage record
 upstream = "https://chatgpt.com/backend-api"
 auth_dir = "~/.ciallopa/auths"
@@ -141,11 +138,12 @@ irreversible and is **off by default**; to enable the button / API:
 allow_reset_consume = true   # default false → POST below answers 403
 ```
 
-`POST /admin/v1/accounts/{id}/reset-credits/consume` with `Authorization: Bearer <client key>`,
-`Content-Type: application/json` and `{"confirm": "<id>"}` (optional `credit_id`,
-`redeem_request_id`). The page asks for confirmation in a dialog naming the account. Each attempt
-is logged in the usage DB (`reset_consume`); a timeout / 5xx stays `pending` and the next attempt
-reuses the same `redeem_request_id`, so a retry cannot spend twice. Needs `[usage] enabled`.
+`POST /admin/v1/accounts/{id}/reset-credits/consume` with an **admin** client key
+(`Authorization: Bearer …`), `Content-Type: application/json` and `{"confirm": "<id>"}`
+(optional `credit_id`, `redeem_request_id`). The page asks for confirmation in a dialog naming
+the account. Each attempt is logged in the usage DB (`reset_consume`); a timeout / 5xx stays
+`pending` and any further click on that account must retry the same attempt (HTTP 409 otherwise),
+so a retry cannot spend twice. Needs `[usage] enabled`.
 
 Internal upstream calls (token refresh, `/wham/*`, reset credits) reuse the `User-Agent` +
 `originator` of the latest validated Codex client request (`GET /usage/v1/client-fingerprint`;
@@ -179,10 +177,16 @@ allow_config_write = true   # default false; file only, the page cannot turn it 
 ```
 
 Then the settings page edits the file (preview diff → `PUT` with `If-Match`, comments kept,
-`<file>.bak` written), generates or deletes client keys (a new key is shown once), and the
-accounts page enables / disables, sets weight and priority, deletes (with confirmation), imports
-and logs in accounts and refreshes tokens. Every change is audited in
-`<config file>.audit.jsonl`. Details: docs/SETTINGS.md.
+`<file>.bak` written), generates or deletes client keys (a new key is shown once and is never
+admin — set `admin = true` in the file for management), and the accounts page enables / disables,
+sets weight and priority, deletes (with confirmation), imports and logs in accounts and refreshes
+tokens. Every change is audited in `<config file>.audit.jsonl`. Details: docs/SETTINGS.md.
+
+**Migration:** existing plain / labeled keys without `admin = true` can still forward requests,
+but `/admin/v1/*` (settings, accounts, key management, reset-credit consume) answers 403 until
+you add `admin = true` on at least one `[[api_keys]]` entry in the config file. If no key is
+admin, nobody can manage (there is no fallback to “any key”). Reload does **not** need
+`allow_config_write`, but it does need an admin key.
 
 ## Caddy
 ```

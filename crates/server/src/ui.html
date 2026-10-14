@@ -265,7 +265,7 @@ function renderCards(q){
 }
 
 // ---- reset credits (重置卡): read-only display; consume only via the confirm dialog
-let RC=null,cpFor=null,cpOpener=null,cpCredit=null;const RCOPEN=new Set(),RCU="ciallopa_rc_used";
+let RC=null,cpFor=null,cpOpener=null,cpCredit=null,cpRid=null;const RCOPEN=new Set(),RCU="ciallopa_rc_used";
 function credStatus(c){return !c.status||c.status==="available"}
 function rcLine(a,r){
   const d=el("div","rc");d.appendChild(el("span",null,"重置卡"));
@@ -315,21 +315,23 @@ function rcList(a,r,cs,lid,open){
   return ul;
 }
 const CODEN={reset:"已重置",nothing_to_reset:"无需重置（未扣卡）",no_credit:"没有可用的卡",already_redeemed:"该请求已兑换过（未重复扣卡）"};
-function openConsume(a,r,from,card){cpFor=a.account;cpOpener=from;cpCredit=card?card.id:null;$("cpacct").textContent=(a.email?a.email+"（"+a.account+"）":a.account);
+function openConsume(a,r,from,card){cpFor=a.account;cpOpener=from;cpCredit=card?card.id:null;cpRid=null;$("cpacct").textContent=(a.email?a.email+"（"+a.account+"）":a.account);
   const av=(r.credits||[]).filter(credStatus).length;
   $("cpinfo").textContent="当前可用 "+r.available_count+" 张"+(r.nearest_expires_at?"，最近一张到期 "+fmtTime(Date.parse(r.nearest_expires_at),true):"")+(av&&av!==r.available_count?"（列表中 "+av+" 张可用）":"")+"。"+(card?"将使用指定的这张："+(card.title?"“"+card.title+"”，":"")+(card.expires_at&&!isNaN(Date.parse(card.expires_at))?"到期 "+fmtTime(Date.parse(card.expires_at),true)+"（"+fmtDur((Date.parse(card.expires_at)-Date.now())/1000)+"后）":"永不过期")+"。":"将由上游选择使用哪一张。");
   $("cpres").textContent="";$("cpyes").textContent="确认使用 1 张";$("cpyes").disabled=false;$("cpyes").classList.remove("hide");$("cpno").textContent="取消";$("cp").classList.remove("hide");$("cpno").focus()}
-function closeConsume(){if($("cp").classList.contains("hide"))return;$("cp").classList.add("hide");cpFor=null;cpCredit=null;if(cpOpener&&document.contains(cpOpener))cpOpener.focus();cpOpener=null}
+function closeConsume(){if($("cp").classList.contains("hide"))return;$("cp").classList.add("hide");cpFor=null;cpCredit=null;cpRid=null;if(cpOpener&&document.contains(cpOpener))cpOpener.focus();cpOpener=null}
 $("cpno").addEventListener("click",closeConsume);
 $("cp").addEventListener("click",e=>{if(e.target===$("cp"))closeConsume()});
 document.addEventListener("keydown",e=>{if($("cp").classList.contains("hide"))return;
   if(e.key==="Escape"){closeConsume();return}
   if(e.key==="Tab"){const f=[$("cpno"),$("cpyes")].filter(x=>!x.disabled&&!x.classList.contains("hide"));const i=f.indexOf(document.activeElement);e.preventDefault();f[(i+(e.shiftKey?f.length-1:1))%f.length].focus()}});
 $("cpyes").addEventListener("click",async()=>{const acct=cpFor;if(!acct)return;$("cpyes").disabled=true;$("cpres").textContent="正在提交…";
-  try{const j=await apiPost("/admin/v1/accounts/"+encodeURIComponent(acct)+"/reset-credits/consume",Object.assign({confirm:acct},cpCredit?{credit_id:cpCredit}:{}));
+  try{const j=await apiPost("/admin/v1/accounts/"+encodeURIComponent(acct)+"/reset-credits/consume",Object.assign({confirm:acct},cpCredit?{credit_id:cpCredit}:{},cpRid?{redeem_request_id:cpRid}:{}));
     $("cpres").textContent="结果："+(CODEN[j.code]||j.code)+(j.code==="reset"?"，重置了 "+j.windows_reset+" 个窗口":"")+"\nredeem_request_id: "+j.redeem_request_id;
     $("cpyes").classList.add("hide");$("cpno").textContent="关闭";$("cpno").focus();loadAll()}
   catch(e){if(e.message==="401")return;const pend=e.body&&e.body.status==="pending";
+    if(e.status===409&&e.body&&e.body.pending){const p=e.body.pending;cpCredit=p.credit_id||null;cpRid=p.redeem_request_id;
+      $("cpres").textContent="这个账号上一次使用的结果还未知"+(p.credit_id?"（卡 "+p.credit_id+"）":"（由上游选卡）")+"，为避免多扣一张，只能重试那一次。\nredeem_request_id: "+p.redeem_request_id;$("cpyes").disabled=false;$("cpyes").textContent="重试上一次";return}
     $("cpres").textContent="失败："+e.message+(pend?"\n结果未知；再次点击会用同一个 redeem_request_id 重试，不会重复扣卡。":"");$("cpyes").disabled=false;if(pend)$("cpyes").textContent="用同一请求重试"}});
 async function reloadCards(){const q=await api("/usage/v1/quota");renderCards(q)}
 

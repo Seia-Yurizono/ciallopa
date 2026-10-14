@@ -158,24 +158,34 @@ impl Default for LogConfig {
 }
 
 /// One client key. Config accepts a plain string (label = `key-<sha256(key)[:8]>`) or a
-/// table `{ label = "laptop", key = "sk-..." }`.
+/// table `{ label = "laptop", key = "sk-...", admin = true }`. Only tables with
+/// `admin = true` may call `/admin/v1/*` (settings, key / account management, reset-credit
+/// consume); plain strings are never admin.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum ApiKeyEntry {
     Plain(String),
-    Labeled { label: String, key: String },
+    Labeled {
+        label: String,
+        key: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        admin: bool,
+    },
 }
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct ApiKey {
     pub label: String,
     pub key: String,
+    /// May call the management API (`/admin/v1/*`).
+    pub admin: bool,
 }
 impl std::fmt::Debug for ApiKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ApiKey")
             .field("label", &self.label)
             .field("key", &"<redacted>")
+            .field("admin", &self.admin)
             .finish()
     }
 }
@@ -194,10 +204,12 @@ impl ApiKeyEntry {
             ApiKeyEntry::Plain(k) => ApiKey {
                 label: default_key_label(k),
                 key: k.clone(),
+                admin: false,
             },
-            ApiKeyEntry::Labeled { label, key } => ApiKey {
+            ApiKeyEntry::Labeled { label, key, admin } => ApiKey {
                 label: label.trim().to_string(),
                 key: key.clone(),
+                admin: *admin,
             },
         }
     }

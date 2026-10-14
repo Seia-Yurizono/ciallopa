@@ -136,8 +136,15 @@ async fn connect(
         };
         let mut creds = match st.accounts.credentials(&id).await {
             Ok(c) => c,
-            Err(_) => {
-                st.router.report(route, &id, &Outcome::AuthFailed);
+            Err(e) => {
+                tracing::warn!(account = %id, error = %e, "credentials unavailable");
+                // IO / transient refresh failures are not a revoked token: skip without cooldown.
+                if !matches!(
+                    e,
+                    ciallopa_core::AuthError::Io(_) | ciallopa_core::AuthError::Refresh(_)
+                ) {
+                    st.router.report(route, &id, &Outcome::AuthFailed);
+                }
                 route.exclude.push(id);
                 continue;
             }
@@ -424,6 +431,19 @@ async fn relay(
                             // Never forward: Codex would end the turn (UsageLimitReached is fatal).
                             st.router.report(&route, &account, &o);
                             let _ = utx.send(WsMessage::Close(None)).await;
+                            // Finish the close handshake on the old socket before dropping it
+                            // (L7): drain until Close / disconnect, briefly bounded.
+                            {
+                                let deadline = tokio::time::Instant::now()
+                                    + std::time::Duration::from_secs(2);
+                                loop {
+                                    match tokio::time::timeout_at(deadline, urx.next()).await {
+                                        Ok(Some(Ok(WsMessage::Close(_)))) | Ok(None) | Err(_) => break,
+                                        Ok(Some(Ok(_))) => continue,
+                                        Ok(Some(Err(_))) => break,
+                                    }
+                                }
+                            }
                             switches += 1;
                             if awaiting && !started && switches < max_switches {
                                 if let Some(req) = pending.clone() {

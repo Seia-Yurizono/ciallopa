@@ -75,10 +75,15 @@ All routes sit behind the client-key middleware.
 
 ## Write rules
 
-- Every change (config PUT, keys, account actions) needs `[ui] allow_config_write = true`, which
-  can only be set in the file — like `allow_reset_consume`, the page cannot grant itself
-  permissions. Without it the API answers 403 and the pages are read-only. Validate and reload
-  stay available: they only read the file the operator already controls.
+- Every `/admin/v1/*` call needs an **admin** client key (`admin = true` on its `[[api_keys]]`
+  entry). Plain keys and labeled keys without the flag get 403. If no admin key is configured,
+  management is unavailable for everyone (no fallback to “any key”). Page-generated keys are
+  never admin — set the flag in the file.
+- Writes (config PUT, keys, account actions, reset-credit consume) also need the matching
+  `[ui] allow_*` switch, which can only be set in the file — the page cannot grant itself
+  permissions. Without the switch the API answers 403 and the pages are read-only. Validate and
+  reload stay available without `allow_config_write` (they only read the file the operator
+  already controls), but they still need an admin key.
 - Same CSRF rules as the reset-credit action: client key in a header (`Authorization: Bearer` or
   `x-api-key`), `Content-Type: application/json`, no `Cookie` header.
 - Not editable from the page: `listen`, `auth_dir`, `usage.path`, `usage.prices`, `ui.enabled`,

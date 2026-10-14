@@ -11,6 +11,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use ciallopa_auth::file::valid_account_id;
 use ciallopa_core::{AccountPatch, AuthError};
 use ciallopa_forward::ClientKey;
 use serde::Deserialize;
@@ -40,6 +41,10 @@ fn ms(t: SystemTime) -> i64 {
     t.duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+fn bad_id(id: &str) -> Option<Response> {
+    (!valid_account_id(id)).then(|| err(StatusCode::BAD_REQUEST, "invalid account id"))
 }
 
 fn auth_err(e: AuthError) -> Response {
@@ -124,6 +129,9 @@ async fn update(
     headers: HeaderMap,
     body: Option<Json<AccountPatch>>,
 ) -> Response {
+    if let Some(r) = bad_id(&id) {
+        return r;
+    }
     if let Some(r) = s.write_guard(&headers) {
         return r;
     }
@@ -159,6 +167,9 @@ async fn remove(
     headers: HeaderMap,
     body: Option<Json<ConfirmReq>>,
 ) -> Response {
+    if let Some(r) = bad_id(&id) {
+        return r;
+    }
     if let Some(r) = s.write_guard(&headers) {
         return r;
     }
@@ -214,6 +225,9 @@ async fn refresh(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Response {
+    if let Some(r) = bad_id(&id) {
+        return r;
+    }
     if let Some(r) = s.write_guard(&headers) {
         return r;
     }

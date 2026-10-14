@@ -54,7 +54,8 @@ fn save(b: &Backend, fp: &Fingerprint) {
     }
 }
 
-/// Restore the persisted fingerprint and persist future changes (off the request path).
+/// Restore the persisted fingerprint and persist future changes through one background
+/// writer (coalesced, at most once per `fingerprint::MIN_SAVE_INTERVAL`).
 pub fn install(cfg: &Config, usage: Option<Arc<Recorder>>) {
     let b = backend(cfg, usage);
     if let Some(fp) = load(&b) {
@@ -63,12 +64,18 @@ pub fn install(cfg: &Config, usage: Option<Arc<Recorder>>) {
             tracing::info!(user_agent = %f.user_agent, "restored learned client fingerprint");
         }
     }
-    fingerprint::set_saver(Box::new(move |fp| {
-        let (b, fp) = (b.clone(), fp.clone());
-        let _ = std::thread::Builder::new()
-            .name("fp-save".into())
-            .spawn(move || save(&b, &fp));
-    }));
+    *BACKEND.lock().unwrap_or_else(|e| e.into_inner()) = Some(b.clone());
+    fingerprint::set_saver(Box::new(move |fp| save(&b, fp)));
+}
+
+static BACKEND: std::sync::Mutex<Option<Backend>> = std::sync::Mutex::new(None);
+
+/// Graceful shutdown / tests: write a still-pending change (before the usage DB closes).
+pub fn flush() {
+    let b = BACKEND.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some(b) = b {
+        fingerprint::flush_with(|fp| save(&b, fp));
+    }
 }
 
 /// Restore only (CLI subcommands such as `login`): no saver.

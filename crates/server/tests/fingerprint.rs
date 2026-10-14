@@ -235,6 +235,8 @@ async fn learned_fingerprint_end_to_end() {
     );
 
     // 5. persisted in the usage DB; restored after a restart
+    // Debounced writer: flush the pending change (same path as graceful shutdown).
+    ciallopa::client_fp::flush();
     wait_persisted(|| {
         usage
             .kv_get("client_fingerprint")
@@ -259,6 +261,7 @@ async fn learned_fingerprint_end_to_end() {
     h.insert("user-agent", ua1.parse().unwrap());
     h.insert("originator", "codex_cli_rs".parse().unwrap());
     assert!(fingerprint::observe(&h, None));
+    ciallopa::client_fp::flush();
     let file = dir.path().join("off").join("client_fingerprint.json");
     wait_persisted(|| file.exists()).await;
     fingerprint::reset_for_tests();

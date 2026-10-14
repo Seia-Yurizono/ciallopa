@@ -91,12 +91,16 @@ impl ClientPool {
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
     fn entry(&self, account: &str) -> Result<PoolEntry, UpstreamError> {
-        let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(e) = m.get(account) {
-            return Ok(e.clone());
+        {
+            let m = self.map.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(e) = m.get(account) {
+                return Ok(e.clone());
+            }
         }
+        // Build outside the map lock: `build_reqwest` is fallible and may block briefly
+        // on crypto / DNS resolver init; other accounts must keep serving.
         let opts = self.options();
-        let e = PoolEntry {
+        let fresh = PoolEntry {
             client: build_reqwest(&opts)?,
             jar: opts.cloudflare_cookies.then(|| {
                 std::sync::Arc::new(cookies::CookieJar::new(
@@ -105,22 +109,40 @@ impl ClientPool {
                 ))
             }),
         };
-        m.insert(account.to_string(), e.clone());
-        Ok(e)
+        let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(m.entry(account.to_string()).or_insert(fresh).clone())
     }
     pub fn options(&self) -> ClientOptions {
         self.opts.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
-    /// Hot-reload. Proxy or connect-timeout changes drop every cached client (rebuilt lazily
-    /// on next use; requests and WebSockets in flight keep the client they already hold).
-    /// A cookie toggle only adds empty jars or drops all jars; connections are kept.
-    /// Fails (and changes nothing) when a client cannot be built with `new`.
+    /// Hot-reload. Proxy or connect-timeout changes drop every cached *client* (rebuilt
+    /// lazily on next use; in-flight requests / WebSockets keep the client they already
+    /// hold) but **preserve** each account's cookie jar across the rebuild so a proxy
+    /// change does not look like a brand-new Cloudflare client. A cookie toggle only
+    /// adds empty jars or drops all jars; connections are kept. Fails (and changes
+    /// nothing) when a client cannot be built with `new`.
     pub fn reconfigure(&self, new: ClientOptions) -> Result<(), UpstreamError> {
         build_reqwest(&new)?;
         let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
         let mut o = self.opts.lock().unwrap_or_else(|e| e.into_inner());
         if o.proxy_url != new.proxy_url || o.connect_timeout != new.connect_timeout {
-            m.clear();
+            // Keep jars (when cookies stay on); drop only the reqwest Clients.
+            if new.cloudflare_cookies {
+                for e in m.values_mut() {
+                    // Force next `entry()` to rebuild the client; jar survives via a
+                    // side map below — simplest: replace client with a fresh one now
+                    // while keeping the Arc jar.
+                    e.client = build_reqwest(&new)?;
+                    if e.jar.is_none() {
+                        e.jar = Some(std::sync::Arc::new(cookies::CookieJar::new(
+                            self.any_cookie_host
+                                .load(std::sync::atomic::Ordering::SeqCst),
+                        )));
+                    }
+                }
+            } else {
+                m.clear();
+            }
         } else if o.cloudflare_cookies != new.cloudflare_cookies {
             let any = self
                 .any_cookie_host
@@ -313,7 +335,8 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
-        assert!(p.is_empty(), "proxy change drops cached clients");
+        assert_eq!(p.len(), 1, "proxy change rebuilds clients but keeps jar");
+        assert!(p.jar("a").is_some());
         assert!(p
             .reconfigure(ClientOptions {
                 proxy_url: "http://[::1".into(),

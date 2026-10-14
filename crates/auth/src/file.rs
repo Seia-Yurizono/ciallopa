@@ -54,10 +54,21 @@ fn version(v: &Value) -> [Option<&Value>; 4] {
     VERSION_KEYS.map(|k| v.get(k))
 }
 
+/// Account ids are single path segments under `auth_dir` (no `/`, `\`, `.`, `..`).
+pub fn valid_account_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 200
+        && !id.starts_with('.')
+        && !id.contains('/')
+        && !id.contains('\\')
+        && id != ".."
+        && id.bytes().all(|b| b.is_ascii_graphic() && b != b'%')
+}
+
 /// Atomic write (tmp + fsync + rename), file mode 0600, dir 0700.
 pub fn write_auth_file(dir: &Path, id: &str, v: &Value) -> Result<PathBuf, AuthError> {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    if id.contains('/') || id.starts_with('.') || id.is_empty() {
+    if !valid_account_id(id) {
         return Err(AuthError::Invalid(format!("bad id {id:?}")));
     }
     std::fs::create_dir_all(dir)?;
@@ -271,6 +282,9 @@ impl FileLock {
     pub fn acquire(dir: &Path, id: &str) -> Result<Self, AuthError> {
         use std::os::fd::AsRawFd;
         use std::os::unix::fs::OpenOptionsExt;
+        if !valid_account_id(id) {
+            return Err(AuthError::Invalid(format!("bad id {id:?}")));
+        }
         std::fs::create_dir_all(dir)?;
         let f = std::fs::OpenOptions::new()
             .read(true)

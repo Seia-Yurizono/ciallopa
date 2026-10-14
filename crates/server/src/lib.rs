@@ -51,6 +51,12 @@ pub fn key_index(keys: &[ciallopa_core::config::ApiKey], got: &str) -> Option<us
     found
 }
 
+/// `/admin/...` (management API). Paths are matched after percent-decoding-free routing, so a
+/// plain prefix check is exact for axum's router.
+pub fn is_admin_path(p: &str) -> bool {
+    p == "/admin" || p.starts_with("/admin/")
+}
+
 async fn require_key(State(keys): State<Keys>, mut req: Request<Body>, next: Next) -> Response {
     // Current snapshot on every request: added / removed keys apply immediately.
     let keys = keys.0.keys();
@@ -58,6 +64,18 @@ async fn require_key(State(keys): State<Keys>, mut req: Request<Body>, next: Nex
         Some(i) => {
             // Only the label travels with the request (usage log); never the key.
             let label: Arc<str> = Arc::from(keys[i].label.as_str());
+            // Management API (settings, keys, accounts, reset-credit consume): admin keys only.
+            // No admin key configured ⇒ nobody can call it (never falls back to "any key").
+            if is_admin_path(req.uri().path()) && !keys[i].admin {
+                return (
+                    StatusCode::FORBIDDEN,
+                    axum::Json(serde_json::json!({"error": {
+                        "type": "admin_required",
+                        "message": "this client key is not an admin key; set admin = true on its [[api_keys]] entry in the config file"
+                    }})),
+                )
+                    .into_response();
+            }
             // Learn the Codex client fingerprint (validated UA + originator pair; HTTP and WS).
             ciallopa_core::fingerprint::observe(req.headers(), Some(&label));
             req.extensions_mut()

@@ -96,7 +96,9 @@ pub(crate) async fn send_info(
 async fn send_inner(st: &AppState, ob: Outbound, info: &mut SendInfo) -> Result<Chosen, Response> {
     let retries = u64::from(st.config.load().upstream_opts.max_attempts);
     let mut route = ob.route;
-    let mut transient: u64 = 0;
+    // Transport / 5xx retry budget is per client request: carried over account switches
+    // done by `send_streaming` (quota failover), never reset per account.
+    let mut transient: u64 = u64::from(info.retries);
     let mut last: Option<Response> = None;
     loop {
         info.retries = transient as u32;
@@ -161,11 +163,13 @@ async fn send_inner(st: &AppState, ob: Outbound, info: &mut SendInfo) -> Result<
                     transient += 1;
                     info.retries = transient as u32;
                     if transient > retries {
-                        return Err(json_error(
-                            StatusCode::BAD_GATEWAY,
-                            "upstream_error",
-                            "upstream connection failed",
-                        ));
+                        return Err(last.unwrap_or_else(|| {
+                            json_error(
+                                StatusCode::BAD_GATEWAY,
+                                "upstream_error",
+                                "upstream connection failed",
+                            )
+                        }));
                     }
                     tokio::time::sleep(delay_for(transient, None)).await;
                     break;
@@ -305,38 +309,46 @@ fn stream_body(
     let router = Arc::clone(&st.router);
     let mut reported = false;
     let body = async_stream(move |tx| async move {
-        let report_limit = |chunk: &[u8]| {
-            router.report(
-                &route,
-                &account,
-                &Outcome::RateLimited {
-                    retry_after: ciallopa_routing::parse_codex_retry_after(
-                        429,
-                        chunk,
-                        SystemTime::now(),
-                    ),
-                    usage_limit: true,
-                    quota: None,
-                },
-            );
+        // Detect usage_limit only from complete SSE events (`error` / `response.failed`),
+        // never by searching raw bytes (user text containing the string is fine).
+        let mut pending: Vec<u8> = Vec::new();
+        let mut parsed = 0usize;
+        let report_quota = |o: &Outcome| {
+            router.report(&route, &account, o);
         };
         let fail = |trk: &mut Option<Tracker>, k: &str| {
             if let Some(t) = trk.as_mut() {
                 t.fail(k);
             }
         };
-        if !prefix.is_empty() {
-            if memfind(&prefix, b"usage_limit_reached") {
-                reported = true;
-                report_limit(&prefix);
-                fail(&mut trk, "usage_limit");
+        let check = |buf: &[u8], from: usize, trk: &mut Option<Tracker>, reported: &mut bool| {
+            let (evs, np) = sse_events(buf, from);
+            for e in &evs {
+                if *reported {
+                    break;
+                }
+                if let EventKind::Quota(o) = event_kind(e) {
+                    *reported = true;
+                    report_quota(&o);
+                    fail(trk, "usage_limit");
+                }
             }
+            np
+        };
+        if !prefix.is_empty() {
+            pending.extend_from_slice(&prefix);
+            parsed = check(&pending, parsed, &mut trk, &mut reported);
             if let Some(t) = trk.as_mut() {
                 t.feed_sse(&prefix);
             }
             if tx.send(Ok(prefix)).await.is_err() {
                 fail(&mut trk, "client_closed");
                 return;
+            }
+            // Drop consumed bytes so the buffer stays bounded under long streams.
+            if parsed > 0 {
+                pending.drain(..parsed);
+                parsed = 0;
             }
         }
         loop {
@@ -368,10 +380,19 @@ fn stream_body(
                     return;
                 }
                 Ok(Some(Ok(chunk))) => {
-                    if !reported && memfind(&chunk, b"usage_limit_reached") {
-                        reported = true;
-                        report_limit(&chunk);
-                        fail(&mut trk, "usage_limit");
+                    if !reported {
+                        pending.extend_from_slice(&chunk);
+                        // Cap the hold: if an event never completes, give up scanning.
+                        if pending.len() > BOOTSTRAP_MAX {
+                            pending.clear();
+                            parsed = 0;
+                        } else {
+                            parsed = check(&pending, parsed, &mut trk, &mut reported);
+                            if parsed > 0 {
+                                pending.drain(..parsed);
+                                parsed = 0;
+                            }
+                        }
                     }
                     if let Some(t) = trk.as_mut() {
                         t.feed_sse(&chunk);
@@ -430,7 +451,7 @@ pub(crate) fn event_kind(text: &str) -> EventKind {
                 text.as_bytes(),
                 SystemTime::now(),
             ),
-            usage_limit: is_usage_limit(text.as_bytes()) || text.contains("usage_limit_reached"),
+            usage_limit: is_usage_limit(text.as_bytes()) || is_quota_code(text),
             quota,
         }
     };
@@ -537,9 +558,14 @@ pub(crate) async fn send_streaming(
             .max(1),
     );
     let mut switches = 0usize;
+    let mut carried_retries = 0u32;
     loop {
-        let mut info = SendInfo::default();
+        let mut info = SendInfo {
+            retries: carried_retries,
+            ..Default::default()
+        };
         let res = send_info(st, ob.clone(), &mut info).await;
+        carried_retries = info.retries;
         if let Some(t) = trk.as_mut() {
             t.retries(info.retries);
             t.accounts(&info.tried, res.as_ref().ok().map(|c| &c.account));
@@ -607,9 +633,55 @@ pub(crate) async fn send_streaming(
                     ended = true;
                     break;
                 }
-                // Timeouts / transport errors: hand over to the normal streamer which
-                // reports them; the held prefix is forwarded first.
-                Ok(Some(Err(_))) | Err(_) => break,
+                Ok(Some(Err(e))) => {
+                    // Consuming the Err means stream_body would only see EOF — surface it here.
+                    if let Some(t) = trk.as_mut() {
+                        t.status(status.as_u16());
+                        t.fail_msg("stream_error", format!("upstream stream error: {e}"));
+                    }
+                    st.router
+                        .report(&route, &account, &Outcome::Transient { status: None });
+                    let err_body = async_stream(move |tx| async move {
+                        if !buf.is_empty() {
+                            let _ = tx.send(Ok(Bytes::from(buf))).await;
+                        }
+                        let _ = tx.send(Err(std::io::Error::other(e.to_string()))).await;
+                    });
+                    let mut r = Response::new(err_body);
+                    *r.status_mut() = status;
+                    *r.headers_mut() = headers;
+                    return r;
+                }
+                Err(_) => {
+                    // Bootstrap already waited one full idle; do not hand over to stream_body
+                    // (that would wait another idle — L1).
+                    if let Some(t) = trk.as_mut() {
+                        t.status(status.as_u16());
+                        t.fail_msg(
+                            "idle_timeout",
+                            format!("upstream stream idle for {}s (timeout)", idle.as_secs()),
+                        );
+                    }
+                    tracing::warn!(account = %account, "upstream stream idle timeout (bootstrap)");
+                    st.router
+                        .report(&route, &account, &Outcome::Transient { status: None });
+                    let idle_s = idle.as_secs();
+                    let err_body = async_stream(move |tx| async move {
+                        if !buf.is_empty() {
+                            let _ = tx.send(Ok(Bytes::from(buf))).await;
+                        }
+                        let _ = tx
+                            .send(Err(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                format!("stream idle timeout ({idle_s}s)"),
+                            )))
+                            .await;
+                    });
+                    let mut r = Response::new(err_body);
+                    *r.status_mut() = status;
+                    *r.headers_mut() = headers;
+                    return r;
+                }
             }
         }
         if let Some(o) = switch {

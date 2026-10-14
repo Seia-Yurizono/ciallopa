@@ -3,5 +3,5 @@ pub mod file;
 pub mod login;
 pub mod oauth;
 
-pub use file::{AuthFile, FileAccountStore};
+pub use file::{valid_account_id, AuthFile, FileAccountStore};
 pub use oauth::OAuthClient;

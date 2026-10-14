@@ -48,7 +48,7 @@ struct Env {
 
 fn base(up: &str, auth: &std::path::Path, extra: &str) -> String {
     format!(
-        "# ciallopa test config\napi_keys = [\"{KEY}\"]   # client keys\nupstream = \"http://{up}/backend-api\"\nauth_dir = \"{}\"\n\n[routing]\n# how accounts are picked\nstrategy = \"round-robin\"\n\n[usage]\nenabled = false\n{extra}",
+        "# ciallopa test config\napi_keys = [{{label = \"admin\", key = \"{KEY}\", admin = true}}]   # client keys\nupstream = \"http://{up}/backend-api\"\nauth_dir = \"{}\"\n\n[routing]\n# how accounts are picked\nstrategy = \"round-robin\"\n\n[usage]\nenabled = false\n{extra}",
         auth.display()
     )
 }
@@ -155,8 +155,8 @@ async fn reload_applies_hot_keeps_live_ws_and_records_pending() {
     std::fs::write(
         &e.path,
         base(&e.up, &e.auth, "").replace(
-            &format!("api_keys = [\"{KEY}\"]"),
-            &format!("api_keys = [\"{KEY}\", {{ label = \"two\", key = \"{k2}\" }}]\nlisten = \"127.0.0.1:1\""),
+            &format!("api_keys = [{{label = \"admin\", key = \"{KEY}\", admin = true}}]"),
+            &format!("api_keys = [{{label = \"admin\", key = \"{KEY}\", admin = true}}, {{ label = \"two\", key = \"{k2}\" }}]\nlisten = \"127.0.0.1:1\""),
         ).replace("strategy = \"round-robin\"", "strategy = \"fill-first\"")
             + "[upstream_opts]\nconnect_timeout_secs = 5\ncloudflare_cookies = true\n",
     )
@@ -175,7 +175,12 @@ async fn reload_applies_hot_keeps_live_ws_and_records_pending() {
     assert!(!applied.contains(&"listen"));
     assert_eq!(j["pending_restart"][0]["key"], "listen");
     assert!(!j.to_string().contains(k2), "secret in response: {j}");
-    assert_eq!(e.upstream.pools.len(), 0, "clients rebuilt lazily");
+    assert_eq!(
+        e.upstream.pools.len(),
+        1,
+        "timeout change keeps jar, rebuilds client in place"
+    );
+    assert!(e.upstream.pools.jar("a").is_some());
     let (c, _) = e.config().await;
     assert_eq!(c["running"]["routing.strategy"], "fill-first");
     assert_eq!(c["running"]["listen"], "127.0.0.1:8317");
@@ -191,10 +196,18 @@ async fn reload_applies_hot_keeps_live_ws_and_records_pending() {
         .to_text()
         .unwrap()
         .contains("\"n\":2"));
-    // new key works immediately
+    // new key works immediately for client routes; /admin needs admin = true
     let r = e
         .http
         .get(e.url("/admin/v1/config"))
+        .bearer_auth(k2)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403);
+    let r = e
+        .http
+        .get(e.url("/usage/v1/client-fingerprint"))
         .bearer_auth(k2)
         .send()
         .await
@@ -340,7 +353,8 @@ async fn write_api_switch_etag_comments_keys_and_audit() {
         .send()
         .await
         .unwrap();
-    assert_eq!(ok.status(), 200);
+    // usable at once, but page-generated keys are never admin keys
+    assert_eq!(ok.status(), 403);
     let r = e
         .req(reqwest::Method::DELETE, "/admin/v1/config/keys/phone")
         .header("if-match", &etag)
@@ -492,4 +506,114 @@ async fn file_watch_applies_and_external_auth_removal_cleans_up() {
         }
     }
     assert!(ok, "watcher did not apply the change");
+}
+
+#[tokio::test]
+async fn admin_api_needs_admin_key() {
+    // Security #1: a non-admin key may forward but never manage.
+    let e = env("\n[ui]\nallow_config_write = true\n").await;
+    let (_, etag) = e.config().await;
+    let r = e
+        .req(reqwest::Method::POST, "/admin/v1/config/keys")
+        .header("if-match", &etag)
+        .json(&json!({"label": "phone"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let phone = r.json::<Value>().await.unwrap()["key"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (c, etag) = e.config().await;
+    let keys = c.to_string();
+    assert!(
+        keys.contains("\"admin\":true") && keys.contains("\"admin\":false"),
+        "{keys}"
+    );
+    for (m, p) in [
+        (reqwest::Method::GET, "/admin/v1/config"),
+        (reqwest::Method::POST, "/admin/v1/config/reload"),
+        (reqwest::Method::DELETE, "/admin/v1/config/keys/admin"),
+        (reqwest::Method::GET, "/admin/v1/accounts"),
+        (reqwest::Method::PATCH, "/admin/v1/accounts/a"),
+        (
+            reqwest::Method::POST,
+            "/admin/v1/accounts/a/reset-credits/consume",
+        ),
+    ] {
+        let r = e
+            .http
+            .request(m.clone(), e.url(p))
+            .bearer_auth(&phone)
+            .header("if-match", &etag)
+            .json(&json!({"confirm": "a", "disabled": true}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 403, "{m} {p}");
+    }
+    // still a valid client key for read APIs
+    let r = e
+        .http
+        .get(e.url("/usage/v1/client-fingerprint"))
+        .bearer_auth(&phone)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    // admin key still works
+    assert!(e.config().await.0.is_object());
+}
+
+#[tokio::test]
+async fn no_admin_key_means_no_management() {
+    // When every key lacks admin = true, /admin is forbidden even with a valid key.
+    let dir = tempfile::tempdir().unwrap();
+    let auth = dir.path().join("auths");
+    std::fs::create_dir_all(&auth).unwrap();
+    let cfg = Config::parse(&format!(
+        "api_keys = [\"{KEY}\"]\nauth_dir = \"{}\"\n[usage]\nenabled = false\n",
+        auth.display()
+    ))
+    .unwrap();
+    let accounts = Arc::new(ciallopa_auth::FileAccountStore::open(auth).await.unwrap());
+    let state = AppState {
+        accounts,
+        router: Arc::new(ciallopa_routing::CpaRouter::new(cfg.routing.clone())),
+        upstream: Arc::new(ciallopa_upstream::UpstreamClient::new(&cfg).unwrap()),
+        usage: None,
+        config: Arc::new(cfg.into()),
+    };
+    let app = ciallopa::build_app(state);
+    let ln = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = ln.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(ln, app).await.unwrap() });
+    let r = reqwest::Client::new()
+        .get(format!("http://{addr}/admin/v1/config"))
+        .bearer_auth(KEY)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403);
+}
+
+#[tokio::test]
+async fn account_id_path_traversal_rejected_before_lock() {
+    // Security #2: no lock file may appear outside auth_dir.
+    let e = env("\n[ui]\nallow_config_write = true\n").await;
+    let r = e
+        .req(reqwest::Method::PATCH, "/admin/v1/accounts/%2F..%2Fpwn")
+        .json(&json!({"weight": 2}))
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status() == 400 || r.status() == 404, "{}", r.status());
+    let parent = e.auth.parent().unwrap();
+    let leaked: Vec<_> = std::fs::read_dir(parent)
+        .unwrap()
+        .flatten()
+        .filter(|d| d.file_name().to_string_lossy().contains("pwn"))
+        .collect();
+    assert!(leaked.is_empty(), "{leaked:?}");
 }

@@ -73,26 +73,19 @@ impl Recorder {
         Ok(())
     }
 
-    /// Latest recent `pending` attempt for (account, credit_id): its id must be reused.
-    pub async fn reset_pending(
-        &self,
-        account: &str,
-        credit_id: Option<&str>,
-    ) -> Result<Option<ConsumeAttempt>, UsageError> {
-        let (p, a, c) = (
-            self.path.clone(),
-            account.to_string(),
-            credit_id.map(str::to_string),
-        );
+    /// Latest recent `pending` attempt of `account` (any credit): while one exists, every
+    /// consume on the account must retry exactly that attempt (same id and credit).
+    pub async fn reset_pending(&self, account: &str) -> Result<Option<ConsumeAttempt>, UsageError> {
+        let (p, a) = (self.path.clone(), account.to_string());
         tokio::task::spawn_blocking(move || {
             let conn = store::open_rw(&p)?;
             Ok(conn
                 .query_row(
                     &format!(
-                        "SELECT {COLS} FROM reset_consume WHERE account=?1 AND credit_id IS ?2 \
-                         AND status='pending' AND started_ms>=?3 ORDER BY id DESC LIMIT 1"
+                        "SELECT {COLS} FROM reset_consume WHERE account=?1 \
+                         AND status='pending' AND started_ms>=?2 ORDER BY id DESC LIMIT 1"
                     ),
-                    params![a, c, now_ms() - PENDING_REUSE_MS],
+                    params![a, now_ms() - PENDING_REUSE_MS],
                     row,
                 )
                 .optional()?)
@@ -184,14 +177,16 @@ mod tests {
             ..Default::default()
         };
         let r = Recorder::open_as(&cfg, "i1").unwrap();
-        assert!(r.reset_pending("a", None).await.unwrap().is_none());
+        assert!(r.reset_pending("a").await.unwrap().is_none());
         let id = r
             .reset_begin("a", None, "rid-1", Some("k"), "i1")
             .await
             .unwrap();
-        let p = r.reset_pending("a", None).await.unwrap().unwrap();
+        let p = r.reset_pending("a").await.unwrap().unwrap();
         assert_eq!(p.redeem_request_id, "rid-1");
-        assert!(r.reset_pending("a", Some("c1")).await.unwrap().is_none());
+        // Account-wide: a card-level attempt must see the account-level pending one.
+        assert!(r.reset_pending("a").await.unwrap().is_some());
+        assert!(r.reset_pending("b").await.unwrap().is_none());
         r.reset_finish(
             id,
             ConsumeOutcome {
@@ -204,7 +199,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(r.reset_pending("a", None).await.unwrap().is_none());
+        assert!(r.reset_pending("a").await.unwrap().is_none());
         let all = r.reset_attempts(10).await.unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].code.as_deref(), Some("reset"));

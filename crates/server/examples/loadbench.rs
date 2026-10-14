@@ -44,7 +44,10 @@ fn pct(v: &mut [f64], p: f64) -> f64 {
 }
 
 async fn load(url: String, conc: usize, total: usize, key: String) {
-    let http = reqwest::Client::builder().pool_max_idle_per_host(conc).build().unwrap();
+    let http = reqwest::Client::builder()
+        .pool_max_idle_per_host(conc)
+        .build()
+        .unwrap();
     let next = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let t0 = Instant::now();
     let mut tasks = vec![];
@@ -105,7 +108,15 @@ async fn main() {
     let a: Vec<String> = std::env::args().collect();
     match a[1].as_str() {
         "mock" => mock(a[2].clone(), a[3].parse().unwrap(), a[4].parse().unwrap()).await,
-        "load" => load(a[2].clone(), a[3].parse().unwrap(), a[4].parse().unwrap(), a[5].clone()).await,
+        "load" => {
+            load(
+                a[2].clone(),
+                a[3].parse().unwrap(),
+                a[4].parse().unwrap(),
+                a[5].clone(),
+            )
+            .await
+        }
         _ => panic!("mock|load"),
     }
 }

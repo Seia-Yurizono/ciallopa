@@ -191,6 +191,24 @@ async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: Bytes) -> Re
             ))
             .unwrap(),
         "unauth" if auth.ends_with("-1") => Response::builder().status(401).body(Body::empty()).unwrap(),
+        "textlimit" => sse_resp(concat!(
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-t\"}}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"grep usage_limit_reached in proxy.rs\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r-t\"}}\n\n"
+        )),
+        "booterr" => {
+            let s = futures::stream::unfold(0, |i| async move {
+                match i {
+                    0 => Some((Ok::<_, std::io::Error>(Bytes::from_static(b"data: {\"type\":\"response.created\"}\n\n")), 1)),
+                    1 => {
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        Some((Err(std::io::Error::other("boom")), 2))
+                    }
+                    _ => None,
+                }
+            });
+            Response::builder().header("content-type", "text/event-stream").body(Body::from_stream(s)).unwrap()
+        }
         "idle" => {
             let s = futures::stream::unfold(0, |i| async move {
                 if i == 0 {
@@ -1808,4 +1826,54 @@ async fn models_catalog_passthrough_no_null_service_tiers() {
         }
         assert!(!t.contains("\"service_tiers\":null"));
     }
+}
+
+#[tokio::test]
+async fn usage_limit_text_in_output_is_not_a_quota_error() {
+    // H1 / L3: only `error` / `response.failed` events count, never raw bytes.
+    let e = env(300).await;
+    let t = sse_text(&e, "textlimit").await;
+    assert!(t.contains("usage_limit_reached") && t.contains("response.completed"));
+    let o = e.outcomes();
+    assert!(
+        !o.iter()
+            .any(|(_, o)| matches!(o, Outcome::RateLimited { .. })),
+        "{o:?}"
+    );
+}
+
+#[tokio::test]
+async fn bootstrap_transport_error_reaches_client() {
+    // M2: an upstream error after `response.created` must not look like a clean EOF.
+    let e = env(300).await;
+    let r = e
+        .post("/backend-api/codex/responses")
+        .header("x-test-mode", "booterr")
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert!(r.bytes().await.is_err(), "client must see the stream error");
+    assert!(e
+        .outcomes()
+        .iter()
+        .any(|(_, o)| *o == Outcome::Transient { status: None }));
+}
+
+#[tokio::test]
+async fn bootstrap_idle_timeout_not_doubled() {
+    // L1: idle=2s must fail after ~2s, not ~4s.
+    let e = env(2).await;
+    let r = e
+        .post("/backend-api/codex/responses")
+        .header("x-test-mode", "idle")
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    let t0 = std::time::Instant::now();
+    assert!(r.bytes().await.is_err());
+    let el = t0.elapsed();
+    assert!(el < Duration::from_millis(3500), "took {el:?}");
 }

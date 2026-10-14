@@ -1,5 +1,7 @@
 listen = "127.0.0.1:8317"
-api_keys = ["sk-cpa-change-me-0123456789"]
+# Plain strings may only forward requests; the management API (/admin/v1/*, /ui/settings,
+# /ui/accounts, reset-credit consume) needs a table entry with admin = true.
+api_keys = [{ label = "laptop", key = "sk-cpa-change-me-0123456789", admin = true }]
 upstream = "https://chatgpt.com/backend-api"
 auth_dir = "~/.ciallopa/auths"
 proxy_url = ""

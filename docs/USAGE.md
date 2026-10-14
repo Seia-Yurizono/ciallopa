@@ -216,8 +216,13 @@ instance_id = "vps-1"               # default: hostname
 [[api_keys]]
 label = "laptop"                    # 1–64 chars, unique
 key = "sk-..."                      # ≥ 16 chars, unique
+admin = true                        # optional; required for /admin/v1/* and reset-credit consume
 ```
 Key matching is constant time across all keys; only the label reaches the forwarder / log.
+Plain string keys and labeled keys without `admin = true` may only call the proxy and
+`/usage/v1/*` (read). Management (`/admin/v1/*`, including config reload, settings writes,
+account management and reset-credit consume) needs at least one admin key; if none is
+configured those routes answer 403 for every key.
 
 ## Config
 ```toml
@@ -324,3 +329,20 @@ connection pool, dropped when the account disappears) so these cookies never lin
   cookies.
 - Always, regardless of the flag: the client's `Cookie` header is never forwarded upstream and
   upstream `Set-Cookie` is never returned to clients.
+
+## Disk writes
+
+ciallopa batches or rate-limits anything that can hit the disk under normal traffic (same idea as
+Redis `save <seconds> <changes>`, Grafana settings debounce, or a single coalescing writer
+thread):
+
+| Path | Policy |
+|---|---|
+| Usage SQLite (`[usage]`) | Writer thread: batch up to `batch_size` rows or `flush_ms`, then one transaction. |
+| Learned client fingerprint | One background writer; coalesces to the latest UA/originator; saves on change, at most once per 60 s, and at most hourly for an unchanged pair. Request path never blocks on I/O. Flushed on graceful shutdown. |
+| Auth files (`auth_dir`) | Only on login / import / token refresh / admin account edits — never per forward. |
+| Config write-back + `.bak` | Only on an explicit admin save. |
+| `.audit.jsonl` | Append-only on admin actions (rare). |
+
+Anything that would thrash the disk per request is a bug; prefer in-memory + a single coalescing
+writer (see `ciallopa_core::fingerprint`).
