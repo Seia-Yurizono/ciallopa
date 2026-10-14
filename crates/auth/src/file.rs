@@ -407,7 +407,7 @@ impl FileAccountStore {
             .s("refresh_token")
             .filter(|r| !r.is_empty())
             .ok_or(AuthError::ReloginRequired)?;
-        let res = oauth.refresh(&rt).await;
+        let res = oauth.refresh_as(Some(id.as_ref()), &rt).await;
         // Re-read: writers that ignore our flock may have refreshed during the round-trip.
         let disk = read_one(&self.dir, id);
         match res {

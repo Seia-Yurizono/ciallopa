@@ -109,7 +109,7 @@ async fn upstream_req(
     let (ua, originator) = ciallopa_core::fingerprint::headers();
     let mut req = st
         .upstream
-        .http
+        .http_for(account)
         .request(method, st.upstream.url(path))
         .timeout(timeout)
         .header(reqwest::header::USER_AGENT, ua)

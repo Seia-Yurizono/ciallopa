@@ -102,6 +102,9 @@ async fn send_inner(st: &AppState, ob: Outbound, info: &mut SendInfo) -> Result<
         info.retries = transient as u32;
         info.tried.clone_from(&route.exclude);
         let accounts = st.accounts.list().await;
+        st.upstream
+            .pools
+            .retain(|k| accounts.iter().any(|a| a.id == k));
         let sel = match st.router.select(&route, &accounts) {
             Ok(s) => s,
             Err(RouteError::AllCoolingDown { retry_after }) => {
@@ -134,7 +137,7 @@ async fn send_inner(st: &AppState, ob: Outbound, info: &mut SendInfo) -> Result<
             let url = st.upstream.url(&ob.path);
             let res = st
                 .upstream
-                .http
+                .http_for(&id)
                 .request(ob.method.clone(), &url)
                 .headers(upstream_headers(
                     &crate::turn_state::scope(&ob.headers, &id, !route.exclude.is_empty()),

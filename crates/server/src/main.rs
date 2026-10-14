@@ -176,7 +176,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn oauth_client(cfg: &Config) -> Result<ciallopa_auth::OAuthClient, Box<dyn std::error::Error>> {
     let c = ciallopa_auth::OAuthClient::new(&cfg.proxy_url)?;
     Ok(match ciallopa_core::config::env_var("OAUTH_ISSUER") {
-        Some((i, _)) if !i.is_empty() => ciallopa_auth::OAuthClient::with_issuer(&i, c.http),
+        Some((i, _)) if !i.is_empty() => {
+            let mut o = ciallopa_auth::OAuthClient::with_issuer(&i, c.http.clone());
+            o.pools = c.pools.clone();
+            o
+        }
         _ => c,
     })
 }

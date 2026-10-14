@@ -86,6 +86,8 @@ type Seen = (Vec<(String, String)>, Bytes);
 struct Mock {
     hits: Arc<AtomicUsize>,
     seen: Arc<Mutex<Vec<Seen>>>,
+    /// (authorization, client peer port) per `/responses` hit: one port = one connection.
+    peers: Arc<Mutex<Vec<(String, u16)>>>,
 }
 impl Mock {
     fn record(&self, h: &HeaderMap, b: &Bytes) -> usize {
@@ -107,7 +109,18 @@ fn sse_resp(body: &'static str) -> Response {
 }
 
 /// `x-test-noct: 1` mimics chatgpt.com, which sends `/responses` SSE without `Content-Type`.
-async fn up_responses(st: State<Mock>, h: HeaderMap, b: Bytes) -> Response {
+async fn up_responses(
+    st: State<Mock>,
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    h: HeaderMap,
+    b: Bytes,
+) -> Response {
+    let auth = h
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    st.peers.lock().unwrap().push((auth, peer.port()));
     let noct = h.contains_key("x-test-noct");
     let mut r = up_responses_inner(st, h, b).await;
     if noct {
@@ -288,7 +301,14 @@ async fn up_ws(State(m): State<Mock>, h: HeaderMap, ws: WebSocketUpgrade) -> Res
 async fn serve(app: Router) -> String {
     let ln = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = ln.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(ln, app).await.unwrap() });
+    tokio::spawn(async move {
+        axum::serve(
+            ln,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap()
+    });
     format!("127.0.0.1:{}", addr.port())
 }
 
@@ -435,6 +455,47 @@ async fn rate_limit_fails_over() {
         matches!(o[0].1, Outcome::RateLimited { usage_limit: true, retry_after: Some(d), .. } if d == Duration::from_secs(30))
     );
     assert_eq!(o[1].0, "b");
+}
+
+/// Each account has its own connection pool: sequential requests reuse the account's own
+/// keep-alive connection, but two accounts never share one.
+#[tokio::test]
+async fn accounts_use_separate_connections() {
+    let e = env(300).await;
+    for _ in 0..3 {
+        let r = e
+            .post("/backend-api/codex/responses")
+            .header("x-test-mode", "limit")
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        r.bytes().await.unwrap();
+    }
+    let peers = e.mock.peers.lock().unwrap().clone();
+    let ports = |tok: &str| {
+        let mut v: Vec<u16> = peers
+            .iter()
+            .filter(|(a, _)| a.contains(tok))
+            .map(|(_, p)| *p)
+            .collect();
+        v.dedup();
+        v
+    };
+    let (pa, pb) = (ports("tok-a"), ports("tok-b"));
+    assert_eq!(peers.len(), 6, "{peers:?}");
+    assert_eq!(
+        pa.len(),
+        1,
+        "account a reuses its own connection: {peers:?}"
+    );
+    assert_eq!(
+        pb.len(),
+        1,
+        "account b reuses its own connection: {peers:?}"
+    );
+    assert_ne!(pa[0], pb[0], "accounts must not share a connection");
 }
 
 #[tokio::test]

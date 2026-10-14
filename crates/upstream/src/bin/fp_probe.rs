@@ -30,6 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         base_url: base.trim_end_matches('/').to_string(),
         http: c,
         opts: ClientOptions::default(),
+        pools: std::sync::Arc::new(ciallopa_upstream::ClientPool::new(ClientOptions::default())),
     };
     let mut h = http::HeaderMap::new();
     h.insert("authorization", "Bearer fake".parse()?);

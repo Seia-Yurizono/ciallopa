@@ -58,6 +58,49 @@ pub fn build_reqwest(opts: &ClientOptions) -> Result<reqwest::Client, UpstreamEr
     Ok(b.build()?)
 }
 
+/// One `reqwest::Client` (and therefore one connection pool) per account, lazily built with
+/// the exact same [`build_reqwest`] settings, so accounts never share a TCP/TLS/h2
+/// connection (no cross-account linkage via connection reuse) while the ClientHello and h2
+/// fingerprint stay identical.
+#[derive(Debug)]
+pub struct ClientPool {
+    opts: ClientOptions,
+    map: std::sync::Mutex<std::collections::HashMap<String, reqwest::Client>>,
+}
+impl ClientPool {
+    pub fn new(opts: ClientOptions) -> Self {
+        Self {
+            opts,
+            map: Default::default(),
+        }
+    }
+    /// The account's own client, created on first use.
+    pub fn get(&self, account: &str) -> Result<reqwest::Client, UpstreamError> {
+        let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(c) = m.get(account) {
+            return Ok(c.clone());
+        }
+        let c = build_reqwest(&self.opts)?;
+        m.insert(account.to_string(), c.clone());
+        Ok(c)
+    }
+    /// Drop clients (and their idle connections) of accounts that no longer exist.
+    pub fn retain<F: Fn(&str) -> bool>(&self, keep: F) {
+        let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
+        m.retain(|k, _| keep(k));
+    }
+    pub fn remove(&self, account: &str) {
+        let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
+        m.remove(account);
+    }
+    pub fn len(&self) -> usize {
+        self.map.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
 pub mod retry;
 pub mod ws;
 
@@ -67,8 +110,11 @@ pub use ws::{close as ws_close, UpstreamWs, WsMessage};
 #[derive(Clone)]
 pub struct UpstreamClient {
     pub base_url: String,
+    /// Account-less client (not used for account traffic).
     pub http: reqwest::Client,
     pub opts: ClientOptions,
+    /// Per-account clients; all account-authenticated HTTP goes through [`Self::http_for`].
+    pub pools: std::sync::Arc<ClientPool>,
 }
 impl UpstreamClient {
     pub fn new(cfg: &Config) -> Result<Self, UpstreamError> {
@@ -76,8 +122,16 @@ impl UpstreamClient {
         Ok(Self {
             base_url: cfg.upstream.trim_end_matches('/').to_string(),
             http: build_reqwest(&opts)?,
+            pools: std::sync::Arc::new(ClientPool::new(opts.clone())),
             opts,
         })
+    }
+    /// The account's own client/connection pool (lazy). Falls back to the shared client only
+    /// if building fails, which cannot happen for a config that already built `http`.
+    pub fn http_for(&self, account: &str) -> reqwest::Client {
+        self.pools
+            .get(account)
+            .unwrap_or_else(|_| self.http.clone())
     }
     /// `base_url` + `path` (path starts with `/`, may carry a query).
     pub fn url(&self, path: &str) -> String {
@@ -123,5 +177,19 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
+    }
+
+    #[test]
+    fn pool_per_account_lazy_and_prunable() {
+        let p = ClientPool::new(ClientOptions::default());
+        assert!(p.is_empty());
+        p.get("a").unwrap();
+        p.get("a").unwrap();
+        p.get("b").unwrap();
+        assert_eq!(p.len(), 2);
+        p.retain(|k| k == "a");
+        assert_eq!(p.len(), 1);
+        p.remove("a");
+        assert!(p.is_empty());
     }
 }
