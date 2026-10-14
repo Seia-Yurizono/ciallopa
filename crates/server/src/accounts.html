@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
+<title>ciallopa 账号</title>
+<style>
+:root{--bg:#f6f7f9;--fg:#1d2330;--mut:#5d6779;--card:#fff;--line:#e3e6ea;--acc:#2f6fed;--ok:#14804a;--warn:#b45309;--bad:#c53030;--wbg:#fef3c7;--wfg:#7c2d12;--bbg:#fde8e8;--bfg:#9b1c1c;--hbg:#e7f6ec;--hfg:#14532d}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1218;--fg:#e6e9ef;--mut:#a3adbd;--card:#171b23;--line:#2a303b;--acc:#5b8cff;--ok:#3cc27e;--warn:#f0a930;--bad:#ff6b6b;--wbg:#f0a930;--wfg:#1a1200;--bbg:#ff8a8a;--bfg:#1f0505;--hbg:#3cc27e;--hfg:#04170c}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+header{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:5;flex-wrap:wrap}
+header h1{font-size:16px;margin:0}
+nav a{color:var(--acc);text-decoration:none;margin-right:12px}nav a[aria-current]{color:var(--fg);font-weight:600}
+.sp{flex:1}
+main{max-width:1180px;margin:0 auto;padding:16px}
+section{margin-bottom:24px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px}
+h2{font-size:15px;margin:0 0 8px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.mut{color:var(--mut);font-size:12px}
+table{border-collapse:collapse;width:100%}
+th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{font-size:12px;color:var(--mut);font-weight:500}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;word-break:break-all}
+.badge{display:inline-block;font-size:11px;padding:1px 6px;border-radius:9px;border:1px solid var(--line);color:var(--mut);white-space:nowrap}
+.badge.hot{color:var(--hfg);background:var(--hbg);border-color:var(--ok)}
+.badge.rs{color:var(--wfg);background:var(--wbg);border-color:var(--warn)}
+.badge.bad{color:var(--bfg);background:var(--bbg);border-color:var(--bad)}
+.banner{padding:8px 12px;border-radius:8px;margin-bottom:12px;border:1px solid var(--warn);background:var(--wbg);color:var(--wfg)}
+.banner.err{border-color:var(--bad);background:var(--bbg);color:var(--bfg)}
+.hide{display:none!important}
+button,input,select{font:inherit;color:inherit}
+button{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:4px 10px;cursor:pointer}
+button:hover{border-color:var(--acc)}button:disabled{opacity:.5;cursor:default}
+button.pri{background:var(--acc);border-color:var(--acc);color:#fff}
+button.danger{border-color:var(--bad);color:var(--bad)}
+input,select{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:3px 6px;max-width:100%}
+input.chg,select.chg{border-color:var(--acc);outline:1px solid var(--acc)}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.diffv{color:var(--warn)}
+#dlg{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:20}
+#dlgb{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;max-width:640px;width:calc(100% - 32px);max-height:80vh;overflow:auto}
+#dlgb h3{margin:0 0 8px;font-size:15px}
+.acts{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}
+#add h2+div,#add h2:not(:first-child){margin-top:14px}
+#dev{padding:8px;border:1px dashed var(--ok);border-radius:8px;margin-top:8px}
+textarea{font:12px ui-monospace,Menlo,monospace;width:100%;min-height:90px;background:var(--bg);color:inherit;border:1px solid var(--line);border-radius:6px;padding:6px}
+input.n{width:7em}
+.code{font-size:20px;font-weight:600;letter-spacing:2px}
+#login{max-width:420px;margin:12vh auto;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:20px}
+#login form{display:flex;gap:8px;margin-top:12px}#login input{flex:1}
+</style>
+</head>
+<body>
+<div id="login" class="hide">
+  <h2>ciallopa 账号</h2>
+  <div class="mut">请输入访问密钥（与代理的 API key 相同）。仅保存在本标签页的 sessionStorage 中。</div>
+  <form id="lf"><input id="key" type="password" autocomplete="current-password" placeholder="sk-..." required aria-label="访问密钥"><button class="pri" type="submit">进入</button></form>
+  <div id="lerr" class="mut" role="alert"></div>
+</div>
+<div id="app" class="hide">
+<header><h1>ciallopa</h1><nav><a href="/ui">概览</a><a href="/ui/settings">设置</a><a href="/ui/accounts" aria-current="page">账号</a></nav>
+  <span id="mode" class="badge"></span><span class="sp"></span><span class="mut" id="upd" aria-live="polite"></span>
+  <button id="refresh">刷新</button><button id="rescan" title="重新扫描账号目录（目录变化也会自动扫描）">重新扫描账号目录</button></header>
+<main>
+  <div id="msg" role="alert"></div>
+  <section><h2>账号 <span class="mut" id="meta"></span></h2>
+    <div class="mut" id="hint"></div>
+    <table><thead><tr><th>账号</th><th>套餐</th><th>状态</th><th title="加权轮询时使用；0 = 不参与">权重</th><th title="数值大的优先">优先级</th><th>近 24 小时</th><th></th></tr></thead><tbody id="rows"><tr><td colspan="7" class="mut">加载中…</td></tr></tbody></table>
+  </section>
+  <section id="add" class="hide"><h2>添加账号</h2>
+    <div class="row"><button id="devbtn" class="pri">设备码登录</button><span class="mut">在浏览器里打开链接并输入一次性代码，完成后账号自动加入。</span></div>
+    <div id="dev" class="hide" role="status"><div>1. 打开 <a id="devurl" target="_blank" rel="noopener noreferrer"></a> 并登录</div><div>2. 输入一次性代码（15 分钟内有效）：<span class="code mono" id="devcode"></span></div><div class="mut" id="devst">等待完成…</div></div>
+    <h2>导入 auth.json</h2>
+    <div class="mut">粘贴 Codex CLI 的 <code>~/.codex/auth.json</code>（或 CPA 的 codex 账号文件）内容。内容只发送给本服务，用于写入账号目录。</div>
+    <form id="imf"><textarea id="imt" aria-label="auth.json 内容" spellcheck="false" autocomplete="off"></textarea><div class="row"><button class="pri" type="submit">导入</button></div></form>
+  </section>
+</main></div>
+<div id="dlg" class="hide" role="dialog" aria-modal="true" aria-labelledby="dlgt"><div id="dlgb">
+  <h3 id="dlgt"></h3><div id="dlgc"></div>
+  <div class="acts"><button id="dno">取消</button><button id="dyes" class="danger">确认</button></div>
+</div></div>
+<script>
+"use strict";
+(function(){
+const $=id=>document.getElementById(id);
+const KS="ciallopa_key";
+let W=false,poll=null;
+function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined&&text!==null)e.textContent=String(text);return e}
+function clear(e){while(e.firstChild)e.removeChild(e.firstChild)}
+function key(){return sessionStorage.getItem(KS)||""}
+function show(app,err){$("app").classList.toggle("hide",!app);$("login").classList.toggle("hide",app);$("lerr").textContent=err||""}
+async function call(method,path,body){
+  const h={"Authorization":"Bearer "+key()};if(body!==undefined)h["Content-Type"]="application/json";
+  const r=await fetch(path,{method,headers:h,body:body===undefined?undefined:JSON.stringify(body),cache:"no-store",credentials:"omit",referrerPolicy:"no-referrer"});
+  if(r.status===401){sessionStorage.removeItem(KS);show(false,"密钥无效或已过期");throw new Error("401")}
+  let j=null;try{j=await r.json()}catch(_){}
+  if(!r.ok)throw new Error((j&&j.error&&j.error.message)||("HTTP "+r.status));
+  return j;
+}
+function fail(e){if(e&&e.message==="401")return;$("msg").className="banner err";$("msg").textContent=e.message||String(e)}
+function ok(t){$("msg").className="banner";$("msg").textContent=t}
+const NF=new Intl.NumberFormat("zh-CN");
+function fmtN(n){n=Number(n||0);if(n>=1e6)return(n/1e6).toFixed(2)+"M";if(n>=1e3)return(n/1e3).toFixed(1)+"k";return String(n)}
+function p2(x){return String(x).padStart(2,"0")}
+function hm(ms){const d=new Date(ms);return p2(d.getMonth()+1)+"-"+p2(d.getDate())+" "+p2(d.getHours())+":"+p2(d.getMinutes())}
+const ST={normal:["正常","hot","可以接收请求"],cooling:["冷却中","rs","上游限流或出错后暂停使用，到时自动恢复"],disabled:["已停用","","手动停用，不参与选号"],token_invalid:["Token 失效","bad","刷新令牌已失效，需要重新登录（设备码登录或导入）"]};
+let dlgOk=null,dlgPrev=null;
+function dialog(title,body,yes,cb){$("dlgt").textContent=title;clear($("dlgc"));$("dlgc").appendChild(body);$("dyes").textContent=yes;dlgOk=cb;dlgPrev=document.activeElement;$("dlg").classList.remove("hide");$("dno").focus()}
+function closeDlg(){$("dlg").classList.add("hide");dlgOk=null;if(dlgPrev&&document.body.contains(dlgPrev))dlgPrev.focus()}
+$("dno").addEventListener("click",closeDlg);
+$("dyes").addEventListener("click",async()=>{const f=dlgOk;if(!f)return;$("dyes").disabled=true;try{await f();closeDlg()}catch(e){closeDlg();fail(e)}finally{$("dyes").disabled=false}});
+document.addEventListener("keydown",e=>{if(e.key==="Escape"&&!$("dlg").classList.contains("hide"))closeDlg()});
+function btn(t,cls,f,title){const b=el("button",cls,t);if(title)b.title=title;b.addEventListener("click",async()=>{b.disabled=true;try{await f()}catch(e){fail(e)}finally{b.disabled=false}});return b}
+function numIn(v,label){const i=el("input","n");i.type="number";i.step="1";i.value=v;i.setAttribute("aria-label",label);return i}
+function render(j){
+  W=j.write_enabled;$("mode").textContent=W?"可编辑":"只读";$("mode").className="badge "+(W?"hot":"");
+  $("mode").title=W?"配置文件中 [ui] allow_config_write = true":"在配置文件中设置 [ui] allow_config_write = true 才能在这里修改账号";
+  $("meta").textContent=j.accounts.length+" 个 · 选号策略 "+j.strategy;
+  $("hint").textContent=W?"权重和优先级保存后立即生效，不影响冷却状态和已绑定的会话。":"当前为只读：在配置文件中设置 [ui] allow_config_write = true 后可启用、停用、调整、删除和添加账号。";
+  $("add").classList.toggle("hide",!W);
+  const tb=$("rows");clear(tb);
+  if(!j.accounts.length){const r=el("tr");const t=el("td","mut","还没有账号"+(W?"，可在下方添加。":"。用 ciallopa login 添加，或开启写入后在这里添加。"));t.colSpan=7;r.appendChild(t);tb.appendChild(r)}
+  for(const a of j.accounts){
+    const r=el("tr"),c1=el("td");c1.appendChild(el("div",null,a.email||a.id));if(a.email)c1.appendChild(el("div","mut mono",a.id));r.appendChild(c1);
+    r.appendChild(el("td",null,a.plan||"–"));
+    const s=ST[a.status]||[a.status,""],sc=el("td"),b=el("span","badge "+s[1],s[0]);b.title=s[2];sc.appendChild(b);
+    if(a.status==="cooling"&&a.cooling_until_ms)sc.appendChild(el("div","mut","至 "+hm(a.cooling_until_ms)));r.appendChild(sc);
+    const wt=el("td"),pt=el("td");
+    if(W){const wi=numIn(a.weight,"权重"),pi=numIn(a.priority,"优先级");wi.min="0";wt.appendChild(wi);pt.appendChild(pi);
+      const save=btn("保存",null,async()=>{const w=parseInt(wi.value,10),p=parseInt(pi.value,10);if(isNaN(w)||isNaN(p))throw new Error("权重和优先级必须是整数");
+        await call("PATCH","/admin/v1/accounts/"+encodeURIComponent(a.id),{weight:w,priority:p});ok("已更新 "+(a.email||a.id)+" 的权重和优先级。");await load()});
+      save.disabled=true;const dirty=()=>{save.disabled=wi.value===String(a.weight)&&pi.value===String(a.priority)};wi.addEventListener("input",dirty);pi.addEventListener("input",dirty);pt.appendChild(el("span",null," "));pt.appendChild(save)}
+    else{wt.textContent=a.weight;pt.textContent=a.priority}
+    r.append(wt,pt);
+    const u=a.usage_24h;r.appendChild(el("td",null,u?(NF.format(u.requests)+" 次 · "+fmtN(u.input_tokens+u.output_tokens)+" token"+(u.errors?" · "+u.errors+" 错误":"")):(j.usage_enabled?"无请求":"–")));
+    const act=el("td");
+    if(W){
+      if(a.status!=="token_invalid")act.appendChild(btn(a.disabled?"启用":"停用",null,async()=>{await call("PATCH","/admin/v1/accounts/"+encodeURIComponent(a.id),{disabled:!a.disabled});ok((a.disabled?"已启用 ":"已停用 ")+(a.email||a.id)+"。");await load()}));
+      act.appendChild(btn("刷新 Token",null,async()=>{await call("POST","/admin/v1/accounts/"+encodeURIComponent(a.id)+"/refresh",{});ok("已刷新 "+(a.email||a.id)+" 的 Token。");await load()},"立即用刷新令牌换新的访问令牌"));
+      act.appendChild(btn("删除","danger",async()=>{const box=el("div");box.appendChild(el("p",null,"删除账号："));box.appendChild(el("p","mono",a.email?a.email+"（"+a.id+"）":a.id));
+        box.appendChild(el("p",null,"会删除账号目录中的账号文件，并清掉它的连接、cookie 和会话绑定。已绑定到它的会话下一轮会改用其他账号。删除后只能重新登录或导入才能恢复。"));
+        dialog("删除账号",box,"删除账号",async()=>{await call("DELETE","/admin/v1/accounts/"+encodeURIComponent(a.id),{confirm:a.id});ok("已删除 "+(a.email||a.id)+"。");await load()})}));
+    }
+    r.appendChild(act);tb.appendChild(r)}
+  $("upd").textContent="更新于 "+p2(new Date().getHours())+":"+p2(new Date().getMinutes())+":"+p2(new Date().getSeconds());
+}
+async function load(){render(await call("GET","/admin/v1/accounts"))}
+$("refresh").addEventListener("click",()=>{$("msg").textContent="";$("msg").className="";load().catch(fail)});
+$("rescan").addEventListener("click",async()=>{try{const j=await call("POST","/admin/v1/accounts/reload",{});ok("已重新扫描账号目录"+(j.removed.length?"，移除了 "+j.removed.length+" 个账号":"")+"。");await load()}catch(e){fail(e)}});
+$("imf").addEventListener("submit",async e=>{e.preventDefault();let doc;try{doc=JSON.parse($("imt").value)}catch(_){fail(new Error("内容不是有效的 JSON"));return}
+  try{const j=await call("POST","/admin/v1/accounts/import",{auth_json:doc});$("imt").value="";ok("已导入账号 "+j.account+"。");await load()}catch(err){fail(err)}});
+$("devbtn").addEventListener("click",async()=>{$("devbtn").disabled=true;try{const j=await call("POST","/admin/v1/accounts/login/device",{});
+  $("devurl").textContent=j.url;$("devurl").href=j.url;$("devcode").textContent=j.code;$("devst").textContent="等待完成…";$("dev").classList.remove("hide");
+  clearInterval(poll);poll=setInterval(async()=>{try{const s=await call("GET","/admin/v1/accounts/login/"+j.login_id);
+    if(s.status==="done"){clearInterval(poll);$("devst").textContent="登录成功：已添加 "+s.account;$("devbtn").disabled=false;load().catch(fail)}
+    else if(s.status==="error"){clearInterval(poll);$("devst").textContent="登录失败："+s.message;$("devbtn").disabled=false}}catch(e){clearInterval(poll);$("devbtn").disabled=false;fail(e)}},3000)}
+  catch(e){$("devbtn").disabled=false;fail(e)}});
+$("lf").addEventListener("submit",async e=>{e.preventDefault();sessionStorage.setItem(KS,$("key").value);$("key").value="";try{show(true);await load()}catch(err){if(err.message!=="401")$("lerr").textContent=err.message}});
+if(key()){show(true);load().catch(fail)}else show(false);
+})();
+</script>
+</body>
+</html>

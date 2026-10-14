@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
+<title>ciallopa 设置</title>
+<style>
+:root{--bg:#f6f7f9;--fg:#1d2330;--mut:#5d6779;--card:#fff;--line:#e3e6ea;--acc:#2f6fed;--ok:#14804a;--warn:#b45309;--bad:#c53030;--wbg:#fef3c7;--wfg:#7c2d12;--bbg:#fde8e8;--bfg:#9b1c1c;--hbg:#e7f6ec;--hfg:#14532d}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1218;--fg:#e6e9ef;--mut:#a3adbd;--card:#171b23;--line:#2a303b;--acc:#5b8cff;--ok:#3cc27e;--warn:#f0a930;--bad:#ff6b6b;--wbg:#f0a930;--wfg:#1a1200;--bbg:#ff8a8a;--bfg:#1f0505;--hbg:#3cc27e;--hfg:#04170c}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+header{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:5;flex-wrap:wrap}
+header h1{font-size:16px;margin:0}
+nav a{color:var(--acc);text-decoration:none;margin-right:12px}nav a[aria-current]{color:var(--fg);font-weight:600}
+.sp{flex:1}
+main{max-width:1180px;margin:0 auto;padding:16px}
+section{margin-bottom:24px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px}
+h2{font-size:15px;margin:0 0 8px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.mut{color:var(--mut);font-size:12px}
+table{border-collapse:collapse;width:100%}
+th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{font-size:12px;color:var(--mut);font-weight:500}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;word-break:break-all}
+.badge{display:inline-block;font-size:11px;padding:1px 6px;border-radius:9px;border:1px solid var(--line);color:var(--mut);white-space:nowrap}
+.badge.hot{color:var(--hfg);background:var(--hbg);border-color:var(--ok)}
+.badge.rs{color:var(--wfg);background:var(--wbg);border-color:var(--warn)}
+.badge.bad{color:var(--bfg);background:var(--bbg);border-color:var(--bad)}
+.banner{padding:8px 12px;border-radius:8px;margin-bottom:12px;border:1px solid var(--warn);background:var(--wbg);color:var(--wfg)}
+.banner.err{border-color:var(--bad);background:var(--bbg);color:var(--bfg)}
+.hide{display:none!important}
+button,input,select{font:inherit;color:inherit}
+button{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:4px 10px;cursor:pointer}
+button:hover{border-color:var(--acc)}button:disabled{opacity:.5;cursor:default}
+button.pri{background:var(--acc);border-color:var(--acc);color:#fff}
+button.danger{border-color:var(--bad);color:var(--bad)}
+input,select{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:3px 6px;max-width:100%}
+input.chg,select.chg{border-color:var(--acc);outline:1px solid var(--acc)}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.diffv{color:var(--warn)}
+#dlg{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:20}
+#dlgb{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;max-width:640px;width:calc(100% - 32px);max-height:80vh;overflow:auto}
+#dlgb h3{margin:0 0 8px;font-size:15px}
+.acts{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}
+#newkey{padding:8px;border:1px dashed var(--ok);border-radius:8px;margin-top:8px}
+#login{max-width:420px;margin:12vh auto;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:20px}
+#login form{display:flex;gap:8px;margin-top:12px}#login input{flex:1}
+</style>
+</head>
+<body>
+<div id="login" class="hide">
+  <h2>ciallopa 设置</h2>
+  <div class="mut">请输入访问密钥（与代理的 API key 相同）。仅保存在本标签页的 sessionStorage 中。</div>
+  <form id="lf"><input id="key" type="password" autocomplete="current-password" placeholder="sk-..." required aria-label="访问密钥"><button class="pri" type="submit">进入</button></form>
+  <div id="lerr" class="mut" role="alert"></div>
+</div>
+<div id="app" class="hide">
+<header><h1>ciallopa</h1><nav><a href="/ui">概览</a><a href="/ui/settings" aria-current="page">设置</a><a href="/ui/accounts">账号</a></nav>
+  <span id="mode" class="badge"></span><span class="sp"></span><span class="mut" id="upd" aria-live="polite"></span>
+  <button id="reload" title="重新读取配置文件并应用（文件变化会自动应用，这里用于手动触发）">重新加载配置文件</button></header>
+<main>
+  <div id="msg" role="alert"></div>
+  <div id="pend" class="banner hide" role="status"></div>
+  <section><h2>配置 <span class="mut" id="meta"></span></h2>
+    <div class="mut" id="hint"></div>
+    <div class="row" id="editbar"><button id="check" class="pri" disabled>检查并保存改动</button><button id="discard" disabled>放弃改动</button><span class="mut" id="nchg"></span></div>
+    <table><thead><tr><th>设置项</th><th>当前值</th><th>生效方式</th></tr></thead><tbody id="rows"></tbody></table>
+  </section>
+  <section><h2>客户端密钥</h2>
+    <div class="mut">只显示标签和末 4 位。新密钥由服务端生成，只显示一次。</div>
+    <table><thead><tr><th>标签</th><th>密钥</th><th></th></tr></thead><tbody id="keys"></tbody></table>
+    <form id="kf" class="row hide"><input id="klabel" placeholder="新密钥标签，如 phone" maxlength="64" required aria-label="新密钥标签"><button class="pri" type="submit">生成新密钥</button></form>
+    <div id="newkey" class="hide" role="status"><div>新密钥（只显示这一次，请立即保存）：</div><code id="nkv"></code> <button id="nkc">复制</button> <button id="nkx">我已保存</button></div>
+  </section>
+  <section><h2>变更记录 <span class="mut">最近 20 条</span></h2><table><thead><tr><th>时间</th><th>操作者</th><th>操作</th><th>内容</th></tr></thead><tbody id="audit"></tbody></table></section>
+</main></div>
+<div id="dlg" class="hide" role="dialog" aria-modal="true" aria-labelledby="dlgt"><div id="dlgb">
+  <h3 id="dlgt"></h3><div id="dlgc"></div>
+  <div class="acts"><button id="dno">取消</button><button id="dyes" class="pri">确认</button></div>
+</div></div>
+<script>
+"use strict";
+(function(){
+const $=id=>document.getElementById(id);
+const KS="ciallopa_key";
+let CFG=null,ETAG="",EDITS={};
+function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined&&text!==null)e.textContent=String(text);return e}
+function clear(e){while(e.firstChild)e.removeChild(e.firstChild)}
+function key(){return sessionStorage.getItem(KS)||""}
+function show(app,err){$("app").classList.toggle("hide",!app);$("login").classList.toggle("hide",app);$("lerr").textContent=err||""}
+async function call(method,path,body,extra){
+  const h={"Authorization":"Bearer "+key()};if(body!==undefined)h["Content-Type"]="application/json";Object.assign(h,extra||{});
+  const r=await fetch(path,{method,headers:h,body:body===undefined?undefined:JSON.stringify(body),cache:"no-store",credentials:"omit",referrerPolicy:"no-referrer"});
+  if(r.status===401){sessionStorage.removeItem(KS);show(false,"密钥无效或已过期");throw new Error("401")}
+  let j=null;try{j=await r.json()}catch(_){}
+  if(!r.ok){const e=new Error((j&&j.error&&j.error.message)||("HTTP "+r.status));e.status=r.status;e.body=j;throw e}
+  return {j,r};
+}
+function fail(e){if(e&&e.message==="401")return;$("msg").className="banner err";$("msg").textContent=(e.status===412?"配置文件已被修改（可能是手动编辑），已重新读取，请重新确认改动。":"")+(e.message||String(e));if(e.status===412)load()}
+function ok(t){$("msg").className="banner";$("msg").textContent=t}
+function fmt(v){if(v===null||v===undefined)return"（默认）";if(typeof v==="object")return JSON.stringify(v);if(v==="")return"（空）";return String(v)}
+function p2(x){return String(x).padStart(2,"0")}
+function ftime(ms){const d=new Date(ms);return d.getFullYear()+"-"+p2(d.getMonth()+1)+"-"+p2(d.getDate())+" "+p2(d.getHours())+":"+p2(d.getMinutes())+":"+p2(d.getSeconds())}
+const GROUPS=[["","基础"],["routing.","选号与会话"],["upstream_opts.","上游连接"],["images.","图片接口"],["log.","日志"],["usage.","用量日志"],["ui.","管理页"]];
+function group(k){let g="";for(const [p] of GROUPS)if(p&&k.startsWith(p))g=p;return g}
+function badge(f){const b=el("span","badge "+(f.effect==="hot"?"hot":"rs"),f.effect==="hot"?"热更新":"需重启");b.title=f.effect==="hot"?"保存或修改文件后立即生效，不影响进行中的请求和会话":"写入文件后，重启 ciallopa 才生效";return b}
+function input(f,v){
+  let e;
+  if(f.kind==="bool"){e=el("select");for(const [val,t] of [["true","开"],["false","关"]]){const o=el("option",null,t);o.value=val;e.appendChild(o)}e.value=String(!!v)}
+  else if(f.kind==="enum"){e=el("select");for(const o of f.options){const x=el("option",null,o);x.value=o;e.appendChild(x)}e.value=v}
+  else{e=el("input");e.value=v===null||v===undefined?"":String(v);if(f.kind==="int"||f.kind==="float"){e.type="number";e.step=f.kind==="int"?"1":"any";e.min="0"}e.size=f.kind==="string"?32:10}
+  e.setAttribute("aria-label",f.desc);
+  const orig=e.value;
+  e.addEventListener("input",()=>{let val=e.value;if(f.kind==="bool")val=val==="true";else if(f.kind==="int")val=val===""?null:parseInt(val,10);else if(f.kind==="float")val=val===""?null:parseFloat(val);
+    if(e.value===orig)delete EDITS[f.key];else EDITS[f.key]=val;e.classList.toggle("chg",e.value!==orig);upd()});
+  e.addEventListener("change",()=>e.dispatchEvent(new Event("input")));
+  return e;
+}
+function upd(){const n=Object.keys(EDITS).length;$("check").disabled=!n;$("discard").disabled=!n;$("nchg").textContent=n?n+" 项未保存":""}
+function render(){
+  const c=CFG,tb=$("rows");clear(tb);EDITS={};upd();
+  $("mode").textContent=c.write_enabled?"可编辑":"只读";$("mode").className="badge "+(c.write_enabled?"hot":"");
+  $("mode").title=c.write_enabled?"配置文件中 [ui] allow_config_write = true":"在配置文件中设置 [ui] allow_config_write = true 才能在这里修改（此开关只能在文件里改）";
+  $("meta").textContent=(c.path||"（未使用配置文件）")+" · 版本 "+c.version;
+  $("hint").textContent=c.write_enabled?"修改后点“检查并保存改动”：先预览差异，确认后写回配置文件（保留注释），再立即应用。":"当前为只读。配置文件的修改会自动应用；也可以点右上角“重新加载配置文件”。";
+  $("editbar").classList.toggle("hide",!c.write_enabled);
+  if(c.file_error){$("msg").className="banner err";$("msg").textContent="配置文件有错误，未应用，仍在使用上一次的配置："+c.file_error}
+  const pend=c.pending_restart||[];$("pend").classList.toggle("hide",!pend.length);clear($("pend"));
+  if(pend.length){$("pend").appendChild(el("b",null,pend.length+" 项需重启后生效："));$("pend").appendChild(document.createTextNode(" "+pend.map(p=>p.key+"（运行中 "+fmt(p.old)+" → 文件 "+fmt(p.new)+"）").join("；")))}
+  const pk=new Set(pend.map(p=>p.key));
+  for(const [p,name] of GROUPS){
+    const fs=c.schema.filter(f=>group(f.key)===p&&f.key!=="api_keys");if(!fs.length)continue;
+    const tr=el("tr");const th=el("th",null,name);th.colSpan=3;tr.appendChild(th);tb.appendChild(tr);
+    for(const f of fs){
+      const r=el("tr"),a=el("td"),b=el("td"),d=el("td");
+      a.appendChild(el("div",null,f.desc));a.appendChild(el("code",null,f.key));
+      const run=c.running[f.key],file=c.values?c.values[f.key]:run;
+      if(c.write_enabled&&f.editable)b.appendChild(input(f,file));else b.appendChild(el("span","mono",fmt(run)));
+      if(pk.has(f.key)){const x=el("div","mut diffv","运行中："+fmt(run));b.appendChild(x)}
+      if(!f.editable&&c.write_enabled)b.appendChild(el("div","mut","只能在配置文件中修改"));
+      if(f.key==="log.level"&&c.overrides&&c.overrides["log.level"])b.appendChild(el("div","mut","已被环境变量 RUST_LOG 覆盖"));
+      d.appendChild(badge(f));r.append(a,b,d);tb.appendChild(r)}
+  }
+  const kt=$("keys");clear(kt);
+  for(const k of (c.running.api_keys||[])){const r=el("tr");r.appendChild(el("td",null,k.label));r.appendChild(el("td","mono",k.hint));const t=el("td");
+    if(c.write_enabled){const b=el("button","danger","删除");b.addEventListener("click",()=>delKey(k.label));t.appendChild(b)}r.appendChild(t);kt.appendChild(r)}
+  if(!(c.running.api_keys||[]).length){const r=el("tr");const t=el("td","mut","没有密钥：所有代理请求都会被拒绝");t.colSpan=3;r.appendChild(t);kt.appendChild(r)}
+  $("kf").classList.toggle("hide",!c.write_enabled);
+  const lr=c.last_reload;$("upd").textContent=lr?("上次应用 "+ftime(lr.at_ms)+(lr.ok?"":"（失败）")):"";
+}
+async function load(){const {j,r}=await call("GET","/admin/v1/config");CFG=j;ETAG=r.headers.get("etag")||"";render();loadAudit().catch(()=>{})}
+async function loadAudit(){const {j}=await call("GET","/admin/v1/config/audit?limit=20");const tb=$("audit");clear(tb);
+  for(const e of j.entries){const r=el("tr");r.appendChild(el("td","mono",ftime(e.ts_ms)));r.appendChild(el("td",null,e.actor||"（文件/信号）"));r.appendChild(el("td",null,e.action+" · "+e.source));
+    r.appendChild(el("td","mono",(e.changes||[]).map(c=>c.key+": "+fmt(c.old)+" → "+fmt(c.new)).join("；")));tb.appendChild(r)}
+  if(!j.entries.length){const r=el("tr");const t=el("td","mut","暂无");t.colSpan=4;r.appendChild(t);tb.appendChild(r)}}
+let dlgOk=null,dlgPrev=null;
+function dialog(title,body,yes,cb){$("dlgt").textContent=title;clear($("dlgc"));$("dlgc").appendChild(body);$("dyes").textContent=yes;dlgOk=cb;dlgPrev=document.activeElement;$("dlg").classList.remove("hide");$("dno").focus()}
+function closeDlg(){$("dlg").classList.add("hide");dlgOk=null;if(dlgPrev)dlgPrev.focus()}
+$("dno").addEventListener("click",closeDlg);
+$("dyes").addEventListener("click",async()=>{const f=dlgOk;if(!f)return;$("dyes").disabled=true;try{await f();closeDlg()}catch(e){closeDlg();fail(e)}finally{$("dyes").disabled=false}});
+document.addEventListener("keydown",e=>{if(e.key==="Escape"&&!$("dlg").classList.contains("hide"))closeDlg()});
+$("check").addEventListener("click",async()=>{try{
+  const {j}=await call("POST","/admin/v1/config/validate",{changes:EDITS});
+  const box=el("div");
+  if(!j.ok){box.appendChild(el("p",null,"有错误，无法保存："));const ul=el("ul");for(const e of j.errors)ul.appendChild(el("li",null,(e.key?e.key+"：":"")+e.message));box.appendChild(ul);dialog("检查未通过",box,"知道了",async()=>{});return}
+  const t=el("table"),h=el("tr");for(const x of ["设置项","原值","新值","生效方式"])h.appendChild(el("th",null,x));t.appendChild(h);
+  for(const d of j.diff){const r=el("tr");r.appendChild(el("td","mono",d.key));r.appendChild(el("td","mono",fmt(d.old)));r.appendChild(el("td","mono",fmt(d.new)));const b=el("td");b.appendChild(badge(d));r.appendChild(b);t.appendChild(r)}
+  box.appendChild(t);if(j.diff.some(d=>d.effect==="restart"))box.appendChild(el("p","mut","标为“需重启”的项会写入文件，重启 ciallopa 后才生效。"));
+  dialog("确认保存 "+j.diff.length+" 项改动",box,"写入配置文件并应用",async()=>{const {j:r}=await call("PUT","/admin/v1/config",{changes:EDITS},{"If-Match":ETAG});await load();ok("已保存："+r.applied.length+" 项已立即生效"+(r.pending_restart.length?"，"+r.pending_restart.length+" 项需重启":"")+"。")});
+}catch(e){fail(e)}});
+$("discard").addEventListener("click",()=>render());
+$("reload").addEventListener("click",async()=>{$("reload").disabled=true;try{const {j}=await call("POST","/admin/v1/config/reload",{});await load();ok("已重新加载："+(j.applied.length?j.applied.length+" 项改动已生效":"没有需要应用的改动")+"。")}catch(e){fail(e);load().catch(()=>{})}finally{$("reload").disabled=false}});
+function delKey(label){const b=el("div");b.appendChild(el("p",null,"删除密钥“"+label+"”？使用它的客户端会立即无法访问。此操作会写回配置文件。"));
+  dialog("删除密钥",b,"删除",async()=>{await call("DELETE","/admin/v1/config/keys/"+encodeURIComponent(label),{},{"If-Match":ETAG});await load();ok("已删除密钥 "+label+"。")})}
+$("kf").addEventListener("submit",async e=>{e.preventDefault();try{const {j}=await call("POST","/admin/v1/config/keys",{label:$("klabel").value},{"If-Match":ETAG});$("klabel").value="";$("nkv").textContent=j.key;$("newkey").classList.remove("hide");await load()}catch(err){fail(err)}});
+$("nkc").addEventListener("click",()=>navigator.clipboard.writeText($("nkv").textContent));
+$("nkx").addEventListener("click",()=>{$("nkv").textContent="";$("newkey").classList.add("hide")});
+$("lf").addEventListener("submit",async e=>{e.preventDefault();sessionStorage.setItem(KS,$("key").value);$("key").value="";try{show(true);await load()}catch(err){if(err.message!=="401")$("lerr").textContent=err.message}});
+if(key()){show(true);load().catch(fail)}else show(false);
+})();
+</script>
+</body>
+</html>

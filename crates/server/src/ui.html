@@ -15,6 +15,7 @@
 body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
 header{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:5;flex-wrap:wrap}
 header h1{font-size:16px;margin:0}
+nav a{color:var(--acc);text-decoration:none;margin-right:12px}nav a[aria-current]{color:var(--fg);font-weight:600}
 .sp{flex:1}
 #logout{margin-left:16px;border-color:var(--bad);color:var(--bad)}
 main{max-width:1280px;margin:0 auto;padding:16px}
@@ -123,7 +124,7 @@ td.cw{white-space:nowrap;padding-right:12px}.wi{display:inline-block;margin-left
   <div id="lerr" class="mut" role="alert"></div>
 </div>
 <div id="app" class="hide">
-<header><h1>ciallopa 管理面板 <span class="mut" id="ro">只读</span></h1>
+<header><h1>ciallopa 管理面板 <span class="mut" id="ro">只读</span></h1><nav><a href="/ui" aria-current="page">概览</a><a href="/ui/settings">设置</a><a href="/ui/accounts">账号</a></nav>
   <span class="mut" id="tz"></span><span class="mut" id="cfp" tabindex="0"></span><span class="sp"></span>
   <span class="mut" id="upd" aria-live="polite"></span>
   <label class="mut"><input type="checkbox" id="auto"> 自动刷新 (15s)</label>

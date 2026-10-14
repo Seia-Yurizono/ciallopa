@@ -1,6 +1,7 @@
-//! Built-in read-only management page (`GET /ui`). One static, self-contained HTML file
-//! (inline CSS/JS, no external resources). The page holds no data: it asks for the access
-//! key (sessionStorage, sent as `Authorization: Bearer`) and calls `/usage/v1/*`.
+//! Built-in management pages: overview (`GET /ui`), settings (`/ui/settings`) and accounts
+//! (`/ui/accounts`). Each is one static, self-contained HTML file (inline CSS/JS, no external
+//! resources). The pages hold no data: they ask for the access key (sessionStorage, sent as
+//! `Authorization: Bearer`) and call the key-protected `/usage/v1/*` and `/admin/v1/*` APIs.
 //!
 //! CSP allows exactly the page's inline `<script>` / `<style>` by SHA-256 hash; everything
 //! else is `'none'` except `connect-src 'self'`.
@@ -13,6 +14,9 @@ use sha2::{Digest, Sha256};
 use std::sync::LazyLock;
 
 pub const PAGE: &str = include_str!("ui.html");
+pub const SETTINGS_PAGE: &str = include_str!("settings.html");
+pub const ACCOUNTS_PAGE: &str = include_str!("accounts.html");
+pub const PAGES: [&str; 3] = [PAGE, SETTINGS_PAGE, ACCOUNTS_PAGE];
 
 fn inline_blocks<'a>(html: &'a str, tag: &str) -> Vec<&'a str> {
     let (open, close) = (format!("<{tag}>"), format!("</{tag}>"));
@@ -27,8 +31,8 @@ fn inline_blocks<'a>(html: &'a str, tag: &str) -> Vec<&'a str> {
     out
 }
 
-fn hashes(tag: &str) -> String {
-    inline_blocks(PAGE, tag)
+fn hashes(page: &str, tag: &str) -> String {
+    inline_blocks(page, tag)
         .iter()
         .map(|b| {
             let h = base64::engine::general_purpose::STANDARD.encode(Sha256::digest(b.as_bytes()));
@@ -38,24 +42,32 @@ fn hashes(tag: &str) -> String {
         .join(" ")
 }
 
-pub static CSP: LazyLock<String> = LazyLock::new(|| {
+/// CSP of a page: exactly its own inline script and style, by SHA-256.
+pub fn csp_for(page: &str) -> String {
     format!(
         "default-src 'none'; script-src {}; style-src {}; connect-src 'self'; img-src 'self' data:; \
          base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
-        hashes("script"),
-        hashes("style")
+        hashes(page, "script"),
+        hashes(page, "style")
     )
-});
+}
+
+pub static CSP: LazyLock<String> = LazyLock::new(|| csp_for(PAGE));
+static CSPS: LazyLock<[String; 3]> = LazyLock::new(|| PAGES.map(csp_for));
 
 async fn page() -> Response {
-    let mut r = PAGE.into_response();
+    serve(0)
+}
+
+fn serve(i: usize) -> Response {
+    let mut r = PAGES[i].into_response();
     let h = r.headers_mut();
     let hv = |s: &str| HeaderValue::from_str(s).unwrap_or(HeaderValue::from_static(""));
     h.insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("text/html; charset=utf-8"),
     );
-    h.insert(header::CONTENT_SECURITY_POLICY, hv(&CSP));
+    h.insert(header::CONTENT_SECURITY_POLICY, hv(&CSPS[i]));
     h.insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
@@ -72,6 +84,8 @@ async fn page() -> Response {
 pub fn routes() -> Router {
     Router::new()
         .route("/ui", get(page))
+        .route("/ui/settings", get(|| async { serve(1) }))
+        .route("/ui/accounts", get(|| async { serve(2) }))
         .route("/", get(|| async { Redirect::temporary("/ui") }))
 }
 
@@ -81,26 +95,40 @@ mod tests {
 
     #[test]
     fn self_contained_and_hashed() {
-        // exactly one inline script and style, no external resources, no inline handlers
-        assert_eq!(inline_blocks(PAGE, "script").len(), 1);
-        assert_eq!(inline_blocks(PAGE, "style").len(), 1);
-        for bad in [
-            "src=\"http",
-            "href=\"http",
-            "<link",
-            "@import",
-            " onclick=",
-            " onload=",
-            "style=\"",
-            "innerHTML",
-            "outerHTML",
-            "insertAdjacentHTML",
-            "document.write",
-            "eval(",
-            "new Function",
-        ] {
-            assert!(!PAGE.contains(bad), "page contains {bad:?}");
+        for page in PAGES {
+            // exactly one inline script and style, no external resources, no inline handlers
+            assert_eq!(inline_blocks(page, "script").len(), 1);
+            assert_eq!(inline_blocks(page, "style").len(), 1);
+            for bad in [
+                "src=\"http",
+                "href=\"http",
+                "<link",
+                "@import",
+                " onclick=",
+                " onload=",
+                "style=\"",
+                "innerHTML",
+                "outerHTML",
+                "insertAdjacentHTML",
+                "document.write",
+                "eval(",
+                "new Function",
+            ] {
+                assert!(!page.contains(bad), "page contains {bad:?}");
+            }
+            let csp = csp_for(page);
+            assert!(csp.contains("script-src 'sha256-") && !csp.contains("unsafe"));
+            // every page links the other two
+            for href in [
+                "href=\"/ui\"",
+                "href=\"/ui/settings\"",
+                "href=\"/ui/accounts\"",
+            ] {
+                assert!(page.contains(href), "missing nav {href}");
+            }
         }
+        // write controls only exist behind the server-side switch; secrets never rendered
+        assert!(SETTINGS_PAGE.contains("If-Match") && ACCOUNTS_PAGE.contains("confirm:a.id"));
         assert!(CSP.contains("script-src 'sha256-"));
         assert!(CSP.contains("default-src 'none'"));
         assert!(!CSP.contains("unsafe"));
