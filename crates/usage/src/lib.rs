@@ -86,6 +86,8 @@ pub struct Record {
     pub resp_model: Option<String>,
     /// `response.reasoning.effort` actually used.
     pub resp_effort: Option<String>,
+    /// `response.incomplete` reason (`incomplete_details.reason`, else `unknown`); None = not incomplete.
+    pub incomplete: Option<String>,
     /// Codex `thread-id` / `x-codex-turn-metadata` (for a future authoritative cost lookup).
     pub thread_id: Option<String>,
     pub turn_id: Option<String>,
@@ -164,6 +166,7 @@ impl Record {
             req_tier: None,
             resp_model: None,
             resp_effort: None,
+            incomplete: None,
             thread_id: None,
             turn_id: None,
             key: None,
@@ -785,6 +788,7 @@ mod tests {
                 "ALTER TABLE requests DROP COLUMN req_tier;
                  ALTER TABLE requests DROP COLUMN resp_model;
                  ALTER TABLE requests DROP COLUMN resp_effort;
+                 ALTER TABLE requests DROP COLUMN incomplete;
                  INSERT INTO labels VALUES(1,'old-acct'),(2,'gpt-5.5'),(3,'default');
                  INSERT INTO requests(id,account,model,transport,status,retries,switches,duration_ms,out_tok,tier)
                    VALUES({old_id},1,2,1,200,0,0,5,7,3);
@@ -807,6 +811,7 @@ mod tests {
         x.service_tier = Some("default".into());
         x.resp_model = Some("gpt-5.5-2026-09-30".into());
         x.resp_effort = Some("medium".into());
+        x.incomplete = Some("max_output_tokens".into());
         assert!(r.record(x));
         r.flush_blocking().unwrap();
         let c = store::open_ro(&p).unwrap();
@@ -825,6 +830,8 @@ mod tests {
         .unwrap();
         assert_eq!(rows.len(), 2);
         let (new, old) = (&rows[0], &rows[1]);
+        assert_eq!(new.incomplete.as_deref(), Some("max_output_tokens"));
+        assert_eq!(old.incomplete, None);
         assert_eq!(old.account.as_deref(), Some("old-acct"));
         assert_eq!(old.service_tier.as_deref(), Some("default"));
         assert_eq!(old.requested_service_tier, None);

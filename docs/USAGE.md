@@ -48,6 +48,7 @@ writer OS thread "usage-writer":  recv first msg → collect until batch_size or
 | `tier` | `service_tier` actually served: terminal event's `response.service_tier` (wins), else `response.created`'s, else the request body's; `auto` from a response is ignored (`priority` = Fast mode, `flex`, `default`/`auto` = standard). Pricing uses this. |
 | `req_tier` | v5: request body's `service_tier` (`fast` stored as `priority`), kept even when downgraded |
 | `resp_model`, `resp_effort` | v5: `response.model` / `response.reasoning.effort` (terminal event wins over `response.created`; SSE and WS) |
+| `incomplete` | v7: `response.incomplete` reason (`incomplete_details.reason`, else `unknown`). Passed through untouched, tokens recorded, **not** an error and never a cooldown (Codex treats it as terminal since bc9cad3 / counts its tokens since #53670) |
 | `thread`, `turn` | Codex thread / turn id from the `thread-id` header, `x-codex-turn-metadata` (JSON `thread_id`, `turn_id`) or body `client_metadata` (WS `response.create`). Stored for a future authoritative cost lookup; nothing queries upstream yet. Values > 128 chars are ignored. |
 | `key` | **label** of the client key that made the request (`[[api_keys]] label`, or `key-<sha256[..8]>` for plain keys). The raw key is never stored. |
 | `instance` | `instance_id` of the ciallopa that wrote the row (default: hostname) |
@@ -125,7 +126,7 @@ Filters on both list endpoints: `account=`, `model=`, `key=<label>`, `instance=`
 - `GET /usage/v1/records?limit=100&before=<ms>&since=<ms>&errors=1&<filters>`
   → `{"records":[…]}` newest first (limit ≤ 1000; `before` = pagination cursor). Rows include
   `key`, `instance`, `plan`, `primary_used_pct`, `primary_reset_at`, `secondary_*`,
-  `cache_write_tokens`, `service_tier`, `requested_service_tier`, `response_model`, `response_effort`,
+  `cache_write_tokens`, `service_tier`, `requested_service_tier`, `response_model`, `response_effort`, `incomplete`,
   `model_mismatch` (null = no response model; false = same ignoring case and a `-YYYY-MM-DD` snapshot
   suffix; true = different), `thread_id`, `turn_id`, `cost_usd`, `price_status`
   (`ok` | `unknown_price` | `no_tokens`), `has_detail`.

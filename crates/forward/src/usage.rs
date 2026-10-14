@@ -262,7 +262,15 @@ impl Tracker {
         }
         match ty {
             "response.completed" | "response.done" => {}
-            "response.incomplete" => self.fail("incomplete"),
+            // Terminal for Codex (bc9cad3) but not a proxy/upstream failure: keep tokens, flag it.
+            "response.incomplete" => {
+                let reason = resp
+                    .and_then(|r| r.pointer("/incomplete_details/reason"))
+                    .and_then(|r| r.as_str())
+                    .filter(|r| !r.is_empty())
+                    .unwrap_or("unknown");
+                self.rec.incomplete = Some(reason.chars().take(64).collect());
+            }
             _ => {
                 let text = v.to_string();
                 let msg = v

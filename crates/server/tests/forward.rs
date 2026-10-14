@@ -195,6 +195,17 @@ async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: Bytes) -> Re
         "meta_created_only" => sse_resp(
             "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-c\",\"model\":\"gpt-5.5\",\"service_tier\":\"auto\",\"reasoning\":{\"effort\":\"high\"}}}\n\n",
         ),
+        "incomplete" => sse_resp(concat!(
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-i\"}}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n",
+            "data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"r-i\",\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"usage\":{\"input_tokens\":40,\"output_tokens\":16,\"output_tokens_details\":{\"reasoning_tokens\":4}}}}\n\n"
+        )),
+        "ts_issue" => {
+            let mut r = sse_resp("data: {\"type\":\"response.completed\"}\n\n");
+            let ts = if auth.contains("tok-a") { "ts-owned-a" } else { "ts-owned-b" };
+            r.headers_mut().insert("x-codex-turn-state", ts.parse().unwrap());
+            r
+        }
         "compact" => sse_resp(concat!(
             "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-c\"}}\n\n",
             "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"compaction\"}}\n\n",
@@ -215,9 +226,12 @@ async fn up_models(State(m): State<Mock>, h: HeaderMap) -> Response {
     m.record(&h, &Bytes::new());
     Response::builder()
         .header("content-type", "application/json")
-        .body(Body::from(r#"{"models":[]}"#))
+        .body(Body::from(MODELS_BODY))
         .unwrap()
 }
+
+/// Upstream catalog shape (service_tiers is an array; `[]` when a model has none).
+const MODELS_BODY: &str = r#"{"models":[{"slug":"gpt-5.5","service_tiers":[{"id":"priority","name":"Fast"}]},{"slug":"gpt-6-luna","service_tiers":[]}]}"#;
 
 async fn up_images(State(m): State<Mock>, h: HeaderMap, b: Bytes) -> Response {
     m.record(&h, &b);
@@ -472,7 +486,7 @@ async fn models_cached_and_wham_passthrough() {
             .send()
             .await
             .unwrap();
-        assert_eq!(r.text().await.unwrap(), r#"{"models":[]}"#);
+        assert_eq!(r.text().await.unwrap(), MODELS_BODY);
     }
     assert_eq!(e.mock.hits.load(Ordering::SeqCst), 1);
     let r = e
@@ -1472,4 +1486,138 @@ async fn usage_captures_response_model_effort_and_tier() {
             .any(|g| g["group"]["response_model"] == "gpt-5.6-luna"),
         "{v}"
     );
+}
+
+fn turn_states(e: &Env) -> Vec<(String, Option<String>)> {
+    e.mock
+        .seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(h, _)| {
+            (
+                hdr(h, "authorization").unwrap_or("").to_string(),
+                hdr(h, "x-codex-turn-state").map(str::to_string),
+            )
+        })
+        .collect()
+}
+
+/// Item 6: a turn state issued by account a never reaches account b on failover; an unknown
+/// one is kept on the first attempt only; the owner keeps receiving its own value.
+#[tokio::test]
+async fn turn_state_not_carried_across_accounts() {
+    let e = env(300).await;
+    // a issues ts-owned-a
+    let r = e
+        .post("/backend-api/codex/responses")
+        .header("x-test-mode", "ts_issue")
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.headers()["x-codex-turn-state"], "ts-owned-a");
+    // same turn: a is limited → failover to b must not carry a's turn state
+    for ts in ["ts-owned-a", "ts-never-seen"] {
+        e.mock.seen.lock().unwrap().clear();
+        let r = e
+            .post("/backend-api/codex/responses")
+            .header("x-test-mode", "limit")
+            .header("x-codex-turn-state", ts)
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        let seen = turn_states(&e);
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        assert!(seen[0].0.contains("tok-a"));
+        assert_eq!(seen[0].1.as_deref(), Some(ts), "first attempt keeps it");
+        assert!(seen[1].0.contains("tok-b"));
+        assert_eq!(seen[1].1, None, "{ts} leaked to account b");
+    }
+}
+
+/// Item 3: response.incomplete passes through, tokens recorded, flagged, not an error, no cooldown.
+#[tokio::test]
+async fn incomplete_passthrough_recorded_no_cooldown() {
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    let body = sse_text(&e, "incomplete").await;
+    assert!(body.contains("response.incomplete") && body.contains("max_output_tokens"));
+    let rows = wait_rows(&e, 1).await;
+    let r = &rows[0];
+    assert_eq!(r["incomplete"], "max_output_tokens");
+    assert!(r["error"].is_null(), "{r}");
+    assert_eq!(r["input_tokens"], 40);
+    assert_eq!(r["output_tokens"], 16);
+    assert_eq!(r["reasoning_tokens"], 4);
+    let o = e.outcomes();
+    assert!(
+        o.iter().all(|(_, o)| matches!(o, Outcome::Success { .. })),
+        "{o:?}"
+    );
+    // a still serves the next request (no cooldown / switch)
+    let _ = sse_text(&e, "").await;
+    assert!(e.outcomes().iter().all(|(a, _)| a == "a"));
+}
+
+/// Item 4: a client close is answered with a close frame (closing handshake completes).
+#[tokio::test]
+async fn websocket_client_close_gets_close_frame() {
+    use tokio_tungstenite::tungstenite::{
+        client::IntoClientRequest,
+        protocol::{frame::coding::CloseCode, CloseFrame},
+        Message as M,
+    };
+    let e = env(300).await;
+    let mut req = format!("ws://{}/backend-api/codex/responses", e.proxy)
+        .into_client_request()
+        .unwrap();
+    req.headers_mut()
+        .insert("authorization", format!("Bearer {KEY}").parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    ws.send(M::text(r#"{"type":"response.create","n":1}"#))
+        .await
+        .unwrap();
+    let _ = ws.next().await.unwrap().unwrap();
+    ws.send(M::Close(Some(CloseFrame {
+        code: CloseCode::Normal,
+        reason: "bye".into(),
+    })))
+    .await
+    .unwrap();
+    let got = tokio::time::timeout(Duration::from_secs(3), ws.next())
+        .await
+        .expect("no close reply");
+    match got {
+        Some(Ok(M::Close(_))) => {}
+        other => panic!("expected close frame, got {other:?}"),
+    }
+}
+
+/// Item 1: the models catalog is passed through byte-for-byte (never rewritten, so ciallopa
+/// cannot introduce `service_tiers: null`) on both client paths.
+#[tokio::test]
+async fn models_catalog_passthrough_no_null_service_tiers() {
+    let e = env(300).await;
+    for p in [
+        "/v1/models",
+        "/backend-api/codex/models?client_version=0.162.1",
+    ] {
+        let r = e
+            .http
+            .get(format!("http://{}{p}", e.proxy))
+            .bearer_auth(KEY)
+            .send()
+            .await
+            .unwrap();
+        let t = r.text().await.unwrap();
+        assert_eq!(t, MODELS_BODY, "{p}");
+        let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+        for m in v["models"].as_array().unwrap() {
+            assert!(m["service_tiers"].is_array(), "{m}");
+        }
+        assert!(!t.contains("\"service_tiers\":null"));
+    }
 }

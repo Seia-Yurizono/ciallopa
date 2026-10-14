@@ -140,10 +140,17 @@ async fn connect(
         loop {
             match st
                 .upstream
-                .ws_connect(path, upstream_headers(headers, &creds))
+                .ws_connect(
+                    path,
+                    upstream_headers(
+                        &crate::turn_state::scope(headers, &id, !route.exclude.is_empty()),
+                        &creds,
+                    ),
+                )
                 .await
             {
                 Ok((ws, resp)) => {
+                    crate::turn_state::learn(resp.headers(), &id);
                     let quota = parse_quota(resp.headers());
                     st.router.report(route, &id, &Outcome::Success { quota });
                     return Ok((ws, resp.headers().clone(), id));
@@ -491,6 +498,14 @@ async fn relay(
             }
         }
     }
+    // Finish both closing handshakes: flush the close frame (tungstenite queues the reply to a
+    // peer Close; without this the TCP stream is dropped with "reset without closing
+    // handshake"). Bounded so a dead peer cannot hold the task.
+    let _ = tokio::time::timeout(Duration::from_secs(2), async {
+        let _ = dtx.close().await;
+        let _ = utx.close().await;
+    })
+    .await;
 }
 
 #[cfg(test)]

@@ -424,7 +424,9 @@ function effortCell(r){
   else{box.appendChild(el("span","ef","–"));tip="推理强度：–"}
   box.dataset.tip=tip;return box}
 function statusCell(r){const s=r.status,b=el("span","st"+(s===429?" s429":s>=500?" s5":s>=400?" s4":""),s);const t=el("td","ec");t.appendChild(b);
-  t.title="HTTP "+s+(s===429?"（限流/额度）":s>=500?"（上游/服务端错误）":"");return t}
+  t.title="HTTP "+s+(s===429?"（限流/额度）":s>=500?"（上游/服务端错误）":"");
+  if(r.incomplete){t.appendChild(document.createTextNode(" "));t.appendChild(el("span","badge warn","未完成"));t.title+="；response.incomplete："+r.incomplete+"（token 已计入，不算错误）"}
+  return t}
 let recState={offset:0,to:0,total:0,rows:[]};
 function recRow(r){
   const isErr=!!(r.error||r.status>=400);const tr=el("tr",(isErr?"err":"")+(r.has_detail?" dt":""));
