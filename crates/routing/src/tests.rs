@@ -1631,3 +1631,56 @@ fn quota_avoidance_off_by_default() {
     // No proactive avoidance: a full-but-not-erroring account is still picked.
     assert_eq!(pick(&r, &rq("m"), &[acct("a"), acct("b")]), "a");
 }
+
+#[test]
+fn overload_streak_backoff_and_reset() {
+    let (r, clk) = router(cfg(Strategy::FillFirst));
+    let a: AccountId = "a".into();
+    let ov = |cool| Outcome::Overloaded {
+        streak: 2,
+        base: Duration::from_secs(120),
+        max: Duration::from_secs(300),
+        cool,
+    };
+    let left = |r: &CpaRouter| {
+        r.cooling_until_any(&"a".into())
+            .and_then(|t| {
+                t.duration_since(t0() + Duration::from_millis(clk.0.load(Ordering::SeqCst)))
+                    .ok()
+            })
+            .map(|d| d.as_secs())
+    };
+    // Last usable account (cool = false): counted, never cooled.
+    for _ in 0..5 {
+        r.report(&rq("m"), &a, &ov(false));
+    }
+    assert_eq!(r.cooling_until_any(&a), None);
+    r.content_ok(&a);
+    r.report(&rq("m"), &a, &ov(true));
+    assert_eq!(r.cooling_until_any(&a), None, "below streak");
+    r.report(&rq("m"), &a, &ov(true));
+    assert_eq!(left(&r), Some(120));
+    assert_eq!(r.cooling_reason_any(&a), Some("overloaded"));
+    // Not quota: selection error is not flagged as quota exhaustion.
+    match r.select(&rq("m"), &[acct("a")]) {
+        Err(RouteError::AllCoolingDown { quota, .. }) => assert!(!quota),
+        x => panic!("{x:?}"),
+    }
+    clk.0.fetch_add(121_000, Ordering::SeqCst);
+    r.report(&rq("m"), &a, &ov(true));
+    r.report(&rq("m"), &a, &ov(true));
+    assert_eq!(left(&r), Some(240));
+    clk.0.fetch_add(241_000, Ordering::SeqCst);
+    r.report(&rq("m"), &a, &ov(true));
+    r.report(&rq("m"), &a, &ov(true));
+    assert_eq!(left(&r), Some(300), "capped");
+    // Delivered content resets the backoff level.
+    clk.0.fetch_add(301_000, Ordering::SeqCst);
+    r.content_ok(&a);
+    r.report(&rq("m"), &a, &ov(true));
+    r.report(&rq("m"), &a, &ov(true));
+    assert_eq!(left(&r), Some(120));
+    r.note_attempt(&a);
+    let (att, n) = r.overload_stats(&a);
+    assert_eq!((att, n), (1, 13));
+}

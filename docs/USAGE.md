@@ -92,12 +92,33 @@ client retries with its own backoff. This keeps one retry layer per backend, so 
 multiply (Codex already retries 5xx 4 times per request and reconnects the turn 5 times).
 A WebSocket handshake is the exception: Codex does not retry a failed handshake itself, so
 ciallopa retries it up to 4 times, on another usable account when there is one, otherwise on the
-same account with backoff (or `Retry-After`, capped at 60 s).
-A WebSocket handshake is the exception: Codex does not retry a failed handshake itself, so
-ciallopa retries it up to 4 times, on another usable account when there is one, otherwise on the
 same account with backoff (or `Retry-After`, capped at 60 s). An account is cooled only after **3 consecutive** 5xx (any success resets the count), for
 `transient_cooldown_secs` (default 15) or the upstream `Retry-After`, capped at 60 s. The last
 usable account is never cooled; network errors never cool.
+
+### Overloaded / "at capacity"
+`server_is_overloaded`, `slow_down`, `service_unavailable_error`, or an error that only says
+"…overloaded…" / "…at capacity…" with no other code. It usually arrives as HTTP 200 followed by
+an in-stream `error` event and `response.failed`; it can also be an HTTP 503 / 502 / 400 / 429
+body. It is account-level throttling, not quota and not a credential problem.
+- **Before any output** (SSE: only `response.created`, `response.in_progress` and
+  `codex.rate_limits` have arrived, and these are held until the first other event; WS: the same
+  frames of the current turn): the request is replayed on another usable account, each account at
+  most once per request, after a 20–120 ms jitter. This does not use `max_attempts`. Session
+  affinity is unchanged: a session only moves when its account errors or cools down.
+- **After output** (text, reasoning, tool call), or when no other account is usable: the
+  upstream error is passed through verbatim (the rest of the stream included), and the client
+  decides. No 429 is ever synthesized for overload.
+- `x-retry-metadata: NO_MORE_RETRY` forbids another try on the same account (it ends the WS
+  handshake retries on the last account); switching to another account is still allowed.
+- Cooldown: after `overload_streak` (default 2) consecutive overloaded answers on one account it
+  is cooled for `overload_cooldown_secs` (default 120), doubling on each further cooldown up to
+  `overload_cooldown_max_secs` (default 600). Delivered output resets both the streak and the
+  doubling. The last usable account is never cooled. The account page shows the reason
+  `overloaded` and, per account, overloaded / upstream attempts over the last 24 h (memory only,
+  cleared on restart and by "解除冷却"; nothing is written to disk for it).
+- Log: source `stream` (in-stream) or `upstream` (HTTP body), error code as sent upstream (for
+  example `server_is_overloaded`); the attempt chain records each switch with `kind: stream`.
 
 ## Error details
 Stored for failed requests (status ≥ 400 or `error` set) and for successful requests that
@@ -109,8 +130,8 @@ retried or switched accounts (attempt chain only), in `error_detail`:
 - `message`: upstream `error.message` or a descriptive local message (`upstream stream idle
   for 300s (timeout)`, `no account available`, `upstream websocket closed mid-turn (code …)`, …).
 - `attempts` (v9): JSON array, at most 8 entries (`{"dropped": n}` marks omitted middle ones):
-  `account`, `t_ms` (since request start), `kind` (`http` / `transport` / `refresh`), `status`,
-  `code`, `action` (`ok`, `retry(<ms>ms)`, `switch`, `cooldown(<s>s)+switch`, `refresh+retry`,
+  `account`, `t_ms` (since request start), `kind` (`http` / `transport` / `refresh` / `stream`), `status`,
+  `code`, `action` (`ok`, `retry(<ms>ms)`, `switch`, `cooldown(<s>s)+switch`, `cooldown+switch`, `refresh+retry`,
   `stop`) and `body` (first 512 bytes, redacted). Written by the same batched writer as the row.
 - `up_req_id` (v9): upstream `x-request-id` / `x-oai-request-id` / `cf-ray`.
 - `headers`: only `x-codex-*`, `cf-ray`, `retry-after`, `content-type`, `x-request-id`,

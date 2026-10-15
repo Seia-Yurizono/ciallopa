@@ -156,6 +156,38 @@ async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: Bytes) -> Re
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
+    const OVER: &str = concat!(
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-a\"}}\n\n",
+        "event: error\ndata: {\"type\":\"service_unavailable_error\",\"code\":\"server_is_overloaded\",\"message\":\"Our servers are currently overloaded. Please try again later.\",\"sequence_number\":1}\n\n",
+        "data: {\"type\":\"response.failed\",\"sequence_number\":2,\"response\":{\"id\":\"r-a\",\"error\":{\"code\":\"server_is_overloaded\",\"message\":\"Our servers are currently overloaded.\"}}}\n\n"
+    );
+    const OK_B: &str = concat!(
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-b\"}}\n\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r-b\"}}\n\n"
+    );
+    match mode.as_str() {
+        "midover" if auth.contains("tok-a") => return sse_resp(OVER),
+        "allover" => return sse_resp(OVER),
+        "midover" => return sse_resp(OK_B),
+        "lateover" => {
+            return sse_resp(concat!(
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-a\"}}\n\n",
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n",
+                "data: {\"type\":\"error\",\"error\":{\"type\":\"service_unavailable_error\",\"code\":\"server_is_overloaded\",\"message\":\"overloaded\"}}\n\n"
+            ))
+        }
+        "over400" if auth.contains("tok-a") => {
+            return Response::builder()
+                .status(400)
+                .header("content-type", "application/json")
+                .header("x-retry-metadata", "NO_MORE_RETRY")
+                .body(Body::from(r#"{"error":{"message":"Our servers are currently overloaded. Please try again later."}}"#))
+                .unwrap()
+        }
+        "over400" => return sse_resp(OK_B),
+        _ => {}
+    }
     match mode.as_str() {
         "retry" if n < 1 => Response::builder().status(503).body(Body::from("busy")).unwrap(),
         "down" => Response::builder()
@@ -2026,4 +2058,63 @@ async fn retried_success_keeps_attempt_chain() {
     assert_eq!(at.len(), 2, "{v}");
     assert_eq!(at[0]["action"], "switch");
     assert_eq!(at[1]["action"], "ok");
+}
+
+#[tokio::test]
+async fn sse_overload_before_output_switches() {
+    let e = env(300).await;
+    let t = sse_text(&e, "midover").await;
+    assert!(!t.contains("overloaded"), "{t}");
+    assert!(
+        t.contains("r-b") && t.contains("response.completed") && !t.contains("r-a"),
+        "{t}"
+    );
+    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 2);
+    let o = e.outcomes();
+    assert!(o
+        .iter()
+        .any(|(a, o)| a == "a" && matches!(o, Outcome::Overloaded { cool: true, .. })));
+    assert!(!o
+        .iter()
+        .any(|(_, o)| matches!(o, Outcome::RateLimited { .. } | Outcome::AuthFailed)));
+}
+
+#[tokio::test]
+async fn sse_overload_everywhere_passes_through_verbatim() {
+    let e = env(300).await;
+    let t = sse_text(&e, "allover").await;
+    assert!(
+        t.contains("server_is_overloaded") && t.contains("response.failed"),
+        "{t}"
+    );
+    assert!(t.contains("\"r-a\""), "{t}");
+    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 2, "each account once");
+    let o = e.outcomes();
+    // The last usable account is never cooled.
+    assert!(o
+        .iter()
+        .any(|(a, o)| a == "b" && matches!(o, Outcome::Overloaded { cool: false, .. })));
+}
+
+#[tokio::test]
+async fn sse_overload_after_output_is_forwarded() {
+    let e = env(300).await;
+    let t = sse_text(&e, "lateover").await;
+    assert!(
+        t.contains("delta") && t.contains("server_is_overloaded"),
+        "{t}"
+    );
+    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn http_400_overload_message_switches_despite_no_more_retry() {
+    let e = env(300).await;
+    let t = sse_text(&e, "over400").await;
+    assert!(t.contains("r-b"), "{t}");
+    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 2);
+    assert!(e
+        .outcomes()
+        .iter()
+        .any(|(a, o)| a == "a" && matches!(o, Outcome::Overloaded { .. })));
 }

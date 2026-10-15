@@ -183,6 +183,27 @@ pub const SCHEMA: &[Field] = &[
         "上游连续 3 次 5xx 后的冷却（秒，0 = 不冷却）",
     ),
     f(
+        "upstream_opts.overload_streak",
+        "int",
+        Hot,
+        true,
+        "同一账号连续几次 overloaded 后冷却（0 = 不冷却）",
+    ),
+    f(
+        "upstream_opts.overload_cooldown_secs",
+        "int",
+        Hot,
+        true,
+        "overloaded 冷却起始时长（秒，之后每次翻倍）",
+    ),
+    f(
+        "upstream_opts.overload_cooldown_max_secs",
+        "int",
+        Hot,
+        true,
+        "overloaded 冷却上限（秒）",
+    ),
+    f(
         "upstream_opts.connect_timeout_secs",
         "int",
         Hot,

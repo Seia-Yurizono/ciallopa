@@ -115,6 +115,7 @@ async fn list(State(s): State<S>) -> Response {
             "weight": a.weight,
             "priority": a.priority,
             "usage_24h": usage.get(&a.id),
+            "overload_24h": overload_json(st.router.overload_stats(&a.id)),
         }));
     }
     let cfg = st.config.load();
@@ -368,4 +369,8 @@ async fn device_status(Path(lid): Path<String>) -> Response {
         Some(v) => Json(v.clone()).into_response(),
         None => err(StatusCode::NOT_FOUND, "unknown login"),
     }
+}
+
+fn overload_json((attempts, overloaded): (u64, u64)) -> serde_json::Value {
+    json!({"attempts": attempts, "overloaded": overloaded})
 }

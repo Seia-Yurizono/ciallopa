@@ -106,7 +106,7 @@ const NF=new Intl.NumberFormat("zh-CN");
 function fmtN(n){n=Number(n||0);if(n>=1e6)return(n/1e6).toFixed(2)+"M";if(n>=1e3)return(n/1e3).toFixed(1)+"k";return String(n)}
 function p2(x){return String(x).padStart(2,"0")}
 function hm(ms){const d=new Date(ms);return p2(d.getMonth()+1)+"-"+p2(d.getDate())+" "+p2(d.getHours())+":"+p2(d.getMinutes())}
-const CR={usage_limit:"额度用完",rate_limited:"上游限流",auth:"认证失败",transient:"上游连续 5xx",challenge:"Cloudflare 拦截",model_unsupported:"模型不可用"};
+const CR={usage_limit:"额度用完",rate_limited:"上游限流",auth:"认证失败",transient:"上游连续 5xx",overloaded:"上游过载（overloaded）",challenge:"Cloudflare 拦截",model_unsupported:"模型不可用"};
 const ST={normal:["正常","hot","可以接收请求"],cooling:["冷却中","rs","上游限流或出错后暂停使用，到时自动恢复"],disabled:["已停用","","手动停用，不参与选号"],token_invalid:["Token 失效","bad","刷新令牌已失效，需要重新登录（设备码登录或导入）"]};
 let dlgOk=null,dlgPrev=null;
 function dialog(title,body,yes,cb){$("dlgt").textContent=title;clear($("dlgc"));$("dlgc").appendChild(body);$("dyes").textContent=yes;dlgOk=cb;dlgPrev=document.activeElement;$("dlg").classList.remove("hide");$("dno").focus()}
@@ -129,7 +129,7 @@ function render(j){
     r.appendChild(el("td",null,a.plan||"–"));
     const s=ST[a.status]||[a.status,""],sc=el("td"),b=el("span","badge "+s[1],s[0]);b.title=s[2];sc.appendChild(b);
     if(a.status==="cooling"&&a.cooling_until_ms){const why=CR[a.cooling_reason]||a.cooling_reason;sc.appendChild(el("div","mut",(why?why+" · ":"")+"至 "+hm(a.cooling_until_ms)));
-      sc.appendChild(btn("解除冷却",null,async()=>{const j=await call("POST","/admin/v1/accounts/"+encodeURIComponent(a.id)+"/clear-cooldown",{});ok(j&&j.cleared?"已解除 "+(a.email||a.id)+" 的冷却，立即参与选号。":(a.email||a.id)+" 已不在冷却中。");await load()},"清除这个账号的全部冷却和连续 5xx 计数，立即参与选号"))}
+      sc.appendChild(btn("解除冷却",null,async()=>{const j=await call("POST","/admin/v1/accounts/"+encodeURIComponent(a.id)+"/clear-cooldown",{});ok(j&&j.cleared?"已解除 "+(a.email||a.id)+" 的冷却，立即参与选号。":(a.email||a.id)+" 已不在冷却中。");await load()},"清除这个账号的全部冷却以及连续 5xx、overloaded 计数，立即参与选号"))}
     r.appendChild(sc);
     const wt=el("td"),pt=el("td");
     if(W){const wi=numIn(a.weight,"权重"),pi=numIn(a.priority,"优先级");wi.min="0";wt.appendChild(wi);pt.appendChild(pi);
@@ -139,6 +139,7 @@ function render(j){
     else{wt.textContent=a.weight;pt.textContent=a.priority}
     r.append(wt,pt);
     const u=a.usage_24h;r.appendChild(el("td",null,u?(NF.format(u.requests)+" 次 · "+fmtN(u.input_tokens+u.output_tokens)+" token"+(u.errors?" · "+u.errors+" 错误":"")):(j.usage_enabled?"无请求":"–")));
+    {const o=a.overload_24h,c=r.lastChild;if(o&&o.overloaded){const d=el("div","mut","overloaded "+o.overloaded+"/"+o.attempts+"（"+(o.attempts?Math.round(o.overloaded*100/o.attempts):100)+"%）");d.title="近 24 小时上游回复 overloaded / at capacity 的次数与上游请求总数（内存统计，重启清零）";c.appendChild(d)}}
     const act=el("td");
     if(W){
       if(a.status!=="token_invalid")act.appendChild(btn(a.disabled?"启用":"停用",null,async()=>{await call("PATCH","/admin/v1/accounts/"+encodeURIComponent(a.id),{disabled:!a.disabled});ok((a.disabled?"已启用 ":"已停用 ")+(a.email||a.id)+"。");await load()}));

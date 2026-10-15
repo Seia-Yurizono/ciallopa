@@ -211,6 +211,26 @@ async fn connect(
                             .insert(crate::errors::meta_upstream(status, &h, &body));
                         r
                     };
+                    st.router.note_attempt(&id);
+                    if let Some(code) = proxy::overload_body(status, &body) {
+                        // Account-level throttling: try every other usable account once, no
+                        // same-account retry; the last one hands the error to the client.
+                        let others = proxy::others_usable(st, &accounts, route, &id);
+                        st.router
+                            .report(route, &id, &proxy::overload_outcome(st, others));
+                        tracing::info!(account = %id, code = %code, "ws handshake overloaded");
+                        let mut resp = resp;
+                        if let Some(m) = resp.extensions_mut().get_mut::<crate::errors::ErrMeta>() {
+                            m.code = code;
+                        }
+                        if !others {
+                            return Err(resp);
+                        }
+                        route.exclude.push(id.clone());
+                        last = Some(resp);
+                        tokio::time::sleep(switch_jitter()).await;
+                        break;
+                    }
                     match status {
                         401 if !refreshed => {
                             refreshed = true;
@@ -243,7 +263,8 @@ async fn connect(
                                     cooldown,
                                 },
                             );
-                            if transient >= retries {
+                            // NO_MORE_RETRY forbids another try on this account only.
+                            if transient >= retries || (!others && proxy::no_more_retry(&h)) {
                                 return Err(resp);
                             }
                             transient += 1;
@@ -393,6 +414,7 @@ async fn relay(
                         if !awaiting {
                             if let (Message::Text(t), Some(ep)) = (&m, endpoint) {
                                 if t.as_str().contains("response.create") {
+                                    st.router.note_attempt(&account);
                                     turn = Tracker::start(&st, Transport::Ws, ep, ctx.key.as_deref()).map(|mut tr| {
                                         let v = serde_json::from_str::<serde_json::Value>(t.as_str()).ok();
                                         tr.headers(&ctx.headers);
@@ -460,6 +482,45 @@ async fn relay(
                         if let (proxy::EventKind::Quota(_), Some(t), WsMessage::Text(txt)) = (&kind, turn.as_mut(), &m) {
                             t.error_text(txt.as_str().as_bytes());
                         }
+                        if let proxy::EventKind::Overloaded(code) = &kind {
+                            let accounts = st.accounts.list().await;
+                            let others = proxy::others_usable(&st, &accounts, &route, &account);
+                            st.router.report(&route, &account, &proxy::overload_outcome(&st, others));
+                            let can_replay = awaiting && !started && others && switches + 1 < max_switches.max(2);
+                            if let (true, Some(req)) = (can_replay, pending.clone()) {
+                                switches += 1;
+                                let _ = utx.send(WsMessage::Close(None)).await;
+                                route.exclude.push(account.clone());
+                                match connect(&st, &ctx.path, &ctx.headers, &mut route).await {
+                                    Ok((ws, h, id)) => {
+                                        quota_h = h;
+                                        tracing::info!(from = %account, to = %id, code = %code, "ws overloaded before output; replayed on another account");
+                                        if let Some(t) = turn.as_mut() { t.switch_to(&id); t.quota(&quota_h); }
+                                        account = id;
+                                        let (t, r) = ws.split();
+                                        let old_tx = std::mem::replace(&mut utx, t);
+                                        let old_rx = std::mem::replace(&mut urx, r);
+                                        tokio::spawn(drain_close(old_tx, old_rx));
+                                        held.clear();
+                                        st.router.note_attempt(&account);
+                                        if utx.send(WsMessage::text(req.as_str())).await.is_ok() {
+                                            continue 'outer;
+                                        }
+                                    }
+                                    Err(_) => tracing::warn!("ws redial after overload failed"),
+                                }
+                                // Redial failed: the old socket is closed; let the client replay.
+                                if let Some(t) = turn.as_mut() { t.fail_msg(code, "upstream overloaded; redial failed, closed for client replay"); t.source(crate::errors::SRC_STREAM); }
+                                let _ = dtx.send(close(CLOSE_REPLAY, CLOSE_REPLAY_REASON)).await;
+                                break;
+                            }
+                            // Output already sent, or no other account: pass it through verbatim.
+                            if let Some(t) = turn.as_mut() {
+                                if let WsMessage::Text(txt) = &m { t.error_text(txt.as_str().as_bytes()); }
+                                t.fail_msg(code, "upstream overloaded");
+                                t.source(crate::errors::SRC_STREAM);
+                            }
+                        }
                         if let proxy::EventKind::Quota(o) = kind {
                             // Never forward: Codex would end the turn (UsageLimitReached is fatal).
                             st.router.report(&route, &account, &o);
@@ -507,7 +568,12 @@ async fn relay(
                             continue;
                         }
                         if awaiting {
-                            if !started { if let Some(t) = turn.as_mut() { t.ttft(); } }
+                            if !started {
+                                if let Some(t) = turn.as_mut() { t.ttft(); }
+                                if matches!(kind, proxy::EventKind::Content) && !done {
+                                    st.router.content_ok(&account);
+                                }
+                            }
                             started = true;
                         }
                         for h in held.drain(..) {

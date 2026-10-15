@@ -64,6 +64,9 @@ max_attempts = 1    # per-request failovers for transport/408/5xx before the fir
 transient_cooldown_secs = 15   # upstream 5xx: fail over to another account if one is usable; cool an account only
                                # after 3 consecutive 5xx (Retry-After wins, max 60 s). The last usable
                                # account is never cooled. 0 = never cool on 5xx.
+overload_streak = 2            # overloaded / "at capacity" before output: replayed on another usable account;
+overload_cooldown_secs = 120   # after 2 in a row the account cools 120 s, doubling up to
+overload_cooldown_max_secs = 600 # 600 s; output resets it. Last usable account never cooled.
 connect_timeout_secs = 30
 compress_requests = true   # zstd level 3 on plaintext HTTP POST /responses bodies (incl. compaction
                            # turns), like official Codex with ChatGPT auth. Already-encoded bodies,

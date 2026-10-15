@@ -329,6 +329,8 @@ impl Tracker {
                 self.source(crate::errors::SRC_STREAM);
                 if crate::proxy::quota_event(v).0 {
                     self.fail("usage_limit");
+                } else if let Some(c) = crate::proxy::overload_code(v) {
+                    self.fail(&c);
                 } else if ty == "error" {
                     self.fail("upstream_error_event");
                 } else {
@@ -388,11 +390,12 @@ fn find_boundary(b: &[u8]) -> Option<(usize, usize)> {
 }
 
 fn is_terminal(ev: &[u8]) -> bool {
-    const PATS: [&[u8]; 4] = [
+    const PATS: [&[u8]; 5] = [
         b"\"response.completed\"",
         b"\"response.failed\"",
         b"\"response.incomplete\"",
         b"\"type\":\"error\"",
+        b"\"type\":\"service_unavailable_error\"",
     ];
     PATS.iter().any(|p| crate::proxy::memfind(ev, p))
 }

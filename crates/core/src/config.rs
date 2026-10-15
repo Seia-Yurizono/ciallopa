@@ -86,6 +86,13 @@ pub struct UpstreamOpts {
     /// Cooldown (seconds) after 3 consecutive upstream 5xx on one account; `Retry-After`
     /// overrides it, capped at 60. 0 = never cool on 5xx. The last usable account is never cooled.
     pub transient_cooldown_secs: u64,
+    /// Consecutive overloaded answers (`server_is_overloaded` / `slow_down` / "at capacity")
+    /// on one account before it is cooled. 0 = never cool on overload.
+    pub overload_streak: u32,
+    /// First overload cooldown (seconds); doubles on each further cooldown until a success.
+    pub overload_cooldown_secs: u64,
+    /// Upper bound of the overload cooldown (seconds).
+    pub overload_cooldown_max_secs: u64,
 }
 impl Default for UpstreamOpts {
     fn default() -> Self {
@@ -96,6 +103,9 @@ impl Default for UpstreamOpts {
             compress_requests: true,
             cloudflare_cookies: false,
             transient_cooldown_secs: 15,
+            overload_streak: 2,
+            overload_cooldown_secs: 120,
+            overload_cooldown_max_secs: 600,
         }
     }
 }

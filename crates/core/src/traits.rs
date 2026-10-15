@@ -54,9 +54,17 @@ pub trait Router: Send + Sync + 'static {
         None
     }
     /// Why the account is cooling down (`usage_limit`, `rate_limited`, `auth`, `transient`,
-    /// `challenge`, `model_unsupported`); None = not cooling.
+    /// `overloaded`, `challenge`, `model_unsupported`); None = not cooling.
     fn cooling_reason(&self, _id: &AccountId) -> Option<&'static str> {
         None
+    }
+    /// One upstream attempt was made on this account (24 h overload ratio denominator).
+    fn note_attempt(&self, _id: &AccountId) {}
+    /// Real output reached the client from this account: resets its overload streak/backoff.
+    fn content_ok(&self, _id: &AccountId) {}
+    /// Upstream attempts and overloaded ones on this account over the last 24 h (in memory).
+    fn overload_stats(&self, _id: &AccountId) -> (u64, u64) {
+        (0, 0)
     }
     /// Manual "clear cooldown": drop every cooldown and failure streak of the account.
     /// Returns whether anything was cleared.

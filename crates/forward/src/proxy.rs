@@ -105,6 +105,17 @@ impl Best {
         r.extensions_mut().insert(meta);
         self.0 = Some((rank, r));
     }
+    /// An overloaded answer: kept verbatim, ranked like a 5xx (a later quota 429 still wins).
+    fn overloaded(&mut self, status: u16, h: &HeaderMap, b: Bytes, code: String) {
+        if self.0.as_ref().is_some_and(|(r, _)| *r > 4) {
+            return;
+        }
+        let mut meta = errors::meta_upstream(status, h, &b);
+        meta.code = code;
+        let mut r = buffered(status, h, b);
+        r.extensions_mut().insert(meta);
+        self.0 = Some((4, r));
+    }
     fn or(self, f: impl FnOnce() -> Response) -> Response {
         self.0.map(|(_, r)| r).unwrap_or_else(f)
     }
@@ -250,9 +261,39 @@ async fn send_inner(st: &AppState, ob: Outbound, info: &mut SendInfo) -> Result<
                 }
             };
             st.upstream.store_cookies(&id, &url, r.headers());
+            st.router.note_attempt(&id);
             let status = r.status().as_u16();
             let mut a = errors::attempt(&id, "http");
             a.status = Some(status);
+            // Overload answered as an HTTP error (503 `server_is_overloaded`, 502/400 with only
+            // an "overloaded" message): account-level throttling, so try every other usable
+            // account once (does not use the transient budget); the last one passes it through.
+            let r = if status == 400 || status == 429 || status >= 500 {
+                let h = r.headers().clone();
+                let b = r.bytes().await.unwrap_or_default();
+                if let Some(code) = overload_body(status, &b) {
+                    let others = others_usable(st, &accounts, &route, &id);
+                    let cooled_before = st.router.cooling_until(&id).is_some();
+                    st.router.report(&route, &id, &overload_outcome(st, others));
+                    let cooled = !cooled_before && st.router.cooling_until(&id).is_some();
+                    a.code = Some(code.clone());
+                    a.body = errors::body_snippet(&b);
+                    info.attempts.push(a);
+                    best.overloaded(status, &h, b, code);
+                    let tag = if cooled { "cooldown+" } else { "" };
+                    if !others {
+                        info.attempts.act(format!("{tag}stop"));
+                        return Err(best.or(unreachable_response));
+                    }
+                    info.attempts.act(format!("{tag}switch"));
+                    route.exclude.push(id.clone());
+                    tokio::time::sleep(switch_jitter()).await;
+                    break;
+                }
+                rebuild(status, &h, b)
+            } else {
+                r
+            };
             match status {
                 s if s < 400 => {
                     a.action = "ok".into();
@@ -371,6 +412,14 @@ async fn send_inner(st: &AppState, ob: Outbound, info: &mut SendInfo) -> Result<
             }
         }
     }
+}
+
+/// An upstream response whose body was already read, rebuilt for the normal handling.
+fn rebuild(status: u16, h: &HeaderMap, b: Bytes) -> reqwest::Response {
+    let mut r = http::Response::new(b);
+    *r.status_mut() = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
+    *r.headers_mut() = h.clone();
+    reqwest::Response::from(r)
 }
 
 fn unreachable_response() -> Response {
@@ -614,6 +663,9 @@ pub(crate) enum EventKind {
     Preamble,
     /// Account-level quota / rate-limit failure: cool down and switch.
     Quota(Outcome),
+    /// Upstream capacity / per-account throttling (`server_is_overloaded`, `slow_down`, …):
+    /// switch account if another one is usable, else pass through. Carries the logged code.
+    Overloaded(String),
     /// Anything else: real output (or a non-quota terminal event).
     Content,
 }
@@ -663,6 +715,96 @@ pub(crate) fn quota_event(v: &serde_json::Value) -> (bool, bool) {
     }
 }
 
+/// Structured codes that mean "upstream capacity / account throttled", never quota.
+const OVERLOAD_CODES: [&str; 3] = [
+    "server_is_overloaded",
+    "slow_down",
+    "service_unavailable_error",
+];
+
+/// Overload detection on an error event (`error`, `response.failed`, or an event whose own
+/// `type`/`code` is an overload code) or an HTTP error body. Structured `code`/`type` first;
+/// a bare `message` ("…currently overloaded…", "…at capacity…") counts only when the error
+/// object carries no other code. Output events (deltas, items) are never inspected.
+/// Returns the code to log (`server_is_overloaded` for message-only matches).
+pub(crate) fn overload_code(v: &serde_json::Value) -> Option<String> {
+    let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    let errorish = ty == "error"
+        || ty == "response.failed"
+        || OVERLOAD_CODES.contains(&ty)
+        || (ty.is_empty() && v.get("error").is_some());
+    if !errorish {
+        return None;
+    }
+    let objs = [Some(v), v.get("error"), v.pointer("/response/error")];
+    let field = |o: &serde_json::Value, k: &str| {
+        o.get(k)
+            .and_then(|t| t.as_str())
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+    };
+    let mut other_code = false;
+    for o in objs.iter().flatten() {
+        if let Some(c) = field(o, "code") {
+            if OVERLOAD_CODES.contains(&c.as_str()) {
+                return Some(c);
+            }
+            other_code = true;
+        }
+    }
+    for o in objs.iter().flatten() {
+        if let Some(t) = field(o, "type").filter(|t| OVERLOAD_CODES.contains(&t.as_str())) {
+            return Some(t);
+        }
+    }
+    if other_code {
+        return None;
+    }
+    let overloaded_msg = objs.iter().flatten().any(|o| {
+        field(o, "message").is_some_and(|m| {
+            let m = m.to_ascii_lowercase();
+            m.contains("overloaded") || m.contains("at capacity")
+        })
+    });
+    overloaded_msg.then(|| "server_is_overloaded".to_string())
+}
+
+/// Overload in an HTTP error body (400 / 429 / 5xx JSON).
+pub(crate) fn overload_body(status: u16, b: &[u8]) -> Option<String> {
+    if !(status == 400 || status == 429 || status >= 500) {
+        return None;
+    }
+    let mut v: serde_json::Value = serde_json::from_slice(b).ok()?;
+    if v.get("type").is_none() && v.get("error").is_some() {
+        if let Some(o) = v.as_object_mut() {
+            o.insert("type".into(), "error".into());
+        }
+    }
+    overload_code(&v)
+}
+
+/// `x-retry-metadata: NO_MORE_RETRY`: do not retry on the same account (switching is fine).
+pub(crate) fn no_more_retry(h: &HeaderMap) -> bool {
+    h.get_all("x-retry-metadata")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .any(|v| v.to_ascii_uppercase().contains("NO_MORE_RETRY"))
+}
+
+/// The router outcome for one overloaded answer on `id` (cooling never hits the last usable
+/// account).
+pub(crate) fn overload_outcome(st: &AppState, others: bool) -> Outcome {
+    let c = st.config.load();
+    let o = &c.upstream_opts;
+    Outcome::Overloaded {
+        streak: o.overload_streak,
+        base: Duration::from_secs(o.overload_cooldown_secs),
+        max: Duration::from_secs(o.overload_cooldown_max_secs),
+        cool: others,
+    }
+}
+
 /// Classify one Responses event JSON (`data:` payload of SSE, or a WS text frame).
 pub(crate) fn event_kind(text: &str) -> EventKind {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
@@ -677,7 +819,10 @@ pub(crate) fn event_kind(text: &str) -> EventKind {
     }
     let (quota, code) = quota_event(&v);
     if !quota {
-        return EventKind::Content;
+        return match overload_code(&v) {
+            Some(c) => EventKind::Overloaded(c),
+            None => EventKind::Content,
+        };
     }
     let quota_h =
         ciallopa_routing::parse_quota_event_headers(text.as_bytes()).and_then(|h| parse_quota(&h));
@@ -776,6 +921,8 @@ pub(crate) async fn send_streaming(
     );
     let mut switches = 0usize;
     let mut carried_retries = 0u32;
+    // Attempt chain across in-stream failovers (send_info restarts its own per call).
+    let mut chain = errors::Attempts::default();
     loop {
         let mut info = SendInfo {
             retries: carried_retries,
@@ -783,12 +930,14 @@ pub(crate) async fn send_streaming(
         };
         let res = send_info(st, ob.clone(), &mut info).await;
         carried_retries = info.retries;
+        for a in info.attempts.list.drain(..) {
+            chain.push(a);
+        }
         if let Some(t) = trk.as_mut() {
             t.retries(info.retries);
-            t.attempts(&info.attempts);
+            t.attempts(&chain);
             // A failed request that never switched still ran on one account: log it.
-            let last_tried = info
-                .attempts
+            let last_tried = chain
                 .list
                 .last()
                 .map(|a| a.account.clone())
@@ -837,6 +986,7 @@ pub(crate) async fn send_streaming(
         let mut buf: Vec<u8> = Vec::new();
         let mut parsed = 0usize;
         let mut switch: Option<Outcome> = None;
+        let mut overload: Option<String> = None;
         let mut ended = false;
         'boot: loop {
             if buf.len() > BOOTSTRAP_MAX {
@@ -854,10 +1004,15 @@ pub(crate) async fn send_streaming(
                                 if let Some(t) = trk.as_mut() {
                                     t.ttft();
                                 }
+                                st.router.content_ok(&account);
                                 break 'boot;
                             }
                             EventKind::Quota(o) => {
                                 switch = Some(o);
+                                break 'boot;
+                            }
+                            EventKind::Overloaded(code) => {
+                                overload = Some(code);
                                 break 'boot;
                             }
                         }
@@ -913,6 +1068,54 @@ pub(crate) async fn send_streaming(
                     return r;
                 }
             }
+        }
+        if let Some(code) = overload {
+            // In-stream overload before any output: nothing reached the client yet, so the same
+            // request is replayed on another usable account (each account at most once).
+            let accounts = st.accounts.list().await;
+            let others = others_usable(st, &accounts, &route, &account);
+            let cooled_before = st.router.cooling_until(&account).is_some();
+            st.router
+                .report(&route, &account, &overload_outcome(st, others));
+            let cooled = !cooled_before && st.router.cooling_until(&account).is_some();
+            let mut a = errors::attempt(&account, "stream");
+            a.status = Some(status.as_u16());
+            a.code = Some(code.clone());
+            a.body = errors::body_snippet(&buf);
+            let tag = if cooled { "cooldown+" } else { "" };
+            a.action = format!("{tag}{}", if others { "switch" } else { "stop" });
+            chain.push(a);
+            if let Some(t) = trk.as_mut() {
+                t.attempts(&chain);
+            }
+            if others {
+                tracing::info!(account = %account, code = %code, "overloaded before first output; switching account");
+                ob.route = route;
+                ob.route.exclude.push(account);
+                tokio::time::sleep(switch_jitter()).await;
+                continue;
+            }
+            // Last usable account: the upstream error goes to the client verbatim (rest of the
+            // stream included); the tracker logs it as stream / <code>.
+            if let Some(t) = trk.as_mut() {
+                t.status(status.as_u16());
+                t.fail_msg(&code, "upstream overloaded on every usable account");
+                t.source(errors::SRC_STREAM);
+            }
+            if ended {
+                up = futures::stream::empty().boxed();
+            }
+            return stream_body(
+                st,
+                status,
+                headers,
+                route,
+                account,
+                Bytes::from(buf),
+                up,
+                trk,
+                true,
+            );
         }
         if let Some(o) = switch {
             st.router.report(&route, &account, &o);
@@ -1046,6 +1249,64 @@ mod quota_tests {
         assert!(!q(
             r#"{"type":"response.output_text.delta","delta":"usage_limit_reached"}"#
         ));
+    }
+    #[test]
+    fn overload_detection() {
+        let k = |t: &str| event_kind(t);
+        let ov = |t: &str| matches!(k(t), EventKind::Overloaded(_));
+        assert!(ov(
+            r#"{"type":"service_unavailable_error","code":"server_is_overloaded","message":"x"}"#
+        ));
+        assert!(ov(r#"{"type":"error","error":{"code":"slow_down"}}"#));
+        assert!(ov(
+            r#"{"type":"response.failed","response":{"error":{"code":"server_is_overloaded"}}}"#
+        ));
+        assert!(ov(
+            r#"{"type":"error","error":{"message":"Selected model is at capacity."}}"#
+        ));
+        assert!(ov(
+            r#"{"type":"error","error":{"type":"service_unavailable_error"}}"#
+        ));
+        // Never from output text, and an explicit other code wins over the message.
+        assert!(!ov(
+            r#"{"type":"response.output_text.delta","delta":"server is overloaded"}"#
+        ));
+        assert!(!ov(
+            r#"{"type":"error","error":{"code":"context_length_exceeded","message":"overloaded"}}"#
+        ));
+        assert!(matches!(
+            k(
+                r#"{"type":"error","status":429,"error":{"type":"usage_limit_reached","message":"overloaded"}}"#
+            ),
+            EventKind::Quota(_)
+        ));
+        assert_eq!(
+            overload_body(
+                400,
+                br#"{"error":{"message":"Our servers are currently overloaded."}}"#
+            )
+            .as_deref(),
+            Some("server_is_overloaded")
+        );
+        assert_eq!(
+            overload_body(
+                503,
+                br#"{"error":{"type":"server_error","code":"server_is_overloaded"}}"#
+            )
+            .as_deref(),
+            Some("server_is_overloaded")
+        );
+        assert_eq!(overload_body(503, b"busy"), None);
+        assert_eq!(
+            overload_body(401, br#"{"error":{"message":"overloaded"}}"#),
+            None
+        );
+        let mut h = HeaderMap::new();
+        h.insert(
+            "x-retry-metadata",
+            HeaderValue::from_static("NO_MORE_RETRY"),
+        );
+        assert!(no_more_retry(&h));
     }
     #[test]
     fn credential_errors_that_cool() {

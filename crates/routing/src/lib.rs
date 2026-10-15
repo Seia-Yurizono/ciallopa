@@ -51,6 +51,7 @@ enum ErrKind {
     ModelUnsupported,
     Challenge,
     Transient,
+    Overloaded,
 }
 impl ErrKind {
     fn rebinds(self) -> bool {
@@ -64,6 +65,7 @@ impl ErrKind {
             ErrKind::ModelUnsupported => "model_unsupported",
             ErrKind::Challenge => "challenge",
             ErrKind::Transient => "transient",
+            ErrKind::Overloaded => "overloaded",
         }
     }
 }
@@ -97,6 +99,27 @@ struct State {
     quota: HashMap<AccountId, QuotaSnapshot>,
     /// Consecutive upstream 5xx per account (reset on success / manual clear).
     streak: HashMap<AccountId, u32>,
+    /// Overload streak and cooldown level per account (reset by delivered content / clear).
+    overload: HashMap<AccountId, (u32, u32)>,
+    /// Hourly (hour index, attempts, overloaded) ring per account, last 24 h (memory only).
+    stats: HashMap<AccountId, [(u64, u64, u64); 24]>,
+}
+
+fn hour_of(t: SystemTime) -> u64 {
+    t.duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs() / 3600)
+        .unwrap_or(0)
+}
+
+fn bump(st: &mut State, id: &AccountId, now: SystemTime, att: u64, ov: u64) {
+    let h = hour_of(now);
+    let ring = st.stats.entry(id.clone()).or_default();
+    let slot = &mut ring[(h % 24) as usize];
+    if slot.0 != h {
+        *slot = (h, 0, 0);
+    }
+    slot.1 += att;
+    slot.2 += ov;
 }
 
 pub struct CpaRouter {
@@ -173,6 +196,8 @@ impl CpaRouter {
                 model: HashMap::new(),
                 quota: HashMap::new(),
                 streak: HashMap::new(),
+                overload: HashMap::new(),
+                stats: HashMap::new(),
             }),
         }
     }
@@ -209,6 +234,8 @@ impl CpaRouter {
         st.model.retain(|(a, _), _| a != id);
         st.quota.remove(id);
         st.streak.remove(id);
+        st.overload.remove(id);
+        st.stats.remove(id);
         st.rr_last.retain(|_, v| v != id);
     }
 
@@ -240,6 +267,7 @@ impl CpaRouter {
         st.account.remove(id);
         st.model.retain(|(a, _), _| a != id);
         st.streak.remove(id);
+        st.overload.remove(id);
         live
     }
 
@@ -392,6 +420,21 @@ impl Router for CpaRouter {
     }
     fn clear_cooldown(&self, id: &AccountId) -> bool {
         self.clear(id)
+    }
+    fn note_attempt(&self, id: &AccountId) {
+        let now = (self.clock)();
+        bump(&mut self.lock(), id, now, 1, 0);
+    }
+    fn content_ok(&self, id: &AccountId) {
+        self.lock().overload.remove(id);
+    }
+    fn overload_stats(&self, id: &AccountId) -> (u64, u64) {
+        let h = hour_of((self.clock)());
+        self.lock().stats.get(id).map_or((0, 0), |r| {
+            r.iter()
+                .filter(|s| s.0 + 24 > h && s.0 <= h)
+                .fold((0, 0), |a, s| (a.0 + s.1, a.1 + s.2))
+        })
     }
     fn select(&self, req: &RouteRequest, accounts: &[Account]) -> Result<Selection, RouteError> {
         let now = (self.clock)();
@@ -613,6 +656,29 @@ impl Router for CpaRouter {
                 );
                 m.last_err = Some(ErrKind::ModelUnsupported);
                 Some(ErrKind::ModelUnsupported)
+            }
+            Outcome::Overloaded {
+                streak,
+                base,
+                max,
+                cool,
+            } => {
+                bump(&mut st, account, now, 0, 1);
+                let e = st.overload.entry(account.clone()).or_insert((0, 0));
+                e.0 = e.0.saturating_add(1);
+                if !*cool || *streak == 0 || base.is_zero() || e.0 < *streak {
+                    // Counted only: binding kept, account stays usable.
+                    return;
+                }
+                let d = base
+                    .saturating_mul(1u32.checked_shl(e.1).unwrap_or(u32::MAX))
+                    .min((*max).max(*base));
+                e.0 = 0;
+                e.1 = e.1.saturating_add(1).min(16);
+                let a = st.account.entry(account.clone()).or_default();
+                a.next_retry = Some(max_opt(a.live_until(now), now + d));
+                a.last_err = Some(ErrKind::Overloaded);
+                Some(ErrKind::Overloaded)
             }
             Outcome::Challenge => {
                 let m = st.model.entry(mkey).or_default();

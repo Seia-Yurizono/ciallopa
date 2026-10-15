@@ -115,6 +115,17 @@ pub enum Outcome {
         status: u16,
         cooldown: Option<Duration>,
     },
+    /// Upstream capacity / account-level throttling (`server_is_overloaded`, `slow_down`,
+    /// `service_unavailable_error`, "at capacity"), in-stream or as HTTP status. Never a quota
+    /// or credential problem. After `streak` consecutive ones the account is cooled for
+    /// `base * 2^level` (capped at `max`, level grows per cooldown, reset by a success);
+    /// `cool = false` (last usable account, or feature off) only counts.
+    Overloaded {
+        streak: u32,
+        base: Duration,
+        max: Duration,
+        cool: bool,
+    },
     /// Cloudflare challenge page (403 + challenge markers): >=10s exponential cooldown.
     Challenge,
     /// 4xx caused by the request itself; not the account's fault.
