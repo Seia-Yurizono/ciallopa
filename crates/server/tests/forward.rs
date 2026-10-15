@@ -157,7 +157,7 @@ async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: Bytes) -> Re
         .unwrap_or("")
         .to_string();
     match mode.as_str() {
-        "retry" if n < 2 => Response::builder().status(503).body(Body::from("busy")).unwrap(),
+        "retry" if n < 1 => Response::builder().status(503).body(Body::from("busy")).unwrap(),
         "down" => Response::builder()
             .status(503)
             .header("content-type", "application/json")
@@ -480,10 +480,12 @@ async fn retries_5xx_then_succeeds() {
         .await
         .unwrap();
     assert_eq!(r.status(), 200);
-    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 3);
+    // One 503, then a failover to another account succeeds.
+    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 2);
     let o = e.outcomes();
     assert!(matches!(o[0].1, Outcome::ServerError { status: 503, .. }));
-    assert!(matches!(o[2].1, Outcome::Success { .. }));
+    assert!(matches!(o[1].1, Outcome::Success { .. }));
+    assert_ne!(o[0].0, o[1].0);
 }
 
 #[tokio::test]
@@ -1072,9 +1074,9 @@ async fn usage_sse_rows() {
 async fn usage_counts_retries() {
     let d = tempfile::tempdir().unwrap();
     let e = env_usage(300, Some(usage_recorder(d.path()))).await;
-    sse_text(&e, "retry").await; // two 503s, then ok
+    sse_text(&e, "retry").await; // one 503, then ok on another account
     let rows = wait_rows(&e, 1).await;
-    assert_eq!(rows[0]["retries"], 2, "{rows:?}");
+    assert_eq!(rows[0]["retries"], 1, "{rows:?}");
     assert!(rows[0]["error"].is_null());
 }
 
@@ -1448,7 +1450,7 @@ fn hdr<'a>(h: &'a [(String, String)], k: &str) -> Option<&'a str> {
 async fn responses_compressed_like_codex_and_retries_reuse_bytes() {
     let e = env(300).await;
     let body = r#"{"model":"gpt-5.5","prompt_cache_key":"pk","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello hello hello"}]}]}"#;
-    // 503, 503, 200: three attempts must carry the same compressed bytes.
+    // 503, then 200 on another account: both attempts carry the same compressed bytes.
     let r = e
         .post("/v1/responses")
         .header("x-test-mode", "retry")
@@ -1461,7 +1463,7 @@ async fn responses_compressed_like_codex_and_retries_reuse_bytes() {
     assert!(r.headers().get("content-encoding").is_none());
     assert!(r.text().await.unwrap().contains("response.completed"));
     let seen = e.mock.seen.lock().unwrap().clone();
-    assert_eq!(seen.len(), 3);
+    assert_eq!(seen.len(), 2);
     for (h, b) in &seen {
         assert_eq!(hdr(h, "content-encoding"), Some("zstd"));
         assert!(
@@ -1991,8 +1993,8 @@ async fn upstream_5xx_passed_through_with_provenance() {
     assert!(r.headers().keys().all(|k| !k.as_str().contains("ciallopa")));
     let t = r.text().await.unwrap();
     assert!(t.contains("up busy"), "{t}");
-    // Same account retried before switching; 5 requests total (max_attempts = 4).
-    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 5);
+    // One failover to another account, never the same account twice (max_attempts = 1).
+    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 2);
     let rows = wait_rows(&e, 1).await;
     let row = &rows[0];
     assert_eq!(row["err_source"], "upstream", "{row}");
@@ -2002,11 +2004,10 @@ async fn upstream_5xx_passed_through_with_provenance() {
     let v: serde_json::Value = detail_of(&e, &id, true).await.json().await.unwrap();
     assert_eq!(v["upstream_request_id"], "req_down");
     let at = v["attempts"].as_array().unwrap();
-    assert_eq!(at.len(), 5, "{v}");
-    assert!(at[0]["action"].as_str().unwrap().starts_with("retry"));
-    assert_eq!(at[1]["action"], "switch");
-    assert_eq!(at[4]["action"], "stop");
-    assert_ne!(at[0]["account"], at[2]["account"]);
+    assert_eq!(at.len(), 2, "{v}");
+    assert_eq!(at[0]["action"], "switch");
+    assert_eq!(at[1]["action"], "stop");
+    assert_ne!(at[0]["account"], at[1]["account"]);
 }
 
 #[tokio::test]
@@ -2022,6 +2023,7 @@ async fn retried_success_keeps_attempt_chain() {
     let id = row["request_id"].as_str().unwrap().to_string();
     let v: serde_json::Value = detail_of(&e, &id, true).await.json().await.unwrap();
     let at = v["attempts"].as_array().unwrap();
-    assert_eq!(at.len(), 3, "{v}");
-    assert_eq!(at[2]["action"], "ok");
+    assert_eq!(at.len(), 2, "{v}");
+    assert_eq!(at[0]["action"], "switch");
+    assert_eq!(at[1]["action"], "ok");
 }

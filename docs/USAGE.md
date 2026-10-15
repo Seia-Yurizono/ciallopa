@@ -73,8 +73,10 @@ What the client receives:
   `retry-after`, `x-codex-*`, `x-request-id`, `cf-ray`, …). Priority: usage-limit 429 > other 429 >
   5xx/408 > 401 > 403 > 404; an upstream 5xx is never turned into a 429.
 - No upstream response ⇒ an upstream-shaped error with a standard code: 503
-  `{"error":{"type":"server_error","code":"server_is_overloaded",…}}` with `Retry-After`
-  (no account, all cooling), 502 / 504 for network failures. Codex retries these.
+  `{"error":{"type":"server_error","code":"server_is_overloaded",…}}`, with `Retry-After` only
+  when every account is cooling (the earliest end); no account / no usable account carries no
+  `Retry-After`, so Codex stops after its short request retries (about 3 s) instead of waiting
+  on every reconnect. 502 / 504 for network failures. Codex retries these.
 - Every account out of usage quota ⇒ 429 `usage_limit_reached` with the earliest `resets_at` /
   `resets_in_seconds` and `Retry-After` (the only locally synthesized quota error).
 - A stream that ends without a terminal event (upstream cut, stream error, idle timeout) ends with
@@ -82,9 +84,18 @@ What the client receives:
   retries the turn.
 - Responses carry no proxy-specific headers or wording; source and code exist only in the log.
 
-Upstream 408 / 5xx handling: the same account is retried with backoff (or `Retry-After`) once,
-then the request moves to another usable account; the shared `max_attempts` budget bounds the
-total. An account is cooled only after **3 consecutive** 5xx (any success resets the count), for
+Upstream 408 / 5xx and transport errors: the request moves to another usable account after a
+short jitter (20–120 ms), at most `max_attempts` times (default 1) per client request. The same
+account is never retried locally: when no other account is usable, or the budget is spent, the
+last upstream response (status, body, `Retry-After`) goes back to the client at once, and the
+client retries with its own backoff. This keeps one retry layer per backend, so retries do not
+multiply (Codex already retries 5xx 4 times per request and reconnects the turn 5 times).
+A WebSocket handshake is the exception: Codex does not retry a failed handshake itself, so
+ciallopa retries it up to 4 times, on another usable account when there is one, otherwise on the
+same account with backoff (or `Retry-After`, capped at 60 s).
+A WebSocket handshake is the exception: Codex does not retry a failed handshake itself, so
+ciallopa retries it up to 4 times, on another usable account when there is one, otherwise on the
+same account with backoff (or `Retry-After`, capped at 60 s). An account is cooled only after **3 consecutive** 5xx (any success resets the count), for
 `transient_cooldown_secs` (default 15) or the upstream `Retry-After`, capped at 60 s. The last
 usable account is never cooled; network errors never cool.
 

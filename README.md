@@ -47,13 +47,21 @@ quota_avoid_threshold = 0.0             # 0 = off (default): switch only on upst
 
 [upstream_opts]
 stream_idle_timeout_secs = 300
-max_attempts = 4    # RETRIES (Codex request_max_retries): transport/408/5xx before first byte ⇒ ≤5 requests.
-                    # 401/403/404/429 fail over to another account and do not consume retries.
+max_attempts = 1    # per-request failovers for transport/408/5xx before the first byte: each one moves
+                    # to ANOTHER usable account (≤2 upstream requests per client attempt). The same
+                    # account is never retried locally: with no other usable account the upstream
+                    # response (status, body, Retry-After) goes straight back and the client retries
+                    # it with its own backoff (Codex: 4 request retries + 5 stream retries).
+                    # 401/403/404/429 fail over to another account and do not consume this budget.
+                    # WS handshakes are not retried by Codex, so they get up to 4 retries
+                    # (another account first, else the same one with backoff) regardless.
+                    # WS handshakes are not retried by Codex, so they get up to 4 retries
+                    # (another account first, else the same one with backoff) regardless.
                     # In-stream quota errors (usage_limit_reached etc.) before the first output
                     # event: account cooled + request replayed on the next account (SSE and WS).
                     # WS after output / incremental turn: frame withheld, close 1012 ⇒ Codex
                     # reconnects with full input on another account.
-transient_cooldown_secs = 15   # upstream 5xx: retry the same account, then switch; cool an account only
+transient_cooldown_secs = 15   # upstream 5xx: fail over to another account if one is usable; cool an account only
                                # after 3 consecutive 5xx (Retry-After wins, max 60 s). The last usable
                                # account is never cooled. 0 = never cool on 5xx.
 connect_timeout_secs = 30

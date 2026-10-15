@@ -173,7 +173,7 @@ pub const SCHEMA: &[Field] = &[
         "int",
         Hot,
         true,
-        "失败重试次数",
+        "5xx/网络错误时换号重试次数（不重试同一账号）",
     ),
     f(
         "upstream_opts.transient_cooldown_secs",

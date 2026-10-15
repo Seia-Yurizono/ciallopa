@@ -32,6 +32,12 @@ pub fn delay_for(attempt: u64, h: Option<&HeaderMap>) -> Duration {
         .unwrap_or_else(|| backoff(attempt))
 }
 
+/// Short jittered pause (20–120 ms) before failing over to another account, so a burst of
+/// failures does not hit the next account in lockstep.
+pub fn switch_jitter() -> Duration {
+    Duration::from_millis(rand::rng().random_range(20..120))
+}
+
 /// Status codes retried before the first downstream byte (Codex: 5xx + transport only).
 pub fn is_retryable_status(s: u16) -> bool {
     (500..600).contains(&s)

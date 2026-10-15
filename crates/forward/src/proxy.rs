@@ -8,7 +8,7 @@ use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use ciallopa_core::{AccountId, AuthError, Outcome, RouteError, RouteRequest};
 use ciallopa_routing::{is_cloudflare_challenge, is_usage_limit, parse_quota, retry_after_for_429};
-use ciallopa_upstream::retry::{delay_for, is_retryable_status};
+use ciallopa_upstream::retry::{is_retryable_status, switch_jitter};
 use futures::StreamExt;
 use http::{HeaderMap, HeaderValue, Method, StatusCode};
 use std::sync::Arc;
@@ -111,7 +111,7 @@ impl Best {
 }
 
 /// Another account (not `id`, not excluded, enabled, not cooling) could take the request.
-fn others_usable(
+pub(crate) fn others_usable(
     st: &AppState,
     accounts: &[ciallopa_core::Account],
     route: &RouteRequest,
@@ -124,9 +124,6 @@ fn others_usable(
             && st.router.cooling_until(&a.id).is_none()
     })
 }
-
-/// Failed tries on one account before switching to another (when one is usable).
-const SAME_ACCOUNT_TRIES: u32 = 2;
 
 async fn send_inner(st: &AppState, ob: Outbound, info: &mut SendInfo) -> Result<Chosen, Response> {
     let (retries, cool_secs) = {
@@ -175,7 +172,9 @@ async fn send_inner(st: &AppState, ob: Outbound, info: &mut SendInfo) -> Result<
                         StatusCode::SERVICE_UNAVAILABLE,
                         errors::SRC_LOCAL,
                         code,
-                        Some(Duration::from_secs(30)),
+                        // No Retry-After: nothing will change by itself, so the client gives up after its
+                        // short request retries instead of waiting out server advice on every reconnect.
+                        None,
                     ),
                 }));
             }
@@ -204,7 +203,6 @@ async fn send_inner(st: &AppState, ob: Outbound, info: &mut SendInfo) -> Result<
             }
         };
         let mut refreshed = false;
-        let mut same = 0u32;
         loop {
             let url = st.upstream.url(&ob.path);
             let res = st
@@ -237,22 +235,18 @@ async fn send_inner(st: &AppState, ob: Outbound, info: &mut SendInfo) -> Result<
                     // Network errors never cool the account.
                     st.router
                         .report(&route, &id, &Outcome::Transient { status: None });
-                    transient += 1;
-                    same += 1;
-                    info.retries = transient as u32;
-                    if transient > retries {
+                    // Local retries only fail over to another account; the client owns
+                    // same-backend retries and their backoff (no layered amplification).
+                    if transient >= retries || !others_usable(st, &accounts, &route, &id) {
                         info.attempts.act("stop");
                         return Err(best.or(|| errors::network(code)));
                     }
-                    if same >= SAME_ACCOUNT_TRIES && others_usable(st, &accounts, &route, &id) {
-                        info.attempts.act("switch");
-                        route.exclude.push(id.clone());
-                        break;
-                    }
-                    let d = delay_for(transient, None);
-                    info.attempts.act(format!("retry({}ms)", d.as_millis()));
-                    tokio::time::sleep(d).await;
-                    continue;
+                    transient += 1;
+                    info.retries = transient as u32;
+                    info.attempts.act("switch");
+                    route.exclude.push(id.clone());
+                    tokio::time::sleep(switch_jitter()).await;
+                    break;
                 }
             };
             st.upstream.store_cookies(&id, &url, r.headers());
@@ -338,10 +332,6 @@ async fn send_inner(st: &AppState, ob: Outbound, info: &mut SendInfo) -> Result<
                     a.code = Some(errors::upstream_code(s, &h, &b));
                     a.body = errors::body_snippet(&b);
                     info.attempts.push(a);
-                    transient += 1;
-                    same += 1;
-                    info.retries = transient as u32;
-                    let d = delay_for(transient, Some(&h));
                     best.offer(s, &h, b);
                     let cool_tag = if cooled {
                         let secs = st
@@ -354,18 +344,18 @@ async fn send_inner(st: &AppState, ob: Outbound, info: &mut SendInfo) -> Result<
                     } else {
                         String::new()
                     };
-                    if transient > retries {
+                    // No other account, or the per-request budget is spent: hand the upstream
+                    // response (status, body, Retry-After) to the client, which retries it.
+                    if transient >= retries || !others {
                         info.attempts.act(format!("{cool_tag}stop"));
                         return Err(best.or(unreachable_response));
                     }
-                    if cooled || (same >= SAME_ACCOUNT_TRIES && others) {
-                        info.attempts.act(format!("{cool_tag}switch"));
-                        route.exclude.push(id.clone());
-                        break;
-                    }
-                    info.attempts.act(format!("retry({}ms)", d.as_millis()));
-                    tokio::time::sleep(d).await;
-                    continue;
+                    transient += 1;
+                    info.retries = transient as u32;
+                    info.attempts.act(format!("{cool_tag}switch"));
+                    route.exclude.push(id.clone());
+                    tokio::time::sleep(switch_jitter()).await;
+                    break;
                 }
                 s => {
                     a.action = "stop".into();

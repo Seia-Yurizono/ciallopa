@@ -7,7 +7,7 @@ use axum::extract::{OriginalUri, State};
 use axum::response::Response;
 use ciallopa_core::{AccountId, Outcome, RouteError, RouteRequest};
 use ciallopa_routing::{parse_quota, parse_quota_event_headers};
-use ciallopa_upstream::retry::{delay_for, is_retryable_status};
+use ciallopa_upstream::retry::{delay_for, is_retryable_status, switch_jitter};
 use ciallopa_upstream::ws::handshake_status;
 use ciallopa_upstream::{UpstreamWs, WsMessage};
 use ciallopa_usage::Transport;
@@ -101,13 +101,19 @@ pub(crate) async fn handler(
     resp
 }
 
+/// Handshake retries for transport errors / 408 / 5xx (Codex `request_max_retries` default).
+const WS_HANDSHAKE_RETRIES: u64 = 4;
+
 async fn connect(
     st: &AppState,
     path: &str,
     headers: &HeaderMap,
     route: &mut RouteRequest,
 ) -> Result<(UpstreamWs, HeaderMap, AccountId), Response> {
-    let retries = u64::from(st.config.load().upstream_opts.max_attempts);
+    // Codex does not retry a failed WebSocket handshake at the request level (it gives up on the
+    // turn or falls back to HTTPS), so this is the only retry layer for it: up to
+    // WS_HANDSHAKE_RETRIES with backoff, on another usable account when there is one.
+    let retries = WS_HANDSHAKE_RETRIES;
     let mut transient = 0u64;
     let mut last: Option<Response> = None;
     loop {
@@ -139,7 +145,9 @@ async fn connect(
                         StatusCode::SERVICE_UNAVAILABLE,
                         crate::errors::SRC_LOCAL,
                         code,
-                        Some(std::time::Duration::from_secs(30)),
+                        // No Retry-After: nothing will change by itself, so the client gives up after its
+                        // short request retries instead of waiting out server advice on every reconnect.
+                        None,
                     )
                 }));
             }
@@ -181,11 +189,16 @@ async fn connect(
                         tracing::warn!(account = %id, error = %e, "upstream ws connect failed");
                         st.router
                             .report(route, &id, &Outcome::Transient { status: None });
-                        transient += 1;
-                        if transient > retries {
+                        if transient >= retries {
                             return Err(crate::errors::network("connect"));
                         }
-                        tokio::time::sleep(delay_for(transient, None)).await;
+                        transient += 1;
+                        if proxy::others_usable(st, &accounts, route, &id) {
+                            route.exclude.push(id.clone());
+                            tokio::time::sleep(switch_jitter()).await;
+                        } else {
+                            tokio::time::sleep(delay_for(transient, None)).await;
+                        }
                         break;
                     };
                     let resp = {
@@ -218,12 +231,7 @@ async fn connect(
                             break;
                         }
                         s if s == 408 || is_retryable_status(s) => {
-                            let others = accounts.iter().any(|a| {
-                                a.id != id
-                                    && !a.disabled
-                                    && !route.exclude.contains(&a.id)
-                                    && st.router.cooling_until(&a.id).is_none()
-                            });
+                            let others = proxy::others_usable(st, &accounts, route, &id);
                             let secs = st.config.load().upstream_opts.transient_cooldown_secs;
                             let cooldown =
                                 (others && secs > 0).then(|| std::time::Duration::from_secs(secs));
@@ -235,11 +243,16 @@ async fn connect(
                                     cooldown,
                                 },
                             );
-                            transient += 1;
-                            if transient > retries {
+                            if transient >= retries {
                                 return Err(resp);
                             }
-                            tokio::time::sleep(delay_for(transient, Some(&h))).await;
+                            transient += 1;
+                            if others {
+                                route.exclude.push(id.clone());
+                                tokio::time::sleep(switch_jitter()).await;
+                            } else {
+                                tokio::time::sleep(delay_for(transient, Some(&h))).await;
+                            }
                             break;
                         }
                         s => {

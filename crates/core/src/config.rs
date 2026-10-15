@@ -67,9 +67,11 @@ impl RoutingConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct UpstreamOpts {
     pub stream_idle_timeout_secs: u64,
-    /// Number of *retries* after the first attempt for transport errors / 408 / 5xx, before any
-    /// byte reaches the client (Codex `request_max_retries`): default 4 ⇒ up to 5 requests.
-    /// 401/403/404/429 failovers to another account do not consume retries.
+    /// Per-request budget of local failovers for transport errors / 408 / 5xx, before any byte
+    /// reaches the client. Each one moves to *another* usable account; the same account is never
+    /// retried locally, because the client already retries it with its own backoff. When no other
+    /// account is usable the upstream response goes back to the client right away. Default 1 ⇒
+    /// at most 2 upstream requests per client attempt. 401/403/404/429 failovers do not consume it.
     pub max_attempts: u32,
     pub connect_timeout_secs: u64,
     /// zstd-compress (level 3) plaintext HTTP `POST /responses` bodies before forwarding, like
@@ -89,7 +91,7 @@ impl Default for UpstreamOpts {
     fn default() -> Self {
         Self {
             stream_idle_timeout_secs: 300,
-            max_attempts: 4,
+            max_attempts: 1,
             connect_timeout_secs: 30,
             compress_requests: true,
             cloudflare_cookies: false,
