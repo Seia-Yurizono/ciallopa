@@ -33,7 +33,7 @@ of a change.
 | `api_keys` | New keys work and removed keys get 401 from the next request. Open WebSockets stay open. |
 | `proxy_url`, `upstream_opts.connect_timeout_secs` | Per-account clients (and token-refresh clients) are dropped and rebuilt on next use. |
 | `upstream_opts.cloudflare_cookies` | Off: every account's jar is dropped. On: empty jars. Connections are kept. |
-| `upstream_opts.stream_idle_timeout_secs`, `max_attempts`, `compress_requests`, `transient_cooldown_secs`, `overload_streak`, `overload_cooldown_secs`, `overload_cooldown_max_secs` | Next request. Running cooldowns keep their end time. |
+| `upstream_opts.stream_idle_timeout_secs`, `max_attempts`, `compress_requests`, `transient_cooldown_secs`, `overload_streak`, `overload_cooldown_secs`, `overload_cooldown_max_secs`, `overload_retry_wait_secs` | Next request. Running cooldowns keep their end time. |
 | `routing.*` | Next selection. Cooldowns, quota snapshots, session bindings and round-robin cursors are kept; a new `session_affinity_ttl` applies to bindings written from then on. |
 | `images.*` | Next request. |
 | `log.level` | Immediately, unless `RUST_LOG` is set (it takes precedence; the page says so). |

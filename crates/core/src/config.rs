@@ -93,6 +93,10 @@ pub struct UpstreamOpts {
     pub overload_cooldown_secs: u64,
     /// Upper bound of the overload cooldown (seconds).
     pub overload_cooldown_max_secs: u64,
+    /// When the only usable account (or every account) is overloaded before any output, wait
+    /// about this long (jittered to 2/3–5/3 of it; an upstream `Retry-After` is honored up to
+    /// 10 s) and retry once on the same account. 0 = no wait-and-retry.
+    pub overload_retry_wait_secs: u64,
 }
 impl Default for UpstreamOpts {
     fn default() -> Self {
@@ -106,6 +110,7 @@ impl Default for UpstreamOpts {
             overload_streak: 2,
             overload_cooldown_secs: 120,
             overload_cooldown_max_secs: 600,
+            overload_retry_wait_secs: 3,
         }
     }
 }

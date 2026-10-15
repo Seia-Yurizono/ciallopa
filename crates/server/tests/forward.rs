@@ -186,6 +186,14 @@ async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: Bytes) -> Re
                 .unwrap()
         }
         "over400" => return sse_resp(OK_B),
+        "overonce" if n < 2 => return sse_resp(OVER),
+        "overonce" => return sse_resp(OK_B),
+        "overnmr" => {
+            let mut r = sse_resp(OVER);
+            r.headers_mut()
+                .insert("x-retry-metadata", "NO_MORE_RETRY".parse().unwrap());
+            return r;
+        }
         _ => {}
     }
     match mode.as_str() {
@@ -2026,7 +2034,8 @@ async fn upstream_5xx_passed_through_with_provenance() {
     let t = r.text().await.unwrap();
     assert!(t.contains("up busy"), "{t}");
     // One failover to another account, never the same account twice (max_attempts = 1).
-    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 2);
+    // Each account once, then one wait-and-retry on the last usable account.
+    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 3);
     let rows = wait_rows(&e, 1).await;
     let row = &rows[0];
     assert_eq!(row["err_source"], "upstream", "{row}");
@@ -2036,10 +2045,12 @@ async fn upstream_5xx_passed_through_with_provenance() {
     let v: serde_json::Value = detail_of(&e, &id, true).await.json().await.unwrap();
     assert_eq!(v["upstream_request_id"], "req_down");
     let at = v["attempts"].as_array().unwrap();
-    assert_eq!(at.len(), 2, "{v}");
+    assert_eq!(at.len(), 3, "{v}");
     assert_eq!(at[0]["action"], "switch");
-    assert_eq!(at[1]["action"], "stop");
+    assert_eq!(at[1]["action"], "wait+retry");
+    assert_eq!(at[2]["action"], "stop");
     assert_ne!(at[0]["account"], at[1]["account"]);
+    assert_eq!(at[1]["account"], at[2]["account"]);
 }
 
 #[tokio::test]
@@ -2088,7 +2099,11 @@ async fn sse_overload_everywhere_passes_through_verbatim() {
         "{t}"
     );
     assert!(t.contains("\"r-a\""), "{t}");
-    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 2, "each account once");
+    assert_eq!(
+        e.mock.hits.load(Ordering::SeqCst),
+        3,
+        "each account once, plus one wait-and-retry"
+    );
     let o = e.outcomes();
     // The last usable account is never cooled.
     assert!(o
@@ -2117,4 +2132,30 @@ async fn http_400_overload_message_switches_despite_no_more_retry() {
         .outcomes()
         .iter()
         .any(|(a, o)| a == "a" && matches!(o, Outcome::Overloaded { .. })));
+}
+
+#[tokio::test]
+async fn sse_overload_last_account_waits_and_retries_once() {
+    let e = env_cfg(300, None, "overload_retry_wait_secs = 1\n").await;
+    let t0 = std::time::Instant::now();
+    let t = sse_text(&e, "overonce").await;
+    assert!(t.contains("r-b") && !t.contains("overloaded"), "{t}");
+    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 3);
+    assert!(t0.elapsed() >= std::time::Duration::from_millis(600));
+}
+
+#[tokio::test]
+async fn sse_overload_no_more_retry_skips_wait() {
+    let e = env_cfg(300, None, "overload_retry_wait_secs = 1\n").await;
+    let t = sse_text(&e, "overnmr").await;
+    assert!(t.contains("server_is_overloaded"), "{t}");
+    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn sse_overload_wait_retry_disabled() {
+    let e = env_cfg(300, None, "overload_retry_wait_secs = 0\n").await;
+    let t = sse_text(&e, "allover").await;
+    assert!(t.contains("server_is_overloaded"), "{t}");
+    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 2);
 }

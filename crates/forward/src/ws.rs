@@ -115,6 +115,7 @@ async fn connect(
     // WS_HANDSHAKE_RETRIES with backoff, on another usable account when there is one.
     let retries = WS_HANDSHAKE_RETRIES;
     let mut transient = 0u64;
+    let mut overload_waited = false;
     let mut last: Option<Response> = None;
     loop {
         let accounts = st.accounts.list().await;
@@ -224,6 +225,12 @@ async fn connect(
                             m.code = code;
                         }
                         if !others {
+                            if let Some(w) = proxy::overload_retry_wait(st, overload_waited, &h) {
+                                overload_waited = true;
+                                tracing::info!(account = %id, wait_ms = w.as_millis() as u64, "ws handshake overloaded on last usable account; waiting to retry once");
+                                tokio::time::sleep(w).await;
+                                continue;
+                            }
                             return Err(resp);
                         }
                         route.exclude.push(id.clone());
@@ -390,6 +397,8 @@ async fn relay(
     let mut pending: Option<String> = None;
     let mut held: Vec<Message> = Vec::new();
     let mut started = false;
+    // The single same-account overload wait-and-retry of the current turn is spent.
+    let mut overload_waited = false;
     // Usage: one tracker per turn (client `response.create` → terminal event). Dropping it
     // emits the record, so every `break` below records the in-flight turn with its error.
     let endpoint = endpoint_of(&ctx.path);
@@ -406,6 +415,7 @@ async fn relay(
                             sleep.as_mut().reset(tokio::time::Instant::now() + idle);
                             held.clear();
                             started = false;
+                            overload_waited = false;
                         }
                         pending = match &m {
                             Message::Text(t) if !awaiting && replayable(t.as_str()) => Some(t.as_str().to_string()),
@@ -486,15 +496,27 @@ async fn relay(
                             let accounts = st.accounts.list().await;
                             let others = proxy::others_usable(&st, &accounts, &route, &account);
                             st.router.report(&route, &account, &proxy::overload_outcome(&st, others));
-                            let can_replay = awaiting && !started && others && switches + 1 < max_switches.max(2);
+                            let fresh = awaiting && !started && pending.is_some();
+                            // Only usable account left: wait once and replay on it (Codex does not
+                            // retry an in-stream overload itself).
+                            let wait = (fresh && !others)
+                                .then(|| proxy::overload_retry_wait(&st, overload_waited, &HeaderMap::new()))
+                                .flatten();
+                            let can_replay = fresh && ((others && switches + 1 < max_switches.max(2)) || wait.is_some());
                             if let (true, Some(req)) = (can_replay, pending.clone()) {
-                                switches += 1;
                                 let _ = utx.send(WsMessage::Close(None)).await;
-                                route.exclude.push(account.clone());
+                                if let Some(w) = wait {
+                                    overload_waited = true;
+                                    tracing::info!(account = %account, code = %code, wait_ms = w.as_millis() as u64, "ws overloaded before output on last usable account; waiting to retry once");
+                                    tokio::time::sleep(w).await;
+                                } else {
+                                    switches += 1;
+                                    route.exclude.push(account.clone());
+                                }
                                 match connect(&st, &ctx.path, &ctx.headers, &mut route).await {
                                     Ok((ws, h, id)) => {
                                         quota_h = h;
-                                        tracing::info!(from = %account, to = %id, code = %code, "ws overloaded before output; replayed on another account");
+                                        tracing::info!(from = %account, to = %id, code = %code, "ws overloaded before output; replayed");
                                         if let Some(t) = turn.as_mut() { t.switch_to(&id); t.quota(&quota_h); }
                                         account = id;
                                         let (t, r) = ws.split();

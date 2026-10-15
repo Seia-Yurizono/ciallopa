@@ -63,6 +63,8 @@ pub(crate) struct SendInfo {
     pub tried: Vec<AccountId>,
     /// Every upstream attempt with ciallopa's reaction (bounded).
     pub attempts: crate::errors::Attempts,
+    /// The single same-account overload wait-and-retry of this client request is spent.
+    pub overload_waited: bool,
 }
 
 /// Run the selection / retry loop. `Err` is a ready-made downstream response.
@@ -282,6 +284,13 @@ async fn send_inner(st: &AppState, ob: Outbound, info: &mut SendInfo) -> Result<
                     best.overloaded(status, &h, b, code);
                     let tag = if cooled { "cooldown+" } else { "" };
                     if !others {
+                        if let Some(w) = overload_retry_wait(st, info.overload_waited, &h) {
+                            info.overload_waited = true;
+                            info.attempts.act(format!("{tag}wait+retry"));
+                            tracing::info!(account = %id, wait_ms = w.as_millis() as u64, "overloaded on last usable account; waiting to retry once");
+                            tokio::time::sleep(w).await;
+                            continue;
+                        }
                         info.attempts.act(format!("{tag}stop"));
                         return Err(best.or(unreachable_response));
                     }
@@ -792,6 +801,16 @@ pub(crate) fn no_more_retry(h: &HeaderMap) -> bool {
         .any(|v| v.to_ascii_uppercase().contains("NO_MORE_RETRY"))
 }
 
+/// Pause for the one same-account retry after an overload with no other usable account, or
+/// `None` when it is spent, disabled, or forbidden by `x-retry-metadata: NO_MORE_RETRY`.
+pub(crate) fn overload_retry_wait(st: &AppState, waited: bool, h: &HeaderMap) -> Option<Duration> {
+    if waited || no_more_retry(h) {
+        return None;
+    }
+    let base = st.config.load().upstream_opts.overload_retry_wait_secs;
+    ciallopa_upstream::retry::overload_wait(base, Some(h))
+}
+
 /// The router outcome for one overloaded answer on `id` (cooling never hits the last usable
 /// account).
 pub(crate) fn overload_outcome(st: &AppState, others: bool) -> Outcome {
@@ -921,15 +940,18 @@ pub(crate) async fn send_streaming(
     );
     let mut switches = 0usize;
     let mut carried_retries = 0u32;
+    let mut overload_waited = false;
     // Attempt chain across in-stream failovers (send_info restarts its own per call).
     let mut chain = errors::Attempts::default();
     loop {
         let mut info = SendInfo {
             retries: carried_retries,
+            overload_waited,
             ..Default::default()
         };
         let res = send_info(st, ob.clone(), &mut info).await;
         carried_retries = info.retries;
+        overload_waited = info.overload_waited;
         for a in info.attempts.list.drain(..) {
             chain.push(a);
         }
@@ -979,6 +1001,7 @@ pub(crate) async fn send_streaming(
             return stream_back_tracked(st, c, trk, ob.expect_sse);
         }
         let status = c.resp.status();
+        let up_headers = c.resp.headers().clone();
         let mut headers = downstream_headers(c.resp.headers());
         ensure_sse_content_type(&mut headers);
         let (route, account) = (c.route, c.account);
@@ -1083,7 +1106,15 @@ pub(crate) async fn send_streaming(
             a.code = Some(code.clone());
             a.body = errors::body_snippet(&buf);
             let tag = if cooled { "cooldown+" } else { "" };
-            a.action = format!("{tag}{}", if others { "switch" } else { "stop" });
+            let wait = (!others)
+                .then(|| overload_retry_wait(st, overload_waited, &up_headers))
+                .flatten();
+            let next = match (others, wait.is_some()) {
+                (true, _) => "switch",
+                (false, true) => "wait+retry",
+                (false, false) => "stop",
+            };
+            a.action = format!("{tag}{next}");
             chain.push(a);
             if let Some(t) = trk.as_mut() {
                 t.attempts(&chain);
@@ -1093,6 +1124,16 @@ pub(crate) async fn send_streaming(
                 ob.route = route;
                 ob.route.exclude.push(account);
                 tokio::time::sleep(switch_jitter()).await;
+                continue;
+            }
+            if let Some(w) = wait {
+                // Only usable account left: nothing reached the client, so wait once and replay
+                // on the same account (Codex does not retry an in-stream overload itself).
+                tracing::info!(account = %account, code = %code, wait_ms = w.as_millis() as u64, "overloaded before first output on last usable account; waiting to retry once");
+                overload_waited = true;
+                drop(up);
+                ob.route = route;
+                tokio::time::sleep(w).await;
                 continue;
             }
             // Last usable account: the upstream error goes to the client verbatim (rest of the

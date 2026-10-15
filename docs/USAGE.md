@@ -106,11 +106,16 @@ body. It is account-level throttling, not quota and not a credential problem.
   frames of the current turn): the request is replayed on another usable account, each account at
   most once per request, after a 20–120 ms jitter. This does not use `max_attempts`. Session
   affinity is unchanged: a session only moves when its account errors or cools down.
-- **After output** (text, reasoning, tool call), or when no other account is usable: the
-  upstream error is passed through verbatim (the rest of the stream included), and the client
-  decides. No 429 is ever synthesized for overload.
-- `x-retry-metadata: NO_MORE_RETRY` forbids another try on the same account (it ends the WS
-  handshake retries on the last account); switching to another account is still allowed.
+- **No other account usable** (one account, or every account already overloaded) and still
+  nothing sent: ciallopa waits about `overload_retry_wait_secs` (default 3, jittered to 2–5 s; an
+  upstream `Retry-After` is honored up to 10 s) and retries once on the same account, because
+  Codex does not retry an in-stream overload itself. One such retry per HTTP request and per WS
+  turn; `0` disables it.
+- **After output** (text, reasoning, tool call), or when that retry is spent: the upstream error
+  is passed through verbatim (the rest of the stream included), and the client decides. No 429
+  is ever synthesized for overload.
+- `x-retry-metadata: NO_MORE_RETRY` forbids another try on the same account (it skips the
+  wait-and-retry and ends the WS handshake retries on the last account); switching to another account is still allowed.
 - Cooldown: after `overload_streak` (default 2) consecutive overloaded answers on one account it
   is cooled for `overload_cooldown_secs` (default 120), doubling on each further cooldown up to
   `overload_cooldown_max_secs` (default 600). Delivered output resets both the streak and the

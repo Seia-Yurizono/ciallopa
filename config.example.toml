@@ -37,6 +37,9 @@ transient_cooldown_secs = 15
 overload_streak = 2
 overload_cooldown_secs = 120
 overload_cooldown_max_secs = 600
+# No other usable account and nothing sent yet: wait about this long (2/3–5/3 jitter; upstream
+# Retry-After honored up to 10 s) and retry once on the same account. 0 = off.
+overload_retry_wait_secs = 3
 # Per-account in-memory jar for ChatGPT infrastructure cookies (Cloudflare + __oailb only,
 # official Codex allowlist; https ChatGPT hosts only; never shared across accounts).
 # Client Cookie headers are never forwarded upstream and upstream Set-Cookie never reaches clients.

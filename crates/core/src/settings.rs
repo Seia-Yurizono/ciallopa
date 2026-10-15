@@ -204,6 +204,13 @@ pub const SCHEMA: &[Field] = &[
         "overloaded 冷却上限（秒）",
     ),
     f(
+        "upstream_opts.overload_retry_wait_secs",
+        "int",
+        Hot,
+        true,
+        "仅剩一个可用账号或全部 overloaded 时，等待约几秒后同号重试 1 次（0 = 不重试）",
+    ),
+    f(
         "upstream_opts.connect_timeout_secs",
         "int",
         Hot,
