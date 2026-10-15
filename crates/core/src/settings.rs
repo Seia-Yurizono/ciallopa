@@ -176,6 +176,13 @@ pub const SCHEMA: &[Field] = &[
         "失败重试次数",
     ),
     f(
+        "upstream_opts.transient_cooldown_secs",
+        "int",
+        Hot,
+        true,
+        "上游连续 3 次 5xx 后的冷却（秒，0 = 不冷却）",
+    ),
+    f(
         "upstream_opts.connect_timeout_secs",
         "int",
         Hot,

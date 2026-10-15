@@ -20,9 +20,10 @@ pub enum AuthError {
 pub enum RouteError {
     #[error("no accounts configured")]
     NoAccounts,
-    /// Every candidate is cooling down; respond 429 with Retry-After.
+    /// Every candidate is cooling down. `quota` = every one is out of usage quota (the only
+    /// case that may be answered with a synthesized `usage_limit_reached`).
     #[error("all accounts cooling down")]
-    AllCoolingDown { retry_after: Duration },
+    AllCoolingDown { retry_after: Duration, quota: bool },
     #[error("not implemented")]
     Unimplemented,
 }

@@ -34,6 +34,10 @@ pub fn routes(s: S) -> Router {
             axum::routing::patch(update).delete(remove),
         )
         .route("/admin/v1/accounts/{id}/refresh", post(refresh))
+        .route(
+            "/admin/v1/accounts/{id}/clear-cooldown",
+            post(clear_cooldown),
+        )
         .with_state(s)
 }
 
@@ -107,6 +111,7 @@ async fn list(State(s): State<S>) -> Response {
             "status": status,
             "disabled": a.disabled,
             "cooling_until_ms": cool.map(ms),
+            "cooling_reason": cool.and_then(|_| st.router.cooling_reason(&a.id)),
             "weight": a.weight,
             "priority": a.priority,
             "usage_24h": usage.get(&a.id),
@@ -238,6 +243,35 @@ async fn refresh(
         }
         Err(e) => auth_err(e),
     }
+}
+
+/// Manual "clear cooldown": a runtime action (nothing is written to the config), so it needs
+/// an admin key and the CSRF header but not `allow_config_write`.
+async fn clear_cooldown(
+    State(s): State<S>,
+    key: Option<axum::Extension<ClientKey>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Some(r) = bad_id(&id) {
+        return r;
+    }
+    if let Some(r) = csrf(&headers) {
+        return r;
+    }
+    if !s.st.accounts.list().await.iter().any(|a| a.id == id) {
+        return err(StatusCode::NOT_FOUND, "no such account");
+    }
+    let cleared = s.st.router.clear_cooldown(&id);
+    if cleared {
+        s.audit_account(
+            actor(&key).as_deref(),
+            "account-clear-cooldown",
+            &id,
+            Value::Null,
+        );
+    }
+    Json(json!({"ok": true, "cleared": cleared})).into_response()
 }
 
 async fn reload(State(s): State<S>, headers: HeaderMap) -> Response {

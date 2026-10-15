@@ -434,15 +434,56 @@ async fn account_management_and_removal_cleanup() {
     // runtime state of a
     e.upstream.pools.get("a").unwrap();
     e.upstream.pools.get("b").unwrap();
-    ciallopa_core::Router::report(
-        &*e.router,
-        &RouteRequest {
-            model: "m".into(),
-            ..Default::default()
-        },
-        &"a".to_string(),
-        &Outcome::Transient { status: Some(503) },
-    );
+    let cool_a = || {
+        for _ in 0..3 {
+            ciallopa_core::Router::report(
+                &*e.router,
+                &RouteRequest {
+                    model: "m".into(),
+                    ..Default::default()
+                },
+                &"a".to_string(),
+                &Outcome::Transient { status: Some(503) },
+            );
+        }
+    };
+    cool_a();
+    assert!(e.router.cooling_until_any(&"a".to_string()).is_some());
+    // Manual clear: CSRF (JSON) required; the list shows the reason while cooling.
+    let l: serde_json::Value = e
+        .req(reqwest::Method::GET, "/admin/v1/accounts")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let ra = l["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["id"] == "a")
+        .unwrap()
+        .clone();
+    assert_eq!(ra["cooling_reason"], "transient", "{ra}");
+    let r = e
+        .req(reqwest::Method::POST, "/admin/v1/accounts/a/clear-cooldown")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
+    let r: serde_json::Value = e
+        .req(reqwest::Method::POST, "/admin/v1/accounts/a/clear-cooldown")
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(r["cleared"], true);
+    assert!(e.router.cooling_until_any(&"a".to_string()).is_none());
+    cool_a();
     assert!(e.router.cooling_until_any(&"a".to_string()).is_some());
     let r = e
         .req(reqwest::Method::DELETE, "/admin/v1/accounts/a")

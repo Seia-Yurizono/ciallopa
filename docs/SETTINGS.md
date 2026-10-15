@@ -33,7 +33,7 @@ of a change.
 | `api_keys` | New keys work and removed keys get 401 from the next request. Open WebSockets stay open. |
 | `proxy_url`, `upstream_opts.connect_timeout_secs` | Per-account clients (and token-refresh clients) are dropped and rebuilt on next use. |
 | `upstream_opts.cloudflare_cookies` | Off: every account's jar is dropped. On: empty jars. Connections are kept. |
-| `upstream_opts.stream_idle_timeout_secs`, `max_attempts`, `compress_requests` | Next request. |
+| `upstream_opts.stream_idle_timeout_secs`, `max_attempts`, `compress_requests`, `transient_cooldown_secs` | Next request. Running cooldowns keep their end time. |
 | `routing.*` | Next selection. Cooldowns, quota snapshots, session bindings and round-robin cursors are kept; a new `session_affinity_ttl` applies to bindings written from then on. |
 | `images.*` | Next request. |
 | `log.level` | Immediately, unless `RUST_LOG` is set (it takes precedence; the page says so). |
@@ -65,13 +65,14 @@ All routes sit behind the client-key middleware.
 | `POST /admin/v1/config/keys` | `{"label": "phone"}` + `If-Match` → a server-generated key, returned **once**. |
 | `DELETE /admin/v1/config/keys/{label}` | `If-Match`; the key used by the current session cannot delete itself. |
 | `GET /admin/v1/config/audit?limit=50` | Recent audit entries. |
-| `GET /admin/v1/accounts` | id, email, plan, status (`normal` / `cooling` / `disabled` / `token_invalid`), cooldown end, weight, priority, last-24h requests and tokens. No tokens. |
+| `GET /admin/v1/accounts` | id, email, plan, status (`normal` / `cooling` / `disabled` / `token_invalid`), cooldown end and reason (`usage_limit`, `rate_limited`, `auth`, `transient`, `challenge`, `model_unsupported`), weight, priority, last-24h requests and tokens. No tokens. |
 | `PATCH /admin/v1/accounts/{id}` | `{"disabled"?, "weight"?, "priority"?}`; takes effect on the next selection. |
 | `DELETE /admin/v1/accounts/{id}` | `{"confirm": "<id>"}`; deletes the auth file and the runtime state above. |
 | `POST /admin/v1/accounts/import` | `{"auth_json": {…}}` — a Codex CLI `auth.json` or CPA codex file. |
 | `POST /admin/v1/accounts/login/device`, `GET /admin/v1/accounts/login/{id}` | Device-code login (URL + one-time code; the server polls and saves the account). |
 | `POST /admin/v1/accounts/{id}/refresh` | Refresh the access token now. |
 | `POST /admin/v1/accounts/reload` | Re-scan `auth_dir`. |
+| `POST /admin/v1/accounts/{id}/clear-cooldown` | `{}`; drops every cooldown and the consecutive-5xx count of the account (runtime only, audited; needs the admin key and the JSON/CSRF rule, not `allow_config_write`). |
 
 ## Write rules
 

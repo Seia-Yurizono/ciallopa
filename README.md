@@ -53,6 +53,9 @@ max_attempts = 4    # RETRIES (Codex request_max_retries): transport/408/5xx bef
                     # event: account cooled + request replayed on the next account (SSE and WS).
                     # WS after output / incremental turn: frame withheld, close 1012 ⇒ Codex
                     # reconnects with full input on another account.
+transient_cooldown_secs = 15   # upstream 5xx: retry the same account, then switch; cool an account only
+                               # after 3 consecutive 5xx (Retry-After wins, max 60 s). The last usable
+                               # account is never cooled. 0 = never cool on 5xx.
 connect_timeout_secs = 30
 compress_requests = true   # zstd level 3 on plaintext HTTP POST /responses bodies (incl. compaction
                            # turns), like official Codex with ChatGPT auth. Already-encoded bodies,

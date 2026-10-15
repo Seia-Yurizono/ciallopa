@@ -1,4 +1,5 @@
 //! HTTP forwarding core: account selection, failover, pre-first-byte retries, idle timeout.
+use crate::errors;
 use crate::headers::{downstream_headers, upstream_headers};
 use crate::usage::Tracker;
 use crate::AppState;
@@ -54,25 +55,14 @@ fn buffered(status: u16, headers: &HeaderMap, body: Bytes) -> Response {
     r
 }
 
-fn cooling_down(retry_after: Duration) -> Response {
-    let mut r = json_error(
-        StatusCode::TOO_MANY_REQUESTS,
-        "usage_limit_reached",
-        "all accounts are cooling down",
-    );
-    let secs = retry_after.as_secs().max(1).to_string();
-    if let Ok(v) = HeaderValue::from_str(&secs) {
-        r.headers_mut().insert(http::header::RETRY_AFTER, v);
-    }
-    r
-}
-
 /// What `send_info` observed (for the usage log).
 #[derive(Default)]
 pub(crate) struct SendInfo {
     pub retries: u32,
     /// Accounts tried and abandoned (failover), in order.
     pub tried: Vec<AccountId>,
+    /// Every upstream attempt with ciallopa's reaction (bounded).
+    pub attempts: crate::errors::Attempts,
 }
 
 /// Run the selection / retry loop. `Err` is a ready-made downstream response.
@@ -93,13 +83,65 @@ pub(crate) async fn send_info(
     r
 }
 
+/// The most meaningful upstream error seen so far (returned verbatim if nothing succeeds).
+/// Priority: usage-limit 429 > other 429 > 5xx/408 > 401 > 403 > 404; later wins on ties.
+#[derive(Default)]
+struct Best(Option<(u8, Response)>);
+impl Best {
+    fn offer(&mut self, status: u16, h: &HeaderMap, b: Bytes) {
+        let rank = match status {
+            429 if is_usage_limit(&b) => 6,
+            429 => 5,
+            408 | 500..=599 => 4,
+            401 => 3,
+            403 => 2,
+            _ => 1,
+        };
+        if self.0.as_ref().is_some_and(|(r, _)| *r > rank) {
+            return;
+        }
+        let meta = errors::meta_upstream(status, h, &b);
+        let mut r = buffered(status, h, b);
+        r.extensions_mut().insert(meta);
+        self.0 = Some((rank, r));
+    }
+    fn or(self, f: impl FnOnce() -> Response) -> Response {
+        self.0.map(|(_, r)| r).unwrap_or_else(f)
+    }
+}
+
+/// Another account (not `id`, not excluded, enabled, not cooling) could take the request.
+fn others_usable(
+    st: &AppState,
+    accounts: &[ciallopa_core::Account],
+    route: &RouteRequest,
+    id: &AccountId,
+) -> bool {
+    accounts.iter().any(|a| {
+        &a.id != id
+            && !a.disabled
+            && !route.exclude.contains(&a.id)
+            && st.router.cooling_until(&a.id).is_none()
+    })
+}
+
+/// Failed tries on one account before switching to another (when one is usable).
+const SAME_ACCOUNT_TRIES: u32 = 2;
+
 async fn send_inner(st: &AppState, ob: Outbound, info: &mut SendInfo) -> Result<Chosen, Response> {
-    let retries = u64::from(st.config.load().upstream_opts.max_attempts);
+    let (retries, cool_secs) = {
+        let c = st.config.load();
+        (
+            u64::from(c.upstream_opts.max_attempts),
+            c.upstream_opts.transient_cooldown_secs,
+        )
+    };
     let mut route = ob.route;
     // Transport / 5xx retry budget is per client request: carried over account switches
     // done by `send_streaming` (quota failover), never reset per account.
     let mut transient: u64 = u64::from(info.retries);
-    let mut last: Option<Response> = None;
+    let mut best = Best::default();
+    let mut last_net: Option<&'static str> = None;
     loop {
         info.retries = transient as u32;
         info.tried.clone_from(&route.exclude);
@@ -109,17 +151,33 @@ async fn send_inner(st: &AppState, ob: Outbound, info: &mut SendInfo) -> Result<
             .retain(|k| accounts.iter().any(|a| a.id == k));
         let sel = match st.router.select(&route, &accounts) {
             Ok(s) => s,
-            Err(RouteError::AllCoolingDown { retry_after }) => {
-                return Err(last.unwrap_or_else(|| cooling_down(retry_after)))
-            }
-            Err(e) => {
-                return Err(last.unwrap_or_else(|| {
-                    json_error(
+            Err(RouteError::AllCoolingDown { retry_after, quota }) => {
+                return Err(best.or(|| match (quota, last_net) {
+                    (true, _) => errors::quota_exhausted(retry_after),
+                    (false, Some(code)) => errors::network(code),
+                    (false, None) => errors::local(
                         StatusCode::SERVICE_UNAVAILABLE,
-                        "no_account",
-                        &e.to_string(),
-                    )
+                        errors::SRC_LOCAL,
+                        "all_cooling",
+                        Some(retry_after.max(Duration::from_secs(1))),
+                    ),
                 }))
+            }
+            Err(_) => {
+                let code = if accounts.is_empty() {
+                    "no_account"
+                } else {
+                    "no_usable_account"
+                };
+                return Err(best.or(|| match last_net {
+                    Some(n) => errors::network(n),
+                    None => errors::local(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        errors::SRC_LOCAL,
+                        code,
+                        Some(Duration::from_secs(30)),
+                    ),
+                }));
             }
         };
         let id = sel.account.clone();
@@ -127,6 +185,17 @@ async fn send_inner(st: &AppState, ob: Outbound, info: &mut SendInfo) -> Result<
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!(account = %id, error = %e, "credentials unavailable");
+                let mut a = errors::attempt(&id, "refresh");
+                a.code = Some(
+                    if cools_on_credentials_error(&e) {
+                        "refresh_revoked"
+                    } else {
+                        "refresh_transient"
+                    }
+                    .into(),
+                );
+                a.action = "switch".into();
+                info.attempts.push(a);
                 if cools_on_credentials_error(&e) {
                     st.router.report(&route, &id, &Outcome::AuthFailed);
                 }
@@ -135,6 +204,7 @@ async fn send_inner(st: &AppState, ob: Outbound, info: &mut SendInfo) -> Result<
             }
         };
         let mut refreshed = false;
+        let mut same = 0u32;
         loop {
             let url = st.upstream.url(&ob.path);
             let res = st
@@ -157,28 +227,42 @@ async fn send_inner(st: &AppState, ob: Outbound, info: &mut SendInfo) -> Result<
             let r = match res {
                 Ok(r) => r,
                 Err(e) => {
-                    tracing::warn!(account = %id, error = %e, "upstream transport error");
+                    let code = errors::net_code(&e);
+                    tracing::warn!(account = %id, error = %e, code, "upstream transport error");
+                    last_net = Some(code);
+                    let mut a = errors::attempt(&id, "transport");
+                    a.code = Some(code.into());
+                    a.body = Some(e.to_string().chars().take(300).collect());
+                    info.attempts.push(a);
+                    // Network errors never cool the account.
                     st.router
                         .report(&route, &id, &Outcome::Transient { status: None });
                     transient += 1;
+                    same += 1;
                     info.retries = transient as u32;
                     if transient > retries {
-                        return Err(last.unwrap_or_else(|| {
-                            json_error(
-                                StatusCode::BAD_GATEWAY,
-                                "upstream_error",
-                                "upstream connection failed",
-                            )
-                        }));
+                        info.attempts.act("stop");
+                        return Err(best.or(|| errors::network(code)));
                     }
-                    tokio::time::sleep(delay_for(transient, None)).await;
-                    break;
+                    if same >= SAME_ACCOUNT_TRIES && others_usable(st, &accounts, &route, &id) {
+                        info.attempts.act("switch");
+                        route.exclude.push(id.clone());
+                        break;
+                    }
+                    let d = delay_for(transient, None);
+                    info.attempts.act(format!("retry({}ms)", d.as_millis()));
+                    tokio::time::sleep(d).await;
+                    continue;
                 }
             };
             st.upstream.store_cookies(&id, &url, r.headers());
             let status = r.status().as_u16();
+            let mut a = errors::attempt(&id, "http");
+            a.status = Some(status);
             match status {
                 s if s < 400 => {
+                    a.action = "ok".into();
+                    info.attempts.push(a);
                     crate::turn_state::learn(r.headers(), &id);
                     let quota = parse_quota(r.headers());
                     st.router.report(&route, &id, &Outcome::Success { quota });
@@ -192,6 +276,8 @@ async fn send_inner(st: &AppState, ob: Outbound, info: &mut SendInfo) -> Result<
                     refreshed = true;
                     match st.accounts.force_refresh(&id).await {
                         Ok(c) => {
+                            a.action = "refresh+retry".into();
+                            info.attempts.push(a);
                             creds = c;
                             continue;
                         }
@@ -201,8 +287,12 @@ async fn send_inner(st: &AppState, ob: Outbound, info: &mut SendInfo) -> Result<
                     }
                     let h = r.headers().clone();
                     let b = r.bytes().await.unwrap_or_default();
+                    a.code = Some(errors::upstream_code(status, &h, &b));
+                    a.body = errors::body_snippet(&b);
+                    a.action = "switch".into();
+                    info.attempts.push(a);
                     st.router.report(&route, &id, &Outcome::AuthFailed);
-                    last = Some(buffered(status, &h, b));
+                    best.offer(status, &h, b);
                     route.exclude.push(id.clone());
                     break;
                 }
@@ -210,29 +300,76 @@ async fn send_inner(st: &AppState, ob: Outbound, info: &mut SendInfo) -> Result<
                     let h = r.headers().clone();
                     let b = r.bytes().await.unwrap_or_default();
                     let outcome = classify_error(status, &h, &b);
+                    a.code = Some(match &outcome {
+                        Outcome::Challenge => "challenge".into(),
+                        _ => errors::upstream_code(status, &h, &b),
+                    });
+                    a.body = errors::body_snippet(&b);
+                    a.action = "switch".into();
+                    info.attempts.push(a);
                     st.router.report(&route, &id, &outcome);
-                    last = Some(buffered(status, &h, b));
+                    best.offer(status, &h, b);
                     route.exclude.push(id.clone());
                     break;
                 }
                 s if s == 408 || is_retryable_status(s) => {
-                    st.router
-                        .report(&route, &id, &Outcome::Transient { status: Some(s) });
-                    transient += 1;
-                    info.retries = transient as u32;
-                    if transient > retries {
-                        return Ok(Chosen {
-                            resp: r,
-                            account: id,
-                            route,
+                    let h = r.headers().clone();
+                    let b = r.bytes().await.unwrap_or_default();
+                    let others = others_usable(st, &accounts, &route, &id);
+                    let ra = h
+                        .get(http::header::RETRY_AFTER)
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|v| {
+                            ciallopa_routing::parse_retry_after_header(v, SystemTime::now())
                         });
+                    // Never cool the last usable account; 0 disables 5xx cooldown entirely.
+                    let cooldown = (others && cool_secs > 0)
+                        .then(|| ra.unwrap_or(Duration::from_secs(cool_secs)));
+                    let cooled_before = st.router.cooling_until(&id).is_some();
+                    st.router.report(
+                        &route,
+                        &id,
+                        &Outcome::ServerError {
+                            status: s,
+                            cooldown,
+                        },
+                    );
+                    let cooled = !cooled_before && st.router.cooling_until(&id).is_some();
+                    a.code = Some(errors::upstream_code(s, &h, &b));
+                    a.body = errors::body_snippet(&b);
+                    info.attempts.push(a);
+                    transient += 1;
+                    same += 1;
+                    info.retries = transient as u32;
+                    let d = delay_for(transient, Some(&h));
+                    best.offer(s, &h, b);
+                    let cool_tag = if cooled {
+                        let secs = st
+                            .router
+                            .cooling_until(&id)
+                            .and_then(|t| t.duration_since(SystemTime::now()).ok())
+                            .map(|d| d.as_secs() + 1)
+                            .unwrap_or(0);
+                        format!("cooldown({secs}s)+")
+                    } else {
+                        String::new()
+                    };
+                    if transient > retries {
+                        info.attempts.act(format!("{cool_tag}stop"));
+                        return Err(best.or(unreachable_response));
                     }
-                    let d = delay_for(transient, Some(r.headers()));
-                    drop(r);
+                    if cooled || (same >= SAME_ACCOUNT_TRIES && others) {
+                        info.attempts.act(format!("{cool_tag}switch"));
+                        route.exclude.push(id.clone());
+                        break;
+                    }
+                    info.attempts.act(format!("retry({}ms)", d.as_millis()));
                     tokio::time::sleep(d).await;
-                    break;
+                    continue;
                 }
                 s => {
+                    a.action = "stop".into();
+                    info.attempts.push(a);
                     st.router
                         .report(&route, &id, &Outcome::ClientError { status: s });
                     return Ok(Chosen {
@@ -244,6 +381,10 @@ async fn send_inner(st: &AppState, ob: Outbound, info: &mut SendInfo) -> Result<
             }
         }
     }
+}
+
+fn unreachable_response() -> Response {
+    errors::local(StatusCode::BAD_GATEWAY, errors::SRC_LOCAL, "internal", None)
 }
 
 /// Stream an upstream response downstream untouched, with a per-chunk idle timeout.
@@ -268,6 +409,7 @@ pub(crate) fn stream_back_tracked(
         t.status(status.as_u16());
         if status.as_u16() >= 400 {
             t.error_headers(c.resp.headers());
+            t.upstream_error(status.as_u16(), c.resp.headers());
         }
         if !sse {
             t.not_stream();
@@ -283,6 +425,7 @@ pub(crate) fn stream_back_tracked(
         Bytes::new(),
         up,
         trk,
+        sse,
     )
 }
 
@@ -298,6 +441,7 @@ fn stream_body(
     prefix: Bytes,
     mut up: UpStream,
     mut trk: Option<Tracker>,
+    sse: bool,
 ) -> Response {
     let idle = Duration::from_secs(
         st.config
@@ -313,6 +457,8 @@ fn stream_body(
         // never by searching raw bytes (user text containing the string is fine).
         let mut pending: Vec<u8> = Vec::new();
         let mut parsed = 0usize;
+        // Terminal-event detection for the truncation guard (tail carried across chunks).
+        let mut term = TermScan::default();
         let report_quota = |o: &Outcome| {
             router.report(&route, &account, o);
         };
@@ -336,6 +482,7 @@ fn stream_body(
             np
         };
         if !prefix.is_empty() {
+            term.feed(&prefix);
             pending.extend_from_slice(&prefix);
             parsed = check(&pending, parsed, &mut trk, &mut reported);
             if let Some(t) = trk.as_mut() {
@@ -362,6 +509,13 @@ fn stream_body(
                     }
                     tracing::warn!(account = %account, "upstream stream idle timeout");
                     router.report(&route, &account, &Outcome::Transient { status: None });
+                    if let Some(t) = trk.as_mut() {
+                        t.source(errors::SRC_NETWORK);
+                    }
+                    if sse && !term.seen {
+                        let _ = tx.send(Ok(errors::truncated_event())).await;
+                        return;
+                    }
                     let _ = tx
                         .send(Err(std::io::Error::new(
                             std::io::ErrorKind::TimedOut,
@@ -370,16 +524,35 @@ fn stream_body(
                         .await;
                     return;
                 }
-                Ok(None) => return,
+                Ok(None) => {
+                    if sse && !term.seen {
+                        if let Some(t) = trk.as_mut() {
+                            t.fail_msg(
+                                "stream_truncated",
+                                "upstream stream ended without a terminal event",
+                            );
+                            t.source(errors::SRC_STREAM);
+                        }
+                        tracing::warn!(account = %account, "upstream stream ended without a terminal event");
+                        let _ = tx.send(Ok(errors::truncated_event())).await;
+                    }
+                    return;
+                }
                 Ok(Some(Err(e))) => {
                     if let Some(t) = trk.as_mut() {
-                        t.fail_msg("stream_error", format!("upstream stream error: {e}"));
+                        t.fail_msg("stream_truncated", format!("upstream stream error: {e}"));
+                        t.source(errors::SRC_STREAM);
                     }
                     router.report(&route, &account, &Outcome::Transient { status: None });
+                    if sse && !term.seen {
+                        let _ = tx.send(Ok(errors::truncated_event())).await;
+                        return;
+                    }
                     let _ = tx.send(Err(std::io::Error::other(e))).await;
                     return;
                 }
                 Ok(Some(Ok(chunk))) => {
+                    term.feed(&chunk);
                     if !reported {
                         pending.extend_from_slice(&chunk);
                         // Cap the hold: if an event never completes, give up scanning.
@@ -409,6 +582,36 @@ fn stream_body(
     *r.status_mut() = status;
     *r.headers_mut() = headers;
     r
+}
+
+/// Cheap "a terminal Responses event went by" detector over raw SSE bytes.
+#[derive(Default)]
+struct TermScan {
+    tail: Vec<u8>,
+    seen: bool,
+}
+impl TermScan {
+    const PATS: [&'static [u8]; 4] = [
+        b"\"response.completed\"",
+        b"\"response.failed\"",
+        b"\"response.incomplete\"",
+        b"\"response.done\"",
+    ];
+    fn feed(&mut self, chunk: &[u8]) {
+        if self.seen {
+            return;
+        }
+        self.tail.extend_from_slice(chunk);
+        if Self::PATS.iter().any(|p| memfind(&self.tail, p))
+            || (memfind(&self.tail, b"\"type\":\"error\"") && memfind(&self.tail, b"data:"))
+        {
+            self.seen = true;
+            self.tail = Vec::new();
+            return;
+        }
+        let keep = 32.min(self.tail.len());
+        self.tail.drain(..self.tail.len() - keep);
+    }
 }
 
 /// Max bytes held while waiting for the first meaningful SSE event.
@@ -592,7 +795,21 @@ pub(crate) async fn send_streaming(
         carried_retries = info.retries;
         if let Some(t) = trk.as_mut() {
             t.retries(info.retries);
-            t.accounts(&info.tried, res.as_ref().ok().map(|c| &c.account));
+            t.attempts(&info.attempts);
+            // A failed request that never switched still ran on one account: log it.
+            let last_tried = info
+                .attempts
+                .list
+                .last()
+                .map(|a| a.account.clone())
+                .filter(|a| !info.tried.contains(a));
+            t.accounts(
+                &info.tried,
+                res.as_ref()
+                    .ok()
+                    .map(|c| &c.account)
+                    .or(last_tried.as_ref()),
+            );
             if let Ok(c) = &res {
                 t.quota(c.resp.headers());
             }
@@ -606,6 +823,9 @@ pub(crate) async fn send_streaming(
                 // Local / buffered upstream errors: the body is small and already in memory.
                 let (parts, body) = r.into_parts();
                 t.error_headers(&parts.headers);
+                if let Some(m) = parts.extensions.get::<errors::ErrMeta>() {
+                    t.meta_err(m);
+                }
                 let b = axum::body::to_bytes(body, 1 << 20)
                     .await
                     .unwrap_or_default();
@@ -661,7 +881,8 @@ pub(crate) async fn send_streaming(
                     // Consuming the Err means stream_body would only see EOF — surface it here.
                     if let Some(t) = trk.as_mut() {
                         t.status(status.as_u16());
-                        t.fail_msg("stream_error", format!("upstream stream error: {e}"));
+                        t.fail_msg("stream_truncated", format!("upstream stream error: {e}"));
+                        t.source(errors::SRC_STREAM);
                     }
                     st.router
                         .report(&route, &account, &Outcome::Transient { status: None });
@@ -669,7 +890,7 @@ pub(crate) async fn send_streaming(
                         if !buf.is_empty() {
                             let _ = tx.send(Ok(Bytes::from(buf))).await;
                         }
-                        let _ = tx.send(Err(std::io::Error::other(e.to_string()))).await;
+                        let _ = tx.send(Ok(errors::truncated_event())).await;
                     });
                     let mut r = Response::new(err_body);
                     *r.status_mut() = status;
@@ -685,21 +906,16 @@ pub(crate) async fn send_streaming(
                             "idle_timeout",
                             format!("upstream stream idle for {}s (timeout)", idle.as_secs()),
                         );
+                        t.source(errors::SRC_NETWORK);
                     }
                     tracing::warn!(account = %account, "upstream stream idle timeout (bootstrap)");
                     st.router
                         .report(&route, &account, &Outcome::Transient { status: None });
-                    let idle_s = idle.as_secs();
                     let err_body = async_stream(move |tx| async move {
                         if !buf.is_empty() {
                             let _ = tx.send(Ok(Bytes::from(buf))).await;
                         }
-                        let _ = tx
-                            .send(Err(std::io::Error::new(
-                                std::io::ErrorKind::TimedOut,
-                                format!("stream idle timeout ({idle_s}s)"),
-                            )))
-                            .await;
+                        let _ = tx.send(Ok(errors::truncated_event())).await;
                     });
                     let mut r = Response::new(err_body);
                     *r.status_mut() = status;
@@ -724,6 +940,7 @@ pub(crate) async fn send_streaming(
                     "usage_limit",
                     "usage limit reached on every available account",
                 );
+                t.source(errors::SRC_STREAM);
                 t.not_stream();
                 t.error_body(&buf);
             }
@@ -747,6 +964,7 @@ pub(crate) async fn send_streaming(
             Bytes::from(buf),
             up,
             trk,
+            true,
         );
     }
 }

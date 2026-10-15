@@ -158,6 +158,12 @@ async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: Bytes) -> Re
         .to_string();
     match mode.as_str() {
         "retry" if n < 2 => Response::builder().status(503).body(Body::from("busy")).unwrap(),
+        "down" => Response::builder()
+            .status(503)
+            .header("content-type", "application/json")
+            .header("x-request-id", "req_down")
+            .body(Body::from(r#"{"error":{"type":"server_error","code":"server_is_overloaded","message":"up busy"}}"#))
+            .unwrap(),
         "limit" if auth.contains("tok-a") => Response::builder()
             .status(429)
             .body(Body::from(r#"{"error":{"type":"usage_limit_reached","resets_in_seconds":30}}"#))
@@ -476,7 +482,7 @@ async fn retries_5xx_then_succeeds() {
     assert_eq!(r.status(), 200);
     assert_eq!(e.mock.hits.load(Ordering::SeqCst), 3);
     let o = e.outcomes();
-    assert_eq!(o[0].1, Outcome::Transient { status: Some(503) });
+    assert!(matches!(o[0].1, Outcome::ServerError { status: 503, .. }));
     assert!(matches!(o[2].1, Outcome::Success { .. }));
 }
 
@@ -674,7 +680,10 @@ async fn idle_timeout_aborts_stream() {
         .unwrap();
     assert_eq!(r.status(), 200);
     let t0 = std::time::Instant::now();
-    assert!(r.bytes().await.is_err(), "stream must abort");
+    // A cut-off stream ends with a synthetic `response.failed` so the client retries.
+    let b = r.text().await.unwrap();
+    assert!(b.contains("event: response.failed"), "{b}");
+    assert!(!b.contains("ciallopa"));
     assert!(t0.elapsed() < Duration::from_secs(4));
     assert!(e
         .outcomes()
@@ -1384,7 +1393,8 @@ async fn usage_error_detail_capture_and_api() {
         .send()
         .await
         .unwrap();
-    assert!(r.text().await.is_err()); // local idle timeout (1s) aborts the stream
+    let t = r.text().await.unwrap(); // idle timeout (1s) ends the stream with response.failed
+    assert!(t.contains("event: response.failed"), "{t}");
     sse_text(&e, "usage").await; // success: no detail
     let rows = wait_rows(&e, 4).await;
     assert_eq!(rows.len(), 4, "{rows:?}");
@@ -1858,7 +1868,11 @@ async fn bootstrap_transport_error_reaches_client() {
         .await
         .unwrap();
     assert_eq!(r.status(), 200);
-    assert!(r.bytes().await.is_err(), "client must see the stream error");
+    let b = r.text().await.unwrap();
+    assert!(
+        b.contains("event: response.failed"),
+        "client must see the stream error: {b}"
+    );
     assert!(e
         .outcomes()
         .iter()
@@ -1877,7 +1891,7 @@ async fn bootstrap_idle_timeout_not_doubled() {
         .await
         .unwrap();
     let t0 = std::time::Instant::now();
-    assert!(r.bytes().await.is_err());
+    assert!(r.text().await.unwrap().contains("response.failed"));
     let el = t0.elapsed();
     assert!(el < Duration::from_millis(3500), "took {el:?}");
 }
@@ -1958,4 +1972,56 @@ async fn http_refresh_error_must_not_authfail() {
         !o.iter().any(|(_, x)| matches!(x, Outcome::AuthFailed)),
         "{o:?}"
     );
+}
+
+#[tokio::test]
+async fn upstream_5xx_passed_through_with_provenance() {
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    let r = e
+        .post("/backend-api/codex/responses")
+        .header("x-test-mode", "down")
+        .body(r#"{"model":"gpt-5.5","input":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    // Never rewritten into a local 429: the upstream status, body and request id pass through.
+    assert_eq!(r.status(), 503);
+    assert_eq!(r.headers()["x-request-id"], "req_down");
+    assert!(r.headers().keys().all(|k| !k.as_str().contains("ciallopa")));
+    let t = r.text().await.unwrap();
+    assert!(t.contains("up busy"), "{t}");
+    // Same account retried before switching; 5 requests total (max_attempts = 4).
+    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 5);
+    let rows = wait_rows(&e, 1).await;
+    let row = &rows[0];
+    assert_eq!(row["err_source"], "upstream", "{row}");
+    assert_eq!(row["error"], "server_is_overloaded");
+    assert_eq!(row["upstream_status"], 503);
+    let id = row["request_id"].as_str().unwrap().to_string();
+    let v: serde_json::Value = detail_of(&e, &id, true).await.json().await.unwrap();
+    assert_eq!(v["upstream_request_id"], "req_down");
+    let at = v["attempts"].as_array().unwrap();
+    assert_eq!(at.len(), 5, "{v}");
+    assert!(at[0]["action"].as_str().unwrap().starts_with("retry"));
+    assert_eq!(at[1]["action"], "switch");
+    assert_eq!(at[4]["action"], "stop");
+    assert_ne!(at[0]["account"], at[2]["account"]);
+}
+
+#[tokio::test]
+async fn retried_success_keeps_attempt_chain() {
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    sse_text(&e, "retry").await;
+    let rows = wait_rows(&e, 1).await;
+    let row = &rows[0];
+    assert!(row["error"].is_null(), "{row}");
+    assert!(row["err_source"].is_null());
+    assert_eq!(row["has_detail"], true);
+    let id = row["request_id"].as_str().unwrap().to_string();
+    let v: serde_json::Value = detail_of(&e, &id, true).await.json().await.unwrap();
+    let at = v["attempts"].as_array().unwrap();
+    assert_eq!(at.len(), 3, "{v}");
+    assert_eq!(at[2]["action"], "ok");
 }

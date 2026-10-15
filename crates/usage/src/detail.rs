@@ -37,6 +37,10 @@ pub struct ErrorDetail {
     /// Total body length seen, even beyond the capture buffer.
     pub body_len: usize,
     pub headers: Vec<(String, String)>,
+    /// `x-request-id` / `x-oai-request-id` / `cf-ray` of the last upstream response.
+    pub upstream_request_id: Option<String>,
+    /// Attempt chain (JSON array, ≤ 8 entries + a `dropped` marker); failed or switched only.
+    pub attempts: Option<serde_json::Value>,
 }
 impl ErrorDetail {
     pub fn push_body(&mut self, chunk: &[u8]) {
@@ -74,6 +78,24 @@ impl ErrorDetail {
             body_len: self.body_len as i64,
             truncated,
             headers: serde_json::Value::Object(headers).to_string(),
+            upstream_request_id: self
+                .upstream_request_id
+                .as_deref()
+                .map(|v| redact_text(v).chars().take(128).collect()),
+            // Account ids are shown in the panel anyway; only upstream body snippets are redacted.
+            attempts: self.attempts.as_ref().map(|a| {
+                let mut a = a.clone();
+                if let Some(list) = a.as_array_mut() {
+                    for x in list {
+                        if let Some(b) = x.get_mut("body") {
+                            if let Some(t) = b.as_str() {
+                                *b = serde_json::Value::String(redact_body(t));
+                            }
+                        }
+                    }
+                }
+                a.to_string()
+            }),
         }
     }
 }
@@ -84,6 +106,8 @@ pub(crate) struct Stored {
     pub body_len: i64,
     pub truncated: bool,
     pub headers: String,
+    pub upstream_request_id: Option<String>,
+    pub attempts: Option<String>,
 }
 
 /// API shape of `GET /usage/v1/records/{id}/detail`.
@@ -97,6 +121,9 @@ pub struct DetailRow {
     pub body_len: i64,
     pub truncated: bool,
     pub headers: serde_json::Value,
+    pub upstream_request_id: Option<String>,
+    /// Attempt chain: `[{account, t_ms, kind, status, code, action, body}]`.
+    pub attempts: serde_json::Value,
 }
 
 fn cap(s: &str, n: usize) -> (String, bool) {

@@ -53,4 +53,14 @@ pub trait Router: Send + Sync + 'static {
     fn cooling_until(&self, _id: &AccountId) -> Option<std::time::SystemTime> {
         None
     }
+    /// Why the account is cooling down (`usage_limit`, `rate_limited`, `auth`, `transient`,
+    /// `challenge`, `model_unsupported`); None = not cooling.
+    fn cooling_reason(&self, _id: &AccountId) -> Option<&'static str> {
+        None
+    }
+    /// Manual "clear cooldown": drop every cooldown and failure streak of the account.
+    /// Returns whether anything was cleared.
+    fn clear_cooldown(&self, _id: &AccountId) -> bool {
+        false
+    }
 }

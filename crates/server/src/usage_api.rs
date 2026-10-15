@@ -65,6 +65,12 @@ struct RecordsQ {
     /// `1` ⇒ only requested Fast/Flex that was not served.
     downgraded: Option<u8>,
     errors: Option<u8>,
+    /// Comma-separated error sources (`client,local,network,upstream,stream`).
+    source: Option<String>,
+    /// Exact error code.
+    error: Option<String>,
+    /// `1` ⇒ only requests that retried or switched accounts.
+    retried: Option<u8>,
     #[serde(flatten)]
     f: FiltersQ,
 }
@@ -96,6 +102,17 @@ async fn records(State(St { rec, .. }): State<St>, Query(q): Query<RecordsQ>) ->
         offset,
         tier: q.tier,
         downgraded: q.downgraded.unwrap_or(0) != 0,
+        sources: q
+            .source
+            .as_deref()
+            .unwrap_or("")
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect(),
+        error: q.error.filter(|e| !e.trim().is_empty()),
+        retried: q.retried.unwrap_or(0) != 0,
     };
     let total = match rec.recent_count(rq.clone()).await {
         Ok(n) => n,

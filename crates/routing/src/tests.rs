@@ -3,6 +3,58 @@
 //! conductor cooldown tests (table-driven where CPA is).
 #![allow(clippy::unwrap_used, clippy::type_complexity)]
 use super::*;
+
+#[test]
+fn clear_cooldown_and_reason() {
+    let (r, _) = router(RoutingConfig::default());
+    let a: AccountId = "a".into();
+    for _ in 0..3 {
+        r.report(
+            &rq("m"),
+            &a,
+            &Outcome::ServerError {
+                status: 502,
+                cooldown: Some(Duration::from_secs(15)),
+            },
+        );
+    }
+    assert_eq!(r.cooling_reason_any(&a), Some("transient"));
+    assert!(r.clear(&a));
+    assert_eq!(r.cooling_reason_any(&a), None);
+    assert!(!r.clear(&a));
+}
+
+#[test]
+fn all_cooling_quota_flag() {
+    let (r, _) = router(RoutingConfig::default());
+    let accts = [acct("a"), acct("b")];
+    let ul = Outcome::RateLimited {
+        retry_after: Some(Duration::from_secs(300)),
+        usage_limit: true,
+        quota: None,
+    };
+    r.report(&rq("m"), &"a".into(), &ul);
+    r.report(&rq("m"), &"b".into(), &ul);
+    assert!(matches!(
+        r.select(&rq("m"), &accts),
+        Err(RouteError::AllCoolingDown { quota: true, .. })
+    ));
+    r.clear(&"b".into());
+    for _ in 0..3 {
+        r.report(
+            &rq("m"),
+            &"b".into(),
+            &Outcome::ServerError {
+                status: 502,
+                cooldown: Some(Duration::from_secs(15)),
+            },
+        );
+    }
+    assert!(matches!(
+        r.select(&rq("m"), &accts),
+        Err(RouteError::AllCoolingDown { quota: false, .. })
+    ));
+}
 use ciallopa_core::SessionInfo;
 use http::HeaderMap;
 use serde_json::json;
@@ -267,7 +319,8 @@ fn all_cooldown_returns_earliest_retry_after() {
     assert_eq!(
         r.select(&rq("m"), &a),
         Err(RouteError::AllCoolingDown {
-            retry_after: Duration::from_secs(30)
+            retry_after: Duration::from_secs(30),
+            quota: false,
         })
     );
     // per-model: other models still route
@@ -348,10 +401,66 @@ fn cooldown_table() {
             want: Some(Duration::from_secs(10)),
         },
         CoolCase {
-            name: "5xx 60s",
+            name: "single 5xx: no cooldown",
             outcomes: vec![Outcome::Transient { status: Some(502) }],
             model_scoped: true,
+            want: None,
+        },
+        CoolCase {
+            name: "3 consecutive 5xx: cooldown",
+            outcomes: vec![
+                Outcome::ServerError {
+                    status: 502,
+                    cooldown: Some(Duration::from_secs(15)),
+                };
+                3
+            ],
+            model_scoped: true,
             want: Some(TRANSIENT_COOLDOWN),
+        },
+        CoolCase {
+            name: "5xx cooldown capped at 60s",
+            outcomes: vec![
+                Outcome::ServerError {
+                    status: 503,
+                    cooldown: Some(Duration::from_secs(600)),
+                };
+                3
+            ],
+            model_scoped: true,
+            want: Some(TRANSIENT_COOLDOWN_MAX),
+        },
+        CoolCase {
+            name: "last usable account never cooled on 5xx",
+            outcomes: vec![
+                Outcome::ServerError {
+                    status: 500,
+                    cooldown: None,
+                };
+                5
+            ],
+            model_scoped: true,
+            want: None,
+        },
+        CoolCase {
+            name: "success resets the 5xx streak",
+            outcomes: vec![
+                Outcome::ServerError {
+                    status: 500,
+                    cooldown: Some(Duration::from_secs(15)),
+                },
+                Outcome::ServerError {
+                    status: 500,
+                    cooldown: Some(Duration::from_secs(15)),
+                },
+                Outcome::Success { quota: None },
+                Outcome::ServerError {
+                    status: 500,
+                    cooldown: Some(Duration::from_secs(15)),
+                },
+            ],
+            model_scoped: true,
+            want: None,
         },
         CoolCase {
             name: "transport error no cooldown",
@@ -551,7 +660,7 @@ struct RebindCase {
 fn rebind_on_table() {
     let cases = [
         RebindCase {
-            name: "any: 5xx rebinds",
+            name: "any: 5xx failover rebinds",
             rebind: RebindOn::Any,
             outcome: Outcome::Transient { status: Some(503) },
             want_bound_after: "b",
@@ -649,7 +758,9 @@ fn rebind_quota_preserves_binding_while_bound_account_cools_transiently() {
     let a = [acct("a"), acct("b")];
     let req = rq_s("m", "codex:s");
     assert_eq!(pick(&r, &req, &a), "a");
-    r.report(&req, &"a".into(), &Outcome::Transient { status: Some(500) });
+    for _ in 0..3 {
+        r.report(&req, &"a".into(), &Outcome::Transient { status: Some(500) });
+    }
     // a is cooling: requests fail over to b but binding stays a
     assert_eq!(pick(&r, &req, &a), "b");
     assert_eq!(pick(&r, &req, &a), "b");

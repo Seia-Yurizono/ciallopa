@@ -62,12 +62,15 @@ and (to add) `parse_quota(&HeaderMap) -> Option<QuotaSnapshot>`.
 key middleware (server) → handler
   session = routing::extract_session(headers, body)
   loop attempt ≤ max_attempts:
-     sel   = router.select(&req, &accounts.list().await)?      // AllCoolingDown → 429 + Retry-After
+     sel   = router.select(&req, &accounts.list().await)?      // no upstream response yet: AllCoolingDown{quota} → 429 usage_limit_reached, else 503 + Retry-After
      creds = accounts.credentials(&sel.account).await?         // ReloginRequired → report AuthFailed, exclude, continue
      resp  = upstream (replace only authorization + chatgpt-account-id; drop hop-by-hop, client key, X-Forwarded-*)
      401   → accounts.force_refresh() once, retry same account; still 401 → Outcome::AuthFailed
      router.report(&req, &sel.account, &outcome)
-     retry (exclude account) only if nothing was sent downstream yet
+     408/5xx → Outcome::ServerError (cooldown only after 3 in a row, never the last usable account);
+               retry the same account once, then exclude it
+     retry (exclude account) only if nothing was sent downstream yet;
+     out of accounts / budget → most meaningful upstream error verbatim (see docs/USAGE.md)
 ```
 WS: one downstream WS ↔ one upstream WS pinned to one account; on usage_limit/429/close → report, close downstream with same code.
 

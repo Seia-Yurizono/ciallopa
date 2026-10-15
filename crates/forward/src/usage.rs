@@ -179,6 +179,49 @@ impl Tracker {
         self.rec.detail.get_or_insert_with(Default::default)
     }
 
+    /// Where the (first) error came from; first one wins.
+    pub(crate) fn source(&mut self, src: &'static str) {
+        if self.rec.err_source.is_none() {
+            self.rec.err_source = Some(src);
+        }
+    }
+
+    /// The upstream answered with an error status that is passed through to the client.
+    pub(crate) fn upstream_error(&mut self, status: u16, h: &HeaderMap) {
+        self.rec.upstream_status = Some(status);
+        self.source(crate::errors::SRC_UPSTREAM);
+        if let Some(id) = crate::errors::request_id(h) {
+            self.detail().upstream_request_id = Some(id);
+        }
+    }
+
+    /// Provenance attached to a ready-made error response.
+    pub(crate) fn meta_err(&mut self, m: &crate::errors::ErrMeta) {
+        self.source(m.source);
+        if self.rec.error.is_none() {
+            self.rec.error = Some(m.code.clone());
+        }
+        if m.upstream_status.is_some() {
+            self.rec.upstream_status = m.upstream_status;
+        }
+        if let Some(id) = &m.upstream_request_id {
+            self.detail().upstream_request_id = Some(id.clone());
+        }
+    }
+
+    /// Attempt chain; stored only when something other than one clean success happened.
+    pub(crate) fn attempts(&mut self, a: &crate::errors::Attempts) {
+        if a.eventful() {
+            self.detail().attempts = Some(a.to_json());
+        }
+        // Last upstream status seen, for "502←上游 503"-style display.
+        if let Some(s) = a.list.iter().rev().find_map(|x| x.status) {
+            if s >= 400 {
+                self.rec.upstream_status = Some(s);
+            }
+        }
+    }
+
     /// Selected upstream response headers (only kept if the request ends up failed).
     pub(crate) fn error_headers(&mut self, h: &HeaderMap) {
         let d = self.detail();
@@ -283,6 +326,7 @@ impl Tracker {
                 if d.message.is_none() {
                     d.message = msg.or_else(|| Some(format!("upstream event {ty}")));
                 }
+                self.source(crate::errors::SRC_STREAM);
                 if crate::proxy::quota_event(v).0 {
                     self.fail("usage_limit");
                 } else if ty == "error" {
@@ -415,12 +459,41 @@ impl Drop for Tracker {
         self.rec.duration_ms = elapsed_ms(self.start);
         if !self.terminal && self.rec.error.is_none() && self.rec.status < 400 {
             self.rec.error = Some("client_closed".into());
+            self.source(crate::errors::SRC_CLIENT);
         }
         if self.rec.status >= 400 && self.rec.error.is_none() {
-            self.rec.error = Some(error_for_status(self.rec.status).into());
+            // No structured classification: an upstream status passed through keeps the
+            // upstream's own code; never guess a local cause from the status alone.
+            let code = self
+                .rec
+                .detail
+                .as_ref()
+                .and_then(|d| crate::errors::body_code(&d.body))
+                .unwrap_or_else(|| format!("http_{}", self.rec.status));
+            self.rec.error = Some(code);
+            if self.rec.upstream_status.is_some() {
+                self.source(crate::errors::SRC_UPSTREAM);
+            } else {
+                self.source(crate::errors::SRC_LOCAL);
+            }
+        }
+        if self.rec.error.is_some() && self.rec.err_source.is_none() {
+            self.rec.err_source = Some(crate::errors::SRC_LOCAL);
+        }
+        if self.rec.error.is_none() {
+            self.rec.upstream_status = None;
         }
         match self.rec.error.as_deref() {
-            None => self.rec.detail = None,
+            None => {
+                // Success: keep only the attempt chain (retried / switched requests).
+                let a = self.rec.detail.take().and_then(|d| d.attempts);
+                if let Some(a) = a {
+                    self.rec.detail = Some(Box::new(ErrorDetail {
+                        attempts: Some(a),
+                        ..Default::default()
+                    }));
+                }
+            }
             Some(kind) => {
                 let (kind, status) = (kind.to_string(), self.rec.status);
                 let d = self.detail();
@@ -443,22 +516,17 @@ fn describe(kind: &str, status: u16) -> String {
         "stream_error" => "upstream stream transport error".into(),
         "incomplete" => "response.incomplete from upstream".into(),
         "usage_limit" => "upstream usage limit reached".into(),
-        "no_account" => "no account available".into(),
+        "no_account" => "no account configured".into(),
+        "no_usable_account" => "no usable account (all disabled, excluded or need relogin)".into(),
+        "all_cooling" => "every account is cooling down after upstream errors".into(),
+        "all_quota_exhausted" => "every account is out of usage quota".into(),
+        "stream_truncated" => "upstream stream ended without a terminal event".into(),
+        "connect" => "could not connect to upstream".into(),
+        "timeout" | "timeout_connect" => "upstream timed out".into(),
+        "dns" => "upstream DNS resolution failed".into(),
+        "tls" => "TLS handshake with upstream failed".into(),
         _ if status > 0 => format!("HTTP {status} ({kind})"),
         _ => kind.to_string(),
-    }
-}
-
-pub(crate) fn error_for_status(s: u16) -> &'static str {
-    match s {
-        401 | 403 => "auth",
-        404 => "not_found",
-        408 => "timeout",
-        429 => "rate_limited",
-        400..=499 => "client_error",
-        502 => "upstream_unreachable",
-        503 => "no_account",
-        _ => "upstream_5xx",
     }
 }
 

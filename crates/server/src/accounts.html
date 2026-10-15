@@ -106,6 +106,7 @@ const NF=new Intl.NumberFormat("zh-CN");
 function fmtN(n){n=Number(n||0);if(n>=1e6)return(n/1e6).toFixed(2)+"M";if(n>=1e3)return(n/1e3).toFixed(1)+"k";return String(n)}
 function p2(x){return String(x).padStart(2,"0")}
 function hm(ms){const d=new Date(ms);return p2(d.getMonth()+1)+"-"+p2(d.getDate())+" "+p2(d.getHours())+":"+p2(d.getMinutes())}
+const CR={usage_limit:"额度用完",rate_limited:"上游限流",auth:"认证失败",transient:"上游连续 5xx",challenge:"Cloudflare 拦截",model_unsupported:"模型不可用"};
 const ST={normal:["正常","hot","可以接收请求"],cooling:["冷却中","rs","上游限流或出错后暂停使用，到时自动恢复"],disabled:["已停用","","手动停用，不参与选号"],token_invalid:["Token 失效","bad","刷新令牌已失效，需要重新登录（设备码登录或导入）"]};
 let dlgOk=null,dlgPrev=null;
 function dialog(title,body,yes,cb){$("dlgt").textContent=title;clear($("dlgc"));$("dlgc").appendChild(body);$("dyes").textContent=yes;dlgOk=cb;dlgPrev=document.activeElement;$("dlg").classList.remove("hide");$("dno").focus()}
@@ -127,7 +128,9 @@ function render(j){
     const r=el("tr"),c1=el("td");c1.appendChild(el("div",null,a.email||a.id));if(a.email)c1.appendChild(el("div","mut mono",a.id));r.appendChild(c1);
     r.appendChild(el("td",null,a.plan||"–"));
     const s=ST[a.status]||[a.status,""],sc=el("td"),b=el("span","badge "+s[1],s[0]);b.title=s[2];sc.appendChild(b);
-    if(a.status==="cooling"&&a.cooling_until_ms)sc.appendChild(el("div","mut","至 "+hm(a.cooling_until_ms)));r.appendChild(sc);
+    if(a.status==="cooling"&&a.cooling_until_ms){const why=CR[a.cooling_reason]||a.cooling_reason;sc.appendChild(el("div","mut",(why?why+" · ":"")+"至 "+hm(a.cooling_until_ms)));
+      sc.appendChild(btn("解除冷却",null,async()=>{const j=await call("POST","/admin/v1/accounts/"+encodeURIComponent(a.id)+"/clear-cooldown",{});ok(j&&j.cleared?"已解除 "+(a.email||a.id)+" 的冷却，立即参与选号。":(a.email||a.id)+" 已不在冷却中。");await load()},"清除这个账号的全部冷却和连续 5xx 计数，立即参与选号"))}
+    r.appendChild(sc);
     const wt=el("td"),pt=el("td");
     if(W){const wi=numIn(a.weight,"权重"),pi=numIn(a.priority,"优先级");wi.min="0";wt.appendChild(wi);pt.appendChild(pi);
       const save=btn("保存",null,async()=>{const w=parseInt(wi.value,10),p=parseInt(pi.value,10);if(isNaN(w)||isNaN(p))throw new Error("权重和优先级必须是整数");

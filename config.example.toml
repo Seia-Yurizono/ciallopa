@@ -26,6 +26,9 @@ allow_reset_consume = false       # true = allow manually spending a 重置卡 (
 allow_config_write = false        # true = allow settings / key / account changes from /ui/settings and /ui/accounts (file only)
 
 [upstream_opts]
+# Upstream 5xx: retry the same account with backoff, then switch. An account is cooled only after
+# 3 consecutive 5xx, for this many seconds (upstream Retry-After wins, max 60). 0 = never cool.
+transient_cooldown_secs = 15
 # Per-account in-memory jar for ChatGPT infrastructure cookies (Cloudflare + __oailb only,
 # official Codex allowlist; https ChatGPT hosts only; never shared across accounts).
 # Client Cookie headers are never forwarded upstream and upstream Set-Cookie never reaches clients.

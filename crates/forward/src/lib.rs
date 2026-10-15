@@ -6,6 +6,7 @@
 //! A custom Responses provider with `base_url = "https://<proxy>/v1"` hits `/v1/responses`,
 //! `/v1/responses/compact`, `/v1/models` (mapped to `/codex/*`). Everything else under
 //! `/backend-api/*` is a sticky passthrough.
+mod errors;
 mod headers;
 mod images;
 mod models;

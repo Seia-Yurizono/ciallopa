@@ -29,7 +29,13 @@ const MAX_WEIGHT: i64 = 1_000_000;
 pub const QUOTA_BACKOFF_BASE: Duration = Duration::from_secs(1);
 pub const QUOTA_BACKOFF_MAX: Duration = Duration::from_secs(30 * 60);
 pub const MIN_QUOTA_COOLDOWN_FLOOR: Duration = Duration::from_secs(10);
-pub const TRANSIENT_COOLDOWN: Duration = Duration::from_secs(60);
+/// Default cooldown after `TRANSIENT_STREAK` consecutive upstream 5xx
+/// (`[upstream_opts] transient_cooldown_secs`).
+pub const TRANSIENT_COOLDOWN: Duration = Duration::from_secs(15);
+/// Upper bound for a 5xx cooldown, including one taken from `Retry-After`.
+pub const TRANSIENT_COOLDOWN_MAX: Duration = Duration::from_secs(60);
+/// Consecutive upstream 5xx on one account before it is cooled.
+pub const TRANSIENT_STREAK: u32 = 3;
 pub const AUTH_COOLDOWN: Duration = Duration::from_secs(30 * 60);
 pub const NOT_FOUND_COOLDOWN: Duration = Duration::from_secs(12 * 3600);
 pub const CHALLENGE_MIN_COOLDOWN: Duration = Duration::from_secs(10);
@@ -49,6 +55,16 @@ enum ErrKind {
 impl ErrKind {
     fn rebinds(self) -> bool {
         self != ErrKind::Transient
+    }
+    fn reason(self) -> &'static str {
+        match self {
+            ErrKind::Quota => "rate_limited",
+            ErrKind::UsageLimit => "usage_limit",
+            ErrKind::Auth => "auth",
+            ErrKind::ModelUnsupported => "model_unsupported",
+            ErrKind::Challenge => "challenge",
+            ErrKind::Transient => "transient",
+        }
     }
 }
 
@@ -79,6 +95,8 @@ struct State {
     account: HashMap<AccountId, CoolState>,
     model: HashMap<(AccountId, String), CoolState>,
     quota: HashMap<AccountId, QuotaSnapshot>,
+    /// Consecutive upstream 5xx per account (reset on success / manual clear).
+    streak: HashMap<AccountId, u32>,
 }
 
 pub struct CpaRouter {
@@ -154,6 +172,7 @@ impl CpaRouter {
                 account: HashMap::new(),
                 model: HashMap::new(),
                 quota: HashMap::new(),
+                streak: HashMap::new(),
             }),
         }
     }
@@ -189,7 +208,39 @@ impl CpaRouter {
         st.account.remove(id);
         st.model.retain(|(a, _), _| a != id);
         st.quota.remove(id);
+        st.streak.remove(id);
         st.rr_last.retain(|_, v| v != id);
+    }
+
+    /// Reason of the longest live cooldown of the account (account- or model-level).
+    pub fn cooling_reason_any(&self, id: &AccountId) -> Option<&'static str> {
+        let now = (self.clock)();
+        let st = self.lock();
+        let a = st.account.get(id).into_iter();
+        let m = st
+            .model
+            .iter()
+            .filter(|((x, _), _)| x == id)
+            .map(|(_, s)| s);
+        a.chain(m)
+            .filter_map(|s| Some((s.live_until(now)?, s.last_err?)))
+            .max_by_key(|(t, _)| *t)
+            .map(|(_, k)| k.reason())
+    }
+
+    /// Manual unblock: every cooldown and the 5xx streak; quota snapshot and bindings are kept.
+    pub fn clear(&self, id: &AccountId) -> bool {
+        let now = (self.clock)();
+        let mut st = self.lock();
+        let live = st.account.get(id).and_then(|s| s.live_until(now)).is_some()
+            || st
+                .model
+                .iter()
+                .any(|((x, _), s)| x == id && s.live_until(now).is_some());
+        st.account.remove(id);
+        st.model.retain(|(a, _), _| a != id);
+        st.streak.remove(id);
+        live
     }
 
     /// Latest time the account is cooling down for any reason (account- or model-level).
@@ -285,6 +336,17 @@ impl CpaRouter {
     }
 }
 
+/// Error kind of the state that blocks the account the longest.
+fn blocked_kind(st: &State, id: &AccountId, model: &str, now: SystemTime) -> Option<ErrKind> {
+    let a = st.account.get(id);
+    let m = st.model.get(&(id.clone(), model.to_string()));
+    a.into_iter()
+        .chain(m)
+        .filter_map(|s| Some((s.live_until(now)?, s.last_err)))
+        .max_by_key(|(t, _)| *t)
+        .and_then(|(_, k)| k)
+}
+
 fn blocked(st: &State, id: &AccountId, model: &str, now: SystemTime) -> Option<SystemTime> {
     let a = st.account.get(id).and_then(|s| s.live_until(now));
     let m = st
@@ -325,6 +387,12 @@ impl Router for CpaRouter {
     fn cooling_until(&self, id: &AccountId) -> Option<SystemTime> {
         self.cooling_until_any(id)
     }
+    fn cooling_reason(&self, id: &AccountId) -> Option<&'static str> {
+        self.cooling_reason_any(id)
+    }
+    fn clear_cooldown(&self, id: &AccountId) -> bool {
+        self.clear(id)
+    }
     fn select(&self, req: &RouteRequest, accounts: &[Account]) -> Result<Selection, RouteError> {
         let now = (self.clock)();
         let model = canonical_model_key(&req.model);
@@ -357,7 +425,10 @@ impl Router for CpaRouter {
             let retry_after = earliest
                 .and_then(|e| e.duration_since(now).ok())
                 .unwrap_or_default();
-            return Err(RouteError::AllCoolingDown { retry_after });
+            let quota = cands
+                .iter()
+                .all(|a| blocked_kind(&st, &a.id, &model, now) == Some(ErrKind::UsageLimit));
+            return Err(RouteError::AllCoolingDown { retry_after, quota });
         }
 
         // Cold pick: quota-threshold avoidance (new bindings only), then highest priority tier.
@@ -476,6 +547,7 @@ impl Router for CpaRouter {
                 }
                 st.model.remove(&mkey);
                 st.account.remove(account);
+                st.streak.remove(account);
                 None
             }
             Outcome::RateLimited {
@@ -557,9 +629,23 @@ impl Router for CpaRouter {
             // Transport errors (no status) and request-scoped 4xx never cool the credential
             // and never touch session bindings (CPA shouldSkipCredentialCooldown).
             Outcome::Transient { status: None } | Outcome::ClientError { .. } => return,
-            Outcome::Transient { status: Some(_) } => {
+            Outcome::Transient { status: Some(_) } | Outcome::ServerError { .. } => {
+                let cooldown = match outcome {
+                    Outcome::ServerError { cooldown, .. } => *cooldown,
+                    _ => Some(TRANSIENT_COOLDOWN),
+                };
+                let n = st.streak.entry(account.clone()).or_insert(0);
+                *n = n.saturating_add(1);
+                let Some(d) = cooldown
+                    .filter(|d| !d.is_zero() && *n >= TRANSIENT_STREAK)
+                    .map(|d| d.min(TRANSIENT_COOLDOWN_MAX))
+                else {
+                    // Below the streak (or never cooled): no cooldown, binding kept.
+                    return;
+                };
+                *n = 0;
                 let m = st.model.entry(mkey).or_default();
-                m.next_retry = Some(max_opt(m.live_until(now), now + TRANSIENT_COOLDOWN));
+                m.next_retry = Some(max_opt(m.live_until(now), now + d));
                 m.last_err = Some(ErrKind::Transient);
                 Some(ErrKind::Transient)
             }

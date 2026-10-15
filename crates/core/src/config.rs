@@ -81,6 +81,9 @@ pub struct UpstreamOpts {
     /// cookie) and replay them like official Codex. Off by default. Client `Cookie` headers are
     /// never forwarded and upstream `Set-Cookie` never reaches clients either way.
     pub cloudflare_cookies: bool,
+    /// Cooldown (seconds) after 3 consecutive upstream 5xx on one account; `Retry-After`
+    /// overrides it, capped at 60. 0 = never cool on 5xx. The last usable account is never cooled.
+    pub transient_cooldown_secs: u64,
 }
 impl Default for UpstreamOpts {
     fn default() -> Self {
@@ -90,6 +93,7 @@ impl Default for UpstreamOpts {
             connect_timeout_secs: 30,
             compress_requests: true,
             cloudflare_cookies: false,
+            transient_cooldown_secs: 15,
         }
     }
 }

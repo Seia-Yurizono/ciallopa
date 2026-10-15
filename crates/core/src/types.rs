@@ -108,6 +108,13 @@ pub enum Outcome {
     ModelUnsupported {
         retry_after: Option<Duration>,
     },
+    /// Upstream 408 / 5xx. The account is cooled for `cooldown` only after
+    /// `TRANSIENT_STREAK` consecutive failures; `None` never cools (feature off, or it is
+    /// the last usable account). Any success resets the streak.
+    ServerError {
+        status: u16,
+        cooldown: Option<Duration>,
+    },
     /// Cloudflare challenge page (403 + challenge markers): >=10s exponential cooldown.
     Challenge,
     /// 4xx caused by the request itself; not the account's fault.

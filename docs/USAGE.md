@@ -38,7 +38,9 @@ writer OS thread "usage-writer":  recv first msg → collect until batch_size or
 | `transport` | 1 sse, 2 ws, 3 http (images, non-stream) |
 | `endpoint` | `responses`, `compact`, `images` |
 | `status` | HTTP status to the client (WS turn: 200 or handshake status) |
-| `error` | NULL = ok; else `usage_limit`, `idle_timeout`, `stream_error`, `client_closed`, `upstream_closed`, `response_failed`, `incomplete`, `upstream_error_event`, `rate_limited`, `auth`, `no_account`, `upstream_5xx`, … |
+| `error` | error code, NULL = ok. Upstream HTTP errors keep the upstream's own `error.code` / `error.type` (e.g. `server_is_overloaded`, `invalid_prompt`, `usage_limit_reached`), else `http_<status>`. Local / network / stream codes: see [Error sources](#error-sources). |
+| `err_source` | v9: `client`, `local`, `network`, `upstream` or `stream` (NULL = ok) |
+| `up_status` | v9: last upstream HTTP status of the request; differs from `status` when the client got a local error (e.g. upstream 503 then no account left) |
 | `retries` | pre-first-byte retries (transport / 408 / 5xx) |
 | `switches` | account switches (401/403/404/429 failover, quota-before-output replay) |
 | `ttft_ms` | request start → first non-preamble event (SSE/WS); → response headers (non-stream) |
@@ -57,14 +59,49 @@ TPS is computed at query time: `out_tok / (duration_ms − ttft_ms)`.
 
 Not recorded: `/models`, `/wham/*` and other passthrough, WS handshakes that succeed (only turns).
 
+## Error sources
+| `err_source` | Meaning | Codes |
+|---|---|---|
+| `client` | the client went away | `client_closed` (not counted as an upstream failure) |
+| `local` | ciallopa itself could not serve the request | `no_account`, `no_usable_account` (all disabled / excluded / need relogin), `all_cooling`, `all_quota_exhausted`, `internal` |
+| `network` | no usable upstream response | `connect`, `dns`, `tls`, `timeout`, `timeout_connect`, `transport`, `idle_timeout`, WS `upstream_closed` (transport) |
+| `upstream` | upstream HTTP error, passed through verbatim | upstream `error.code` / `error.type`, else `http_<status>`; `challenge` for a Cloudflare page |
+| `stream` | error inside a 200 stream | `usage_limit`, `response_failed`, `upstream_error_event`, `stream_truncated`, WS `upstream_closed` |
+
+What the client receives:
+- Any upstream response seen ⇒ the most meaningful one is returned verbatim (status, body and
+  `retry-after`, `x-codex-*`, `x-request-id`, `cf-ray`, …). Priority: usage-limit 429 > other 429 >
+  5xx/408 > 401 > 403 > 404; an upstream 5xx is never turned into a 429.
+- No upstream response ⇒ an upstream-shaped error with a standard code: 503
+  `{"error":{"type":"server_error","code":"server_is_overloaded",…}}` with `Retry-After`
+  (no account, all cooling), 502 / 504 for network failures. Codex retries these.
+- Every account out of usage quota ⇒ 429 `usage_limit_reached` with the earliest `resets_at` /
+  `resets_in_seconds` and `Retry-After` (the only locally synthesized quota error).
+- A stream that ends without a terminal event (upstream cut, stream error, idle timeout) ends with
+  `event: response.failed` (`code: server_error`, "stream disconnected before completion") so Codex
+  retries the turn.
+- Responses carry no proxy-specific headers or wording; source and code exist only in the log.
+
+Upstream 408 / 5xx handling: the same account is retried with backoff (or `Retry-After`) once,
+then the request moves to another usable account; the shared `max_attempts` budget bounds the
+total. An account is cooled only after **3 consecutive** 5xx (any success resets the count), for
+`transient_cooldown_secs` (default 15) or the upstream `Retry-After`, capped at 60 s. The last
+usable account is never cooled; network errors never cool.
+
 ## Error details
-Stored only for failed requests (status ≥ 400 or `error` set), in `error_detail`:
+Stored for failed requests (status ≥ 400 or `error` set) and for successful requests that
+retried or switched accounts (attempt chain only), in `error_detail`:
 - `body`: upstream error body (HTTP error response, in-stream `error` / `response.failed` /
   `response.incomplete` event, WS error / quota frame, WS handshake failure, or the local
   JSON error such as `no_account`). Capture stops at 64 KiB; the stored text is redacted and
   then capped at **16 KiB** (`truncated = true`, `body_len` = original byte length).
 - `message`: upstream `error.message` or a descriptive local message (`upstream stream idle
   for 300s (timeout)`, `no account available`, `upstream websocket closed mid-turn (code …)`, …).
+- `attempts` (v9): JSON array, at most 8 entries (`{"dropped": n}` marks omitted middle ones):
+  `account`, `t_ms` (since request start), `kind` (`http` / `transport` / `refresh`), `status`,
+  `code`, `action` (`ok`, `retry(<ms>ms)`, `switch`, `cooldown(<s>s)+switch`, `refresh+retry`,
+  `stop`) and `body` (first 512 bytes, redacted). Written by the same batched writer as the row.
+- `up_req_id` (v9): upstream `x-request-id` / `x-oai-request-id` / `cf-ray`.
 - `headers`: only `x-codex-*`, `cf-ray`, `retry-after`, `content-type`, `x-request-id`,
   `x-oai-request-id`, `openai-*request-id`/`openai-processing-ms`; never cookies or auth.
 - Redaction (body, message, headers): `Bearer`/`Basic` credentials, JWT-like `eyJ…` tokens,
@@ -72,7 +109,13 @@ Stored only for failed requests (status ≥ 400 or `error` set), in `error_detai
   `password`/`secret`/`session` values (JSON keys and `k=v` / `k: v` text) and e-mail
   addresses become `[REDACTED…]`.
 - Purged with the same `retention_days` cutoff as `requests`.
-- `/ui`: click an error row to open the detail panel (pretty-printed JSON, copy button).
+- `/ui`: the error column shows a colored source badge (`客户端` / `ciallopa` / `网络` /
+  `上游 <status>` / `流内`) and the code; the status column shows `502←上游 503` when the client
+  status differs from the last upstream one. Filters: account, source, code, errors only,
+  retried/switched only. Clicking a row opens the detail panel with the attempt timeline,
+  upstream request id, headers and body (copy button).
+- `GET /usage/v1/records` filters: `source=upstream,network` (comma list), `error=<code>`,
+  `retried=1`.
 
 ## Schema
 ```sql
@@ -84,16 +127,20 @@ CREATE TABLE requests(
   in_tok INTEGER, out_tok INTEGER, cached_tok INTEGER, reasoning_tok INTEGER,
   key INTEGER, instance INTEGER, plan INTEGER,                -- labels.id
   p_pct REAL, p_reset INTEGER, s_pct REAL, s_reset INTEGER,
-  tier INTEGER, cw_tok INTEGER, thread INTEGER, turn TEXT);   -- v3
+  tier INTEGER, cw_tok INTEGER, thread INTEGER, turn TEXT,    -- v3
+  req_tier INTEGER, resp_model INTEGER, resp_effort INTEGER,  -- v5
+  incomplete INTEGER,                                         -- v7
+  err_source INTEGER, up_status INTEGER);                     -- v9
 -- one row per *change* of an account's quota (id = observing request id)
 CREATE TABLE quota_obs(id INTEGER PRIMARY KEY, account INTEGER NOT NULL, instance INTEGER,
   plan INTEGER, p_pct REAL, p_reset INTEGER, p_win INTEGER, s_pct REAL, s_reset INTEGER, s_win INTEGER);
 CREATE INDEX quota_obs_account ON quota_obs(account, id);
--- v4: failed requests only (status >= 400 or error set); id = requests.id
+-- failed requests, plus retried / switched successes; id = requests.id
 CREATE TABLE error_detail(id INTEGER PRIMARY KEY, message TEXT, body TEXT,
-  body_len INTEGER NOT NULL, truncated INTEGER NOT NULL, headers TEXT NOT NULL);
+  body_len INTEGER NOT NULL, truncated INTEGER NOT NULL, headers TEXT NOT NULL,
+  up_req_id TEXT, attempts TEXT);                             -- v9
 ```
-- Schema is at `user_version = 8`. Opening an older file upgrades it in place (`ALTER TABLE` /
+- Schema is at `user_version = 9`. Opening an older file upgrades it in place (`ALTER TABLE` /
   new tables); columns that did not exist yet stay NULL on old rows.
 - `quota_obs` gets a row only when used % / plan changes or a reset time moves by > 120 s
   (upstream reset times jitter by a few seconds). Purge keeps each account's latest row.

@@ -64,8 +64,12 @@ pub struct Record {
     pub endpoint: &'static str,
     /// HTTP status sent to the client (WS turns: 200, or the handshake status).
     pub status: u16,
-    /// Short machine-readable kind (`usage_limit`, `idle_timeout`, `client_closed`, …).
+    /// Short machine-readable error code (`usage_limit`, `idle_timeout`, `client_closed`, …).
     pub error: Option<String>,
+    /// Where the error came from: `client`, `local`, `network`, `upstream` or `stream`.
+    pub err_source: Option<&'static str>,
+    /// Last upstream HTTP status seen (may differ from `status`, which the client received).
+    pub upstream_status: Option<u16>,
     /// Pre-first-byte retries (transport / 408 / 5xx).
     pub retries: u32,
     /// Account switches (401/403/404/429 failover + quota-before-output replay).
@@ -153,6 +157,8 @@ impl Record {
             endpoint,
             status: 0,
             error: None,
+            err_source: None,
+            upstream_status: None,
             retries: 0,
             switches: 0,
             ttft_ms: None,
@@ -809,6 +815,10 @@ mod tests {
                  ALTER TABLE requests DROP COLUMN resp_model;
                  ALTER TABLE requests DROP COLUMN resp_effort;
                  ALTER TABLE requests DROP COLUMN incomplete;
+                 ALTER TABLE requests DROP COLUMN err_source;
+                 ALTER TABLE requests DROP COLUMN up_status;
+                 ALTER TABLE error_detail DROP COLUMN up_req_id;
+                 ALTER TABLE error_detail DROP COLUMN attempts;
                  INSERT INTO labels VALUES(1,'old-acct'),(2,'gpt-5.5'),(3,'default');
                  INSERT INTO requests(id,account,model,transport,status,retries,switches,duration_ms,out_tok,tier)
                    VALUES({old_id},1,2,1,200,0,0,5,7,3);

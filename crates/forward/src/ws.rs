@@ -52,6 +52,9 @@ pub(crate) async fn handler(
                 t.not_stream();
                 let (parts, body) = r.into_parts();
                 t.error_headers(&parts.headers);
+                if let Some(m) = parts.extensions.get::<crate::errors::ErrMeta>() {
+                    t.meta_err(m);
+                }
                 let b = axum::body::to_bytes(body, 1 << 20)
                     .await
                     .unwrap_or_default();
@@ -111,27 +114,34 @@ async fn connect(
         let accounts = st.accounts.list().await;
         let id = match st.router.select(route, &accounts) {
             Ok(s) => s.account,
-            Err(RouteError::AllCoolingDown { retry_after }) => {
+            Err(RouteError::AllCoolingDown { retry_after, quota }) => {
                 return Err(last.unwrap_or_else(|| {
-                    let mut r = proxy::json_error(
-                        StatusCode::TOO_MANY_REQUESTS,
-                        "usage_limit_reached",
-                        "all accounts are cooling down",
-                    );
-                    if let Ok(v) = retry_after.as_secs().max(1).to_string().parse() {
-                        r.headers_mut().insert(http::header::RETRY_AFTER, v);
+                    if quota {
+                        crate::errors::quota_exhausted(retry_after)
+                    } else {
+                        crate::errors::local(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            crate::errors::SRC_LOCAL,
+                            "all_cooling",
+                            Some(retry_after),
+                        )
                     }
-                    r
                 }))
             }
-            Err(e) => {
+            Err(_) => {
+                let code = if accounts.is_empty() {
+                    "no_account"
+                } else {
+                    "no_usable_account"
+                };
                 return Err(last.unwrap_or_else(|| {
-                    proxy::json_error(
+                    crate::errors::local(
                         StatusCode::SERVICE_UNAVAILABLE,
-                        "no_account",
-                        &e.to_string(),
+                        crate::errors::SRC_LOCAL,
+                        code,
+                        Some(std::time::Duration::from_secs(30)),
                     )
-                }))
+                }));
             }
         };
         let mut creds = match st.accounts.credentials(&id).await {
@@ -173,11 +183,7 @@ async fn connect(
                             .report(route, &id, &Outcome::Transient { status: None });
                         transient += 1;
                         if transient > retries {
-                            return Err(proxy::json_error(
-                                StatusCode::BAD_GATEWAY,
-                                "upstream_error",
-                                "upstream websocket connect failed",
-                            ));
+                            return Err(crate::errors::network("connect"));
                         }
                         tokio::time::sleep(delay_for(transient, None)).await;
                         break;
@@ -188,6 +194,8 @@ async fn connect(
                             StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
                         *r.headers_mut() = crate::headers::downstream_headers(&h);
                         r.headers_mut().remove(http::header::CONTENT_LENGTH);
+                        r.extensions_mut()
+                            .insert(crate::errors::meta_upstream(status, &h, &body));
                         r
                     };
                     match status {
@@ -210,8 +218,23 @@ async fn connect(
                             break;
                         }
                         s if s == 408 || is_retryable_status(s) => {
-                            st.router
-                                .report(route, &id, &Outcome::Transient { status: Some(s) });
+                            let others = accounts.iter().any(|a| {
+                                a.id != id
+                                    && !a.disabled
+                                    && !route.exclude.contains(&a.id)
+                                    && st.router.cooling_until(&a.id).is_none()
+                            });
+                            let secs = st.config.load().upstream_opts.transient_cooldown_secs;
+                            let cooldown =
+                                (others && secs > 0).then(|| std::time::Duration::from_secs(secs));
+                            st.router.report(
+                                route,
+                                &id,
+                                &Outcome::ServerError {
+                                    status: s,
+                                    cooldown,
+                                },
+                            );
                             transient += 1;
                             if transient > retries {
                                 return Err(resp);
@@ -395,7 +418,7 @@ async fn relay(
                         let code = f.as_ref().map(|f| u16::from(f.code)).unwrap_or(1000);
                         if let Some(t) = turn.as_mut() {
                             let reason = f.as_ref().map(|f| f.reason.to_string()).unwrap_or_default();
-                            t.fail_msg("upstream_closed", format!("upstream websocket closed mid-turn (code {code}) {reason}").trim_end().to_string());
+                            t.fail_msg("upstream_closed", format!("upstream websocket closed mid-turn (code {code}) {reason}").trim_end().to_string()); t.source(crate::errors::SRC_STREAM);
                         }
                         if code != 1000 {
                             st.router.report(&route, &account, &Outcome::Transient { status: None });
@@ -454,7 +477,7 @@ async fn relay(
                                 }
                             }
                             tracing::info!(account = %account, "ws quota error mid-turn; closing for client replay");
-                            if let Some(t) = turn.as_mut() { t.fail_msg("usage_limit", "usage limit reached mid-turn; closed for client replay"); }
+                            if let Some(t) = turn.as_mut() { t.fail_msg("usage_limit", "usage limit reached mid-turn; closed for client replay"); t.source(crate::errors::SRC_STREAM); }
                             let _ = dtx.send(close(CLOSE_REPLAY, CLOSE_REPLAY_REASON)).await;
                             break;
                         }
@@ -495,7 +518,7 @@ async fn relay(
                         }
                     }
                     _ => {
-                        if let Some(t) = turn.as_mut() { t.fail_msg("upstream_closed", "upstream websocket disconnected (transport error)"); }
+                        if let Some(t) = turn.as_mut() { t.fail_msg("upstream_closed", "upstream websocket disconnected (transport error)"); t.source(crate::errors::SRC_NETWORK); }
                         st.router.report(&route, &account, &Outcome::Transient { status: None });
                         let _ = dtx.send(close(CLOSE_INTERNAL, "upstream disconnected")).await;
                         break;
@@ -504,7 +527,7 @@ async fn relay(
             },
             _ = &mut sleep, if awaiting => {
                 tracing::warn!(account = %account, "upstream websocket idle timeout");
-                if let Some(t) = turn.as_mut() { t.fail_msg("idle_timeout", format!("upstream websocket idle for {}s (timeout)", idle.as_secs())); }
+                if let Some(t) = turn.as_mut() { t.fail_msg("idle_timeout", format!("upstream websocket idle for {}s (timeout)", idle.as_secs())); t.source(crate::errors::SRC_NETWORK); }
                 st.router.report(&route, &account, &Outcome::Transient { status: None });
                 let _ = dtx.send(close(CLOSE_INTERNAL, "stream idle timeout")).await;
                 let _ = utx.send(WsMessage::Close(None)).await;

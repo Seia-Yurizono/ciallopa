@@ -353,6 +353,7 @@ dependencies = [
  "futures",
  "http",
  "reqwest",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",

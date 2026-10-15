@@ -6,7 +6,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
 
-pub(crate) const SCHEMA_VERSION: i64 = 8;
+pub(crate) const SCHEMA_VERSION: i64 = 9;
 
 const CREATE_V3: &str = r#"
 CREATE TABLE IF NOT EXISTS labels(
@@ -49,7 +49,10 @@ CREATE TABLE IF NOT EXISTS requests(
   resp_model    INTEGER,               -- labels.id, response.model
   resp_effort   INTEGER,               -- labels.id, response.reasoning.effort
   -- v7
-  incomplete    INTEGER                -- labels.id, response.incomplete reason (NULL = not incomplete)
+  incomplete    INTEGER,               -- labels.id, response.incomplete reason (NULL = not incomplete)
+  -- v9
+  err_source    INTEGER,               -- labels.id: client | local | network | upstream | stream
+  up_status     INTEGER                -- last upstream HTTP status (may differ from status)
 );
 -- Quota snapshots, one row only when an account's values change. id = observing request id.
 CREATE TABLE IF NOT EXISTS quota_obs(
@@ -68,7 +71,10 @@ CREATE TABLE IF NOT EXISTS error_detail(
   body      TEXT,
   body_len  INTEGER NOT NULL,
   truncated INTEGER NOT NULL,
-  headers   TEXT NOT NULL            -- JSON object
+  headers   TEXT NOT NULL,           -- JSON object
+  -- v9
+  up_req_id TEXT,                    -- upstream x-request-id / cf-ray
+  attempts  TEXT                     -- JSON attempt chain (failed or switched requests only)
 );
 -- v6: manual reset-credit (重置卡) consume attempts. status: pending | done | failed.
 -- A `pending` row (timeout / 5xx: outcome unknown) is retried with the same redeem_request_id.
@@ -114,6 +120,15 @@ ALTER TABLE requests ADD COLUMN turn TEXT;
 
 const MIGRATE_6_TO_7: &str = "ALTER TABLE requests ADD COLUMN incomplete INTEGER;";
 
+const MIGRATE_8_TO_9: &str = r#"
+ALTER TABLE requests ADD COLUMN err_source INTEGER;
+ALTER TABLE requests ADD COLUMN up_status INTEGER;
+"#;
+const MIGRATE_8_TO_9_DETAIL: &str = r#"
+ALTER TABLE error_detail ADD COLUMN up_req_id TEXT;
+ALTER TABLE error_detail ADD COLUMN attempts TEXT;
+"#;
+
 const MIGRATE_4_TO_5: &str = r#"
 ALTER TABLE requests ADD COLUMN req_tier INTEGER;
 ALTER TABLE requests ADD COLUMN resp_model INTEGER;
@@ -151,6 +166,20 @@ pub(crate) fn migrate(c: &mut Connection) -> rusqlite::Result<()> {
     }
     if has_requests && (1..=6).contains(&v) {
         tx.execute_batch(MIGRATE_6_TO_7)?;
+    }
+    if has_requests && (1..=8).contains(&v) {
+        tx.execute_batch(MIGRATE_8_TO_9)?;
+    }
+    let has_detail: bool = tx
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='error_detail'",
+            [],
+            |_| Ok(true),
+        )
+        .optional()?
+        .unwrap_or(false);
+    if has_detail && (4..=8).contains(&v) {
+        tx.execute_batch(MIGRATE_8_TO_9_DETAIL)?;
     }
     tx.execute_batch(CREATE_V3)?;
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
@@ -275,15 +304,15 @@ pub(crate) fn insert_batch(
         let mut st = tx.prepare_cached(
             "INSERT OR IGNORE INTO requests(id,account,first_account,model,effort,transport,endpoint,\
              status,error,retries,switches,ttft_ms,duration_ms,in_tok,out_tok,cached_tok,reasoning_tok,\
-             key,instance,plan,p_pct,p_reset,s_pct,s_reset,tier,cw_tok,thread,turn,req_tier,resp_model,resp_effort,incomplete) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32)",
+             key,instance,plan,p_pct,p_reset,s_pct,s_reset,tier,cw_tok,thread,turn,req_tier,resp_model,resp_effort,incomplete,err_source,up_status) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,?34)",
         )?;
         let mut qst = tx.prepare_cached(
             "INSERT OR IGNORE INTO quota_obs(id,account,instance,plan,p_pct,p_reset,p_win,s_pct,s_reset,s_win) \
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
         )?;
         let mut dst = tx.prepare_cached(
-            "INSERT OR IGNORE INTO error_detail(id,message,body,body_len,truncated,headers) VALUES (?1,?2,?3,?4,?5,?6)",
+            "INSERT OR IGNORE INTO error_detail(id,message,body,body_len,truncated,headers,up_req_id,attempts) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
         )?;
         let instance_name = ws.instance.clone();
         let instance = ws.label(&tx, Some(&instance_name))?;
@@ -303,6 +332,7 @@ pub(crate) fn insert_batch(
             let resp_model = ws.label(&tx, r.resp_model.as_deref())?;
             let resp_effort = ws.label(&tx, r.resp_effort.as_deref())?;
             let incomplete = ws.label(&tx, r.incomplete.as_deref())?;
+            let err_source = ws.label(&tx, r.err_source)?;
             let n = st.execute(params![
                 r.id,
                 account,
@@ -336,9 +366,11 @@ pub(crate) fn insert_batch(
                 resp_model,
                 resp_effort,
                 incomplete,
+                err_source,
+                r.upstream_status,
             ])?;
             if let (1, Some(d)) = (n, r.detail.as_deref()) {
-                if r.status >= 400 || r.error.is_some() {
+                if r.status >= 400 || r.error.is_some() || d.attempts.is_some() {
                     let s = d.finish();
                     dst.execute(params![
                         r.id,
@@ -346,7 +378,9 @@ pub(crate) fn insert_batch(
                         s.body,
                         s.body_len,
                         s.truncated,
-                        s.headers
+                        s.headers,
+                        s.upstream_request_id,
+                        s.attempts
                     ])?;
                 }
             }
@@ -457,6 +491,12 @@ pub struct RecentQuery {
     pub tier: Option<String>,
     /// Only rows whose requested priority/flex tier was not served.
     pub downgraded: bool,
+    /// Error sources (`client`, `local`, `network`, `upstream`, `stream`); empty = any.
+    pub sources: Vec<String>,
+    /// Exact error code.
+    pub error: Option<String>,
+    /// Only rows that retried or switched accounts.
+    pub retried: bool,
 }
 
 /// WHERE clause (without ORDER/LIMIT) + params for [`recent`] / [`recent_count`].
@@ -495,6 +535,26 @@ fn recent_where(c: &Connection, q: &RecentQuery) -> rusqlite::Result<Option<(Str
     if q.downgraded {
         s.push_str(" AND req_tier IN (?, ?) AND (tier IS NULL OR tier != req_tier)");
         ps.extend([prio, flex]);
+    }
+    if !q.sources.is_empty() {
+        let ids: Vec<i64> = q
+            .sources
+            .iter()
+            .take(8)
+            .map(|n| label_id(c, n.trim()).map(|x| x.unwrap_or(-1)))
+            .collect::<rusqlite::Result<_>>()?;
+        s.push_str(&format!(
+            " AND err_source IN ({})",
+            vec!["?"; ids.len()].join(",")
+        ));
+        ps.extend(ids);
+    }
+    if let Some(e) = q.error.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
+        s.push_str(" AND error = ?");
+        ps.push(label_id(c, e)?.unwrap_or(-1));
+    }
+    if q.retried {
+        s.push_str(" AND (retries > 0 OR switches > 0)");
     }
     Ok(Some((s, ps)))
 }
@@ -558,6 +618,10 @@ pub struct RecordRow {
     pub turn_id: Option<String>,
     /// Notional USD from tokens × price table at query time; null when unpriced.
     pub cost_usd: Option<f64>,
+    /// `client`, `local`, `network`, `upstream` or `stream` (null = ok or older rows).
+    pub err_source: Option<String>,
+    /// Last upstream HTTP status when it differs in meaning from `status`.
+    pub upstream_status: Option<u16>,
     /// An `error_detail` row exists (`GET /usage/v1/records/{id}/detail`).
     pub has_detail: bool,
     /// `ok`, `unknown_price` (model/tier/date not in the price table) or `no_tokens`.
@@ -612,7 +676,7 @@ pub(crate) fn recent(
         "SELECT id,account,first_account,model,effort,transport,endpoint,status,error,retries,switches,\
          ttft_ms,duration_ms,in_tok,out_tok,cached_tok,reasoning_tok,key,instance,plan,p_pct,p_reset,s_pct,s_reset,\
          tier,cw_tok,thread,turn,EXISTS(SELECT 1 FROM error_detail d WHERE d.id = requests.id),\
-         req_tier,resp_model,resp_effort,incomplete \
+         req_tier,resp_model,resp_effort,incomplete,err_source,up_status \
          FROM requests WHERE {w} ORDER BY id DESC LIMIT ? OFFSET ?"
     );
     ps.push(q.limit.clamp(1, 1000) as i64);
@@ -662,6 +726,8 @@ pub(crate) fn recent(
             endpoint: name(r.get(6)?),
             status: r.get(7)?,
             error: name(r.get(8)?),
+            err_source: name(r.get(33)?),
+            upstream_status: r.get(34)?,
             retries: r.get(9)?,
             switches: r.get(10)?,
             ttft_ms: ttft,
@@ -1235,7 +1301,7 @@ fn estimate(
 pub(crate) fn detail(c: &Connection, id: i64) -> Result<Option<crate::DetailRow>, UsageError> {
     let row = c
         .query_row(
-            "SELECT message, body, body_len, truncated, headers FROM error_detail WHERE id = ?1",
+            "SELECT message, body, body_len, truncated, headers, up_req_id, attempts FROM error_detail WHERE id = ?1",
             [id],
             |r| {
                 let h: String = r.get(4)?;
@@ -1247,6 +1313,11 @@ pub(crate) fn detail(c: &Connection, id: i64) -> Result<Option<crate::DetailRow>
                     body_len: r.get(2)?,
                     truncated: r.get(3)?,
                     headers: serde_json::from_str(&h).unwrap_or(serde_json::Value::Null),
+                    upstream_request_id: r.get(5)?,
+                    attempts: r
+                        .get::<_, Option<String>>(6)?
+                        .and_then(|a| serde_json::from_str(&a).ok())
+                        .unwrap_or(serde_json::Value::Null),
                 })
             },
         )
