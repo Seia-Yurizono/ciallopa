@@ -6,6 +6,9 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
 
+/// Endpoint label of a Codex WS prewarm turn (`response.create` with `generate:false`).
+pub const PREWARM_ENDPOINT: &str = "prewarm";
+
 pub(crate) const SCHEMA_VERSION: i64 = 9;
 
 const CREATE_V3: &str = r#"
@@ -908,32 +911,36 @@ struct Acc {
 impl Acc {
     fn add(
         &mut self,
+        counted: bool,
         err: bool,
         ttft: Option<u32>,
         dur: u32,
         tok: [Option<i64>; 4],
         cost: (Option<f64>, &'static str),
     ) {
+        for (a, t) in self.tok.iter_mut().zip(tok) {
+            *a += t.unwrap_or(0);
+        }
+        match cost {
+            (Some(c), _) => *self.cost.get_or_insert(0.0) += c,
+            (None, "unknown_price") => self.unknown += 1,
+            _ => {}
+        }
+        if !counted {
+            return;
+        }
         self.count += 1;
         self.errors += u64::from(err);
         if let Some(t) = ttft {
             self.ttft.push(t);
         }
         self.dur.push(dur);
-        for (a, t) in self.tok.iter_mut().zip(tok) {
-            *a += t.unwrap_or(0);
-        }
         if let Some(o) = tok[1].filter(|o| *o > 0) {
             let g = i64::from(dur) - i64::from(ttft.unwrap_or(0));
             if g > 0 {
                 self.gen_ms += g;
                 self.gen_out += o;
             }
-        }
-        match cost {
-            (Some(c), _) => *self.cost.get_or_insert(0.0) += c,
-            (None, "unknown_price") => self.unknown += 1,
-            _ => {}
         }
     }
     fn merge(&mut self, o: &Acc) {
@@ -1011,7 +1018,7 @@ pub(crate) fn summary(
     };
     let dim_cols: Vec<&str> = dims.iter().map(|d| d.col()).collect();
     let sql = format!(
-        "SELECT status,error,ttft_ms,duration_ms,in_tok,out_tok,cached_tok,reasoning_tok,model,id,tier,cw_tok,{} \
+        "SELECT status,error,ttft_ms,duration_ms,in_tok,out_tok,cached_tok,reasoning_tok,model,id,tier,cw_tok,endpoint,{} \
          FROM requests WHERE id BETWEEN ? AND ?{fsql}",
         dim_cols.join(",")
     );
@@ -1031,7 +1038,7 @@ pub(crate) fn summary(
     let mut days: std::collections::BTreeMap<i64, DayBucket> = Default::default();
     while let Some(r) = rows.next()? {
         let key: Vec<Option<i64>> = (0..dims.len())
-            .map(|i| r.get(12 + i))
+            .map(|i| r.get(13 + i))
             .collect::<rusqlite::Result<_>>()?;
         let status: u16 = r.get(0)?;
         let err: Option<i64> = r.get(1)?;
@@ -1040,6 +1047,8 @@ pub(crate) fn summary(
         let t: Option<i64> = r.get(10)?;
         let lbl = |x: Option<i64>| x.and_then(|x| names.get(&x)).map(String::as_str);
         let cost = row_cost(prices, lbl(m), lbl(t), r.get(9)?, tok, r.get(11)?);
+        // Codex WS prewarm (`generate:false`): billed tokens count, the request itself does not.
+        let counted = lbl(r.get(12)?) != Some(PREWARM_ENDPOINT);
         if cost.1 == "unknown_price" {
             let k = match lbl(t) {
                 Some(t) if crate::Tier::from_service_tier(Some(t)) != crate::Tier::Standard => {
@@ -1072,8 +1081,10 @@ pub(crate) fn summary(
                 start_ms: k * width - off,
                 ..Default::default()
             });
-            b.count += 1;
-            b.errors += u64::from(err.is_some() || status >= 400);
+            if counted {
+                b.count += 1;
+                b.errors += u64::from(err.is_some() || status >= 400);
+            }
             b.input_tokens += tok[0].unwrap_or(0);
             b.output_tokens += tok[1].unwrap_or(0);
             b.cached_tokens += tok[2].unwrap_or(0);
@@ -1085,6 +1096,7 @@ pub(crate) fn summary(
             }
         }
         groups.entry(key).or_default().add(
+            counted,
             err.is_some() || status >= 400,
             r.get(2)?,
             r.get(3)?,

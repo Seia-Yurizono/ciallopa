@@ -246,6 +246,26 @@ async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: Bytes) -> Re
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"grep usage_limit_reached in proxy.rs\"}\n\n",
             "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r-t\"}}\n\n"
         )),
+        // Real upstream shape: preamble and an empty reasoning item first, output later, and the
+        // body keeps going briefly after `response.completed` (decoder flush / EOF).
+        "slowtail" => {
+            let s = futures::stream::unfold(0, |i| async move {
+                let b: &'static [u8] = match i {
+                    0 => b"data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-s\"}}\n\ndata: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"reasoning\"}}\n\n",
+                    1 => {
+                        tokio::time::sleep(Duration::from_millis(300)).await;
+                        b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r-s\",\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}}\n\n"
+                    }
+                    2 => {
+                        tokio::time::sleep(Duration::from_millis(300)).await;
+                        b"\n"
+                    }
+                    _ => return None,
+                };
+                Some((Ok::<_, std::io::Error>(Bytes::from_static(b)), i + 1))
+            });
+            Response::builder().header("content-type", "text/event-stream").body(Body::from_stream(s)).unwrap()
+        }
         "booterr" => {
             let s = futures::stream::unfold(0, |i| async move {
                 match i {
@@ -347,7 +367,17 @@ async fn up_ws(State(m): State<Mock>, h: HeaderMap, ws: WebSocketUpgrade) -> Res
     let mut r = ws.on_upgrade(move |mut s| async move {
         while let Some(Ok(msg)) = s.recv().await {
             if let Message::Text(t) = msg {
-                if t.as_str().contains("\"meta\"") {
+                if t.as_str().contains("\"generate\":false") {
+                    let _ = s.send(Message::Text(r#"{"type":"response.created","response":{"id":"r-w"}}"#.into())).await;
+                    let _ = s.send(Message::Text(r#"{"type":"response.completed","response":{"id":"r-w","usage":{"input_tokens":8,"output_tokens":0}}}"#.into())).await;
+                } else if t.as_str().contains("\"slow\"") {
+                    let _ = s.send(Message::Text(r#"{"type":"codex.response.metadata","headers":{}}"#.into())).await;
+                    let _ = s.send(Message::Text(r#"{"type":"response.created","response":{"id":"r-x"}}"#.into())).await;
+                    let _ = s.send(Message::Text(r#"{"type":"response.output_item.added","item":{"type":"reasoning"}}"#.into())).await;
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    let _ = s.send(Message::Text(r#"{"type":"response.reasoning_summary_text.delta","delta":"x"}"#.into())).await;
+                    let _ = s.send(Message::Text(r#"{"type":"response.completed","response":{"id":"r-x","usage":{"input_tokens":5,"output_tokens":1}}}"#.into())).await;
+                } else if t.as_str().contains("\"meta\"") {
                     for f in [
                         r#"{"type":"response.created","response":{"id":"r-m","model":"gpt-5.5","service_tier":"auto","reasoning":{"effort":"high"}}}"#,
                         r#"{"type":"response.output_text.delta","delta":"ok"}"#,
@@ -2158,4 +2188,86 @@ async fn sse_overload_wait_retry_disabled() {
     let t = sse_text(&e, "allover").await;
     assert!(t.contains("server_is_overloaded"), "{t}");
     assert_eq!(e.mock.hits.load(Ordering::SeqCst), 2);
+}
+
+/// Codex drops the connection as soon as it has `response.completed`; the upstream body still
+/// has a tail. That is a normal end, not `client_closed`. TTFT is the first output event.
+#[tokio::test]
+async fn sse_close_after_completed_is_not_an_error() {
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    let mut r = e
+        .post("/v1/responses")
+        .header("x-test-mode", "slowtail")
+        .body(r#"{"model":"gpt-5.5","input":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    let mut got = Vec::new();
+    while let Some(c) = r.chunk().await.unwrap() {
+        got.extend_from_slice(&c);
+        if String::from_utf8_lossy(&got).contains("response.completed") {
+            break;
+        }
+    }
+    drop(r);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let rows = wait_rows(&e, 1).await;
+    let u = &rows[0];
+    assert!(u["error"].is_null(), "{u}");
+    assert!(u["err_source"].is_null(), "{u}");
+    assert!(u["ttft_ms"].as_u64().unwrap() >= 250, "{u}");
+}
+
+/// WS: metadata frames are not the first token; `generate:false` prewarm is labelled and kept
+/// out of request counts while its tokens still count.
+#[tokio::test]
+async fn ws_ttft_and_prewarm() {
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as M};
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    let mut req = format!("ws://{}/v1/responses", e.proxy)
+        .into_client_request()
+        .unwrap();
+    req.headers_mut()
+        .insert("authorization", format!("Bearer {KEY}").parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    for body in [
+        r#"{"type":"response.create","model":"gpt-5.5","generate":false}"#,
+        r#"{"type":"response.create","model":"gpt-5.5","tag":"slow"}"#,
+    ] {
+        ws.send(M::text(body)).await.unwrap();
+        loop {
+            let t = ws
+                .next()
+                .await
+                .unwrap()
+                .unwrap()
+                .to_text()
+                .unwrap()
+                .to_string();
+            if t.contains("response.completed") {
+                break;
+            }
+        }
+    }
+    drop(ws);
+    let rows = wait_rows(&e, 2).await;
+    let (turn, warm) = (&rows[0], &rows[1]);
+    assert_eq!(warm["endpoint"], "prewarm", "{warm}");
+    assert_eq!(turn["endpoint"], "responses", "{turn}");
+    assert!(turn["error"].is_null(), "{turn}");
+    assert!(turn["ttft_ms"].as_u64().unwrap() >= 250, "{turn}");
+    let s: serde_json::Value = e
+        .http
+        .get(format!("http://{}/usage/v1/summary?range=1h", e.proxy))
+        .bearer_auth(KEY)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(s["summary"]["total"]["count"], 1, "{s}");
+    assert_eq!(s["summary"]["total"]["input_tokens"], 13, "{s}");
 }

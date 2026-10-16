@@ -153,6 +153,29 @@ impl Tracker {
         self.terminal = true;
     }
 
+    /// The client went away. After a terminal event that is a normal end of stream (Codex closes
+    /// as soon as it has `response.completed`), not an error; before it the client is the source.
+    pub(crate) fn client_gone(&mut self) {
+        if self.terminal {
+            return;
+        }
+        self.fail("client_closed");
+        self.source(crate::errors::SRC_CLIENT);
+    }
+
+    /// Codex WS prewarm (`generate:false`): logged under its own endpoint so it stays out of
+    /// request counts, error rate and latency percentiles while its tokens still count.
+    pub(crate) fn prewarm(&mut self) {
+        self.rec.endpoint = ciallopa_usage::PREWARM_ENDPOINT;
+    }
+
+    /// TTFT is the first event that carries model output (see `is_output_event`).
+    pub(crate) fn output_event(&mut self, ev: &[u8]) {
+        if self.rec.ttft_ms.is_none() && is_output_event(ev) {
+            self.ttft();
+        }
+    }
+
     pub(crate) fn ttft(&mut self) {
         if self.rec.ttft_ms.is_none() {
             self.rec.ttft_ms = Some(elapsed_ms(self.start));
@@ -354,6 +377,7 @@ impl Tracker {
         let buf = std::mem::take(&mut self.scan);
         while let Some((end, sep)) = find_boundary(&buf[start..]) {
             let ev = &buf[start..start + end];
+            self.output_event(ev);
             if is_terminal(ev) {
                 if let Some(v) = sse_data_json(ev) {
                     self.terminal_event(&v);
@@ -387,6 +411,15 @@ fn find_boundary(b: &[u8]) -> Option<(usize, usize)> {
         }
     }
     None
+}
+
+/// First token = first event carrying generated output: any `*.delta` (output text, reasoning
+/// summary / text, tool-call arguments, …) or a finished output item (items streamed without
+/// deltas). `response.created`, `in_progress`, `output_item.added`, `codex.*` metadata and
+/// rate-limit events are not output.
+pub(crate) fn is_output_event(ev: &[u8]) -> bool {
+    crate::proxy::memfind(ev, b".delta\"")
+        || crate::proxy::memfind(ev, b"\"response.output_item.done\"")
 }
 
 fn is_terminal(ev: &[u8]) -> bool {

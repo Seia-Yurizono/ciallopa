@@ -66,6 +66,7 @@ tr.dt:focus-visible td{background:color-mix(in srgb,var(--acc) 16%,var(--card))}
 .st.s4{color:var(--wfg);background:var(--wbg);border-color:var(--wbd)}
 .st.s5{color:var(--bfg);background:var(--bbg);border-color:var(--bad)}
 .src{display:inline-block;font-size:11px;padding:0 6px;border-radius:8px;margin-right:4px;color:#fff;font-weight:600}
+tr.pw td{opacity:.6}
 .src.client{background:#6b7280}.src.local{background:#7c3aed}.src.network{background:#c2410c}.src.upstream{background:#c53030}.src.stream{background:#b7791f}
 .tl{margin:4px 0 8px;padding:0;list-style:none;font-size:12.5px}.tl li{padding:3px 0 3px 14px;border-left:2px solid var(--line);position:relative;white-space:normal}
 .tl li:before{content:"";position:absolute;left:-5px;top:8px;width:8px;height:8px;border-radius:50%;background:var(--mut)}.tl li.ok:before{background:var(--ok)}.tl li.bad:before{background:var(--bad)}
@@ -441,11 +442,12 @@ function statusCell(r){const s=r.status,b=el("span","st"+(s===429?" s429":s>=500
   t.title="客户端收到 HTTP "+s;
   if(r.upstream_status&&r.upstream_status!==s&&r.error){t.appendChild(el("span","mut","←上游 "+r.upstream_status));t.title+="；最后一次上游响应 HTTP "+r.upstream_status}
   if(r.incomplete){t.appendChild(document.createTextNode(" "));t.appendChild(el("span","badge warn","未完成"));t.title+="；response.incomplete："+r.incomplete+"（token 已计入，不算错误）"}
+  if(r.endpoint==="prewarm"){t.appendChild(document.createTextNode(" "));t.appendChild(el("span","badge","预热"));t.title+="；Codex WS 预热（generate:false）：token 计入用量与费用，不计入请求数、错误率和延迟统计"}
   return t}
 const SRC={client:["客户端","客户端断开或请求本身的问题"],local:["ciallopa","ciallopa 本地产生（没有可用账号、全部冷却等）"],network:["网络","连不上上游、超时或流空闲超时"],upstream:["上游","上游 HTTP 返回的错误，原样转给客户端"],stream:["流内","上游流里的错误事件或流被截断"]};
 let recState={offset:0,to:0,total:0,rows:[]};
 function recRow(r){
-  const isErr=!!(r.error||r.status>=400);const tr=el("tr",(isErr?"err":"")+(r.has_detail?" dt":""));
+  const isErr=!!(r.error||r.status>=400);const tr=el("tr",(isErr?"err":"")+(r.has_detail?" dt":"")+(r.endpoint==="prewarm"?" pw":""));
   const hint=r.has_detail?"\n点击或按 Enter 查看错误详情":"";
   if(r.has_detail){tr.tabIndex=0;tr.setAttribute("role","button");tr.setAttribute("aria-label","查看错误详情："+fmtTime(r.ts_ms)+" "+(r.account||"")+" "+(r.error||("HTTP "+r.status)));
     tr.addEventListener("click",()=>openDetail(r,tr));tr.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();openDetail(r,tr)}})}

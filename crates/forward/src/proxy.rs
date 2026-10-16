@@ -537,7 +537,9 @@ fn stream_body(
                 t.feed_sse(&prefix);
             }
             if tx.send(Ok(prefix)).await.is_err() {
-                fail(&mut trk, "client_closed");
+                if let Some(t) = trk.as_mut() {
+                    t.client_gone();
+                }
                 return;
             }
             // Drop consumed bytes so the buffer stays bounded under long streams.
@@ -618,8 +620,15 @@ fn stream_body(
                     if let Some(t) = trk.as_mut() {
                         t.feed_sse(&chunk);
                     }
+                    // The response decoder yields an empty chunk at end of body; forwarding it
+                    // after the client hung up would look like a disconnect.
+                    if chunk.is_empty() {
+                        continue;
+                    }
                     if tx.send(Ok(chunk)).await.is_err() {
-                        fail(&mut trk, "client_closed");
+                        if let Some(t) = trk.as_mut() {
+                            t.client_gone();
+                        }
                         return;
                     }
                 }
@@ -840,6 +849,10 @@ pub(crate) fn event_kind(text: &str) -> EventKind {
     if !quota {
         return match overload_code(&v) {
             Some(c) => EventKind::Overloaded(c),
+            // Transport metadata (`codex.response.metadata`, `responsesapi.websocket_timing`).
+            None if ty.starts_with("codex.") || ty.starts_with("responsesapi.") => {
+                EventKind::Preamble
+            }
             None => EventKind::Content,
         };
     }
@@ -1024,9 +1037,6 @@ pub(crate) async fn send_streaming(
                         match event_kind(&e) {
                             EventKind::Preamble => {}
                             EventKind::Content => {
-                                if let Some(t) = trk.as_mut() {
-                                    t.ttft();
-                                }
                                 st.router.content_ok(&account);
                                 break 'boot;
                             }

@@ -11,7 +11,7 @@ pub use detail::{DetailRow, ErrorDetail};
 pub use prices::{PriceTable, Tier};
 pub use store::{
     AccountQuota, DayBucket, Dim, Estimate, Filters, RecentQuery, RecordRow, Summary, SummaryGroup,
-    SummaryQuery, WindowQuota,
+    SummaryQuery, WindowQuota, PREWARM_ENDPOINT,
 };
 
 use ciallopa_core::config::{QuotaWeights, UsageConfig};

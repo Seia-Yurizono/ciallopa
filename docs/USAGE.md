@@ -36,14 +36,14 @@ writer OS thread "usage-writer":  recv first msg → collect until batch_size or
 | `account` / `first_account` | final account; first tried account only when failover changed it |
 | `model`, `effort` | from body / `response.create` (`reasoning.effort`) |
 | `transport` | 1 sse, 2 ws, 3 http (images, non-stream) |
-| `endpoint` | `responses`, `compact`, `images` |
+| `endpoint` | `responses`, `compact`, `images`, `prewarm` (Codex WS `response.create` with `generate:false`: tokens and cost count; excluded from request counts, error rate and TTFT/duration percentiles; shown greyed with a 预热 badge in the panel) |
 | `status` | HTTP status to the client (WS turn: 200 or handshake status) |
 | `error` | error code, NULL = ok. Upstream HTTP errors keep the upstream's own `error.code` / `error.type` (e.g. `server_is_overloaded`, `invalid_prompt`, `usage_limit_reached`), else `http_<status>`. Local / network / stream codes: see [Error sources](#error-sources). |
 | `err_source` | v9: `client`, `local`, `network`, `upstream` or `stream` (NULL = ok) |
 | `up_status` | v9: last upstream HTTP status of the request; differs from `status` when the client got a local error (e.g. upstream 503 then no account left) |
 | `retries` | pre-first-byte retries (transport / 408 / 5xx) |
 | `switches` | account switches (401/403/404/429 failover, quota-before-output replay) |
-| `ttft_ms` | request start → first non-preamble event (SSE/WS); → response headers (non-stream) |
+| `ttft_ms` | request start → first event carrying model output: any `*.delta` (output text, reasoning summary/text, tool-call arguments) or `response.output_item.done`. `response.created`, `in_progress`, `output_item.added`, `codex.*` / `responsesapi.*` metadata and rate-limit frames are not output. Same rule for SSE and WS. Non-stream: → response headers |
 | `duration_ms` | request start → end of stream / turn |
 | `in_tok`, `out_tok`, `cached_tok`, `reasoning_tok` | from `response.usage` |
 | `cw_tok` | `input_tokens_details.cache_write_tokens` (part of `in_tok`) |
@@ -62,7 +62,7 @@ Not recorded: `/models`, `/wham/*` and other passthrough, WS handshakes that suc
 ## Error sources
 | `err_source` | Meaning | Codes |
 |---|---|---|
-| `client` | the client went away | `client_closed` (not counted as an upstream failure) |
+| `client` | the client went away **before** the terminal event | `client_closed` (not counted as an upstream failure). Closing after `response.completed` / `incomplete` / `failed` is a normal end (Codex hangs up as soon as it has the terminal event) and is not recorded as an error |
 | `local` | ciallopa itself could not serve the request | `no_account`, `no_usable_account` (all disabled / excluded / need relogin), `all_cooling`, `all_quota_exhausted`, `internal` |
 | `network` | no usable upstream response | `connect`, `dns`, `tls`, `timeout`, `timeout_connect`, `transport`, `idle_timeout`, WS `upstream_closed` (transport) |
 | `upstream` | upstream HTTP error, passed through verbatim | upstream `error.code` / `error.type`, else `http_<status>`; `challenge` for a Cloudflare page |
@@ -202,7 +202,7 @@ CREATE TABLE error_detail(id INTEGER PRIMARY KEY, message TEXT, body TEXT,
 | DB locked > 5 s (external writer) | that batch fails, `write_errors += rows`, writer continues |
 | DB cannot be opened at startup | warning, usage log disabled, proxy runs normally |
 | kill -9 / crash | committed rows survive; WAL replayed on next open; `integrity_check` ok (20/20 runs) |
-| client disconnects mid-stream | recorded as `client_closed` when the stream task notices (next upstream chunk or idle timeout) |
+| client disconnects mid-stream | before the terminal event: recorded as `client_closed` (source `client`) when the stream task notices (next upstream chunk or idle timeout); after it: normal success |
 
 ## API (behind the same client key)
 Filters on both list endpoints: `account=`, `model=`, `key=<label>`, `instance=`.

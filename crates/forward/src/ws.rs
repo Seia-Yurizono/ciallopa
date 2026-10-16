@@ -429,6 +429,9 @@ async fn relay(
                                         let v = serde_json::from_str::<serde_json::Value>(t.as_str()).ok();
                                         tr.headers(&ctx.headers);
                                         tr.meta(v.as_ref());
+                                        if v.as_ref().and_then(|v| v.get("generate")).and_then(|g| g.as_bool()) == Some(false) {
+                                            tr.prewarm();
+                                        }
                                         tr.accounts(&[], Some(&account));
                                         tr.quota(&quota_h);
                                         tr.status(200);
@@ -446,12 +449,12 @@ async fn relay(
                         }
                     }
                     if is_close {
-                        if let Some(t) = turn.as_mut() { t.fail("client_closed"); }
+                        if let Some(t) = turn.as_mut() { t.client_gone(); }
                         break;
                     }
                 }
                 _ => {
-                    if let Some(t) = turn.as_mut() { t.fail("client_closed"); }
+                    if let Some(t) = turn.as_mut() { t.client_gone(); }
                     let _ = utx.send(WsMessage::Close(None)).await;
                     break;
                 }
@@ -584,17 +587,17 @@ async fn relay(
                                 }
                             }
                         }
+                        if let (Some(t), WsMessage::Text(txt)) = (turn.as_mut(), &m) {
+                            t.output_event(txt.as_str().as_bytes());
+                        }
                         let preamble = matches!(kind, proxy::EventKind::Preamble) && !done;
                         if awaiting && !started && preamble {
                             if let Some(d) = to_down(m) { held.push(d); }
                             continue;
                         }
                         if awaiting {
-                            if !started {
-                                if let Some(t) = turn.as_mut() { t.ttft(); }
-                                if matches!(kind, proxy::EventKind::Content) && !done {
-                                    st.router.content_ok(&account);
-                                }
+                            if !started && matches!(kind, proxy::EventKind::Content) && !done {
+                                st.router.content_ok(&account);
                             }
                             started = true;
                         }
