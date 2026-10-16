@@ -1895,7 +1895,7 @@ async fn models_catalog_passthrough_no_null_service_tiers() {
     let e = env(300).await;
     for p in [
         "/v1/models",
-        "/backend-api/codex/models?client_version=0.162.1",
+        "/backend-api/codex/models?client_version=0.163.0",
     ] {
         let r = e
             .http

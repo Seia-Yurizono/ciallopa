@@ -167,6 +167,7 @@ async fn connect(
         };
         let mut refreshed = false;
         loop {
+            route.attempt_at = Some(std::time::SystemTime::now());
             match st
                 .upstream
                 .ws_connect_as(

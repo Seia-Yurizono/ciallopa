@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fingerprint check: ciallopa upstream client vs Codex CLI 0.162.1 recorded in fp-survey.
+# Fingerprint check: ciallopa upstream client vs Codex CLI 0.163.0 recorded in fp-survey.
 # Points chatgpt.com at a local fpserver via /etc/hosts (restored on exit), runs
 # fp-probe (same reqwest builder as the proxy), asserts JA4 + Akamai h2 fp.
 # Env: FP_SURVEY = path to fp-survey checkout (required; needs server/fpserver and ca.pem).
@@ -8,7 +8,7 @@ FP=${FP_SURVEY:?set to fp-survey checkout}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 WANT_JA4="t13d1011h2_61a7ad8aa9b6_0d308c48d2a3"
 WANT_JA4_RESUMED="t13d1011h2_61a7ad8aa9b6_053248755fe4"  # PSK resumption (Codex records the same)
-# Codex CLI 0.162.1 Responses WS (tungstenite default rustls connector, no ALPN), captured
+# Codex CLI 0.163.0 Responses WS (tungstenite default rustls connector, no ALPN), captured
 # 2026-10-13 into fp-survey/raw/codex-ws.jsonl; header prefix order is tungstenite-generated.
 WANT_WS_JA4="t13d101000_61a7ad8aa9b6_0d308c48d2a3"
 WANT_WS_HDR="Host,Connection,Upgrade,Sec-WebSocket-Version,Sec-WebSocket-Key"

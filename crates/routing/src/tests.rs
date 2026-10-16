@@ -133,6 +133,7 @@ fn rq_s(model: &str, key: &str) -> RouteRequest {
             ..Default::default()
         },
         exclude: vec![],
+        attempt_at: None,
     }
 }
 fn pick(r: &CpaRouter, req: &RouteRequest, a: &[Account]) -> String {
@@ -782,6 +783,7 @@ fn subagent_inherits_parent_binding_by_default_and_isolates_when_disabled() {
             model: "m".into(),
             session: extract_session(&h, None),
             exclude: vec![],
+            attempt_at: None,
         };
         assert!(child.session.is_subagent);
         assert_eq!(child.session.parent_key.as_deref(), Some("codex:root"));
@@ -822,6 +824,7 @@ fn fork_inherits_parent_even_when_subagent_affinity_disabled() {
         model: "m".into(),
         session: s,
         exclude: vec![],
+        attempt_at: None,
     };
     assert_eq!(pick(&r, &fork, &a), "a");
 }
@@ -842,7 +845,8 @@ fn prompt_cache_key_binds_conversation_alias() {
             &RouteRequest {
                 model: "m".into(),
                 session: s1,
-                exclude: vec![]
+                exclude: vec![],
+                attempt_at: None
             },
             &a
         ),
@@ -856,7 +860,8 @@ fn prompt_cache_key_binds_conversation_alias() {
             &RouteRequest {
                 model: "m".into(),
                 session: s2,
-                exclude: vec![]
+                exclude: vec![],
+                attempt_at: None
             },
             &a
         ),
@@ -1683,4 +1688,51 @@ fn overload_streak_backoff_and_reset() {
     r.note_attempt(&a);
     let (att, n) = r.overload_stats(&a);
     assert_eq!((att, n), (1, 13));
+}
+
+#[test]
+fn stale_inflight_success_keeps_newer_cooldown() {
+    let (r, clk) = router(RoutingConfig::default());
+    let a: AccountId = "a".into();
+    let mut inflight = rq("m");
+    inflight.attempt_at = Some(t0());
+    clk.advance(Duration::from_secs(1));
+    r.report(
+        &rq("m"),
+        &a,
+        &Outcome::RateLimited {
+            retry_after: Some(Duration::from_secs(3600)),
+            usage_limit: true,
+            quota: None,
+        },
+    );
+    clk.advance(Duration::from_secs(1));
+    r.report(&inflight, &a, &Outcome::Success { quota: None });
+    assert!(
+        r.cooling_reason_any(&a).is_some(),
+        "stale success must not clear"
+    );
+    let mut fresh = rq("m");
+    fresh.attempt_at = Some(t0() + Duration::from_secs(3));
+    clk.advance(Duration::from_secs(2));
+    r.report(&fresh, &a, &Outcome::Success { quota: None });
+    assert!(r.cooling_reason_any(&a).is_none(), "newer success clears");
+}
+
+#[test]
+fn success_without_attempt_time_still_clears_cooldown() {
+    let (r, clk) = router(RoutingConfig::default());
+    let a: AccountId = "a".into();
+    r.report(
+        &rq("m"),
+        &a,
+        &Outcome::RateLimited {
+            retry_after: Some(Duration::from_secs(3600)),
+            usage_limit: true,
+            quota: None,
+        },
+    );
+    clk.advance(Duration::from_secs(1));
+    r.report(&rq("m"), &a, &Outcome::Success { quota: None });
+    assert!(r.cooling_reason_any(&a).is_none());
 }

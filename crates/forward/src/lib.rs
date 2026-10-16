@@ -102,6 +102,7 @@ pub(crate) fn session_route(headers: &HeaderMap, body: Option<&serde_json::Value
             .to_string(),
         session: ciallopa_routing::extract_session(headers, body),
         exclude: vec![],
+        attempt_at: None,
     }
 }
 

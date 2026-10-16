@@ -217,6 +217,7 @@ async fn send_inner(st: &AppState, ob: Outbound, info: &mut SendInfo) -> Result<
         };
         let mut refreshed = false;
         loop {
+            route.attempt_at = Some(SystemTime::now());
             let url = st.upstream.url(&ob.path);
             let res = st
                 .upstream

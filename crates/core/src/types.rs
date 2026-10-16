@@ -63,6 +63,9 @@ pub struct RouteRequest {
     pub session: SessionInfo,
     /// Accounts already tried in this request (failover within one request).
     pub exclude: Vec<AccountId>,
+    /// When the current upstream attempt was sent. A later `Success` only clears cooldowns
+    /// recorded before this instant (an in-flight success must not undo a newer cooldown).
+    pub attempt_at: Option<std::time::SystemTime>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

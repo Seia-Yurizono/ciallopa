@@ -96,6 +96,13 @@ same account with backoff (or `Retry-After`, capped at 60 s). An account is cool
 `transient_cooldown_secs` (default 15) or the upstream `Retry-After`, capped at 60 s. The last
 usable account is never cooled; network errors never cool.
 
+### Successes that started before a cooldown
+Each upstream attempt (HTTP request, WS handshake) records when it was sent. A success only
+clears an account's cooldowns, error streaks and session binding when the attempt was sent after
+the account's latest cooldown. A long request that was already in flight when another request
+cooled the account (for example a usage limit) only updates the quota snapshot, so the cooled
+account stays out of rotation. WS `codex.rate_limits` snapshots count as the handshake's attempt.
+
 ### Overloaded / "at capacity"
 `server_is_overloaded`, `slow_down`, `service_unavailable_error`, or an error that only says
 "…overloaded…" / "…at capacity…" with no other code. It usually arrives as HTTP 200 followed by
@@ -393,7 +400,7 @@ Forwarded requests themselves are never changed.
   `codex_exec`, IDE/desktop originators and unauthenticated requests are ignored.
 - Latest valid one wins (one global value). Persisted in the usage DB (`kv`, schema v8) or, with
   `[usage] enabled = false`, `client_fingerprint.json` next to the usage path; re-validated on
-  restore. Fallback: `codex_cli_rs/0.162.1` + `codex_cli_rs`.
+  restore. Fallback: `codex_cli_rs/0.163.0` + `codex_cli_rs`.
 - `GET /usage/v1/client-fingerprint` → `{user_agent, originator, source: learned|default,
   learned_at_ms, key}` (key = client key label). Shown in the `/ui` header.
 

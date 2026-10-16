@@ -3,14 +3,14 @@
 Minimal Rust rewrite of CLIProxyAPI's Codex path: several ChatGPT-subscription accounts behind one
 endpoint for Codex clients (Codex CLI, plus OpenAI Images API clients), meant to sit behind Caddy.
 Network stack pinned to codex-rs (reqwest/rustls/hyper/h2/tokio-tungstenite fork), so upstream TLS,
-h2 and WebSocket fingerprints equal Codex CLI 0.162.1 (`scripts/fp-check.sh`).
+h2 and WebSocket fingerprints equal Codex CLI 0.163.0 (`scripts/fp-check.sh`).
 Interfaces: `docs/INTERFACES.md` · acceptance: `docs/ACCEPTANCE.md`.
 
 ## Build / gates
 ```
 cargo build --release && cargo clippy --all-targets -- -D warnings && cargo test
 scripts/lock-check.sh   # every dep version ⊆ codex-rs Cargo.lock
-scripts/fp-check.sh     # JA4 + Akamai h2 + WS handshake == Codex CLI 0.162.1 (sudo; restores /etc/hosts)
+scripts/fp-check.sh     # JA4 + Akamai h2 + WS handshake == Codex CLI 0.163.0 (sudo; restores /etc/hosts)
 ```
 
 ## Accounts
@@ -86,7 +86,7 @@ cloudflare_cookies = false # true = per-account in-memory jar of ChatGPT infrast
 enabled = true
 main_model = "gpt-5.5"             # wrapper model for non-gpt-image-* Images requests
 default_originator = "codex_exec"       # only for clients that don't send one
-default_user_agent = "codex_exec/0.162.1"   # used when client UA doesn't start with "codex"
+default_user_agent = "codex_exec/0.163.0"   # used when client UA doesn't start with "codex"
 ```
 
 ## Codex CLI client (`~/.codex/config.toml`)
@@ -162,7 +162,7 @@ so a retry cannot spend twice. Needs `[usage] enabled`.
 
 Internal upstream calls (token refresh, `/wham/*`, reset credits) reuse the `User-Agent` +
 `originator` of the latest validated Codex client request (`GET /usage/v1/client-fingerprint`;
-default `codex_cli_rs/0.162.1`). See docs/USAGE.md.
+default `codex_cli_rs/0.163.0`). See docs/USAGE.md.
 
 Details: docs/USAGE.md.
 

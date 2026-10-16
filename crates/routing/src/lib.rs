@@ -103,6 +103,8 @@ struct State {
     overload: HashMap<AccountId, (u32, u32)>,
     /// Hourly (hour index, attempts, overloaded) ring per account, last 24 h (memory only).
     stats: HashMap<AccountId, [(u64, u64, u64); 24]>,
+    /// Last time a cooldown was recorded for the account (any kind).
+    cooled_at: HashMap<AccountId, SystemTime>,
 }
 
 fn hour_of(t: SystemTime) -> u64 {
@@ -198,6 +200,7 @@ impl CpaRouter {
                 streak: HashMap::new(),
                 overload: HashMap::new(),
                 stats: HashMap::new(),
+                cooled_at: HashMap::new(),
             }),
         }
     }
@@ -588,6 +591,12 @@ impl Router for CpaRouter {
                 if let Some(q) = quota {
                     st.quota.insert(account.clone(), q.clone());
                 }
+                // CPA #6643: a success from an attempt sent before the latest cooldown is stale.
+                if let (Some(sent), Some(cooled)) = (req.attempt_at, st.cooled_at.get(account)) {
+                    if *cooled >= sent {
+                        return;
+                    }
+                }
                 st.model.remove(&mkey);
                 st.account.remove(account);
                 st.streak.remove(account);
@@ -717,6 +726,9 @@ impl Router for CpaRouter {
             }
         };
 
+        if kind.is_some() {
+            st.cooled_at.insert(account.clone(), now);
+        }
         // ---- session binding (SessionAffinitySelector.OnResult) ----
         if !self.cfg.load().session_affinity {
             return;
