@@ -125,6 +125,13 @@ pub const SCHEMA: &[Field] = &[
         true,
         "请求体上限（MB，最低按 20 计）",
     ),
+    f(
+        "ws_compression",
+        "bool",
+        Hot,
+        true,
+        "客户端 WebSocket 压缩（permessage-deflate，客户端请求时启用，新连接生效）",
+    ),
     Field {
         options: &["round-robin", "weighted-round-robin", "fill-first"],
         ..f("routing.strategy", "enum", Hot, true, "选号策略")

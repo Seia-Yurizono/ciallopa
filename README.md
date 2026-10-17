@@ -36,6 +36,8 @@ upstream = "https://chatgpt.com/backend-api"
 auth_dir = "~/.ciallopa/auths"
 proxy_url = ""                          # global egress: http:// | socks5h:// (https:// = HTTP only, not WS)
 max_body_mb = 16
+ws_compression = true                   # permessage-deflate on the client WebSocket when the client
+                                        # offers it (Codex always does); applies to new connections
 
 [routing]
 strategy = "round-robin"                # | weighted-round-robin | fill-first
@@ -53,8 +55,6 @@ max_attempts = 1    # per-request failovers for transport/408/5xx before the fir
                     # response (status, body, Retry-After) goes straight back and the client retries
                     # it with its own backoff (Codex: 4 request retries + 5 stream retries).
                     # 401/403/404/429 fail over to another account and do not consume this budget.
-                    # WS handshakes are not retried by Codex, so they get up to 4 retries
-                    # (another account first, else the same one with backoff) regardless.
                     # WS handshakes are not retried by Codex, so they get up to 4 retries
                     # (another account first, else the same one with backoff) regardless.
                     # In-stream quota errors (usage_limit_reached etc.) before the first output
@@ -97,11 +97,19 @@ name = "cpa"
 base_url = "https://cpa.example.com/v1"   # or http://127.0.0.1:8317/v1 locally
 env_key = "CPA_KEY"                       # export CPA_KEY=<one of api_keys>
 wire_api = "responses"
-supports_websockets = true                # false = HTTP SSE only
+supports_websockets = true                # needed for compression; false = HTTP SSE only
 
 [model_providers.cpa.capabilities]
 remote_compaction = "v2"                  # server-side compaction, same as the built-in openai provider
 ```
+Set `supports_websockets = true`. With a custom provider Codex never compresses HTTP request
+bodies and never accepts compressed SSE, so over HTTP every turn sends the whole history
+uncompressed. Over WebSocket Codex offers `permessage-deflate`, ciallopa accepts it
+(`ws_compression`), and a connection that stays open sends only the new input each turn. On a
+long conversation this saves about 30% of the upload (most of the history is encrypted reasoning,
+which barely compresses) and about 80% of the streamed response. The client WebSocket is
+served over HTTP/1.1 Upgrade; HTTP/2 extended CONNECT is not offered.
+
 Without `remote_compaction = "v2"` Codex treats a custom provider as unsupported and compacts
 locally (summarization prompt as a normal turn). With it (Codex >= 0.16x, `compact_remote_v2`),
 compaction is an ordinary `/responses` turn (SSE or WS) whose input ends with
@@ -220,7 +228,8 @@ cpa.example.com {
     }
 }
 ```
-WebSocket upgrades are proxied by Caddy automatically.
+WebSocket upgrades are proxied by Caddy automatically. Caddy forwards `Sec-WebSocket-Extensions`
+both ways, so `permessage-deflate` is negotiated end to end between Codex and ciallopa.
 
 ## systemd (optional)
 ```

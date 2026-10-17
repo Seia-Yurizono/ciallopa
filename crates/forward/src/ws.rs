@@ -1,8 +1,8 @@
 //! Responses WebSocket: one downstream WS ↔ one upstream WS pinned to one account.
 use crate::headers::upstream_headers;
 use crate::usage::{endpoint_of, Tracker};
+use crate::ws_upgrade::{DownWs, Upgrade};
 use crate::{map_path, pq, proxy, session_route, AppState};
-use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{OriginalUri, State};
 use axum::response::Response;
 use ciallopa_core::{AccountId, Outcome, RouteError, RouteRequest};
@@ -34,7 +34,7 @@ pub(crate) async fn handler(
     key: crate::Key,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
-    ws: WebSocketUpgrade,
+    ws: Upgrade,
 ) -> Response {
     let Some(path) = map_path(pq(&uri)) else {
         return proxy::json_error(StatusCode::NOT_FOUND, "not_found", "unknown path");
@@ -78,8 +78,10 @@ pub(crate) async fn handler(
         key: crate::key_label(&key).map(str::to_string),
     };
     let hs_headers = resp_headers.clone();
-    let mut resp =
-        ws.on_upgrade(move |socket| relay(st2, ctx, route, account, socket, up, idle, hs_headers));
+    let compression = st.config.load().ws_compression;
+    let mut resp = ws.on_upgrade(compression, move |socket| {
+        relay(st2, ctx, route, account, socket, up, idle, hs_headers)
+    });
     for (k, v) in resp_headers.iter() {
         let n = k.as_str();
         if n.starts_with("sec-websocket-")
@@ -296,36 +298,23 @@ async fn connect(
     }
 }
 
+/// Both legs are tungstenite streams; raw frames are never relayed.
+type Message = WsMessage;
+
 fn to_up(m: Message) -> Option<WsMessage> {
-    Some(match m {
-        Message::Text(t) => WsMessage::text(t.as_str()),
-        Message::Binary(b) => WsMessage::Binary(b),
-        Message::Ping(b) => WsMessage::Ping(b),
-        Message::Pong(b) => WsMessage::Pong(b),
-        Message::Close(f) => WsMessage::Close(f.map(|f| UpCloseFrame {
-            code: CloseCode::from(f.code),
-            reason: f.reason.as_str().into(),
-        })),
-    })
+    match m {
+        WsMessage::Frame(_) => None,
+        m => Some(m),
+    }
 }
 
 fn to_down(m: WsMessage) -> Option<Message> {
-    Some(match m {
-        WsMessage::Text(t) => Message::Text(t.as_str().into()),
-        WsMessage::Binary(b) => Message::Binary(b),
-        WsMessage::Ping(b) => Message::Ping(b),
-        WsMessage::Pong(b) => Message::Pong(b),
-        WsMessage::Close(f) => Message::Close(f.map(|f| CloseFrame {
-            code: u16::from(f.code),
-            reason: f.reason.as_str().into(),
-        })),
-        WsMessage::Frame(_) => return None,
-    })
+    to_up(m)
 }
 
 fn close(code: u16, reason: &str) -> Message {
-    Message::Close(Some(CloseFrame {
-        code,
+    Message::Close(Some(UpCloseFrame {
+        code: CloseCode::from(code),
         reason: reason.into(),
     }))
 }
@@ -381,7 +370,7 @@ async fn relay(
     ctx: Ctx,
     mut route: RouteRequest,
     mut account: AccountId,
-    down: WebSocket,
+    down: DownWs,
     up: UpstreamWs,
     idle: Duration,
     handshake: HeaderMap,
@@ -622,8 +611,17 @@ async fn relay(
                             }
                         }
                     }
-                    _ => {
-                        if let Some(t) = turn.as_mut() { t.fail_msg("upstream_closed", "upstream websocket disconnected (transport error)"); t.source(crate::errors::SRC_NETWORK); }
+                    other => {
+                        let cause = match &other {
+                            Some(Err(e)) => e.to_string(),
+                            _ => "connection ended without a close frame".to_string(),
+                        };
+                        if awaiting {
+                            tracing::warn!(account = %account, error = %cause, "upstream websocket transport error mid-turn");
+                        } else {
+                            tracing::info!(account = %account, error = %cause, "upstream websocket transport error between turns");
+                        }
+                        if let Some(t) = turn.as_mut() { t.fail_msg("upstream_closed", format!("upstream websocket disconnected (transport error: {cause})")); t.source(crate::errors::SRC_NETWORK); }
                         st.router.report(&route, &account, &Outcome::Transient { status: None });
                         let _ = dtx.send(close(CLOSE_INTERNAL, "upstream disconnected")).await;
                         break;

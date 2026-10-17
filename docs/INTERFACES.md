@@ -74,6 +74,7 @@ key middleware (server) → handler
      out of accounts / budget → most meaningful upstream error verbatim (see docs/USAGE.md)
 ```
 WS: one downstream WS ↔ one upstream WS pinned to one account; on usage_limit/429/close → report, close downstream with same code.
+Downstream WS: HTTP/1.1 Upgrade only (no HTTP/2 extended CONNECT); `permessage-deflate` accepted from the client's first acceptable offer when `ws_compression` is on (`forward/src/ws_upgrade.rs`), otherwise plain. The upstream leg offers it like Codex.
 
 ## Invariants
 - Fingerprint: never touch rustls/reqwest/h2 versions or builder knobs without `scripts/lock-check.sh` and `scripts/fp-check.sh` passing.

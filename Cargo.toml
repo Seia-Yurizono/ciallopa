@@ -13,6 +13,7 @@ license = "MIT"
 reqwest = { version = "=0.12.28", default-features = false, features = ["json", "rustls-tls", "rustls-tls-native-roots", "stream", "http2", "socks", "cookies"] }
 rustls = { version = "=0.23.45", default-features = false, features = ["aws_lc_rs", "std"] }
 hyper = "=1.11.1"
+hyper-util = { version = "=0.1.20", features = ["tokio"] }
 h2 = "=0.4.19"
 tokio-tungstenite = { version = "=0.28.0", features = ["proxy", "rustls-tls-native-roots"] }
 tokio = { version = "=1.52.3", features = ["full"] }

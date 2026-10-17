@@ -367,6 +367,11 @@ async fn up_ws(State(m): State<Mock>, h: HeaderMap, ws: WebSocketUpgrade) -> Res
     let mut r = ws.on_upgrade(move |mut s| async move {
         while let Some(Ok(msg)) = s.recv().await {
             if let Message::Text(t) = msg {
+                if t.as_str().contains("\"drop\"") {
+                    // Created, then the TCP connection goes away without a close frame.
+                    let _ = s.send(Message::Text(r#"{"type":"response.created","response":{"id":"r-d"}}"#.into())).await;
+                    return;
+                }
                 if t.as_str().contains("\"generate\":false") {
                     let _ = s.send(Message::Text(r#"{"type":"response.created","response":{"id":"r-w"}}"#.into())).await;
                     let _ = s.send(Message::Text(r#"{"type":"response.completed","response":{"id":"r-w","usage":{"input_tokens":8,"output_tokens":0}}}"#.into())).await;
@@ -431,6 +436,7 @@ struct Env {
     rec: Arc<Rec>,
     store: Arc<Store>,
     http: reqwest::Client,
+    config: Arc<ciallopa_core::settings::SharedConfig>,
 }
 
 async fn env(idle: u64) -> Env {
@@ -475,6 +481,7 @@ async fn env_cfg(idle: u64, usage: Option<Arc<ciallopa_usage::Recorder>>, extra:
         usage,
         config: Arc::new(cfg.into()),
     };
+    let config = state.config.clone();
     let proxy = serve(ciallopa::build_app(state)).await;
     Env {
         proxy,
@@ -482,6 +489,7 @@ async fn env_cfg(idle: u64, usage: Option<Arc<ciallopa_usage::Recorder>>, extra:
         rec,
         store,
         http: reqwest::Client::new(),
+        config,
     }
 }
 
@@ -2270,4 +2278,261 @@ async fn ws_ttft_and_prewarm() {
         .unwrap();
     assert_eq!(s["summary"]["total"]["count"], 1, "{s}");
     assert_eq!(s["summary"]["total"]["input_tokens"], 13, "{s}");
+}
+
+// ---- client-leg permessage-deflate (ws_compression) ----
+
+fn ws_req(e: &Env) -> tokio_tungstenite::tungstenite::handshake::client::Request {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut req = format!("ws://{}/v1/responses", e.proxy)
+        .into_client_request()
+        .unwrap();
+    req.headers_mut()
+        .insert("authorization", format!("Bearer {KEY}").parse().unwrap());
+    req
+}
+
+/// Client config offering permessage-deflate (Codex: `DeflateConfig::default()`).
+fn deflate_client(
+    f: impl FnOnce(
+        tokio_tungstenite::tungstenite::extensions::compression::deflate::DeflateConfig,
+    )
+        -> tokio_tungstenite::tungstenite::extensions::compression::deflate::DeflateConfig,
+) -> tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
+    use tokio_tungstenite::tungstenite::extensions::compression::deflate::DeflateConfig;
+    let mut c = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default();
+    c.extensions.permessage_deflate = Some(f(DeflateConfig::default()));
+    c
+}
+
+/// Sends `n` large, repetitive turns and checks each echo comes back intact.
+async fn ws_roundtrips<S>(ws: &mut tokio_tungstenite::WebSocketStream<S>, n: usize)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use tokio_tungstenite::tungstenite::Message as M;
+    for i in 0..n {
+        let input: String = (0..4000)
+            .map(|k| format!("{{\"role\":\"user\",\"n\":{},\"t\":\"turn {i}\"}},", k % 97))
+            .collect();
+        let frame = serde_json::json!({"type":"response.create","model":"gpt-5.5","input":input})
+            .to_string();
+        ws.send(M::text(frame.clone())).await.unwrap();
+        let got = ws.next().await.unwrap().unwrap();
+        let v: serde_json::Value = serde_json::from_str(got.to_text().unwrap()).unwrap();
+        assert_eq!(v["type"], "response.completed");
+        assert_eq!(
+            v["echo"],
+            serde_json::from_str::<serde_json::Value>(&frame).unwrap()
+        );
+    }
+}
+
+fn ext(r: &http::Response<Option<Vec<u8>>>) -> Option<String> {
+    r.headers()
+        .get("sec-websocket-extensions")
+        .map(|v| v.to_str().unwrap().to_string())
+}
+
+#[tokio::test]
+async fn ws_deflate_negotiated_with_codex_offer() {
+    let e = env(300).await;
+    let (mut ws, resp) = tokio_tungstenite::connect_async_with_config(
+        ws_req(&e),
+        Some(deflate_client(|d| d)),
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(ext(&resp).as_deref(), Some("permessage-deflate"));
+    // No ciallopa-specific headers on the handshake.
+    assert!(resp
+        .headers()
+        .keys()
+        .all(|k| !k.as_str().contains("ciallopa")));
+    ws_roundtrips(&mut ws, 3).await;
+}
+
+#[tokio::test]
+async fn ws_deflate_params() {
+    use tokio_tungstenite::tungstenite::protocol::Role;
+    let e = env(300).await;
+    let cfg = deflate_client(|d| {
+        d.set_no_context_takeover(Role::Server, true)
+            .set_no_context_takeover(Role::Client, true)
+            .set_max_window_bits(Role::Server, 10)
+            .unwrap()
+            .set_max_window_bits(Role::Client, 12)
+            .unwrap()
+    });
+    let (mut ws, resp) = tokio_tungstenite::connect_async_with_config(ws_req(&e), Some(cfg), false)
+        .await
+        .unwrap();
+    assert_eq!(
+        ext(&resp).as_deref(),
+        Some("permessage-deflate; server_no_context_takeover; client_no_context_takeover; server_max_window_bits=10; client_max_window_bits=12")
+    );
+    ws_roundtrips(&mut ws, 3).await;
+    // Context takeover on, smaller windows only.
+    let cfg = deflate_client(|d| d.set_max_window_bits(Role::Server, 9).unwrap());
+    let (mut ws, resp) = tokio_tungstenite::connect_async_with_config(ws_req(&e), Some(cfg), false)
+        .await
+        .unwrap();
+    assert_eq!(
+        ext(&resp).as_deref(),
+        Some("permessage-deflate; server_max_window_bits=9")
+    );
+    ws_roundtrips(&mut ws, 2).await;
+}
+
+#[tokio::test]
+async fn ws_plain_without_offer_or_when_disabled() {
+    let e = env(300).await;
+    // No offer → plain.
+    let (mut ws, resp) = tokio_tungstenite::connect_async(ws_req(&e)).await.unwrap();
+    assert_eq!(ext(&resp), None);
+    ws_roundtrips(&mut ws, 1).await;
+    // Unacceptable offer → plain.
+    let mut req = ws_req(&e);
+    req.headers_mut().insert(
+        "sec-websocket-extensions",
+        "permessage-deflate; server_max_window_bits=8, x-webkit-deflate-frame"
+            .parse()
+            .unwrap(),
+    );
+    let (mut ws, resp) = tokio_tungstenite::connect_async(req).await.unwrap();
+    assert_eq!(ext(&resp), None);
+    ws_roundtrips(&mut ws, 1).await;
+    // ws_compression = false applies to the next handshake (hot).
+    let mut c = (*e.config.load()).clone();
+    c.ws_compression = false;
+    e.config.store(c.clone());
+    let (mut ws, resp) = tokio_tungstenite::connect_async_with_config(
+        ws_req(&e),
+        Some(deflate_client(|d| d)),
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(ext(&resp), None);
+    ws_roundtrips(&mut ws, 1).await;
+    c.ws_compression = true;
+    e.config.store(c);
+    let (_ws, resp) = tokio_tungstenite::connect_async_with_config(
+        ws_req(&e),
+        Some(deflate_client(|d| d)),
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(ext(&resp).as_deref(), Some("permessage-deflate"));
+}
+
+/// The server really compresses (RSV1) once negotiated, and accepts an uncompressed client
+/// frame on a deflate connection (RFC 7692 §6).
+#[tokio::test]
+async fn ws_deflate_wire_frames_compressed() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let e = env(300).await;
+    let mut s = tokio::net::TcpStream::connect(&e.proxy).await.unwrap();
+    s.write_all(format!(
+        "GET /v1/responses HTTP/1.1\r\nHost: {}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\nAuthorization: Bearer {KEY}\r\n\r\n",
+        e.proxy
+    ).as_bytes()).await.unwrap();
+    let mut buf = Vec::new();
+    while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+        let mut b = [0u8; 1024];
+        let n = s.read(&mut b).await.unwrap();
+        assert!(n > 0);
+        buf.extend_from_slice(&b[..n]);
+    }
+    let end = buf.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+    let head = String::from_utf8_lossy(&buf[..end]).to_ascii_lowercase();
+    assert!(head.starts_with("http/1.1 101"), "{head}");
+    assert!(
+        head.contains("sec-websocket-accept: s3pplmbitxaq9kygzzhzrbk+xoo="),
+        "{head}"
+    );
+    assert!(
+        head.contains("sec-websocket-extensions: permessage-deflate\r\n"),
+        "{head}"
+    );
+    // Masked, uncompressed text frame.
+    let payload: String = format!(
+        r#"{{"type":"response.create","input":"{}"}}"#,
+        "abcabcabc ".repeat(200)
+    );
+    let key = [1u8, 2, 3, 4];
+    let mut f = vec![0x81u8, 0x80 | 126];
+    f.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    f.extend_from_slice(&key);
+    f.extend(payload.bytes().enumerate().map(|(i, b)| b ^ key[i % 4]));
+    s.write_all(&f).await.unwrap();
+    let mut rest = buf[end..].to_vec();
+    while rest.len() < 4 {
+        let mut b = [0u8; 4096];
+        let n = s.read(&mut b).await.unwrap();
+        assert!(n > 0);
+        rest.extend_from_slice(&b[..n]);
+    }
+    assert_eq!(rest[0] & 0x0f, 1, "text frame");
+    assert_eq!(rest[0] & 0x40, 0x40, "RSV1 (compressed) set");
+    let len = match rest[1] & 0x7f {
+        126 => u16::from_be_bytes([rest[2], rest[3]]) as usize,
+        n => n as usize,
+    };
+    assert!(
+        len < payload.len() / 4,
+        "compressed {len} vs {}",
+        payload.len()
+    );
+}
+
+#[tokio::test]
+async fn ws_handshake_rejections_unchanged() {
+    let e = env(300).await;
+    let r = e
+        .http
+        .get(format!("http://{}/v1/responses", e.proxy))
+        .bearer_auth(KEY)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
+    assert_eq!(
+        r.text().await.unwrap(),
+        "Connection header did not include 'upgrade'"
+    );
+}
+
+#[tokio::test]
+async fn ws_upstream_transport_error_mid_turn_recorded_with_cause() {
+    use tokio_tungstenite::tungstenite::Message as M;
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(ws_req(&e)).await.unwrap();
+    ws.send(M::text(
+        r#"{"type":"response.create","model":"gpt-5.5","tag":"drop"}"#,
+    ))
+    .await
+    .unwrap();
+    let mut close = None;
+    while let Some(Ok(m)) = ws.next().await {
+        if let M::Close(f) = m {
+            close = f;
+            break;
+        }
+    }
+    let f = close.expect("close frame");
+    assert_eq!(u16::from(f.code), 1011);
+    let rows = wait_rows(&e, 1).await;
+    let r = &rows[0];
+    assert_eq!(r["error"], "upstream_closed", "{r}");
+    let id = r["request_id"].as_str().unwrap().to_string();
+    let v: serde_json::Value = detail_of(&e, &id, true).await.json().await.unwrap();
+    let msg = v["message"].as_str().unwrap_or_default();
+    assert!(
+        msg.starts_with("upstream websocket disconnected (transport error: ") && msg.len() > 52,
+        "{v}"
+    );
 }

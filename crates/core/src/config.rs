@@ -307,6 +307,10 @@ pub struct Config {
     /// Global egress proxy: http://, https://, socks5://, socks5h://. Empty = direct.
     pub proxy_url: String,
     pub max_body_mb: u64,
+    /// Accept a client's `permessage-deflate` offer on the Responses WebSocket (RFC 7692;
+    /// Codex always offers it). Read at each handshake; open connections keep what they
+    /// negotiated. Off, or without an offer, the client leg is uncompressed.
+    pub ws_compression: bool,
     pub routing: RoutingConfig,
     pub upstream_opts: UpstreamOpts,
     pub images: ImagesConfig,
@@ -324,6 +328,7 @@ impl Default for Config {
             auth_dir: PathBuf::from("~/.ciallopa/auths"),
             proxy_url: String::new(),
             max_body_mb: 16,
+            ws_compression: true,
             routing: RoutingConfig::default(),
             upstream_opts: UpstreamOpts::default(),
             images: ImagesConfig::default(),

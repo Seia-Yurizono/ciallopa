@@ -14,6 +14,7 @@ mod proxy;
 mod turn_state;
 mod usage;
 mod ws;
+mod ws_upgrade;
 
 pub use ciallopa_routing::parse_quota;
 pub use headers::{downstream_headers, upstream_headers};

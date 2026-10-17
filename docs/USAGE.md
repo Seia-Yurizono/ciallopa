@@ -140,7 +140,9 @@ retried or switched accounts (attempt chain only), in `error_detail`:
   JSON error such as `no_account`). Capture stops at 64 KiB; the stored text is redacted and
   then capped at **16 KiB** (`truncated = true`, `body_len` = original byte length).
 - `message`: upstream `error.message` or a descriptive local message (`upstream stream idle
-  for 300s (timeout)`, `no account available`, `upstream websocket closed mid-turn (code …)`, …).
+  for 300s (timeout)`, `no account available`, `upstream websocket closed mid-turn (code …)`,
+  `upstream websocket disconnected (transport error: <cause>)`, …). The transport cause is also
+  logged as a warning when it interrupts a turn.
 - `attempts` (v9): JSON array, at most 8 entries (`{"dropped": n}` marks omitted middle ones):
   `account`, `t_ms` (since request start), `kind` (`http` / `transport` / `refresh` / `stream`), `status`,
   `code`, `action` (`ok`, `retry(<ms>ms)`, `switch`, `cooldown(<s>s)+switch`, `cooldown+switch`, `refresh+retry`,
