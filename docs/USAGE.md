@@ -344,6 +344,18 @@ Headers: CSP `default-src 'none'; script-src 'sha256-…'; style-src 'sha256-…
 `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`,
 `Cache-Control: no-store`. Hashes are computed per page from the embedded files at startup, so
 editing `crates/server/src/{ui,settings,accounts}.html` needs no manual CSP update.
+`GET /favicon.ico` serves the tab icon (SVG).
+
+Page behavior:
+- Theme follows the system (`prefers-color-scheme`); the ◐ / ☀ / ☾ header button switches
+  between system, light and dark and is remembered in `localStorage` (`ciallopa_theme`).
+- `/ui` keeps the request filters and the time range / grouping / trend mode in the URL query
+  (shareable, survives reload; `清除筛选` resets the request filters). Time range, grouping and
+  trend mode are also remembered in `localStorage` as the defaults for a URL without them.
+- Results of actions (refresh, enable / disable, save, copy) appear as toasts; load and save
+  errors stay in a banner at the top of the page.
+- Below 720 px the request and account tables switch to one card per row; the settings page
+  has a group index and a search box, and a floating bar with the pending-change count.
 
 ## Reset credits (重置卡)
 Manual only: nothing in ciallopa consumes a credit by itself (no failover / quota path calls it;

@@ -81,9 +81,25 @@ fn serve(i: usize) -> Response {
     r
 }
 
+/// Tab icon (the pages cannot `<link>` one under their CSP; browsers ask for this path).
+const FAVICON: &str = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='#5b7cff'/><stop offset='1' stop-color='#8b5cf6'/></linearGradient></defs><rect width='32' height='32' rx='8' fill='url(#g)'/><text x='16' y='22.5' font-family='system-ui,sans-serif' font-size='18' font-weight='700' text-anchor='middle' fill='#fff'>C</text></svg>";
+
+async fn favicon() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "image/svg+xml"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        FAVICON,
+    )
+        .into_response()
+}
+
 pub fn routes() -> Router {
     Router::new()
         .route("/ui", get(page))
+        .route("/favicon.ico", get(favicon))
         .route("/ui/settings", get(|| async { serve(1) }))
         .route("/ui/accounts", get(|| async { serve(2) }))
         .route("/", get(|| async { Redirect::temporary("/ui") }))

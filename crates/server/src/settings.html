@@ -7,75 +7,263 @@
 <meta name="color-scheme" content="light dark">
 <title>ciallopa 设置</title>
 <style>
-:root{--bg:#f6f7f9;--fg:#1d2330;--mut:#5d6779;--card:#fff;--line:#e3e6ea;--acc:#2f6fed;--ok:#14804a;--warn:#b45309;--bad:#c53030;--wbg:#fef3c7;--wfg:#7c2d12;--bbg:#fde8e8;--bfg:#9b1c1c;--hbg:#e7f6ec;--hfg:#14532d}
-@media (prefers-color-scheme:dark){:root{--bg:#0f1218;--fg:#e6e9ef;--mut:#a3adbd;--card:#171b23;--line:#2a303b;--acc:#5b8cff;--ok:#3cc27e;--warn:#f0a930;--bad:#ff6b6b;--wbg:#f0a930;--wfg:#1a1200;--bbg:#ff8a8a;--bfg:#1f0505;--hbg:#3cc27e;--hfg:#04170c}}
+:root{color-scheme:light;
+--bg:#f4f5f7;--surface:#fff;--surface-2:#f8f9fb;--surface-3:#eef0f4;--line:#e3e6eb;--line-2:#cfd4dc;
+--fg:#111827;--fg-2:#374151;--mut:#5f6876;--acc:#3b5bdb;--acc-2:#2f4ac0;--acc-fg:#fff;--acc-soft:#eef1fd;
+--ok:#067647;--ok-soft:#e8f6ee;--warn:#b54708;--warn-soft:#fff6e5;--bad:#c4320a;--bad-soft:#fef1ee;--vio:#6d3fd8;--vio-soft:#f3effd;--gray-soft:#f0f1f4;
+--bar:#e7eaef;--danger:#d92d20;--ring:0 0 0 3px color-mix(in srgb,var(--acc) 30%,transparent);
+--sh-1:0 1px 2px rgba(16,24,40,.05);--sh-2:0 1px 3px rgba(16,24,40,.08),0 1px 2px rgba(16,24,40,.04);--sh-3:0 12px 32px -8px rgba(16,24,40,.22),0 4px 8px -4px rgba(16,24,40,.08);
+--r-1:6px;--r-2:10px;--r-3:14px;--s-1:4px;--s-2:8px;--s-3:12px;--s-4:16px;--s-5:24px;--s-6:32px;
+--font:system-ui,-apple-system,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC","Source Han Sans SC",sans-serif;
+--mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,"Noto Sans Mono CJK SC",monospace}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){color-scheme:dark;
+--bg:#0c0e13;--surface:#14171e;--surface-2:#181c24;--surface-3:#20252f;--line:#262b35;--line-2:#363c48;
+--fg:#e8eaef;--fg-2:#c9ced8;--mut:#9aa3b2;--acc:#7d93ff;--acc-2:#9aabff;--acc-fg:#0c1029;--acc-soft:#1c2340;
+--ok:#4ccb8d;--ok-soft:#10261c;--warn:#f2b155;--warn-soft:#2b200e;--bad:#ff7a66;--bad-soft:#2e1612;--vio:#b39cff;--vio-soft:#231c3a;--gray-soft:#20242c;
+--bar:#262b36;--danger:#b42318;--sh-1:none;--sh-2:0 1px 2px rgba(0,0,0,.4);--sh-3:0 16px 40px -8px rgba(0,0,0,.6)}}
+:root[data-theme=dark]{color-scheme:dark;
+--bg:#0c0e13;--surface:#14171e;--surface-2:#181c24;--surface-3:#20252f;--line:#262b35;--line-2:#363c48;
+--fg:#e8eaef;--fg-2:#c9ced8;--mut:#9aa3b2;--acc:#7d93ff;--acc-2:#9aabff;--acc-fg:#0c1029;--acc-soft:#1c2340;
+--ok:#4ccb8d;--ok-soft:#10261c;--warn:#f2b155;--warn-soft:#2b200e;--bad:#ff7a66;--bad-soft:#2e1612;--vio:#b39cff;--vio-soft:#231c3a;--gray-soft:#20242c;
+--bar:#262b36;--danger:#b42318;--sh-1:none;--sh-2:0 1px 2px rgba(0,0,0,.4);--sh-3:0 16px 40px -8px rgba(0,0,0,.6)}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
-header{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:5;flex-wrap:wrap}
-header h1{font-size:16px;margin:0}
-nav a{color:var(--acc);text-decoration:none;margin-right:12px}nav a[aria-current]{color:var(--fg);font-weight:600}
-.sp{flex:1}
-main{max-width:1180px;margin:0 auto;padding:16px}
-section{margin-bottom:24px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px}
-h2{font-size:15px;margin:0 0 8px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 var(--font);-webkit-font-smoothing:antialiased}
+a{color:var(--acc)}
+code,.mono{font-family:var(--mono);font-size:12px}
 .mut{color:var(--mut);font-size:12px}
-table{border-collapse:collapse;width:100%}
-th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
-th{font-size:12px;color:var(--mut);font-weight:500}
-code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;word-break:break-all}
-.badge{display:inline-block;font-size:11px;padding:1px 6px;border-radius:9px;border:1px solid var(--line);color:var(--mut);white-space:nowrap}
-.badge.hot{color:var(--hfg);background:var(--hbg);border-color:var(--ok)}
-.badge.rs{color:var(--wfg);background:var(--wbg);border-color:var(--warn)}
-.badge.bad{color:var(--bfg);background:var(--bbg);border-color:var(--bad)}
-.banner{padding:8px 12px;border-radius:8px;margin-bottom:12px;border:1px solid var(--warn);background:var(--wbg);color:var(--wfg)}
-.banner.err{border-color:var(--bad);background:var(--bbg);color:var(--bfg)}
+.sp{flex:1}
 .hide{display:none!important}
-button,input,select{font:inherit;color:inherit}
-button{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:4px 10px;cursor:pointer}
-button:hover{border-color:var(--acc)}button:disabled{opacity:.5;cursor:default}
-button.pri{background:var(--acc);border-color:var(--acc);color:#fff}
-button.danger{border-color:var(--bad);color:var(--bad)}
-input,select{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:3px 6px;max-width:100%}
-input.chg,select.chg{border-color:var(--acc);outline:1px solid var(--acc)}
-.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.diffv{color:var(--warn)}
-#dlg{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:20}
-#dlgb{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;max-width:640px;width:calc(100% - 32px);max-height:80vh;overflow:auto}
-#dlgb h3{margin:0 0 8px;font-size:15px}
-.acts{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}
-#newkey{padding:8px;border:1px dashed var(--ok);border-radius:8px;margin-top:8px}
-#login{max-width:420px;margin:12vh auto;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:20px}
-#login form{display:flex;gap:8px;margin-top:12px}#login input{flex:1}
+.skip{position:absolute;left:8px;top:-48px;z-index:50;background:var(--acc);color:var(--acc-fg);padding:6px 12px;border-radius:var(--r-1)}
+.skip:focus{top:8px}
+:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+/* header */
+header{position:sticky;top:0;z-index:30;display:flex;align-items:center;gap:var(--s-3);padding:0 var(--s-5);min-height:56px;flex-wrap:wrap;
+background:color-mix(in srgb,var(--surface) 86%,transparent);backdrop-filter:saturate(1.6) blur(10px);-webkit-backdrop-filter:saturate(1.6) blur(10px);border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:10px;font-weight:650;font-size:15px;letter-spacing:.1px;margin:0;white-space:nowrap}
+.logo{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;color:#fff;font-size:14px;font-weight:700;background:linear-gradient(135deg,#5b7cff,#8b5cf6);box-shadow:inset 0 -1px 0 rgba(0,0,0,.15)}
+nav.tabs{display:flex;gap:2px;padding:3px;background:var(--surface-3);border-radius:10px}
+nav.tabs a{color:var(--mut);text-decoration:none;padding:5px 14px;border-radius:7px;font-weight:550;font-size:13px;white-space:nowrap}
+nav.tabs a:hover{color:var(--fg)}
+nav.tabs a[aria-current]{color:var(--fg);background:var(--surface);box-shadow:var(--sh-2)}
+.hgroup{display:flex;align-items:center;gap:var(--s-2);flex-wrap:wrap}
+main{max-width:1440px;margin:0 auto;padding:var(--s-5)}
+.ph{display:flex;align-items:flex-end;gap:var(--s-3);flex-wrap:wrap;margin:0 0 var(--s-4)}
+.ph h1{font-size:20px;line-height:1.3;margin:0;font-weight:650;letter-spacing:-.2px}
+.ph .chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+section{margin-bottom:var(--s-6)}
+h2{font-size:15px;font-weight:620;margin:0 0 var(--s-3);display:flex;align-items:baseline;gap:var(--s-2);flex-wrap:wrap}
+h2 .mut{font-weight:400}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-3);box-shadow:var(--sh-1)}
+.panel.pad{padding:var(--s-4) var(--s-5)}
+/* controls */
+button,input,select,textarea{font:inherit;color:inherit}
+button,.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:32px;padding:0 12px;border-radius:8px;border:1px solid var(--line-2);background:var(--surface);color:var(--fg);font-size:13px;font-weight:550;cursor:pointer;white-space:nowrap;transition:background .12s,border-color .12s,box-shadow .12s}
+button:hover{background:var(--surface-2);border-color:color-mix(in srgb,var(--line-2) 50%,var(--fg) 20%)}
+button:active{transform:translateY(.5px)}
+button:disabled{opacity:.5;cursor:not-allowed;transform:none}
+button:focus-visible{outline:none;box-shadow:var(--ring);border-color:var(--acc)}
+button.pri{background:var(--acc);border-color:var(--acc);color:var(--acc-fg)}
+button.pri:hover{background:var(--acc-2);border-color:var(--acc-2)}
+button.danger{background:var(--danger);border-color:var(--danger);color:#fff}
+button.danger:hover{background:color-mix(in srgb,var(--danger) 85%,#000);border-color:color-mix(in srgb,var(--danger) 85%,#000)}
+button.ghost{background:transparent;border-color:transparent;color:var(--fg-2)}
+button.ghost:hover{background:var(--surface-3)}
+button.ghost.bad,button.out-bad{color:var(--bad)}
+button.out-bad{background:transparent;border-color:color-mix(in srgb,var(--bad) 45%,transparent)}
+button.out-bad:hover{background:var(--bad-soft)}
+button.sm{min-height:26px;padding:0 9px;font-size:12px;border-radius:7px}
+button.icon{width:32px;padding:0}
+input,select,textarea{background:var(--surface);border:1px solid var(--line-2);border-radius:8px;min-height:32px;padding:0 10px;font-size:13px;max-width:100%;transition:border-color .12s,box-shadow .12s}
+textarea{padding:8px 10px}
+input::placeholder,textarea::placeholder{color:color-mix(in srgb,var(--mut) 80%,transparent)}
+input:hover,select:hover,textarea:hover{border-color:color-mix(in srgb,var(--line-2) 50%,var(--fg) 20%)}
+input:focus-visible,select:focus-visible,textarea:focus-visible{outline:none;border-color:var(--acc);box-shadow:var(--ring)}
+select{appearance:none;-webkit-appearance:none;padding-right:28px;cursor:pointer;
+background-image:linear-gradient(45deg,transparent 50%,var(--mut) 50%),linear-gradient(135deg,var(--mut) 50%,transparent 50%);background-position:calc(100% - 15px) 50%,calc(100% - 10px) 50%;background-size:5px 5px;background-repeat:no-repeat}
+input[type=checkbox]{min-height:0;width:16px;height:16px;margin:0;accent-color:var(--acc);vertical-align:-3px}
+label.chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--fg-2);cursor:pointer;white-space:nowrap}
+.switch{appearance:none;-webkit-appearance:none;position:relative;width:30px!important;height:18px!important;border-radius:9px;background:var(--line-2);border:0;cursor:pointer;transition:background .15s;flex:none}
+.switch:after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.3);transition:transform .15s}
+.switch:checked{background:var(--acc)}.switch:checked:after{transform:translateX(12px)}
+.switch:focus-visible{outline:none;box-shadow:var(--ring)}
+/* badges */
+.badge{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;line-height:18px;padding:0 7px;border-radius:999px;background:var(--gray-soft);color:var(--fg-2);border:1px solid transparent;white-space:nowrap;font-weight:550;vertical-align:1px}
+.badge.dot:before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.badge.ok,.badge.hot{background:var(--ok-soft);color:var(--ok)}
+.badge.warn,.badge.rs{background:var(--warn-soft);color:var(--warn)}
+.badge.bad{background:var(--bad-soft);color:var(--bad)}
+.badge.acc{background:var(--acc-soft);color:var(--acc)}
+.badge.line{background:transparent;border-color:var(--line-2);color:var(--mut)}
+/* banners / toasts */
+.banner,#msg:not(:empty){display:block;padding:10px 14px;border-radius:var(--r-2);margin-bottom:var(--s-4);border:1px solid color-mix(in srgb,var(--warn) 35%,transparent);background:var(--warn-soft);color:var(--fg);font-size:13px}
+.banner.err,#msg.err:not(:empty){border-color:color-mix(in srgb,var(--bad) 35%,transparent);background:var(--bad-soft)}
+.banner:before,#msg:not(:empty):before{content:"⚠ ";color:var(--warn);font-weight:700}
+.banner.err:before,#msg.err:not(:empty):before{color:var(--bad)}
+#msg:empty{display:none}
+#toasts{position:fixed;right:20px;bottom:20px;z-index:60;display:flex;flex-direction:column;gap:8px;align-items:flex-end;pointer-events:none;max-width:calc(100vw - 40px)}
+.toast{pointer-events:auto;display:flex;gap:10px;align-items:flex-start;max-width:420px;padding:10px 14px;border-radius:var(--r-2);background:var(--fg);color:var(--bg);box-shadow:var(--sh-3);font-size:13px;white-space:pre-line;overflow-wrap:anywhere;animation:tin .18s ease-out}
+.toast:before{content:"✓";font-weight:700;color:#4ccb8d}
+.toast.err:before{content:"!";color:#ff7a66}
+.toast.out{opacity:0;transform:translateY(6px);transition:opacity .25s,transform .25s}
+@keyframes tin{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+/* tables */
+.tablewrap{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-3);overflow:auto;box-shadow:var(--sh-1)}
+table{border-collapse:separate;border-spacing:0;width:100%;font-size:13px}
+th,td{padding:9px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}
+thead th{font-size:12px;font-weight:600;color:var(--mut);background:var(--surface-2);white-space:nowrap}
+tbody tr:last-child>td{border-bottom:0}
+tbody tr:hover>td{background:color-mix(in srgb,var(--acc) 4%,var(--surface))}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+th[title]{text-decoration:underline dotted color-mix(in srgb,var(--mut) 60%,transparent);text-underline-offset:3px;cursor:help}
+.trunc{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.empty-state{padding:36px 16px;text-align:center;color:var(--mut)}
+.empty-state b{display:block;color:var(--fg-2);font-size:14px;margin-bottom:4px;font-weight:600}
+.empty-state:before{content:"";display:block;width:40px;height:40px;margin:0 auto 10px;border-radius:12px;background:var(--surface-3);border:1px dashed var(--line-2)}
+/* skeleton */
+.skel{display:block;border-radius:6px;background:linear-gradient(90deg,var(--surface-3) 25%,color-mix(in srgb,var(--surface-3) 40%,var(--surface)) 50%,var(--surface-3) 75%);background-size:200% 100%;animation:sk 1.3s linear infinite;height:12px;margin:8px 0}
+.skel.h{height:18px;width:45%}.skel.w6{width:60%}.skel.w8{width:80%}.skel.bar{height:8px}
+@keyframes sk{from{background-position:200% 0}to{background-position:-200% 0}}
+[aria-busy=true] .tablewrap tbody,[aria-busy=true]>.grid{opacity:.6;transition:opacity .2s}
+/* dialogs */
+.modal{position:fixed;inset:0;z-index:40;display:flex;align-items:flex-start;justify-content:center;padding:10vh 16px 16px;background:rgba(10,13,20,.5);backdrop-filter:blur(2px);-webkit-backdrop-filter:blur(2px);animation:fin .15s ease-out}
+.mbox{background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:var(--sh-3);width:min(560px,100%);max-height:84vh;overflow:auto;padding:20px 22px;animation:pin .18s ease-out}
+.mbox h3{margin:0 0 10px;font-size:16px;font-weight:650;display:flex;gap:8px;align-items:center}
+.mbox p{margin:8px 0;font-size:13.5px;color:var(--fg-2)}
+.acts{display:flex;gap:8px;justify-content:flex-end;margin-top:18px;flex-wrap:wrap}
+@keyframes fin{from{opacity:0}to{opacity:1}}
+@keyframes pin{from{opacity:0;transform:translateY(8px) scale(.985)}to{opacity:1;transform:none}}
+/* login */
+#login{max-width:400px;margin:14vh auto 0;padding:28px;background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:var(--sh-3)}
+#login .brand{margin-bottom:14px;font-size:17px}
+#login .logo{width:32px;height:32px;font-size:17px;border-radius:10px}
+#login h2{font-size:17px;margin:0 0 6px}
+#login form{display:flex;gap:8px;margin-top:16px}
+#login input{flex:1;min-height:38px;min-width:0}
+#login button{min-height:38px;padding:0 18px}
+#lerr{margin-top:10px;color:var(--bad)}
+@media (prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
+@media (max-width:720px){
+header{padding:8px 12px;gap:8px;min-height:0}
+header .brand .t2,header #upd,header .chk .lt{display:none}
+header .hgroup{margin-left:auto;gap:6px;flex-wrap:nowrap}
+header .hgroup button{min-height:30px;padding:0 10px}header .hgroup button.icon{width:30px;padding:0}
+nav.tabs{order:3;width:100%}nav.tabs a{flex:1;text-align:center;padding:6px 8px}
+main{padding:14px 12px}
+.ph h1{font-size:18px}
+section{margin-bottom:24px}
+#toasts{left:12px;right:12px;bottom:12px;align-items:stretch}.toast{max-width:none}
+.modal{padding:12px;align-items:flex-end}
+.mbox{border-radius:16px;max-height:88vh;padding:16px}
+.acts button{flex:1}
+}
+/* settings */
+.layout{display:grid;grid-template-columns:200px minmax(0,1fr);gap:var(--s-5);align-items:start}
+#toc{position:sticky;top:76px;display:flex;flex-direction:column;gap:2px;font-size:13px}
+#toc .lab{font-size:11.5px;font-weight:600;color:var(--mut);padding:0 10px 6px;letter-spacing:.3px}
+#toc a{color:var(--fg-2);text-decoration:none;padding:6px 10px;border-radius:8px;display:flex;justify-content:space-between;gap:8px}
+#toc a:hover{background:var(--surface-3);color:var(--fg)}
+#toc a .mut{font-variant-numeric:tabular-nums}
+.sbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid var(--line)}
+.sbar input{flex:1 1 220px;max-width:340px}
+.legend{display:flex;gap:6px 12px;flex-wrap:wrap;align-items:center;font-size:12px;color:var(--mut)}
+#hint{padding:10px 16px 0}
+#cfg table th,#cfg table td{padding:11px 16px}
+#cfg td{vertical-align:top}
+#cfg td:first-child{width:46%}
+#cfg td:last-child{width:96px;text-align:right}
+#cfg td .d{font-weight:550;color:var(--fg);margin-bottom:2px}
+#cfg td code{color:var(--mut);font-size:11.5px;word-break:break-all}
+#cfg tr.grp th{background:var(--surface-2);color:var(--fg-2);font-size:12.5px;font-weight:650;padding:9px 16px;text-align:left;scroll-margin-top:72px;border-top:1px solid var(--line)}
+#cfg tbody tr.grp:first-child th{border-top:0}
+#cfg tbody tr:not(.grp):hover>td{background:color-mix(in srgb,var(--acc) 3%,var(--surface))}
+#cfg tr:has(.chg)>td{background:color-mix(in srgb,var(--acc) 6%,var(--surface))!important}
+#cfg tr:has(.chg)>td:first-child{box-shadow:inset 3px 0 0 var(--acc)}
+#cfg input:not([type=checkbox]){width:min(340px,100%)}
+#cfg input[type=number]{width:140px}
+#cfg td .mono{font-size:12.5px;word-break:break-all;color:var(--fg-2)}
+#cfg td .mut{margin-top:4px}
+input.chg,select.chg{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc)}
+.diffv{color:var(--warn)!important}
+#editbar{position:sticky;bottom:16px;z-index:20;display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px auto 0;padding:10px 12px 10px 18px;border-radius:14px;background:var(--fg);color:var(--bg);box-shadow:var(--sh-3);max-width:560px;transform:translateY(12px);opacity:0;pointer-events:none;transition:opacity .18s,transform .18s}
+#editbar.on{opacity:1;transform:none;pointer-events:auto}
+#editbar #nchg{flex:1;font-weight:600;color:inherit;font-size:13px}
+#editbar #discard{background:transparent;color:inherit;border-color:color-mix(in srgb,var(--bg) 35%,transparent)}
+.panel h2{padding:14px 16px 0;margin:0 0 10px}
+.panel>.mut.p{padding:0 16px 12px}
+.panel table{font-size:13px}
+.panel table th:first-child,.panel table td:first-child{padding-left:16px}
+.panel table th:last-child,.panel table td:last-child{padding-right:16px}
+#kf{padding:12px 16px;border-top:1px solid var(--line);display:flex;gap:8px;flex-wrap:wrap}
+#kf input{flex:1 1 220px;max-width:320px}
+#newkey{margin:0 16px 14px;padding:12px 14px;border:1px solid color-mix(in srgb,var(--ok) 40%,transparent);background:var(--ok-soft);border-radius:var(--r-2);display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+#newkey>div{flex-basis:100%;font-size:13px}
+#nkv{font-size:13px;padding:6px 10px;border-radius:8px;background:var(--surface);border:1px solid var(--line);word-break:break-all;flex:1 1 260px}
+#audit td{font-size:12.5px}
+#audit td.mono{word-break:break-all}
+.mbox table{width:100%;font-size:12.5px;margin:6px 0;border:1px solid var(--line);border-radius:var(--r-2);overflow:hidden}
+.mbox table th{background:var(--surface-2);font-size:12px;color:var(--mut);text-align:left}
+.mbox table td,.mbox table th{padding:7px 10px}
+.mbox ul{padding-left:20px;font-size:13px}
+.r{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+@media (max-width:900px){.layout{grid-template-columns:minmax(0,1fr)}#toc{position:static;flex-direction:row;flex-wrap:wrap;gap:4px}#toc .lab{display:none}#toc a{background:var(--surface);border:1px solid var(--line);padding:4px 10px;font-size:12.5px}}
+@media (max-width:720px){
+#cfg table,#cfg tbody,#cfg tr,#cfg td,#cfg th{display:block;width:auto!important}
+#cfg thead{display:none}
+#cfg tr:not(.grp){padding:10px 14px;border-bottom:1px solid var(--line)}
+#cfg td{border:0;padding:2px 0!important;text-align:left!important}
+#cfg tr:not(.grp){position:relative}
+#cfg td:first-child{padding-right:70px!important}
+#cfg td:last-child{position:absolute;top:10px;right:14px;padding:0!important}
+#cfg td:nth-child(2){margin-top:6px}
+#cfg tr:has(.chg){box-shadow:inset 3px 0 0 var(--acc)}#cfg tr:has(.chg)>td:first-child{box-shadow:none}
+#cfg input:not([type=checkbox]),#cfg select{width:100%!important}
+.panel table th:nth-child(2),.panel table td:nth-child(2){word-break:break-all}
+#audit td:nth-child(3),#audit th:nth-child(3){display:none}
+#editbar{bottom:10px;padding:10px 12px}
+}
 </style>
 </head>
 <body>
 <div id="login" class="hide">
-  <h2>ciallopa 设置</h2>
+  <div class="brand"><span class="logo" aria-hidden="true">C</span><span>ciallopa</span></div>
+  <h2>登录 · 设置</h2>
   <div class="mut">请输入访问密钥（与代理的 API key 相同）。仅保存在本标签页的 sessionStorage 中。</div>
   <form id="lf"><input id="key" type="password" autocomplete="current-password" placeholder="sk-..." required aria-label="访问密钥"><button class="pri" type="submit">进入</button></form>
   <div id="lerr" class="mut" role="alert"></div>
 </div>
 <div id="app" class="hide">
-<header><h1>ciallopa</h1><nav><a href="/ui">概览</a><a href="/ui/settings" aria-current="page">设置</a><a href="/ui/accounts">账号</a></nav>
-  <span id="mode" class="badge"></span><span class="sp"></span><span class="mut" id="upd" aria-live="polite"></span>
-  <button id="reload" title="重新读取配置文件并应用（文件变化会自动应用，这里用于手动触发）">重新加载配置文件</button></header>
-<main>
-  <div id="msg" role="alert"></div>
+<header><a class="skip" href="#main">跳到主要内容</a>
+  <div class="brand"><span class="logo" aria-hidden="true">C</span><span>ciallopa</span><span class="mut t2">管理面板</span></div>
+  <nav class="tabs" aria-label="页面"><a href="/ui">概览</a><a href="/ui/settings" aria-current="page">设置</a><a href="/ui/accounts">账号</a></nav>
+  <span class="sp"></span>
+  <div class="hgroup"><span class="mut" id="upd" aria-live="polite"></span>
+  <button id="reload" title="重新读取配置文件并应用（文件变化会自动应用，这里用于手动触发）">重新加载配置文件</button><button id="theme" class="ghost icon" type="button"></button></div></header>
+<main id="main" tabindex="-1">
+  <div class="ph"><h1>设置</h1><div class="chips"><span id="mode" class="badge"></span><span class="mut mono" id="meta"></span></div></div>
+  <div id="ferr" class="banner err hide" role="alert"></div>
+  <div id="msg" class="err" role="alert"></div>
   <div id="pend" class="banner hide" role="status"></div>
-  <section><h2>配置 <span class="mut" id="meta"></span></h2>
+  <div class="layout">
+  <nav id="toc" aria-label="设置分组"><div class="lab">分组</div></nav>
+  <div>
+  <section id="cfg" class="panel"><div class="sbar"><input id="q" type="search" placeholder="搜索设置项（名称或键名）" aria-label="搜索设置项"><span class="sp"></span><span class="legend"><span class="badge hot">热更新</span>保存后立即生效 <span class="badge rs">需重启</span>重启后生效</span></div>
     <div class="mut" id="hint"></div>
-    <div class="row" id="editbar"><button id="check" class="pri" disabled>检查并保存改动</button><button id="discard" disabled>放弃改动</button><span class="mut" id="nchg"></span></div>
-    <table><thead><tr><th>设置项</th><th>当前值</th><th>生效方式</th></tr></thead><tbody id="rows"></tbody></table>
+    <table><thead><tr><th>设置项</th><th>当前值</th><th>生效方式</th></tr></thead><tbody id="rows"><tr><td colspan="3"><span class="skel w6"></span><span class="skel w8"></span><span class="skel w6"></span></td></tr></tbody></table>
+    <div id="qnone" class="empty-state hide"><b>没有匹配的设置项</b>换个关键词试试</div>
   </section>
-  <section><h2>客户端密钥</h2>
-    <div class="mut">只显示标签和末 4 位。新密钥由服务端生成，只显示一次；默认只能转发和查看用量，不能管理。要开通管理权限，请在配置文件对应的 [[api_keys]] 条目里加上 admin = true。</div>
+  <div class="r" id="editbar"><span id="nchg"></span><button id="discard" disabled>放弃改动</button><button id="check" class="pri" disabled>检查并保存改动</button></div>
+  <section class="panel" id="keysec"><h2>客户端密钥</h2>
+    <div class="mut p">只显示标签和末 4 位。新密钥由服务端生成，只显示一次；默认只能转发和查看用量，不能管理。要开通管理权限，请在配置文件对应的 [[api_keys]] 条目里加上 admin = true。</div>
     <table><thead><tr><th>标签</th><th>密钥</th><th></th></tr></thead><tbody id="keys"></tbody></table>
-    <form id="kf" class="row hide"><input id="klabel" placeholder="新密钥标签，如 phone" maxlength="64" required aria-label="新密钥标签"><button class="pri" type="submit">生成新密钥</button></form>
-    <div id="newkey" class="hide" role="status"><div>新密钥（只显示这一次，请立即保存；默认非管理员，管理权限需在配置文件中设置 admin = true）：</div><code id="nkv"></code> <button id="nkc">复制</button> <button id="nkx">我已保存</button></div>
+    <div id="newkey" class="hide" role="status"><div>新密钥（只显示这一次，请立即保存；默认非管理员，管理权限需在配置文件中设置 admin = true）：</div><code id="nkv"></code> <button id="nkc" class="sm">复制</button> <button id="nkx" class="sm pri">我已保存</button></div>
+    <form id="kf" class="hide"><input id="klabel" placeholder="新密钥标签，如 phone" maxlength="64" required aria-label="新密钥标签"><button class="pri" type="submit">生成新密钥</button></form>
   </section>
-  <section><h2>变更记录 <span class="mut">最近 20 条</span></h2><table><thead><tr><th>时间</th><th>操作者</th><th>操作</th><th>内容</th></tr></thead><tbody id="audit"></tbody></table></section>
+  <section class="panel"><h2>变更记录 <span class="mut">最近 20 条</span></h2><table><thead><tr><th>时间</th><th>操作者</th><th>操作</th><th>内容</th></tr></thead><tbody id="audit"></tbody></table></section>
+  </div></div>
 </main></div>
-<div id="dlg" class="hide" role="dialog" aria-modal="true" aria-labelledby="dlgt"><div id="dlgb">
+<div id="toasts" role="status" aria-live="polite"></div>
+<div id="dlg" class="modal hide" role="dialog" aria-modal="true" aria-labelledby="dlgt"><div id="dlgb" class="mbox">
   <h3 id="dlgt"></h3><div id="dlgc"></div>
   <div class="acts"><button id="dno">取消</button><button id="dyes" class="pri">确认</button></div>
 </div></div>
@@ -87,6 +275,17 @@ const KS="ciallopa_key";
 let CFG=null,ETAG="",EDITS={};
 function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined&&text!==null)e.textContent=String(text);return e}
 function clear(e){while(e.firstChild)e.removeChild(e.firstChild)}
+// ---- theme (跟随系统 / 浅色 / 深色), remembered in this browser only
+const TH="ciallopa_theme";
+function applyTheme(t){const r=document.documentElement;if(t==="light"||t==="dark")r.dataset.theme=t;else delete r.dataset.theme;
+  const n={light:"浅色",dark:"深色"}[t]||"跟随系统",b=$("theme");b.textContent={light:"☀",dark:"☾"}[t]||"◐";b.title="主题："+n+"（点击切换）";b.setAttribute("aria-label","切换主题，当前："+n)}
+applyTheme(localStorage.getItem(TH));
+$("theme").addEventListener("click",()=>{const c=localStorage.getItem(TH),n=c==="light"?"dark":c==="dark"?"":"light";if(n)localStorage.setItem(TH,n);else localStorage.removeItem(TH);applyTheme(n);toast("主题："+({light:"浅色",dark:"深色"}[n]||"跟随系统"))});
+// ---- toasts (action results); errors that need attention stay in the #msg banner
+function toast(t,kind){const d=el("div","toast"+(kind?" "+kind:""),t);$("toasts").appendChild(d);setTimeout(()=>{d.classList.add("out");setTimeout(()=>d.remove(),300)},kind==="err"?7000:3500)}
+// ---- keep Tab inside an open dialog
+function trap(e,box){if(e.key!=="Tab")return;const f=Array.from(box.querySelectorAll("button,a[href],input,select,textarea,[tabindex]:not([tabindex='-1'])")).filter(x=>!x.disabled&&x.offsetParent!==null);if(!f.length)return;
+  const i=f.indexOf(document.activeElement);e.preventDefault();f[i<0?(e.shiftKey?f.length-1:0):(i+(e.shiftKey?f.length-1:1))%f.length].focus()}
 function key(){return sessionStorage.getItem(KS)||""}
 function show(app,err){$("app").classList.toggle("hide",!app);$("login").classList.toggle("hide",app);$("lerr").textContent=err||""}
 async function call(method,path,body,extra){
@@ -98,8 +297,8 @@ async function call(method,path,body,extra){
   return {j,r};
 }
 function adminMsg(j){return j&&j.error&&j.error.type==="admin_required"?"当前密钥没有管理权限。请用带 admin = true 的密钥登录，或在配置文件的 [[api_keys]] 里给该密钥加上 admin = true。":null}
-function fail(e){if(e&&e.message==="401")return;$("msg").className="banner err";const m=adminMsg(e&&e.body)||(e.status===412?"配置文件已被修改（可能是手动编辑），已重新读取，请重新确认改动。":"")+(e.message||String(e));$("msg").textContent=m;if(e.status===412)load()}
-function ok(t){$("msg").className="banner";$("msg").textContent=t}
+function fail(e){if(e&&e.message==="401")return;$("msg").className="err";const m=adminMsg(e&&e.body)||(e.status===412?"配置文件已被修改（可能是手动编辑），已重新读取，请重新确认改动。":"")+(e.message||String(e));$("msg").textContent=m;if(e.status===412)load()}
+function ok(t){$("msg").textContent="";toast(t)}
 function fmt(v){if(v===null||v===undefined)return"（默认）";if(typeof v==="object")return JSON.stringify(v);if(v==="")return"（空）";return String(v)}
 function p2(x){return String(x).padStart(2,"0")}
 function ftime(ms){const d=new Date(ms);return d.getFullYear()+"-"+p2(d.getMonth()+1)+"-"+p2(d.getDate())+" "+p2(d.getHours())+":"+p2(d.getMinutes())+":"+p2(d.getSeconds())}
@@ -118,7 +317,12 @@ function input(f,v){
   e.addEventListener("change",()=>e.dispatchEvent(new Event("input")));
   return e;
 }
-function upd(){const n=Object.keys(EDITS).length;$("check").disabled=!n;$("discard").disabled=!n;$("nchg").textContent=n?n+" 项未保存":""}
+function upd(){const n=Object.keys(EDITS).length;$("check").disabled=!n;$("discard").disabled=!n;$("nchg").textContent=n?n+" 项未保存":"";$("editbar").classList.toggle("on",!!n)}
+function filt(){const q=$("q").value.trim().toLowerCase();let any=false,g=null,gn=0;
+  const fin=()=>{if(g)g.classList.toggle("hide",!gn)};
+  for(const r of $("rows").children){if(r.classList.contains("grp")){fin();g=r;gn=0;continue}const m=!q||(r.dataset.q||"").includes(q);r.classList.toggle("hide",!m);if(m){gn++;any=true}}
+  fin();$("qnone").classList.toggle("hide",any)}
+$("q").addEventListener("input",filt);
 function render(){
   const c=CFG,tb=$("rows");clear(tb);EDITS={};upd();
   $("mode").textContent=c.write_enabled?"可编辑":"只读";$("mode").className="badge "+(c.write_enabled?"hot":"");
@@ -126,16 +330,18 @@ function render(){
   $("meta").textContent=(c.path||"（未使用配置文件）")+" · 版本 "+c.version;
   $("hint").textContent=c.write_enabled?"修改后点“检查并保存改动”：先预览差异，确认后写回配置文件（保留注释），再立即应用。":"当前为只读。配置文件的修改会自动应用；也可以点右上角“重新加载配置文件”。";
   $("editbar").classList.toggle("hide",!c.write_enabled);
-  if(c.file_error){$("msg").className="banner err";$("msg").textContent="配置文件有错误，未应用，仍在使用上一次的配置："+c.file_error}
+  $("ferr").classList.toggle("hide",!c.file_error);$("ferr").textContent=c.file_error?"配置文件有错误，未应用，仍在使用上一次的配置："+c.file_error:"";
+  const toc=$("toc");while(toc.children.length>1)toc.removeChild(toc.lastChild);
   const pend=c.pending_restart||[];$("pend").classList.toggle("hide",!pend.length);clear($("pend"));
   if(pend.length){$("pend").appendChild(el("b",null,pend.length+" 项需重启后生效："));$("pend").appendChild(document.createTextNode(" "+pend.map(p=>p.key+"（运行中 "+fmt(p.old)+" → 文件 "+fmt(p.new)+"）").join("；")))}
   const pk=new Set(pend.map(p=>p.key));
   for(const [p,name] of GROUPS){
     const fs=c.schema.filter(f=>group(f.key)===p&&f.key!=="api_keys");if(!fs.length)continue;
-    const tr=el("tr");const th=el("th",null,name);th.colSpan=3;tr.appendChild(th);tb.appendChild(tr);
+    const gid="g-"+(p.replace(/[^a-z_]/g,"")||"base");const tr=el("tr","grp");const th=el("th",null,name);th.colSpan=3;th.id=gid;th.scope="colgroup";tr.appendChild(th);tb.appendChild(tr);
+    const ta=el("a",null,name);ta.href="#"+gid;ta.appendChild(el("span","mut",fs.length));toc.appendChild(ta);
     for(const f of fs){
-      const r=el("tr"),a=el("td"),b=el("td"),d=el("td");
-      a.appendChild(el("div",null,f.desc));a.appendChild(el("code",null,f.key));
+      const r=el("tr"),a=el("td"),b=el("td"),d=el("td");r.dataset.q=(f.key+" "+f.desc).toLowerCase();
+      a.appendChild(el("div","d",f.desc));a.appendChild(el("code",null,f.key));
       const run=c.running[f.key],file=c.values?c.values[f.key]:run;
       if(c.write_enabled&&f.editable)b.appendChild(input(f,file));else b.appendChild(el("span","mono",fmt(run)));
       if(pk.has(f.key)){const x=el("div","mut diffv","运行中："+fmt(run));b.appendChild(x)}
@@ -143,10 +349,11 @@ function render(){
       if(f.key==="log.level"&&c.overrides&&c.overrides["log.level"])b.appendChild(el("div","mut","已被环境变量 RUST_LOG 覆盖"));
       d.appendChild(badge(f));r.append(a,b,d);tb.appendChild(r)}
   }
+  filt();
   const kt=$("keys");clear(kt);
-  for(const k of (c.running.api_keys||[])){const r=el("tr");r.appendChild(el("td",null,k.label+(k.admin?"（管理员）":"")));r.appendChild(el("td","mono",k.hint));const t=el("td");
-    if(c.write_enabled){const b=el("button","danger","删除");b.addEventListener("click",()=>delKey(k.label));t.appendChild(b)}r.appendChild(t);kt.appendChild(r)}
-  if(!(c.running.api_keys||[]).length){const r=el("tr");const t=el("td","mut","没有密钥：所有代理请求都会被拒绝");t.colSpan=3;r.appendChild(t);kt.appendChild(r)}
+  for(const k of (c.running.api_keys||[])){const r=el("tr"),lt=el("td");lt.appendChild(el("span",null,k.label+" "));if(k.admin){const b=el("span","badge acc","管理员");b.title="admin = true：可使用管理接口";lt.appendChild(b)}r.appendChild(lt);r.appendChild(el("td","mono",k.hint));const t=el("td");
+    if(c.write_enabled){const b=el("button","out-bad sm","删除");b.setAttribute("aria-label","删除密钥 "+k.label);b.addEventListener("click",()=>delKey(k.label));t.appendChild(b)}r.appendChild(t);kt.appendChild(r)}
+  if(!(c.running.api_keys||[]).length){const r=el("tr");const t=el("td","mut","没有密钥：所有代理请求都会被拒绝");t.colSpan=3;r.className="none";r.appendChild(t);kt.appendChild(r)}
   $("kf").classList.toggle("hide",!c.write_enabled);
   const lr=c.last_reload;$("upd").textContent=lr?("上次应用 "+ftime(lr.at_ms)+(lr.ok?"":"（失败）")):"";
 }
@@ -154,13 +361,14 @@ async function load(){const {j,r}=await call("GET","/admin/v1/config");CFG=j;ETA
 async function loadAudit(){const {j}=await call("GET","/admin/v1/config/audit?limit=20");const tb=$("audit");clear(tb);
   for(const e of j.entries){const r=el("tr");r.appendChild(el("td","mono",ftime(e.ts_ms)));r.appendChild(el("td",null,e.actor||"（文件/信号）"));r.appendChild(el("td",null,e.action+" · "+e.source));
     r.appendChild(el("td","mono",(e.changes||[]).map(c=>c.key+": "+fmt(c.old)+" → "+fmt(c.new)).join("；")));tb.appendChild(r)}
-  if(!j.entries.length){const r=el("tr");const t=el("td","mut","暂无");t.colSpan=4;r.appendChild(t);tb.appendChild(r)}}
+  if(!j.entries.length){const r=el("tr");const t=el("td","empty-state","暂无变更记录");t.colSpan=4;r.appendChild(t);tb.appendChild(r)}}
 let dlgOk=null,dlgPrev=null;
 function dialog(title,body,yes,cb){$("dlgt").textContent=title;clear($("dlgc"));$("dlgc").appendChild(body);$("dyes").textContent=yes;dlgOk=cb;dlgPrev=document.activeElement;$("dlg").classList.remove("hide");$("dno").focus()}
 function closeDlg(){$("dlg").classList.add("hide");dlgOk=null;if(dlgPrev)dlgPrev.focus()}
 $("dno").addEventListener("click",closeDlg);
 $("dyes").addEventListener("click",async()=>{const f=dlgOk;if(!f)return;$("dyes").disabled=true;try{await f();closeDlg()}catch(e){closeDlg();fail(e)}finally{$("dyes").disabled=false}});
-document.addEventListener("keydown",e=>{if(e.key==="Escape"&&!$("dlg").classList.contains("hide"))closeDlg()});
+document.addEventListener("keydown",e=>{if($("dlg").classList.contains("hide"))return;if(e.key==="Escape")closeDlg();else trap(e,$("dlgb"))});
+$("dlg").addEventListener("click",e=>{if(e.target===$("dlg"))closeDlg()});
 $("check").addEventListener("click",async()=>{try{
   const {j}=await call("POST","/admin/v1/config/validate",{changes:EDITS});
   const box=el("div");
@@ -174,8 +382,8 @@ $("discard").addEventListener("click",()=>render());
 $("reload").addEventListener("click",async()=>{$("reload").disabled=true;try{const {j}=await call("POST","/admin/v1/config/reload",{});await load();ok("已重新加载："+(j.applied.length?j.applied.length+" 项改动已生效":"没有需要应用的改动")+"。")}catch(e){fail(e);load().catch(()=>{})}finally{$("reload").disabled=false}});
 function delKey(label){const b=el("div");b.appendChild(el("p",null,"删除密钥“"+label+"”？使用它的客户端会立即无法访问。此操作会写回配置文件。"));
   dialog("删除密钥",b,"删除",async()=>{await call("DELETE","/admin/v1/config/keys/"+encodeURIComponent(label),{},{"If-Match":ETAG});await load();ok("已删除密钥 "+label+"。")})}
-$("kf").addEventListener("submit",async e=>{e.preventDefault();try{const {j}=await call("POST","/admin/v1/config/keys",{label:$("klabel").value},{"If-Match":ETAG});$("klabel").value="";$("nkv").textContent=j.key;$("newkey").classList.remove("hide");await load()}catch(err){fail(err)}});
-$("nkc").addEventListener("click",()=>navigator.clipboard.writeText($("nkv").textContent));
+$("kf").addEventListener("submit",async e=>{e.preventDefault();try{const {j}=await call("POST","/admin/v1/config/keys",{label:$("klabel").value},{"If-Match":ETAG});$("klabel").value="";$("nkv").textContent=j.key;$("newkey").classList.remove("hide");await load();$("nkc").focus()}catch(err){fail(err)}});
+$("nkc").addEventListener("click",()=>navigator.clipboard.writeText($("nkv").textContent).then(()=>toast("已复制新密钥"),()=>toast("复制失败，请手动选择复制","err")));
 $("nkx").addEventListener("click",()=>{$("nkv").textContent="";$("newkey").classList.add("hide")});
 $("lf").addEventListener("submit",async e=>{e.preventDefault();sessionStorage.setItem(KS,$("key").value);$("key").value="";try{show(true);await load()}catch(err){if(err.message!=="401")$("lerr").textContent=err.message}});
 if(key()){show(true);load().catch(fail)}else show(false);

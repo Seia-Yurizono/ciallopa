@@ -35,7 +35,7 @@ async fn main() {
     // configured, never used: empty card
     acct("dave", serde_json::json!({"plan_type":"team"}));
     let fake_up = fake_upstream().await;
-    let cfg = Config::parse(&format!(
+    let cfg_text = format!(
         "listen = \"{listen}\"\nupstream = \"http://{fake_up}/backend-api\"\ninstance_id = \"demo-vps\"\nauth_dir = \"{}\"\n\
          [[api_keys]]\nlabel = \"laptop\"\nkey = \"{DEMO_KEY}\"\nadmin = true\n\
          [[api_keys]]\nlabel = \"{}\"\nkey = \"sk-demo-evil-0123456789\"\n\
@@ -44,8 +44,15 @@ async fn main() {
         dir.join("auths").display(),
         EVIL.replace('"', "\\\""),
         dir.join("usage.db").display()
-    ))
+    );
+    // A real file so /ui/settings is editable (demo only: allow_config_write = true).
+    let cfg_path = dir.join("config.toml");
+    std::fs::write(
+        &cfg_path,
+        cfg_text.replace("[ui]\n", "[ui]\nallow_config_write = true\n"),
+    )
     .unwrap();
+    let cfg = Config::load(&cfg_path).unwrap();
     let rec = Recorder::open_as(&cfg.usage, &cfg.instance_id).unwrap();
     // a second proxy instance writing to the same log
     let rec2 = Recorder::open_as(&cfg.usage, "home-nas").unwrap();
@@ -114,6 +121,8 @@ async fn main() {
                 "upstream_5xx".into()
             });
             r.status = if limit { 429 } else { 502 };
+            r.err_source = Some("upstream");
+            r.upstream_status = Some(r.status);
             // Fake upstream error (redacted on write; XSS payload must render as text).
             let mut d = ciallopa_usage::ErrorDetail::default();
             d.add_header("content-type", "application/json");
@@ -200,6 +209,7 @@ async fn main() {
         }
         rr.record(r);
     }
+    demo_special_rows(&rec, now);
     rec.flush_blocking().unwrap();
     rec2.flush_blocking().unwrap();
     drop(rec2);
@@ -214,18 +224,132 @@ async fn main() {
         upstream: Arc::new(ciallopa_upstream::UpstreamClient::new(&cfg).unwrap()),
         config: Arc::new(cfg.into()),
     };
+    // bob is cooling (usage limit, 25 min) so the accounts page shows the cooldown row
+    {
+        state.router.report(
+            &Default::default(),
+            &"bob".to_string(),
+            &ciallopa_core::types::Outcome::RateLimited {
+                retry_after: Some(std::time::Duration::from_secs(25 * 60)),
+                usage_limit: true,
+                quota: None,
+            },
+        );
+    }
+    let settings = ciallopa::settings::Settings::new(state, Some(cfg_path), None);
     let ln = tokio::net::TcpListener::bind(&listen).await.unwrap();
     println!("ui demo on http://{listen}/ui (fake upstream {fake_up})");
     let warm = listen.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        let _ = reqwest::Client::new()
-            .post(format!("http://{warm}/usage/v1/reset-credits/refresh"))
-            .bearer_auth(DEMO_KEY)
-            .send()
-            .await;
+        // the account list loads asynchronously: refresh twice
+        for ms in [300, 1500] {
+            tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+            let _ = reqwest::Client::new()
+                .post(format!("http://{warm}/usage/v1/reset-credits/refresh"))
+                .bearer_auth(DEMO_KEY)
+                .json(&serde_json::json!({}))
+                .send()
+                .await;
+        }
     });
-    axum::serve(ln, ciallopa::build_app(state)).await.unwrap();
+    axum::serve(ln, ciallopa::build_app_with(settings))
+        .await
+        .unwrap();
+}
+
+/// Newest rows covering every error source, an attempt timeline, retried-success and a WS prewarm.
+fn demo_special_rows(rec: &Recorder, now: i64) {
+    use serde_json::json;
+    let mk = |dt: i64, t: Transport, ep: &'static str| {
+        let mut r = Record::new(rec.ids.next_at(now - dt), t, ep);
+        r.account = Some("alice".into());
+        r.model = Some("gpt-5.6-terra".into());
+        r.resp_model = r.model.clone();
+        r.effort = Some("high".into());
+        r.resp_effort = r.effort.clone();
+        r.key = Some("laptop".into());
+        r.service_tier = Some("default".into());
+        r.status = 200;
+        r
+    };
+    let ok_tokens = |r: &mut Record| {
+        r.input_tokens = Some(24_000);
+        r.cached_tokens = Some(19_000);
+        r.output_tokens = Some(1_200);
+        r.reasoning_tokens = Some(300);
+        r.ttft_ms = Some(2_400);
+        r.duration_ms = 9_800;
+    };
+    // WS prewarm (grey row)
+    let mut r = mk(30_000, Transport::Ws, "prewarm");
+    r.input_tokens = Some(18_000);
+    r.cached_tokens = Some(17_500);
+    r.output_tokens = Some(0);
+    r.duration_ms = 420;
+    rec.record(r);
+    // stream: overloaded, switched, then ok (retried success with timeline)
+    let mut r = mk(60_000, Transport::Sse, "responses");
+    ok_tokens(&mut r);
+    r.first_account = Some("bob".into());
+    r.switches = 1;
+    r.detail = Some(Box::new(ciallopa_usage::ErrorDetail {
+        attempts: Some(json!([
+            {"account":"bob","t_ms":0,"kind":"stream","code":"server_is_overloaded","action":"switch","body":"{\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_is_overloaded\"}}}"},
+            {"account":"alice","t_ms":640,"kind":"http","status":200,"action":"ok"}
+        ])),
+        ..Default::default()
+    }));
+    rec.record(r);
+    // local: no usable account
+    let mut r = mk(90_000, Transport::Sse, "responses");
+    r.account = None;
+    r.status = 503;
+    r.error = Some("no_account".into());
+    r.err_source = Some("local");
+    r.duration_ms = 3;
+    r.detail = Some(Box::new(ciallopa_usage::ErrorDetail {
+        message: Some("no usable account (1 needs relogin, 1 disabled)".into()),
+        ..Default::default()
+    }));
+    rec.record(r);
+    // network: connect timeout after retry on the same account
+    let mut r = mk(120_000, Transport::Sse, "responses");
+    r.status = 502;
+    r.error = Some("connect_timeout".into());
+    r.err_source = Some("network");
+    r.retries = 1;
+    r.duration_ms = 30_050;
+    r.detail = Some(Box::new(ciallopa_usage::ErrorDetail {
+        message: Some("connect timeout 30s".into()),
+        attempts: Some(json!([
+            {"account":"alice","t_ms":0,"kind":"transport","code":"connect_timeout","action":"switch"},
+            {"account":"bob","t_ms":15020,"kind":"transport","code":"connect_timeout","action":"stop"}
+        ])),
+        ..Default::default()
+    }));
+    rec.record(r);
+    // stream: truncated after output
+    let mut r = mk(150_000, Transport::Ws, "responses");
+    ok_tokens(&mut r);
+    r.error = Some("stream_truncated".into());
+    r.err_source = Some("stream");
+    r.detail = Some(Box::new(ciallopa_usage::ErrorDetail {
+        message: Some("upstream closed before response.completed".into()),
+        ..Default::default()
+    }));
+    rec.record(r);
+    // client closed mid-stream
+    let mut r = mk(180_000, Transport::Sse, "responses");
+    r.error = Some("client_closed".into());
+    r.err_source = Some("client");
+    r.ttft_ms = Some(1_900);
+    r.duration_ms = 4_100;
+    rec.record(r);
+    // incomplete (not an error)
+    let mut r = mk(210_000, Transport::Sse, "responses");
+    ok_tokens(&mut r);
+    r.incomplete = Some("max_output_tokens".into());
+    rec.record(r);
 }
 
 /// Fake chatgpt.com reset-credit endpoints (never the real upstream): per-account card lists

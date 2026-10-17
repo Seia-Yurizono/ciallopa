@@ -139,7 +139,8 @@ URL) and shows account quota cards, a summary table (24h/7d/30d, by account/key/
 a daily token/cost chart and recent requests. Strict CSP (`default-src 'none'`, script/style
 allowed by SHA-256 hash only, `connect-src 'self'`); all data rendered via `textContent`.
 Local demo with fake data: `cargo run --example ui_demo` → http://127.0.0.1:8399/ui
-(key `sk-demo-0123456789abcdef`).
+(key `sk-demo-0123456789abcdef`; the demo writes its own `config.toml` with
+`allow_config_write = true`, so the settings and accounts pages are editable).
 
 Reset credits (重置卡) — **manual only, never automatic**. Each account's cards are listed
 from upstream `GET /wham/rate-limit-reset-credits` (same headers as Codex CLI) every

@@ -7,177 +7,377 @@
 <meta name="color-scheme" content="light dark">
 <title>ciallopa 管理面板</title>
 <style>
-:root{--bg:#f6f7f9;--fg:#1d2330;--mut:#5d6779;--card:#fff;--line:#e3e6ea;--acc:#2f6fed;--ok:#14804a;--warn:#b45309;--bad:#c53030;--bar:#e9edf2;
---wbg:#fef3c7;--wfg:#7c2d12;--wbd:#b45309;--bbg:#fde8e8;--bfg:#9b1c1c}
-@media (prefers-color-scheme:dark){:root{--bg:#0f1218;--fg:#e6e9ef;--mut:#a3adbd;--card:#171b23;--line:#2a303b;--acc:#5b8cff;--ok:#3cc27e;--warn:#f0a930;--bad:#ff6b6b;--bar:#262c37;
---wbg:#f0a930;--wfg:#1a1200;--wbd:#f0a930;--bbg:#ff8a8a;--bfg:#1f0505}}
+:root{color-scheme:light;
+--bg:#f4f5f7;--surface:#fff;--surface-2:#f8f9fb;--surface-3:#eef0f4;--line:#e3e6eb;--line-2:#cfd4dc;
+--fg:#111827;--fg-2:#374151;--mut:#5f6876;--acc:#3b5bdb;--acc-2:#2f4ac0;--acc-fg:#fff;--acc-soft:#eef1fd;
+--ok:#067647;--ok-soft:#e8f6ee;--warn:#b54708;--warn-soft:#fff6e5;--bad:#c4320a;--bad-soft:#fef1ee;--vio:#6d3fd8;--vio-soft:#f3effd;--gray-soft:#f0f1f4;
+--bar:#e7eaef;--danger:#d92d20;--ring:0 0 0 3px color-mix(in srgb,var(--acc) 30%,transparent);
+--sh-1:0 1px 2px rgba(16,24,40,.05);--sh-2:0 1px 3px rgba(16,24,40,.08),0 1px 2px rgba(16,24,40,.04);--sh-3:0 12px 32px -8px rgba(16,24,40,.22),0 4px 8px -4px rgba(16,24,40,.08);
+--r-1:6px;--r-2:10px;--r-3:14px;--s-1:4px;--s-2:8px;--s-3:12px;--s-4:16px;--s-5:24px;--s-6:32px;
+--font:system-ui,-apple-system,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC","Source Han Sans SC",sans-serif;
+--mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,"Noto Sans Mono CJK SC",monospace}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){color-scheme:dark;
+--bg:#0c0e13;--surface:#14171e;--surface-2:#181c24;--surface-3:#20252f;--line:#262b35;--line-2:#363c48;
+--fg:#e8eaef;--fg-2:#c9ced8;--mut:#9aa3b2;--acc:#7d93ff;--acc-2:#9aabff;--acc-fg:#0c1029;--acc-soft:#1c2340;
+--ok:#4ccb8d;--ok-soft:#10261c;--warn:#f2b155;--warn-soft:#2b200e;--bad:#ff7a66;--bad-soft:#2e1612;--vio:#b39cff;--vio-soft:#231c3a;--gray-soft:#20242c;
+--bar:#262b36;--danger:#b42318;--sh-1:none;--sh-2:0 1px 2px rgba(0,0,0,.4);--sh-3:0 16px 40px -8px rgba(0,0,0,.6)}}
+:root[data-theme=dark]{color-scheme:dark;
+--bg:#0c0e13;--surface:#14171e;--surface-2:#181c24;--surface-3:#20252f;--line:#262b35;--line-2:#363c48;
+--fg:#e8eaef;--fg-2:#c9ced8;--mut:#9aa3b2;--acc:#7d93ff;--acc-2:#9aabff;--acc-fg:#0c1029;--acc-soft:#1c2340;
+--ok:#4ccb8d;--ok-soft:#10261c;--warn:#f2b155;--warn-soft:#2b200e;--bad:#ff7a66;--bad-soft:#2e1612;--vio:#b39cff;--vio-soft:#231c3a;--gray-soft:#20242c;
+--bar:#262b36;--danger:#b42318;--sh-1:none;--sh-2:0 1px 2px rgba(0,0,0,.4);--sh-3:0 16px 40px -8px rgba(0,0,0,.6)}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
-header{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:5;flex-wrap:wrap}
-header h1{font-size:16px;margin:0}
-nav a{color:var(--acc);text-decoration:none;margin-right:12px}nav a[aria-current]{color:var(--fg);font-weight:600}
-.sp{flex:1}
-#logout{margin-left:16px;border-color:var(--bad);color:var(--bad)}
-main{max-width:1280px;margin:0 auto;padding:16px}
-section{margin-bottom:24px}
-h2{font-size:15px;margin:0 0 8px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 var(--font);-webkit-font-smoothing:antialiased}
+a{color:var(--acc)}
+code,.mono{font-family:var(--mono);font-size:12px}
 .mut{color:var(--mut);font-size:12px}
-.toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0 0 16px;padding:8px 10px;background:var(--card);border:1px solid var(--line);border-radius:10px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr));gap:12px;align-items:stretch}
-.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;display:flex;flex-direction:column}
-.card .foot{margin-top:auto;padding-top:8px}
-.card .empty{flex:1;display:flex;align-items:center;justify-content:center;text-align:center;min-height:90px;border:1px dashed var(--line);border-radius:8px;margin-top:10px}
-.est{font-size:12px;margin-top:2px;text-wrap:pretty}.est .i{display:inline-block;margin-left:4px;cursor:help;color:var(--acc)}
-.card.w80{border:2px solid var(--warn)}.card.w95{border:2px solid var(--bad)}
-.card h3{font-size:14px;margin:0 0 6px;word-break:break-all}
-.badge{display:inline-block;font-size:11px;padding:1px 6px;border-radius:9px;border:1px solid var(--line);margin-right:4px;color:var(--mut)}
-.badge.bad{color:var(--bfg);background:var(--bbg);border-color:var(--bad)}
-.badge.warn{color:var(--wfg);background:var(--wbg);border-color:var(--wbd)}
-.win{margin-top:10px}
-.winh{display:flex;justify-content:space-between;align-items:baseline;font-size:12px}
-.big{font-size:22px;font-weight:600;font-variant-numeric:tabular-nums}
-.big.w{color:var(--warn)}.big.b{color:var(--bad)}
-.bar{height:8px;background:var(--bar);border-radius:4px;overflow:hidden;margin:3px 0}
-.bar>i{display:block;height:100%;background:var(--ok)}
-.bar>i.w{background:var(--warn)}.bar>i.b{background:var(--bad)}
-.stale{color:var(--warn)}
-.tablewrap{overflow:auto;max-height:75vh;background:var(--card);border:1px solid var(--line);border-radius:10px}
+.sp{flex:1}
+.hide{display:none!important}
+.skip{position:absolute;left:8px;top:-48px;z-index:50;background:var(--acc);color:var(--acc-fg);padding:6px 12px;border-radius:var(--r-1)}
+.skip:focus{top:8px}
+:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+/* header */
+header{position:sticky;top:0;z-index:30;display:flex;align-items:center;gap:var(--s-3);padding:0 var(--s-5);min-height:56px;flex-wrap:wrap;
+background:color-mix(in srgb,var(--surface) 86%,transparent);backdrop-filter:saturate(1.6) blur(10px);-webkit-backdrop-filter:saturate(1.6) blur(10px);border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:10px;font-weight:650;font-size:15px;letter-spacing:.1px;margin:0;white-space:nowrap}
+.logo{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;color:#fff;font-size:14px;font-weight:700;background:linear-gradient(135deg,#5b7cff,#8b5cf6);box-shadow:inset 0 -1px 0 rgba(0,0,0,.15)}
+nav.tabs{display:flex;gap:2px;padding:3px;background:var(--surface-3);border-radius:10px}
+nav.tabs a{color:var(--mut);text-decoration:none;padding:5px 14px;border-radius:7px;font-weight:550;font-size:13px;white-space:nowrap}
+nav.tabs a:hover{color:var(--fg)}
+nav.tabs a[aria-current]{color:var(--fg);background:var(--surface);box-shadow:var(--sh-2)}
+.hgroup{display:flex;align-items:center;gap:var(--s-2);flex-wrap:wrap}
+main{max-width:1440px;margin:0 auto;padding:var(--s-5)}
+.ph{display:flex;align-items:flex-end;gap:var(--s-3);flex-wrap:wrap;margin:0 0 var(--s-4)}
+.ph h1{font-size:20px;line-height:1.3;margin:0;font-weight:650;letter-spacing:-.2px}
+.ph .chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+section{margin-bottom:var(--s-6)}
+h2{font-size:15px;font-weight:620;margin:0 0 var(--s-3);display:flex;align-items:baseline;gap:var(--s-2);flex-wrap:wrap}
+h2 .mut{font-weight:400}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-3);box-shadow:var(--sh-1)}
+.panel.pad{padding:var(--s-4) var(--s-5)}
+/* controls */
+button,input,select,textarea{font:inherit;color:inherit}
+button,.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:32px;padding:0 12px;border-radius:8px;border:1px solid var(--line-2);background:var(--surface);color:var(--fg);font-size:13px;font-weight:550;cursor:pointer;white-space:nowrap;transition:background .12s,border-color .12s,box-shadow .12s}
+button:hover{background:var(--surface-2);border-color:color-mix(in srgb,var(--line-2) 50%,var(--fg) 20%)}
+button:active{transform:translateY(.5px)}
+button:disabled{opacity:.5;cursor:not-allowed;transform:none}
+button:focus-visible{outline:none;box-shadow:var(--ring);border-color:var(--acc)}
+button.pri{background:var(--acc);border-color:var(--acc);color:var(--acc-fg)}
+button.pri:hover{background:var(--acc-2);border-color:var(--acc-2)}
+button.danger{background:var(--danger);border-color:var(--danger);color:#fff}
+button.danger:hover{background:color-mix(in srgb,var(--danger) 85%,#000);border-color:color-mix(in srgb,var(--danger) 85%,#000)}
+button.ghost{background:transparent;border-color:transparent;color:var(--fg-2)}
+button.ghost:hover{background:var(--surface-3)}
+button.ghost.bad,button.out-bad{color:var(--bad)}
+button.out-bad{background:transparent;border-color:color-mix(in srgb,var(--bad) 45%,transparent)}
+button.out-bad:hover{background:var(--bad-soft)}
+button.sm{min-height:26px;padding:0 9px;font-size:12px;border-radius:7px}
+button.icon{width:32px;padding:0}
+input,select,textarea{background:var(--surface);border:1px solid var(--line-2);border-radius:8px;min-height:32px;padding:0 10px;font-size:13px;max-width:100%;transition:border-color .12s,box-shadow .12s}
+textarea{padding:8px 10px}
+input::placeholder,textarea::placeholder{color:color-mix(in srgb,var(--mut) 80%,transparent)}
+input:hover,select:hover,textarea:hover{border-color:color-mix(in srgb,var(--line-2) 50%,var(--fg) 20%)}
+input:focus-visible,select:focus-visible,textarea:focus-visible{outline:none;border-color:var(--acc);box-shadow:var(--ring)}
+select{appearance:none;-webkit-appearance:none;padding-right:28px;cursor:pointer;
+background-image:linear-gradient(45deg,transparent 50%,var(--mut) 50%),linear-gradient(135deg,var(--mut) 50%,transparent 50%);background-position:calc(100% - 15px) 50%,calc(100% - 10px) 50%;background-size:5px 5px;background-repeat:no-repeat}
+input[type=checkbox]{min-height:0;width:16px;height:16px;margin:0;accent-color:var(--acc);vertical-align:-3px}
+label.chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--fg-2);cursor:pointer;white-space:nowrap}
+.switch{appearance:none;-webkit-appearance:none;position:relative;width:30px!important;height:18px!important;border-radius:9px;background:var(--line-2);border:0;cursor:pointer;transition:background .15s;flex:none}
+.switch:after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.3);transition:transform .15s}
+.switch:checked{background:var(--acc)}.switch:checked:after{transform:translateX(12px)}
+.switch:focus-visible{outline:none;box-shadow:var(--ring)}
+/* badges */
+.badge{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;line-height:18px;padding:0 7px;border-radius:999px;background:var(--gray-soft);color:var(--fg-2);border:1px solid transparent;white-space:nowrap;font-weight:550;vertical-align:1px}
+.badge.dot:before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.badge.ok,.badge.hot{background:var(--ok-soft);color:var(--ok)}
+.badge.warn,.badge.rs{background:var(--warn-soft);color:var(--warn)}
+.badge.bad{background:var(--bad-soft);color:var(--bad)}
+.badge.acc{background:var(--acc-soft);color:var(--acc)}
+.badge.line{background:transparent;border-color:var(--line-2);color:var(--mut)}
+/* banners / toasts */
+.banner,#msg:not(:empty){display:block;padding:10px 14px;border-radius:var(--r-2);margin-bottom:var(--s-4);border:1px solid color-mix(in srgb,var(--warn) 35%,transparent);background:var(--warn-soft);color:var(--fg);font-size:13px}
+.banner.err,#msg.err:not(:empty){border-color:color-mix(in srgb,var(--bad) 35%,transparent);background:var(--bad-soft)}
+.banner:before,#msg:not(:empty):before{content:"⚠ ";color:var(--warn);font-weight:700}
+.banner.err:before,#msg.err:not(:empty):before{color:var(--bad)}
+#msg:empty{display:none}
+#toasts{position:fixed;right:20px;bottom:20px;z-index:60;display:flex;flex-direction:column;gap:8px;align-items:flex-end;pointer-events:none;max-width:calc(100vw - 40px)}
+.toast{pointer-events:auto;display:flex;gap:10px;align-items:flex-start;max-width:420px;padding:10px 14px;border-radius:var(--r-2);background:var(--fg);color:var(--bg);box-shadow:var(--sh-3);font-size:13px;white-space:pre-line;overflow-wrap:anywhere;animation:tin .18s ease-out}
+.toast:before{content:"✓";font-weight:700;color:#4ccb8d}
+.toast.err:before{content:"!";color:#ff7a66}
+.toast.out{opacity:0;transform:translateY(6px);transition:opacity .25s,transform .25s}
+@keyframes tin{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+/* tables */
+.tablewrap{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-3);overflow:auto;box-shadow:var(--sh-1)}
 table{border-collapse:separate;border-spacing:0;width:100%;font-size:13px}
-th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;background:var(--card)}
-thead th{position:sticky;top:0;z-index:2;font-weight:600}
-#rw{max-height:none;overflow-x:auto;overflow-y:visible}
-#rw thead th{position:relative;top:auto;z-index:4;will-change:transform;box-shadow:0 1px 0 var(--line),0 -16px 0 var(--card)}
-#rw thead th:first-child{position:sticky;left:0}
-#rw td{padding-top:8px;padding-bottom:8px}
+th,td{padding:9px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}
+thead th{font-size:12px;font-weight:600;color:var(--mut);background:var(--surface-2);white-space:nowrap}
+tbody tr:last-child>td{border-bottom:0}
+tbody tr:hover>td{background:color-mix(in srgb,var(--acc) 4%,var(--surface))}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+th[title]{text-decoration:underline dotted color-mix(in srgb,var(--mut) 60%,transparent);text-underline-offset:3px;cursor:help}
+.trunc{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.empty-state{padding:36px 16px;text-align:center;color:var(--mut)}
+.empty-state b{display:block;color:var(--fg-2);font-size:14px;margin-bottom:4px;font-weight:600}
+.empty-state:before{content:"";display:block;width:40px;height:40px;margin:0 auto 10px;border-radius:12px;background:var(--surface-3);border:1px dashed var(--line-2)}
+/* skeleton */
+.skel{display:block;border-radius:6px;background:linear-gradient(90deg,var(--surface-3) 25%,color-mix(in srgb,var(--surface-3) 40%,var(--surface)) 50%,var(--surface-3) 75%);background-size:200% 100%;animation:sk 1.3s linear infinite;height:12px;margin:8px 0}
+.skel.h{height:18px;width:45%}.skel.w6{width:60%}.skel.w8{width:80%}.skel.bar{height:8px}
+@keyframes sk{from{background-position:200% 0}to{background-position:-200% 0}}
+[aria-busy=true] .tablewrap tbody,[aria-busy=true]>.grid{opacity:.6;transition:opacity .2s}
+/* dialogs */
+.modal{position:fixed;inset:0;z-index:40;display:flex;align-items:flex-start;justify-content:center;padding:10vh 16px 16px;background:rgba(10,13,20,.5);backdrop-filter:blur(2px);-webkit-backdrop-filter:blur(2px);animation:fin .15s ease-out}
+.mbox{background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:var(--sh-3);width:min(560px,100%);max-height:84vh;overflow:auto;padding:20px 22px;animation:pin .18s ease-out}
+.mbox h3{margin:0 0 10px;font-size:16px;font-weight:650;display:flex;gap:8px;align-items:center}
+.mbox p{margin:8px 0;font-size:13.5px;color:var(--fg-2)}
+.acts{display:flex;gap:8px;justify-content:flex-end;margin-top:18px;flex-wrap:wrap}
+@keyframes fin{from{opacity:0}to{opacity:1}}
+@keyframes pin{from{opacity:0;transform:translateY(8px) scale(.985)}to{opacity:1;transform:none}}
+/* login */
+#login{max-width:400px;margin:14vh auto 0;padding:28px;background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:var(--sh-3)}
+#login .brand{margin-bottom:14px;font-size:17px}
+#login .logo{width:32px;height:32px;font-size:17px;border-radius:10px}
+#login h2{font-size:17px;margin:0 0 6px}
+#login form{display:flex;gap:8px;margin-top:16px}
+#login input{flex:1;min-height:38px;min-width:0}
+#login button{min-height:38px;padding:0 18px}
+#lerr{margin-top:10px;color:var(--bad)}
+@media (prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
+@media (max-width:720px){
+header{padding:8px 12px;gap:8px;min-height:0}
+header .brand .t2,header #upd,header .chk .lt{display:none}
+header .hgroup{margin-left:auto;gap:6px;flex-wrap:nowrap}
+header .hgroup button{min-height:30px;padding:0 10px}header .hgroup button.icon{width:30px;padding:0}
+nav.tabs{order:3;width:100%}nav.tabs a{flex:1;text-align:center;padding:6px 8px}
+main{padding:14px 12px}
+.ph h1{font-size:18px}
+section{margin-bottom:24px}
+#toasts{left:12px;right:12px;bottom:12px;align-items:stretch}.toast{max-width:none}
+.modal{padding:12px;align-items:flex-end}
+.mbox{border-radius:16px;max-height:88vh;padding:16px}
+.acts button{flex:1}
+}
+/* overview */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(300px,100%),1fr));gap:var(--s-4);align-items:stretch}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-3);padding:16px 18px;display:flex;flex-direction:column;box-shadow:var(--sh-1);position:relative;overflow:hidden;min-width:0}
+.card.w80{border-color:color-mix(in srgb,var(--warn) 45%,var(--line));box-shadow:inset 0 3px 0 var(--warn),var(--sh-1)}
+.card.w95{border-color:color-mix(in srgb,var(--bad) 50%,var(--line));box-shadow:inset 0 3px 0 var(--bad),var(--sh-1)}
+.card h3{font-size:14.5px;font-weight:620;margin:0;min-width:0}
+.card .meta{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px}
+.card .aid{margin-top:2px}
+.card .foot{margin-top:auto;padding-top:12px;font-size:11.5px}
+.card .empty{display:flex;align-items:center;justify-content:center;text-align:center;min-height:72px;padding:12px;border:1px dashed var(--line-2);border-radius:var(--r-2);margin:14px 0 4px;background:var(--surface-2)}
+.est{font-size:12px;margin-top:2px;text-wrap:pretty}
+.i{display:inline-grid;place-items:center;width:16px;height:16px;margin-left:4px;cursor:help;color:var(--acc);border-radius:50%;font-size:12px}
+.win{margin-top:14px}
+.winh{display:flex;justify-content:space-between;align-items:baseline;font-size:12.5px;color:var(--fg-2);font-weight:550}
+.winh .mut{font-weight:400}
+.big{font-size:24px;font-weight:680;font-variant-numeric:tabular-nums;letter-spacing:-.5px;color:var(--fg);margin-left:4px}
+.big.w{color:var(--warn)}.big.b{color:var(--bad)}
+.bar{height:8px;background:var(--bar);border-radius:99px;overflow:hidden;margin:6px 0 6px}
+.bar>i{display:block;height:100%;border-radius:99px;background:var(--ok);transition:width .4s}
+.bar>i.w{background:var(--warn)}.bar>i.b{background:var(--bad)}
+.win .mut{line-height:1.6}
+.stale{color:var(--warn)!important}
+.rc{margin-top:14px;font-size:12.5px;display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;border-top:1px solid var(--line);padding-top:12px}
+.rc>span:first-child{font-weight:600;color:var(--fg-2)}
+.rc .cnt{font-weight:650;min-height:24px;padding:0 9px;border-radius:999px;background:var(--acc-soft);border-color:transparent;color:var(--acc);font-size:12px}
+.rc .cnt[aria-expanded="true"]{background:var(--acc);color:var(--acc-fg)}
+.rc .n{font-weight:650}
+.rc button{min-height:26px;padding:0 10px;font-size:12px;border-radius:7px}
+.rc .sp{flex:1}
+.rcl{list-style:none;margin:6px 0 0;padding:0;width:100%;font-size:12px;display:flex;flex-direction:column;gap:6px}
+.rcl li{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;padding:8px 10px;border:1px solid var(--line);border-radius:var(--r-2);background:var(--surface-2)}
+.rcl li.soon{border-color:color-mix(in srgb,var(--warn) 45%,transparent);background:var(--warn-soft)}
+.rcl li.gone{border-color:color-mix(in srgb,var(--bad) 45%,transparent);background:var(--bad-soft)}
+.rcl li.tg{border:0;background:transparent;padding:0;justify-content:flex-end}
+.rcl .t{font-weight:620}.rcl .sp{flex:1}
+.rcl button{min-height:24px;font-size:12px;padding:0 9px}
+/* kpis */
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(170px,100%),1fr));gap:var(--s-3);margin-bottom:var(--s-4)}
+.kpi{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-3);padding:12px 16px;box-shadow:var(--sh-1);min-width:0}
+.kpi .k{font-size:12px;color:var(--mut);font-weight:550}
+.kpi .v{font-size:22px;font-weight:680;letter-spacing:-.4px;font-variant-numeric:tabular-nums;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kpi .v.bad{color:var(--bad)}
+.kpi .s{font-size:11.5px;color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* toolbar + filters */
+.toolbar{position:relative;display:flex;gap:var(--s-3) var(--s-4);flex-wrap:wrap;align-items:center;margin:0 0 var(--s-5);padding:10px 14px;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-3);box-shadow:var(--sh-1)}
+.fld{display:inline-flex;align-items:center;gap:8px}
+.fld>label{font-size:12.5px;color:var(--mut);font-weight:550;white-space:nowrap}
+.ctl{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+.ctl input:not([type=checkbox]){width:9.5em}
+.ctl .chk{margin:0 4px}
+/* data tables */
+.tablewrap{max-height:75vh}
+#sw th,#sw td,#rw th,#rw td{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;background:var(--surface)}
+#sw thead th,#rw thead th{background:var(--surface-2)}
+#sw thead th{position:sticky;top:0;z-index:2}
+#sw tbody tr:nth-child(even)>td,#rw tbody tr:nth-child(even)>td{background:color-mix(in srgb,var(--surface-2) 70%,var(--surface))}
+#sw tbody tr:hover>td,#rw tbody tr:hover>td{background:color-mix(in srgb,var(--acc) 5%,var(--surface))}
+#sw th.l,#sw td.l,#rw th.l,#rw td.l{text-align:left}
+#sw td.l,#rw td.l{max-width:240px;overflow:hidden;text-overflow:ellipsis}
+#sw tr.tot td{background:var(--surface-2)!important;font-weight:650;border-top:1px solid var(--line-2)}
 th:first-child,td:first-child{position:sticky;left:0;z-index:1}
 thead th:first-child{z-index:3}
-th:first-child,td:first-child,td.l,th.l{text-align:left}
-td.l{max-width:260px;overflow:hidden;text-overflow:ellipsis}
-th[title]{text-decoration:underline dotted;text-underline-offset:3px;cursor:help}
+#rw{max-height:none;overflow-x:auto;overflow-y:visible}
+#rw thead th{position:relative;top:auto;z-index:4;will-change:transform;box-shadow:0 1px 0 var(--line)}
+#rw thead th:first-child{position:sticky;left:0}
+#rw td{padding-top:9px;padding-bottom:9px}
 tr.err td:first-child{box-shadow:inset 3px 0 0 var(--bad)}
-tr.err td.ec{color:var(--bad)}
 tr.dt{cursor:pointer}
-tr.dt:hover td,tr.dt:focus-visible td{background:color-mix(in srgb,var(--acc) 9%,var(--card))}
-tr.dt:focus-visible{outline:3px solid var(--acc);outline-offset:-3px}
-tr.dt:focus-visible td{background:color-mix(in srgb,var(--acc) 16%,var(--card))}
-:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
-.more{display:inline-flex;align-items:center;min-height:24px;font-size:12px;margin-left:8px;padding:2px 8px;border:1px solid var(--acc);border-radius:6px;color:var(--acc);background:color-mix(in srgb,var(--acc) 8%,var(--card))}
-.st{display:inline-block;min-width:34px;text-align:center;font-size:11.5px;padding:0 5px;border-radius:8px;border:1px solid var(--line)}
-.st.s4{color:var(--wfg);background:var(--wbg);border-color:var(--wbd)}
-.st.s5{color:var(--bfg);background:var(--bbg);border-color:var(--bad)}
-.src{display:inline-block;font-size:11px;padding:0 6px;border-radius:8px;margin-right:4px;color:#fff;font-weight:600}
-tr.pw td{opacity:.6}
-.src.client{background:#6b7280}.src.local{background:#7c3aed}.src.network{background:#c2410c}.src.upstream{background:#c53030}.src.stream{background:#b7791f}
-.tl{margin:4px 0 8px;padding:0;list-style:none;font-size:12.5px}.tl li{padding:3px 0 3px 14px;border-left:2px solid var(--line);position:relative;white-space:normal}
-.tl li:before{content:"";position:absolute;left:-5px;top:8px;width:8px;height:8px;border-radius:50%;background:var(--mut)}.tl li.ok:before{background:var(--ok)}.tl li.bad:before{background:var(--bad)}
-.tl code{font-size:11.5px}
-.st.s429{color:var(--wfg);background:var(--wbg);border-color:var(--wbd);border-style:dashed}
-#cp{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:flex-start;justify-content:center;padding:12vh 12px;z-index:11}
-#cpb{background:var(--card);border:2px solid var(--bad);border-radius:12px;padding:16px;width:min(520px,100%)}
-#cpb h3{margin:0 0 8px;font-size:15px}#cpb p{margin:6px 0;font-size:13px}#cpb .acct{font-weight:600;word-break:break-all}
-#cpb .acts{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}button.danger{background:var(--bad);border-color:var(--bad);color:#fff}
-#cpres{font-size:13px;margin-top:8px;white-space:pre-wrap;word-break:break-all}
-.rc{margin-top:10px;font-size:12px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;border-top:1px dashed var(--line);padding-top:8px}
-.rc .cnt{font-weight:600;padding:1px 8px}.rc .cnt[aria-expanded="true"]{background:color-mix(in srgb,var(--acc) 12%,var(--card))}
-.rcl{list-style:none;margin:6px 0 0;padding:0;width:100%;font-size:12px}
-.rcl li{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;padding:5px 6px;border:1px solid var(--line);border-radius:6px;margin-top:4px}
-.rcl li.soon{border-color:var(--warn);background:var(--wbg)}.rcl li.gone{border-color:var(--bad);background:var(--bbg);color:var(--bfg)}
-.rcl li.tg{border:0;padding:2px 0;justify-content:flex-end}.rcl .t{font-weight:600}.rcl .sp{flex:1}.rcl button{font-size:12px;padding:1px 8px}
-.rc .i{cursor:help;color:var(--acc)}.rc .n{font-weight:600}.rc button{font-size:12px;padding:2px 8px}.rc .sp{flex:1}
-#dp{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:flex-start;justify-content:center;padding:5vh 12px;z-index:10}
-#dpb{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;width:min(860px,100%);max-height:90vh;overflow:auto}
-#dpb h3{margin:0 0 6px;font-size:15px;display:flex;gap:8px;align-items:center}#dpb h3 span{flex:1}
-#dpb pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px;font-size:12px;white-space:pre-wrap;word-break:break-all;margin:4px 0 10px}
-#dmsg{color:var(--bad);font-size:13px;margin:4px 0 8px;word-break:break-all;white-space:pre-wrap}
-select,input,button{font:inherit;color:inherit;background:var(--card);border:1px solid var(--line);border-radius:6px;padding:4px 8px}
-button{cursor:pointer}button.pri{background:var(--acc);border-color:var(--acc);color:#fff}
-.ctl{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px}
-#login{max-width:360px;margin:15vh auto;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px}
-#login input{width:100%;margin:10px 0}
-.hide{display:none!important}
-#chart{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px;position:relative}
-#chart svg{width:100%;height:auto;display:block}
-.ax{fill:var(--mut);font-size:11px}.tb{fill:var(--acc);opacity:.75}.tb.now{opacity:.4;stroke:var(--acc);stroke-dasharray:3 2}.cl{fill:none;stroke:var(--warn);stroke-width:2}.cd{fill:var(--warn)}.gl{stroke:var(--line)}
-.hit{fill:transparent}.hit:hover{fill:color-mix(in srgb,var(--acc) 8%,transparent)}
-#cfp{max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:help}
-#tt{white-space:pre-line;overflow-wrap:anywhere;position:fixed;z-index:20;max-width:min(360px,calc(100vw - 16px));pointer-events:none;background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:5px 8px;font-size:12px;line-height:1.4;white-space:pre-line;box-shadow:0 2px 10px rgba(0,0,0,.18)}
-#ctip{position:absolute;pointer-events:none;background:var(--card);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12px;white-space:pre;box-shadow:0 2px 8px rgba(0,0,0,.15)}
-.legend{display:flex;gap:12px;font-size:12px;color:var(--mut);padding:0 4px;flex-wrap:wrap}
-.sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
-.sw.t{background:var(--acc)}.sw.c{background:var(--warn)}
-#msg{color:var(--bfg);background:var(--bbg);border:1px solid var(--bad);border-radius:8px;padding:6px 10px;font-size:13px;margin-bottom:12px}
-#msg:empty{display:none}
-.chip{display:inline-block;font-size:11px;line-height:1.35;padding:0 5px;border-radius:8px;border:1px solid var(--line);margin-left:4px;color:var(--mut);vertical-align:1px}
-.chip.fast{color:var(--wfg);background:var(--wbg);border-color:var(--wbd)}
-.chip.flex{color:var(--acc);border-color:var(--acc)}
-.chip.dg{background:color-mix(in srgb,var(--wbg) 45%,var(--card));color:var(--wfg);font-weight:600;border-style:dashed;border-color:var(--wbd)}
-@media (prefers-color-scheme:dark){.chip.dg{background:transparent;color:#fcd34d;border-color:#fcd34d}}
+tr.dt:focus-visible{outline:2px solid var(--acc);outline-offset:-2px}
+tr.dt:focus-visible td{background:color-mix(in srgb,var(--acc) 12%,var(--surface))!important}
+tr.pw td{color:var(--mut)}tr.pw td>*{opacity:.75}
+.more{display:inline-flex;align-items:center;min-height:22px;font-size:11.5px;margin-left:8px;padding:0 8px;border-radius:999px;color:var(--acc);background:var(--acc-soft);font-weight:600}
+tr.dt:hover .more{background:var(--acc);color:var(--acc-fg)}
+.st{display:inline-block;min-width:38px;text-align:center;font-size:11.5px;font-weight:600;line-height:20px;padding:0 6px;border-radius:6px;background:var(--gray-soft);color:var(--fg-2)}
+.st.s4{color:var(--warn);background:var(--warn-soft)}
+.st.s5{color:var(--bad);background:var(--bad-soft)}
+.st.s429{color:var(--warn);background:var(--warn-soft);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--warn) 50%,transparent)}
+.ec .mut{margin-left:4px}
+tr.err td.ec{color:var(--bad)}
+.src{display:inline-flex;align-items:center;gap:4px;font-size:11px;line-height:18px;padding:0 7px;border-radius:999px;margin-right:6px;font-weight:650}
+.src:before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.src.client{background:var(--gray-soft);color:var(--fg-2)}.src.local{background:var(--vio-soft);color:var(--vio)}.src.network{background:var(--warn-soft);color:var(--warn)}.src.upstream{background:var(--bad-soft);color:var(--bad)}.src.stream{background:color-mix(in srgb,#d4a017 16%,var(--surface));color:color-mix(in srgb,#a16207 85%,var(--fg))}
+.chip{display:inline-block;font-size:11px;line-height:17px;padding:0 6px;border-radius:999px;margin-left:6px;color:var(--mut);background:var(--gray-soft);vertical-align:1px;font-weight:600}
+.chip.fast{color:var(--warn);background:var(--warn-soft)}
+.chip.flex{color:var(--acc);background:var(--acc-soft)}
+.chip.dg{background:transparent;color:var(--warn);box-shadow:inset 0 0 0 1px var(--warn)}
 .rm{display:block;font-size:12px;color:var(--mut);overflow:hidden;text-overflow:ellipsis}
 .rm.mm{color:var(--bad)}
 .ef{display:block}.ef.fb{font-style:italic}.ef small{font-size:11px;color:var(--mut);margin-left:4px;font-style:normal}
 .ef.fw{font-size:12px;color:var(--mut)}
-.tot{font-weight:600}
-td.cw{white-space:nowrap;padding-right:12px}.wi{display:inline-block;margin-left:4px;padding:0 2px;color:var(--warn);font-size:12px;cursor:help;border-radius:3px}
-.pager{display:flex;gap:10px;align-items:center;margin-top:8px}
-@media (max-width:600px){main{padding:10px}th,td{padding:5px 6px;font-size:12px}header h1{font-size:15px}.s2{display:none}}
+td.cw{white-space:nowrap}
+.wi{display:inline-block;margin-left:4px;color:var(--warn);font-size:12px;cursor:help;border-radius:3px}
+.pager{display:flex;gap:10px;align-items:center;justify-content:center;margin-top:12px}
+.legend{display:flex;gap:6px 14px;font-size:12px;color:var(--mut);padding:8px 2px 0;flex-wrap:wrap;align-items:center}
+.sw{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+.sw.t{background:var(--acc)}.sw.c{background:var(--warn)}
+/* chart */
+#chart{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-3);padding:12px 14px;position:relative;box-shadow:var(--sh-1)}
+#chart .legend{padding:0 0 6px}
+#chart svg{width:100%;height:auto;display:block}
+.ax{fill:var(--mut);font-size:11px}.tb{fill:var(--acc);opacity:.82}.tb.now{opacity:.35;stroke:var(--acc);stroke-dasharray:3 2}.cl{fill:none;stroke:var(--warn);stroke-width:2;stroke-linejoin:round}.cd{fill:var(--surface);stroke:var(--warn);stroke-width:1.5}.gl{stroke:var(--line);stroke-dasharray:2 4}
+.hit{fill:transparent}.hit:hover{fill:color-mix(in srgb,var(--acc) 7%,transparent)}
+#ctip,#tt{position:fixed;z-index:70;pointer-events:none;background:var(--fg);color:var(--bg);border-radius:8px;padding:6px 10px;font-size:12px;line-height:1.45;box-shadow:var(--sh-3)}
+#ctip{position:absolute;white-space:pre}
+#tt{white-space:pre-line;overflow-wrap:anywhere;max-width:min(360px,calc(100vw - 16px))}
+#cfp{max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:help}
+/* dialogs */
+#cpb{border-top:4px solid var(--bad)}
+#cpb .acct{font-weight:650;word-break:break-all;color:var(--fg)}
+#cpb .warnp{padding:10px 12px;border-radius:var(--r-2);background:var(--bad-soft);color:var(--fg)}
+#cpres{font-size:13px;margin-top:10px;white-space:pre-wrap;word-break:break-all}
+#cpres:not(:empty){padding:10px 12px;border-radius:var(--r-2);background:var(--surface-2);border:1px solid var(--line)}
+#dpb{width:min(880px,100%)}
+#dpb h3 span{flex:1;min-width:0;overflow-wrap:anywhere}
+#dpb pre{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-2);padding:10px 12px;font:12px/1.55 var(--mono);white-space:pre-wrap;word-break:break-all;margin:6px 0 14px;max-height:40vh;overflow:auto}
+#dmeta{font-family:var(--mono);font-size:11.5px}
+#dmsg{color:var(--bad);font-size:13px;margin:10px 0 12px;word-break:break-all;white-space:pre-wrap}
+#dmsg:not(:empty){padding:10px 12px;border-radius:var(--r-2);background:var(--bad-soft)}
+.lab{font-size:12px;font-weight:600;color:var(--mut);margin-top:6px}
+.tl{margin:8px 0 14px;padding:0;list-style:none;font-size:12.5px}.tl li{padding:4px 0 8px 18px;border-left:2px solid var(--line);position:relative;white-space:normal;margin-left:5px}
+.tl li:last-child{border-left-color:transparent}
+.tl li:before{content:"";position:absolute;left:-6px;top:7px;width:10px;height:10px;border-radius:50%;background:var(--mut);box-shadow:0 0 0 3px var(--surface)}.tl li.ok:before{background:var(--ok)}.tl li.bad:before{background:var(--bad)}
+.tl code{font-size:11.5px;padding:1px 5px;border-radius:4px;background:var(--surface-3)}
+@media (max-width:720px){
+.big{font-size:21px}
+.kpi .v{font-size:19px}
+.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+.toolbar{padding:10px 12px;gap:8px}.fld{flex:1 1 140px}.fld select{flex:1;min-width:0}
+.ctl input:not([type=checkbox]),.ctl select{flex:1 1 40%;width:auto;min-width:0}
+#sw th,#sw td{padding:7px 8px;font-size:12px}
+.s2{display:none}
+.ax{font-size:19px}
+#cfp{max-width:100%}
+#rw{border:0;background:transparent;box-shadow:none;overflow:visible}
+#rw table,#rw tbody{display:block}
+#rw thead{display:none}
+#rw tbody tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 14px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:8px;box-shadow:var(--sh-1)}
+#rw tbody tr.err{box-shadow:inset 3px 0 0 var(--bad),var(--sh-1)}
+#rw td{display:flex;justify-content:space-between;align-items:baseline;gap:8px;border:0;padding:3px 0;position:static;background:transparent!important;box-shadow:none!important;white-space:normal;max-width:none;min-width:0;text-align:right}
+#rw td:before{content:attr(data-label);color:var(--mut);font-size:12px;text-align:left;flex:none}
+#rw td.s2{display:flex}
+#rw td:first-child,#rw td.wide{grid-column:1/-1}
+#rw td:first-child{font-weight:600}#rw td:first-child:before{display:none}
+#rw td.wide{display:block;text-align:left}
+#rw td.wide:before{display:inline-block;min-width:4.5em;margin-right:6px}
+#rw td.wide>span:first-of-type{display:inline}
+#rw td.wide .rm{display:block;margin-left:calc(4.5em + 6px)}
+.src,.more{white-space:nowrap}
+#rw td.none{display:none}
+#rw td[colspan]{display:block;text-align:center;grid-column:1/-1}#rw td[colspan]:before{display:none}
+#rw tbody tr:has(td[colspan]){display:block}
+.pager button{flex:1}
+}
 </style>
 </head>
 <body>
 <div id="login" class="hide">
-  <h2>ciallopa 管理面板</h2>
+  <div class="brand"><span class="logo" aria-hidden="true">C</span><span>ciallopa</span></div>
+  <h2>登录管理面板</h2>
   <div class="mut">请输入访问密钥（与代理的 API key 相同）。仅保存在本标签页的 sessionStorage 中，关闭即清除。</div>
   <form id="lf"><input id="key" type="password" autocomplete="current-password" placeholder="sk-..." required aria-label="访问密钥"><button class="pri" type="submit">进入</button></form>
   <div id="lerr" class="mut" role="alert"></div>
 </div>
 <div id="app" class="hide">
-<header><h1>ciallopa 管理面板 <span class="mut" id="ro">只读</span></h1><nav><a href="/ui" aria-current="page">概览</a><a href="/ui/settings">设置</a><a href="/ui/accounts">账号</a></nav>
-  <span class="mut" id="tz"></span><span class="mut" id="cfp" tabindex="0"></span><span class="sp"></span>
-  <span class="mut" id="upd" aria-live="polite"></span>
-  <label class="mut"><input type="checkbox" id="auto"> 自动刷新 (15s)</label>
-  <button id="refresh">刷新</button><button id="logout">退出登录</button></header>
-<main>
-  <div id="msg" role="alert"></div>
-  <section id="sq" aria-busy="true"><h2>账号额度 <span class="mut" id="qnote"></span></h2><div class="grid" id="cards"><div class="mut">加载中…</div></div></section>
+<header><a class="skip" href="#main">跳到主要内容</a>
+  <div class="brand"><span class="logo" aria-hidden="true">C</span><span>ciallopa</span><span class="mut t2">管理面板</span></div>
+  <nav class="tabs" aria-label="页面"><a href="/ui" aria-current="page">概览</a><a href="/ui/settings">设置</a><a href="/ui/accounts">账号</a></nav>
+  <span class="sp"></span>
+  <div class="hgroup"><span class="mut" id="upd" aria-live="polite"></span>
+  <label class="chk" title="每 15 秒自动刷新（标签页不可见时暂停）"><input type="checkbox" id="auto" class="switch"><span class="lt">自动刷新</span></label>
+  <button id="refresh" title="立即刷新全部数据">刷新</button><button id="theme" class="ghost icon" type="button"></button><button id="logout" class="ghost bad" title="清除本标签页保存的密钥">退出</button></div></header>
+<main id="main" tabindex="-1">
+  <div class="ph"><h1>概览</h1><div class="chips"><span class="badge line" id="ro">只读</span><span class="mut" id="tz"></span><span class="mut" id="cfp" tabindex="0"></span></div></div>
+  <div id="msg" class="err" role="alert"></div>
+  <section id="sq" aria-busy="true"><h2>账号额度 <span class="mut" id="qnote"></span></h2><div class="grid" id="cards">
+    <div class="card" aria-hidden="true"><span class="skel h"></span><span class="skel w6"></span><span class="skel bar"></span><span class="skel w8"></span><span class="skel bar"></span><span class="skel w6"></span></div>
+    <div class="card" aria-hidden="true"><span class="skel h"></span><span class="skel w6"></span><span class="skel bar"></span><span class="skel w8"></span><span class="skel bar"></span><span class="skel w6"></span></div>
+    <div class="card" aria-hidden="true"><span class="skel h"></span><span class="skel w6"></span><span class="skel bar"></span><span class="skel w8"></span><span class="skel bar"></span><span class="skel w6"></span></div></div></section>
   <div class="toolbar" role="toolbar" aria-label="时间段与分组">
-    <label class="mut" for="range">时间段</label><select id="range" aria-label="时间段"><option value="24h">最近 24 小时</option><option value="7d">最近 7 天</option><option value="30d">最近 30 天</option></select>
-    <label class="mut" for="group">汇总分组</label><select id="group" aria-label="汇总分组"><option value="account">按账号</option><option value="key">按密钥</option><option value="instance">按实例</option><option value="model">按模型</option><option value="response_model">按实际模型</option></select>
-    <label class="mut" for="tmode">趋势</label><select id="tmode" aria-label="趋势粒度"><option value="day">按天</option><option value="hour">今日按小时</option></select>
+    <div class="fld"><label for="range">时间段</label><select id="range"><option value="24h">最近 24 小时</option><option value="7d">最近 7 天</option><option value="30d">最近 30 天</option></select></div>
+    <div class="fld"><label for="group">汇总分组</label><select id="group"><option value="account">按账号</option><option value="key">按密钥</option><option value="instance">按实例</option><option value="model">按模型</option><option value="response_model">按实际模型</option></select></div>
+    <div class="fld"><label for="tmode">趋势</label><select id="tmode"><option value="day">按天</option><option value="hour">今日按小时</option></select></div>
   </div>
   <section id="ss" aria-busy="true"><h2>汇总 <span class="mut" id="unk"></span></h2>
-    <div class="tablewrap" id="sw"><table><thead><tr><th class="l" id="gh">账号</th><th>请求数</th><th>错误率</th><th title="首字时间（TTFT）：从发出请求到收到第一个输出 token 的时间">首字 p50</th><th class="s2" title="首字时间（TTFT）第 90 百分位">首字 p90</th><th>耗时 p50</th><th class="s2">耗时 p90</th><th>输入</th><th class="s2" title="缓存命中输入：输入中命中提示缓存的 token 数（已包含在输入中）">缓存</th><th>输出</th><th class="s2" title="生成速度：输出 token ÷（总耗时 − 首字时间）">速度 tok/s</th><th title="按 API 标价折算的名义成本，订阅计划实际不按此计费">名义成本 $</th></tr></thead><tbody id="sum"><tr><td class="l" colspan="12">加载中…</td></tr></tbody></table></div>
-    <div class="mut">名义成本按 API 标价折算，订阅计划实际不按此计费。</div>
+    <div class="kpis" id="kpis" aria-label="所选时间段合计"></div>
+    <div class="tablewrap" id="sw"><table><thead><tr><th class="l" id="gh">账号</th><th>请求数</th><th>错误率</th><th title="首字时间（TTFT）：从发出请求到收到第一个输出 token 的时间">首字 p50</th><th class="s2" title="首字时间（TTFT）第 90 百分位">首字 p90</th><th>耗时 p50</th><th class="s2">耗时 p90</th><th>输入</th><th class="s2" title="缓存命中输入：输入中命中提示缓存的 token 数（已包含在输入中）">缓存</th><th>输出</th><th class="s2" title="生成速度：输出 token ÷（总耗时 − 首字时间）">速度 tok/s</th><th title="按 API 标价折算的名义成本，订阅计划实际不按此计费">名义成本 $</th></tr></thead><tbody id="sum"><tr><td class="l" colspan="12"><span class="skel w6"></span><span class="skel w8"></span></td></tr></tbody></table></div>
+    <div class="legend">名义成本按 API 标价折算，订阅计划实际不按此计费。</div>
   </section>
   <section id="st" aria-busy="true"><h2 id="th">趋势 <span class="mut" id="trange"></span></h2>
     <div id="chart"><div class="legend"><span><i class="sw t"></i>Token（输入+输出）</span><span><i class="sw c"></i>名义成本 $</span><span>虚线柱：进行中</span></div><svg id="svg" viewBox="0 0 800 240" role="img" aria-label="token 与名义成本趋势"></svg><div id="ctip" class="hide" role="tooltip"></div></div>
   </section>
   <section id="sr" aria-busy="true"><h2>最近请求 <span class="mut" id="rcount"></span></h2>
-    <div class="ctl"><select id="facct" aria-label="按账号筛选"><option value="">全部账号</option></select>
-      <input id="fkey" placeholder="密钥标签" size="12" aria-label="按密钥标签筛选">
+    <div class="ctl" role="search" aria-label="筛选最近请求"><select id="facct" aria-label="按账号筛选"><option value="">全部账号</option></select>
+      <input id="fkey" placeholder="密钥标签" aria-label="按密钥标签筛选">
       <select id="ftier" aria-label="按档位筛选"><option value="">全部档位</option><option value="priority">Fast</option><option value="flex">Flex</option><option value="standard">标准</option><option value="dg">仅降级</option></select>
       <select id="fsrc" aria-label="按错误来源筛选"><option value="">全部来源</option><option value="upstream">上游</option><option value="stream">流内</option><option value="network">网络</option><option value="local">ciallopa</option><option value="client">客户端</option><option value="upstream,stream,network,local">排除客户端</option></select>
-      <input id="fcode" placeholder="错误码" size="12" aria-label="按错误码筛选">
-      <label class="mut"><input type="checkbox" id="ferr"> 仅错误</label>
-      <label class="mut" title="只看重试过或换过账号的请求"><input type="checkbox" id="fretry"> 仅重试/换号</label></div>
-    <div class="tablewrap" id="rw"><table><thead><tr><th class="l">时间</th><th class="l">账号</th><th class="l s2">密钥</th><th class="l">模型</th><th class="l s2">推理强度</th><th>状态</th><th class="l">错误</th><th class="s2" title="首字时间（TTFT）">首字</th><th>耗时</th><th class="s2">输入</th><th>输出</th><th title="按 API 标价折算的名义成本">名义成本 $</th></tr></thead><tbody id="rec"><tr><td class="l" colspan="12">加载中…</td></tr></tbody></table></div>
+      <input id="fcode" placeholder="错误码（回车）" aria-label="按错误码筛选，回车应用">
+      <label class="chk"><input type="checkbox" id="ferr"> 仅错误</label>
+      <label class="chk" title="只看重试过或换过账号的请求"><input type="checkbox" id="fretry"> 仅重试/换号</label>
+      <button id="fclear" class="ghost sm hide" type="button">清除筛选</button></div>
+    <div class="tablewrap" id="rw"><table><thead><tr><th class="l">时间</th><th class="l">账号</th><th class="l s2">密钥</th><th class="l">模型</th><th class="l s2">推理强度</th><th>状态</th><th class="l">错误</th><th class="s2" title="首字时间（TTFT）">首字</th><th>耗时</th><th class="s2">输入</th><th>输出</th><th title="按 API 标价折算的名义成本">名义成本 $</th></tr></thead><tbody id="rec"><tr><td class="l" colspan="12"><span class="skel w8"></span><span class="skel w6"></span><span class="skel w8"></span></td></tr></tbody></table></div>
     <div class="pager"><button id="rmore" class="hide">加载更多</button><span class="mut" id="rpage"></span></div>
-    <div class="legend"><span>图例：</span><span><span class="chip fast">⚡ Fast</span> 实际以 Fast 处理</span><span><span class="chip dg">Fast→标准</span> 请求 Fast 但被降级</span><span>↳ 上游实际值（与请求不同）</span><span><i>medium</i> <small>响应</small> 请求未指定，取自响应</span><span>（快照）带日期的同一模型</span></div>
+    <div class="legend"><span>图例：</span><span><span class="chip fast">⚡ Fast</span> 实际以 Fast 处理</span><span><span class="chip dg">Fast→标准</span> 请求 Fast 但被降级</span><span>↳ 上游实际值（与请求不同）</span><span><i>medium</i> <small>响应</small> 请求未指定，取自响应</span><span>（快照）带日期的同一模型</span><span><span class="badge">预热</span> 灰色行：WS 预热，不计入请求数</span></div>
   </section>
 </main></div>
+<div id="toasts" role="status" aria-live="polite"></div>
 <div id="tt" class="hide" role="tooltip"></div>
-<div id="cp" class="hide" role="alertdialog" aria-modal="true" aria-labelledby="cptitle" aria-describedby="cpdesc"><div id="cpb">
+<div id="cp" class="modal hide" role="alertdialog" aria-modal="true" aria-labelledby="cptitle" aria-describedby="cpdesc"><div id="cpb" class="mbox">
   <h3 id="cptitle">使用重置卡</h3>
   <div id="cpdesc"><p>账号：<span class="acct" id="cpacct"></span></p>
   <p id="cpinfo"></p>
-  <p><b>此操作不可撤销。</b>确认后会向上游消耗该账号的 1 张重置卡，并重置其额度窗口；卡一旦用掉无法退回。</p></div>
+  <p class="warnp"><b>此操作不可撤销。</b>确认后会向上游消耗该账号的 1 张重置卡，并重置其额度窗口；卡一旦用掉无法退回。</p></div>
   <div id="cpres" role="status"></div>
   <div class="acts"><button id="cpno">取消</button><button id="cpyes" class="danger">确认使用 1 张</button></div>
 </div></div>
-<div id="dp" class="hide" role="dialog" aria-modal="true" aria-labelledby="dtitle"><div id="dpb">
-  <h3><span id="dtitle">错误详情</span><button id="dcopy">复制</button><button id="dclose">关闭</button></h3>
+<div id="dp" class="modal hide" role="dialog" aria-modal="true" aria-labelledby="dtitle"><div id="dpb" class="mbox">
+  <h3><span id="dtitle">错误详情</span><button id="dcopy" class="sm">复制</button><button id="dclose" class="sm" aria-label="关闭">关闭</button></h3>
   <div class="mut" id="dmeta"></div><div id="dmsg"></div>
-  <div class="mut" id="dtll">尝试过程</div><ol class="tl" id="dtl"></ol>
-  <div class="mut">响应头</div><pre id="dhdr"></pre>
-  <div class="mut" id="dblab">响应体</div><pre id="dbody"></pre>
+  <div class="lab" id="dtll">尝试过程</div><ol class="tl" id="dtl"></ol>
+  <div class="lab">响应头</div><pre id="dhdr"></pre>
+  <div class="lab" id="dblab">响应体</div><pre id="dbody"></pre>
 </div></div>
 <script>
 "use strict";
@@ -189,6 +389,17 @@ let timer=null;
 function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined&&text!==null)e.textContent=String(text);return e}
 function td(text,cls,title){const t=el("td",cls,text);if(title)t.title=title;return t}
 function clear(e){while(e.firstChild)e.removeChild(e.firstChild)}
+// ---- theme (跟随系统 / 浅色 / 深色), remembered in this browser only
+const TH="ciallopa_theme";
+function applyTheme(t){const r=document.documentElement;if(t==="light"||t==="dark")r.dataset.theme=t;else delete r.dataset.theme;
+  const n={light:"浅色",dark:"深色"}[t]||"跟随系统",b=$("theme");b.textContent={light:"☀",dark:"☾"}[t]||"◐";b.title="主题："+n+"（点击切换）";b.setAttribute("aria-label","切换主题，当前："+n)}
+applyTheme(localStorage.getItem(TH));
+$("theme").addEventListener("click",()=>{const c=localStorage.getItem(TH),n=c==="light"?"dark":c==="dark"?"":"light";if(n)localStorage.setItem(TH,n);else localStorage.removeItem(TH);applyTheme(n);toast("主题："+({light:"浅色",dark:"深色"}[n]||"跟随系统"))});
+// ---- toasts (action results); errors that need attention stay in the #msg banner
+function toast(t,kind){const d=el("div","toast"+(kind?" "+kind:""),t);$("toasts").appendChild(d);setTimeout(()=>{d.classList.add("out");setTimeout(()=>d.remove(),300)},kind==="err"?7000:3500)}
+// ---- keep Tab inside an open dialog
+function trap(e,box){if(e.key!=="Tab")return;const f=Array.from(box.querySelectorAll("button,a[href],input,select,textarea,[tabindex]:not([tabindex='-1'])")).filter(x=>!x.disabled&&x.offsetParent!==null);if(!f.length)return;
+  const i=f.indexOf(document.activeElement);e.preventDefault();f[i<0?(e.shiftKey?f.length-1:0):(i+(e.shiftKey?f.length-1:1))%f.length].focus()}
 // ---- formats
 const NF=new Intl.NumberFormat("zh-CN");
 function exact(n){return n===null||n===undefined?"":NF.format(n)}
@@ -223,7 +434,7 @@ async function apiPost(path,body){
 function show(app,err){$("app").classList.toggle("hide",!app);$("login").classList.toggle("hide",app);$("lerr").textContent=err||"";if(!app){stopAuto();closeDetail();closeConsume()}}
 function qs(o){const u=new URLSearchParams();for(const k in o)if(o[k]!==""&&o[k]!==null&&o[k]!==undefined)u.set(k,o[k]);return u.toString()}
 async function busy(id,f){$(id).setAttribute("aria-busy","true");try{return await f()}finally{$(id).setAttribute("aria-busy","false")}}
-function emptyRow(tb,text){const tr=el("tr");const c=td(text,"l");c.colSpan=12;tr.appendChild(c);tb.appendChild(tr)}
+function emptyRow(tb,text,sub){const tr=el("tr");const c=td("","l");c.colSpan=12;const e=el("div","empty-state");e.appendChild(el("b",null,text));e.appendChild(document.createTextNode(sub||"换个时间段试试"));c.appendChild(e);tr.appendChild(c);tb.appendChild(tr)}
 // Keep horizontal scroll position across re-renders.
 function keepScroll(id,f){const w=$(id),x=w.scrollLeft;f();w.scrollLeft=x}
 
@@ -239,15 +450,15 @@ function renderCards(q){
   accts.sort((x,y)=>maxUsed(y)-maxUsed(x));
   for(const a of accts){
     const mu=maxUsed(a);
-    const c=el("div","card"+(mu>95?" w95":mu>80?" w80":""));const h=el("h3",null,a.email||a.account);h.title=a.account;c.appendChild(h);
-    const meta=el("div");
+    const c=el("div","card"+(mu>95?" w95":mu>80?" w80":""));const full=a.email?a.email+"（"+a.account+"）":a.account;const h=el("h3","trunc",a.email||a.account);h.title=full;c.appendChild(h);
+    const meta=el("div","meta");
     const qq=a.quota;
     meta.appendChild(el("span","badge",qq&&qq.plan?qq.plan:"未知套餐"));
     if(a.needs_relogin)meta.appendChild(el("span","badge bad","需要重新登录"));
     else if(a.disabled)meta.appendChild(el("span","badge warn","已停用"));
     if(a.configured===false)meta.appendChild(el("span","badge","未配置"));
     c.appendChild(meta);
-    if(a.email){const m=el("div","mut",a.account);m.title=a.account;c.appendChild(m)}
+    if(a.email){const m=el("div","mut aid trunc",a.account);m.title=full;c.appendChild(m)}
     if(!qq){c.appendChild(el("div","mut empty","尚无额度数据（该账号还没有请求经过本代理）"));if(RC&&a.configured!==false)c.appendChild(rcLine(a,rcAcc[a.account]));box.appendChild(c);continue}
     for(const w of [qq.primary,qq.secondary]){
       if(!w||w.used_pct===null||w.used_pct===undefined)continue;
@@ -272,7 +483,7 @@ function renderCards(q){
     box.appendChild(c);
   }
   if(sel.querySelector("option[value='"+CSS.escape(cur)+"']"))sel.value=cur;
-  if(!accts.length)box.appendChild(el("div","mut","没有账号"));
+  if(!accts.length){const e=el("div","empty-state");e.appendChild(el("b",null,"没有账号"));e.appendChild(document.createTextNode("用 ciallopa login 添加，或在“账号”页添加。"));e.style.gridColumn="1/-1";box.appendChild(e)}
 }
 
 // ---- reset credits (重置卡): read-only display; consume only via the confirm dialog
@@ -297,7 +508,7 @@ function rcLine(a,r){
   if(last){const m=el("span","mut","上次使用："+fmtTime(last.started_ms,true)+" "+(last.code?CODEN[last.code]||last.code:last.status));m.title=isoLocal(last.started_ms)+" · redeem_request_id "+last.redeem_request_id;d.appendChild(m)}
   d.appendChild(el("span","sp"));
   if(RC&&RC.is_admin){const rb=el("button",null,"刷新");rb.title="从上游重新获取该账号的重置卡列表";
-  rb.addEventListener("click",async()=>{rb.disabled=true;try{RC=await apiPost("/usage/v1/reset-credits/refresh",{account:a.account});await reloadCards()}catch(e){fail(e)}finally{rb.disabled=false}});d.appendChild(rb)}
+  rb.addEventListener("click",async()=>{rb.disabled=true;try{RC=await apiPost("/usage/v1/reset-credits/refresh",{account:a.account});await reloadCards();toast("已刷新 "+(a.email||a.account)+" 的重置卡")}catch(e){fail(e)}finally{rb.disabled=false}});d.appendChild(rb)}
   if(RC&&RC.can_consume&&r&&r.available_count>0){const b=el("button","danger","使用…");b.setAttribute("aria-haspopup","dialog");b.title="由上游挑选一张使用";b.addEventListener("click",()=>openConsume(a,r,b,null));d.appendChild(b)}
   if(d._list)d.appendChild(d._list);
   return d;
@@ -339,7 +550,7 @@ document.addEventListener("keydown",e=>{if($("cp").classList.contains("hide"))re
 $("cpyes").addEventListener("click",async()=>{const acct=cpFor;if(!acct)return;$("cpyes").disabled=true;$("cpres").textContent="正在提交…";
   try{const j=await apiPost("/admin/v1/accounts/"+encodeURIComponent(acct)+"/reset-credits/consume",Object.assign({confirm:acct},cpCredit?{credit_id:cpCredit}:{},cpRid?{redeem_request_id:cpRid}:{}));
     $("cpres").textContent="结果："+(CODEN[j.code]||j.code)+(j.code==="reset"?"，重置了 "+j.windows_reset+" 个窗口":"")+"\nredeem_request_id: "+j.redeem_request_id;
-    $("cpyes").classList.add("hide");$("cpno").textContent="关闭";$("cpno").focus();loadAll()}
+    $("cpyes").classList.add("hide");$("cpno").textContent="关闭";$("cpno").focus();toast("重置卡："+(CODEN[j.code]||j.code));loadAll()}
   catch(e){if(e.message==="401")return;const pend=e.body&&e.body.status==="pending";
     if(e.status===409&&e.body&&e.body.pending){const p=e.body.pending;cpCredit=p.credit_id||null;cpRid=p.redeem_request_id;
       $("cpres").textContent="这个账号上一次使用的结果还未知"+(p.credit_id?"（卡 "+p.credit_id+"）":"（由上游选卡）")+"，为避免多扣一张，只能重试那一次。\nredeem_request_id: "+p.redeem_request_id;$("cpyes").disabled=false;$("cpyes").textContent="重试上一次";return}
@@ -350,20 +561,27 @@ async function reloadCards(){const q=await api("/usage/v1/quota");renderCards(q)
 const GN={account:"账号",key:"密钥",instance:"实例",model:"模型",response_model:"实际模型"};
 function costCell(c,unk){
   let t,tip=exactUsd(c);
-  if(unk&&c!==null&&c!==undefined&&c>0){const W="部分模型未定价，实际成本不低于此值";const x=td("≥"+fmtUsd(c),"cw");
-    const i=el("span","wi","⚠");i.tabIndex=0;i.setAttribute("role","img");i.dataset.tt=W+"\n"+unk+" 条请求缺少价格；已定价部分 "+tip;i.setAttribute("aria-label",W);x.appendChild(i);return x}
+  if(unk&&c!==null&&c!==undefined&&c>0){const x=td("≥"+fmtUsd(c),"cw");x.appendChild(unkIcon(unk,tip));return x}
   else if(unk&&!c){t="未定价";tip=unk+" 条请求缺少价格"}
   else t=fmtUsd(c);
   return td(t,"",tip)}
+function unkIcon(unk,tip){const W="部分未定价";const i=el("span","wi","⚠");i.tabIndex=0;i.setAttribute("role","img");i.dataset.tt=W+"：实际成本不低于此值\n"+unk+" 条请求缺少价格；已定价部分 "+tip;i.setAttribute("aria-label",W);return i}
+function renderKpis(x,n){const k=$("kpis");clear(k);k.classList.toggle("hide",!x||!n);if(!x||!n)return;
+  const add=(label,v,sub,tip,cls)=>{const d=el("div","kpi");d.appendChild(el("div","k",label));const e=el("div","v"+(cls?" "+cls:""),v);if(tip)e.title=tip;d.appendChild(e);d.appendChild(el("div","s",sub||"\u00a0"));k.appendChild(d);return e};
+  add("请求数",fmtN(x.count),x.errors!==undefined?exact(x.errors)+" 条错误":"",exact(x.count)+" 条");
+  add("错误率",(x.error_rate*100).toFixed(1)+"%","",null,x.error_rate>0.05?"bad":"");
+  add("首字 p50",fmtMs(x.ttft_p50_ms),"p90 "+fmtMs(x.ttft_p90_ms)+" · 耗时 p50 "+fmtMs(x.duration_p50_ms));
+  add("Token",fmtN((x.input_tokens||0)+(x.output_tokens||0)),"输入 "+fmtN(x.input_tokens)+" · 输出 "+fmtN(x.output_tokens)+(x.cached_tokens?" · 缓存 "+fmtN(x.cached_tokens):""),exact((x.input_tokens||0)+(x.output_tokens||0)));
+  const c=x.cost_usd,u=x.unknown_price,v=add("名义成本",u&&!c?"未定价":(u?"≥":"")+fmtUsd(c),u?u+" 条请求缺少价格":"按 API 标价折算",exactUsd(c));if(u&&c)v.appendChild(unkIcon(u,exactUsd(c)))}
 function renderSummary(s){
-  ttHide();
+  ttHide();renderKpis(s.total,s.groups.length);
   const g=$("group").value;$("gh").textContent=GN[g];
   const tb=$("sum");
   keepScroll("sw",()=>{clear(tb);
   const row=(name,x,bold)=>{const tr=el("tr");const n=td(name,"l",name);if(bold)n.appendChild(document.createTextNode(""));tr.appendChild(n);
     const cs=[[fmtN(x.count),exact(x.count)],[(x.error_rate*100).toFixed(1)+"%",x.errors!==undefined?x.errors+" 条错误":""],[fmtMs(x.ttft_p50_ms),exact(x.ttft_p50_ms)+" ms"],[fmtMs(x.ttft_p90_ms),exact(x.ttft_p90_ms)+" ms","s2"],[fmtMs(x.duration_p50_ms),exact(x.duration_p50_ms)+" ms"],[fmtMs(x.duration_p90_ms),exact(x.duration_p90_ms)+" ms","s2"],[fmtN(x.input_tokens),exact(x.input_tokens)],[fmtN(x.cached_tokens),exact(x.cached_tokens),"s2"],[fmtN(x.output_tokens),exact(x.output_tokens)],[x.tps?x.tps.toFixed(1):"–",x.tps?x.tps.toFixed(3)+" tok/s":"","s2"]];
     for(const [v,t,c] of cs)tr.appendChild(td(v,c||"",t));
-    tr.appendChild(costCell(x.cost_usd,x.unknown_price));if(bold)for(const c of tr.children)c.classList.add("tot");return tr};
+    tr.appendChild(costCell(x.cost_usd,x.unknown_price));if(bold)tr.className="tot";if(bold)for(const c of tr.children)c.classList.add("tot");return tr};
   for(const x of s.groups){const v=x.group[g];tb.appendChild(row(v===null||v===undefined?"（无）":v,x))}
   if(s.groups.length)tb.appendChild(row("合计",s.total,true));else emptyRow(tb,"该时间段无请求")});
   $("unk").textContent=(s.unknown_price_models&&s.unknown_price_models.length)?"⚠ 未定价模型："+s.unknown_price_models.join("、"):"";
@@ -465,10 +683,12 @@ function recRow(r){
   tr.appendChild(td(fmtN(r.input_tokens),"s2",exact(r.input_tokens)+(r.cached_tokens?"（缓存命中 "+exact(r.cached_tokens)+"）":"")));
   tr.appendChild(td(fmtN(r.output_tokens),"",exact(r.output_tokens)));
   tr.appendChild(r.price_status==="unknown_price"?td("未定价","","模型/档位不在价格表中"):td(fmtUsd(r.cost_usd),"",exactUsd(r.cost_usd)));
+  const LBL=["时间","账号","密钥","模型","推理强度","状态","错误","首字","耗时","输入","输出","名义成本"];
+  Array.from(tr.children).forEach((c,i)=>{c.dataset.label=LBL[i]||""});tr.children[3].classList.add("wide");ec.classList.add("wide");if(!ec.textContent)ec.classList.add("none");
   return tr}
 function renderRecords(){
   const tb=$("rec");
-  keepScroll("rw",()=>{clear(tb);for(const r of recState.rows)tb.appendChild(recRow(r));if(!recState.rows.length)emptyRow(tb,"该时间段无请求")});stickHead();
+  keepScroll("rw",()=>{clear(tb);for(const r of recState.rows)tb.appendChild(recRow(r));if(!recState.rows.length)emptyRow(tb,"没有符合条件的请求",anyF()?"清除筛选或换个时间段试试":"换个时间段试试")});stickHead();
   $("rcount").textContent="共 "+exact(recState.total)+" 条（"+$("range").selectedOptions[0].textContent+"）";
   const more=recState.rows.length<recState.total;$("rmore").classList.toggle("hide",!more);
   $("rpage").textContent=recState.total?"已显示 "+exact(recState.rows.length)+" / "+exact(recState.total):"";
@@ -484,7 +704,7 @@ async function loadRecords(append){
 function stickHead(){const w=$("rw"),th=w.querySelectorAll("thead th");if(!th.length)return;const top=document.querySelector("header").offsetHeight,r=w.getBoundingClientRect(),h=th[0].offsetHeight;
   const off=Math.max(0,Math.min(top-r.top,r.height-2*h));const v=off>0?"translateY("+off+"px)":"";for(const t of th)t.style.transform=v}
 window.addEventListener("scroll",stickHead,{passive:true});window.addEventListener("resize",stickHead);
-$("fcode").addEventListener("keydown",e=>{if(e.key==="Enter")loadRecords(false).catch(fail)});
+$("fcode").addEventListener("change",()=>loadRecords(false).catch(fail));
 $("rmore").addEventListener("click",async()=>{$("rmore").disabled=true;try{await loadRecords(true)}catch(e){fail(e)}finally{$("rmore").disabled=false}});
 
 // ---- detail dialog (rendered with textContent; focus trapped; focus returns to the row)
@@ -519,7 +739,7 @@ $("dp").addEventListener("click",e=>{if(e.target===$("dp"))closeDetail()});
 document.addEventListener("keydown",e=>{if($("dp").classList.contains("hide"))return;
   if(e.key==="Escape"){closeDetail();return}
   if(e.key==="Tab"){const f=[$("dcopy"),$("dclose")];const i=f.indexOf(document.activeElement);e.preventDefault();f[(i+(e.shiftKey?f.length-1:1))%f.length].focus()}});
-$("dcopy").addEventListener("click",async()=>{try{await navigator.clipboard.writeText(dtext);$("dcopy").textContent="已复制"}catch(_){$("dcopy").textContent="复制失败"}setTimeout(()=>{$("dcopy").textContent="复制"},1500)});
+$("dcopy").addEventListener("click",async()=>{try{await navigator.clipboard.writeText(dtext);$("dcopy").textContent="已复制";toast("已复制详情 JSON")}catch(_){$("dcopy").textContent="复制失败"}setTimeout(()=>{$("dcopy").textContent="复制"},1500)});
 
 // ---- loading
 function fail(e){if(e&&e.message!=="401")$("msg").textContent="加载失败："+e.message}
@@ -529,7 +749,7 @@ async function loadTrend(){const hourly=$("tmode").value==="hour",r=$("range").v
   await busy("st",async()=>{const s=await api("/usage/v1/summary?"+qs({range:hourly?"24h":days+"d",group:"account",bucket:hourly?"hour":"day",tz}));renderTrend(s.summary.buckets,hourly,days)})}
 function renderFp(f){const e=$("cfp");if(!f){e.textContent="";delete e.dataset.tt;return}
   const m=/^[^/]+\/(\S+)/.exec(f.user_agent||"");const learned=f.source==="learned";
-  e.textContent="· 内部请求 UA："+(f.originator||"")+" "+(m?m[1]:"")+(learned?"":"（默认）");
+  e.textContent="内部请求 UA："+(f.originator||"")+" "+(m?m[1]:"")+(learned?"":"（默认）");
   const t=learned&&f.learned_at_ms?"最近学习于 "+fmtTime(f.learned_at_ms)+"（"+ago(f.learned_at_ms)+"）"+(f.key?" · 密钥 "+f.key:""):"尚未从客户端学到，使用内置默认值";
   e.dataset.tt="ciallopa 自己发往上游的请求（刷新 token、额度、重置卡）使用的指纹\nUser-Agent: "+f.user_agent+"\noriginator: "+f.originator+"\n"+t;e.setAttribute("aria-label",e.dataset.tt)}
 async function loadAll(){$("msg").textContent="";api("/usage/v1/client-fingerprint").then(renderFp).catch(()=>renderFp(null));
@@ -550,6 +770,21 @@ let kt;$("fkey").addEventListener("input",()=>{clearTimeout(kt);kt=setTimeout(()
 function enter(){show(true);if(localStorage.getItem(AS)==="1"){$("auto").checked=true;startAuto()}loadAll()}
 $("lf").addEventListener("submit",async e=>{e.preventDefault();sessionStorage.setItem(KS,$("key").value);$("key").value="";
   try{await api("/usage/v1/summary?range=1m");enter()}catch(err){if(err.message!=="401")$("lerr").textContent=err.message}});
+// ---- filters: kept in the URL (shareable, survives reload); range / grouping also remembered in localStorage
+const FIDS=["range","group","tmode","facct","fkey","ftier","fsrc","fcode","ferr","fretry"],RF=FIDS.slice(3),FDEF={range:"24h",group:"account",tmode:"day"},FL="ciallopa_f_";
+function fval(id){const e=$(id);return e.type==="checkbox"?(e.checked?"1":""):e.value}
+function anyF(){return RF.some(id=>fval(id))}
+function saveF(){const u=new URLSearchParams();for(const id of FIDS){const v=fval(id);if(v&&v!==FDEF[id])u.set(id,v)}
+  history.replaceState(null,"",location.pathname+(u.toString()?"?"+u:""));for(const id in FDEF)localStorage.setItem(FL+id,$(id).value);$("fclear").classList.toggle("hide",!anyF())}
+function loadF(){const u=new URLSearchParams(location.search);
+  for(const id of FIDS){const e=$(id);let v=u.get(id);if(v===null&&FDEF[id])v=localStorage.getItem(FL+id);if(v===null)continue;
+    if(e.type==="checkbox")e.checked=v==="1";
+    else if(e.tagName==="SELECT"){if(id==="facct"&&v&&!Array.from(e.options).some(o=>o.value===v)){const o=el("option",null,v);o.value=v;e.appendChild(o)}if(Array.from(e.options).some(o=>o.value===v))e.value=v}
+    else e.value=v}
+  $("fclear").classList.toggle("hide",!anyF())}
+for(const id of FIDS)$(id).addEventListener("change",saveF);$("fkey").addEventListener("input",saveF);
+$("fclear").addEventListener("click",()=>{for(const id of RF){const e=$(id);if(e.type==="checkbox")e.checked=false;else e.value=""}saveF();loadRecords(false).catch(fail);$("facct").focus()});
+loadF();
 if(key())enter();else show(false);
 })();
 </script>
