@@ -135,7 +135,7 @@ records and summaries then carry `cost_usd` (null + `unknown_price` for unpriced
 Web pages: `GET /ui` overview (`/` redirects), `/ui/settings` and `/ui/accounts`
 (`[ui] enabled = true` by default). Each is a single static HTML file embedded in the binary (inline CSS/JS, no external resources) that asks
 for the access key (kept in `sessionStorage`, sent as `Authorization: Bearer`, never in the
-URL) and shows account quota cards, a summary table (24h/7d/30d, by account/key/instance/model),
+URL) and shows account quota cards (remaining % with a bar colored by remaining), a summary table (24h/7d/30d, by account/key/instance/model),
 a daily token/cost chart and recent requests. Strict CSP (`default-src 'none'`, script/style
 allowed by SHA-256 hash only, `connect-src 'self'`); all data rendered via `textContent`.
 Local demo with fake data: `cargo run --example ui_demo` → http://127.0.0.1:8399/ui

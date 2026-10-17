@@ -450,7 +450,7 @@ function renderCards(q){
   accts.sort((x,y)=>maxUsed(y)-maxUsed(x));
   for(const a of accts){
     const mu=maxUsed(a);
-    const c=el("div","card"+(mu>95?" w95":mu>80?" w80":""));const full=a.email?a.email+"（"+a.account+"）":a.account;const h=el("h3","trunc",a.email||a.account);h.title=full;c.appendChild(h);
+    const c=el("div","card"+(mu>80?" w95":mu>50?" w80":""));const full=a.email?a.email+"（"+a.account+"）":a.account;const h=el("h3","trunc",a.email||a.account);h.title=full;c.appendChild(h);
     const meta=el("div","meta");
     const qq=a.quota;
     meta.appendChild(el("span","badge",qq&&qq.plan?qq.plan:"未知套餐"));
@@ -464,10 +464,10 @@ function renderCards(q){
       if(!w||w.used_pct===null||w.used_pct===undefined)continue;
       const d=el("div","win");const hh=el("div","winh");
       hh.appendChild(el("span",null,winName(w.window_minutes)));
-      const left=Math.max(0,100-w.used_pct),cls=w.used_pct>95?"b":w.used_pct>80?"w":"";
+      const left=Math.max(0,100-w.used_pct),cls=left<20?"b":left<50?"w":"";
       const big=el("span","big "+cls,left.toFixed(0)+"%");big.title="剩余 "+left.toFixed(1)+"%（已用 "+w.used_pct.toFixed(1)+"%）";
       const r=el("span",null,"剩余 ");r.appendChild(big);hh.appendChild(r);d.appendChild(hh);
-      const b=el("div","bar"),i=el("i",cls);i.style.width=Math.min(100,Math.max(0,w.used_pct))+"%";b.appendChild(i);d.appendChild(b);
+      const b=el("div","bar"),i=el("i",cls);i.style.width=Math.min(100,left)+"%";b.appendChild(i);d.appendChild(b);
       const info=el("div","mut");
       info.appendChild(document.createTextNode("已用 "+w.used_pct.toFixed(0)+"% · "));
       if(w.resets_at){const rs=el("span",null,"重置 "+fmtDur(w.resets_at-Date.now()/1000)+"（"+fmtTime(w.resets_at*1000,true)+"）");rs.title=isoLocal(w.resets_at*1000);info.appendChild(rs)}

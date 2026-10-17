@@ -356,6 +356,9 @@ Page behavior:
   errors stay in a banner at the top of the page.
 - Below 720 px the request and account tables switch to one card per row; the settings page
   has a group index and a search box, and a floating bar with the pending-change count.
+- Quota cards show **remaining** percent (bar width = remaining). Color follows remaining:
+  green when ≥ 50%, yellow when < 50%, red when < 20%. The card top strip is yellow when
+  the account's max used percent is over 50%, and red when over 80%.
 
 ## Reset credits (重置卡)
 Manual only: nothing in ciallopa consumes a credit by itself (no failover / quota path calls it;
