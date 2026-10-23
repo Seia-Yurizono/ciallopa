@@ -1,0 +1,85 @@
+listen = "127.0.0.1:8317"
+# Plain strings may only forward requests; the management API (/admin/v1/*, /ui/settings,
+# /ui/accounts, reset-credit consume) needs a table entry with admin = true.
+api_keys = [{ label = "laptop", key = "sk-cpa-change-me-0123456789", admin = true }]
+upstream = "https://chatgpt.com/backend-api"
+auth_dir = "~/.ciallopa/auths"
+# Egress proxy for every outbound connection (Codex traffic, token refresh, usage polling,
+# price updates):
+# http://, socks5h:// (socks5:// is treated as socks5h://: the proxy resolves host names).
+# https:// works for HTTP requests only, not for WebSockets. Empty = direct.
+proxy_url = ""
+# Switch the proxy off without deleting the address (also a switch on /ui/settings).
+proxy_enabled = true
+# Outbound address family for direct connections and for reaching the proxy host.
+# false (default): IPv4 only. true: IPv6 as well, raced against IPv4 (Happy Eyeballs).
+# Behind a proxy, the proxy resolves and connects to the targets.
+ipv6 = false
+# Forwarded HTTP requests (through response EOF/drop) and whole WebSocket connections.
+# 0 disables rejection but keeps counting; hot lowering only rejects new requests.
+max_inflight_requests = 64
+# HTTP request body bytes, including uploads; restart required. No hidden minimum.
+max_body_mb = 16
+
+[routing]
+strategy = "round-robin"
+session_affinity = true
+session_affinity_ttl = "24h"
+session_affinity_subagents = true
+session_affinity_rebind_on = "quota"
+quota_avoid_threshold = 0.0   # 0 = off (default); error-driven cooldown + switch only. e.g. 0.95 to also avoid near-full accounts for new sessions
+# Every account cooling down and the first one recovers within this many seconds: hold the
+# request and route it once that account recovers (WebSocket handshakes are held up to 10 s).
+# Longer: answer at once. 0 = never hold. Max 120.
+cooldown_wait_secs = 20
+
+[usage]
+enabled = true
+path = "~/.ciallopa/usage.db"
+retention_days = 90   # default 90; 0 = keep forever (requests + error details)
+# Notional cost uses this price table. It is filled on request only: settings page, section
+# 「价格」, or `ciallopa prices sync --write`, from the dataset at prices_source.
+# prices = "~/.ciallopa/prices.toml"
+# prices_source = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
+
+[ui]
+enabled = true
+reset_credits_refresh_mins = 60   # read-only listing refresh; 0 = on demand only
+allow_reset_consume = false       # true = allow manually spending a 重置卡 (irreversible)
+allow_config_write = false        # true = allow settings / key / account changes from /ui/settings and /ui/accounts (file only)
+
+[upstream_opts]
+# HTTP preparation bounds (seconds): one attempt includes sending the request and waiting for
+# headers; the shared budget includes credentials, error-body reads and retry waits across all
+# account switches. Successful SSE bootstrap/generation is not charged to either bound.
+response_header_timeout_secs = 300
+preparation_timeout_secs = 600
+# Buffered HTTP errors: at most 1 MiB and 10 s total; /models: at most 8 MiB and 10 s.
+# Normal streams keep the separate stream_idle_timeout_secs (default 300), with no total limit.
+# Upstream 5xx: switch to another usable account (the client retries the same one). An account is
+# cooled only after 3 consecutive 5xx, for this many seconds (upstream Retry-After wins, max 60).
+# 0 = never cool.
+transient_cooldown_secs = 15
+# Overloaded / "at capacity" (in-stream or HTTP): replayed on another usable account while nothing
+# has reached the client. After this many consecutive ones an account is cooled for
+# overload_cooldown_secs, doubling per further cooldown up to overload_cooldown_max_secs; output
+# resets it. The last usable account is never cooled. overload_streak = 0 = never cool.
+overload_streak = 2
+overload_cooldown_secs = 120
+overload_cooldown_max_secs = 600
+# Upstream 402 / 404: switch to another usable account at once (HTTP and WS handshake). 0 = switch
+# without cooling. Shown on the accounts page as the cooldown reason.
+# 402 {"detail":{"code":"deactivated_workspace"}}: the account's ChatGPT workspace is gone.
+deactivated_cooldown_secs = 86400
+# Any other 402 (payment / billing problem).
+payment_required_cooldown_secs = 1800
+# 404 that does not say the model is unsupported (upstream Retry-After wins); only that model on that
+# account. A 404 that explicitly says the model is unsupported always cools the model for 12 h.
+not_found_cooldown_secs = 600
+# No other usable account and nothing sent yet: wait about this long (2/3–5/3 jitter; upstream
+# Retry-After honored up to 10 s) and retry once on the same account. 0 = off.
+overload_retry_wait_secs = 3
+# Per-account in-memory jar for ChatGPT infrastructure cookies (Cloudflare + __oailb only,
+# official Codex allowlist; https ChatGPT hosts only; never shared across accounts).
+# Client Cookie headers are never forwarded upstream and upstream Set-Cookie never reaches clients.
+cloudflare_cookies = false

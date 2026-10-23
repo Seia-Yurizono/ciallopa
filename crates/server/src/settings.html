@@ -1,0 +1,625 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
+<title>ciallopa 设置</title>
+<style>
+/* ==== shared:begin (identical in ui.html, accounts.html, settings.html) ==== */
+/* spacing: 4px base, only --s1..--s6. Colour is used only for state. */
+:root{color-scheme:light;
+--s1:4px;--s2:8px;--s3:12px;--s4:16px;--s5:24px;--s6:32px;--r1:4px;--r2:8px;
+--bg:#f3f4f6;--surface:#fff;--surface-2:#f8f9fa;--line:#e3e5e8;--line-2:#cdd1d6;
+--fg:#16181d;--fg-2:#3d424b;--mut:#5f6673;--faint:#6b7280;--bar:#e6e8eb;--ctl:#878d96;--scrim:rgba(10,12,16,.45);
+--ok:#15803d;--ok-bg:#e9f6ee;--cool:#b45309;--cool-bg:#fdf3e1;--err:#c2410c;--err-bg:#fdeee8;
+--proxy:#6d28d9;--proxy-bg:#f1ebfd;--off:#5f6673;--off-bg:#eef0f2;--focus:#2563eb;--danger:#c42b1c;
+--font:system-ui,-apple-system,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+--mono:ui-monospace,"SF Mono",Menlo,Consolas,"Noto Sans Mono CJK SC",monospace;
+--fs-xs:11px;--fs-s:12px;--fs-m:13px;--fs-l:15px;--hdr:48px;--tabbar:0px;--shadow:0 8px 24px rgba(0,0,0,.14)}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){color-scheme:dark;
+--bg:#0e1013;--surface:#16191e;--surface-2:#1b1f25;--line:#272b33;--line-2:#363b45;
+--fg:#e7e9ec;--fg-2:#c3c8cf;--mut:#a1a8b3;--faint:#858c97;--bar:#272c34;--ctl:#6a717c;--scrim:rgba(0,0,0,.6);
+--ok:#4ade80;--ok-bg:#12261a;--cool:#fbbf24;--cool-bg:#2a210c;--err:#fb7a55;--err-bg:#2c1712;
+--proxy:#b79cff;--proxy-bg:#221a38;--off:#a1a8b3;--off-bg:#20242a;--focus:#7aa2ff;--danger:#b4321f;--shadow:0 8px 28px rgba(0,0,0,.55)}}
+:root[data-theme=dark]{color-scheme:dark;
+--bg:#0e1013;--surface:#16191e;--surface-2:#1b1f25;--line:#272b33;--line-2:#363b45;
+--fg:#e7e9ec;--fg-2:#c3c8cf;--mut:#a1a8b3;--faint:#858c97;--bar:#272c34;--ctl:#6a717c;--scrim:rgba(0,0,0,.6);
+--ok:#4ade80;--ok-bg:#12261a;--cool:#fbbf24;--cool-bg:#2a210c;--err:#fb7a55;--err-bg:#2c1712;
+--proxy:#b79cff;--proxy-bg:#221a38;--off:#a1a8b3;--off-bg:#20242a;--focus:#7aa2ff;--danger:#b4321f;--shadow:0 8px 28px rgba(0,0,0,.55)}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:var(--fs-m)/1.45 var(--font);-webkit-font-smoothing:antialiased}
+a{color:var(--fg)}
+a.tag{text-decoration:none}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+code,.mono{font-family:var(--mono);font-size:var(--fs-s)}
+.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+.mut{color:var(--mut)}.faint{color:var(--faint)}
+.sm{font-size:var(--fs-s)}.xs{font-size:var(--fs-xs)}
+.trunc{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.hide{display:none!important}
+.sp{flex:1}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.skip{position:absolute;left:var(--s2);top:-48px;z-index:50;background:var(--fg);color:var(--surface);padding:var(--s1) var(--s3);border-radius:var(--r1)}
+.skip:focus{top:var(--s2)}
+.c-ok{color:var(--ok)}.c-cool{color:var(--cool)}.c-err{color:var(--err)}.c-proxy{color:var(--proxy)}.c-off{color:var(--off)}
+/* shell */
+header{position:sticky;top:0;z-index:30;height:var(--hdr);display:flex;align-items:center;gap:var(--s4);padding:0 var(--s5);background:var(--surface);border-bottom:1px solid var(--line)}
+.brand{font-weight:650;font-size:var(--fs-l);letter-spacing:.2px;white-space:nowrap}
+nav.tabs{display:flex;gap:var(--s1);height:100%}
+nav.tabs a{display:flex;align-items:center;padding:0 var(--s3);color:var(--mut);text-decoration:none;font-weight:550;border-bottom:2px solid transparent;margin-bottom:-1px;white-space:nowrap}
+nav.tabs a:hover{color:var(--fg)}
+nav.tabs a[aria-current]{color:var(--fg);border-bottom-color:var(--fg)}
+nav.tabs a .cnt{margin-left:var(--s1);font-size:var(--fs-xs);color:var(--faint);font-variant-numeric:tabular-nums}
+.hstat{display:flex;align-items:center;gap:var(--s3);font-size:var(--fs-s);color:var(--mut);white-space:nowrap;margin-left:auto}
+main{max-width:1440px;margin:0 auto;padding:var(--s5)}
+section{margin-bottom:var(--s6)}
+section:last-child{margin-bottom:0}
+.sh{display:flex;align-items:baseline;gap:var(--s2);margin-bottom:var(--s2);min-height:28px;flex-wrap:wrap}
+.sh h2{margin:0;font-size:var(--fs-l);font-weight:620}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--r2)}
+.tw{overflow-x:auto}
+.row{display:flex;align-items:center;gap:var(--s2);flex-wrap:wrap}
+.nw{flex-wrap:nowrap}
+/* controls */
+button,select,input,textarea{font:inherit;color:inherit}
+button,.btn{display:inline-flex;align-items:center;justify-content:center;gap:var(--s1);height:28px;padding:0 var(--s3);border:1px solid var(--line-2);border-radius:var(--r1);background:var(--surface);font-size:var(--fs-s);font-weight:550;cursor:pointer;white-space:nowrap;touch-action:manipulation;text-decoration:none;color:var(--fg)}
+button:hover,.btn:hover{background:var(--surface-2)}
+button:disabled{opacity:.45;cursor:not-allowed}
+button.xs,.btn.xs{height:24px;padding:0 var(--s2)}
+button.pri{background:var(--fg);border-color:var(--fg);color:var(--surface)}
+button.pri:hover{background:var(--fg-2)}
+button.ghost{border-color:transparent;background:transparent;color:var(--fg-2)}
+button.ghost:hover{background:var(--surface-2)}
+button.danger{color:var(--err);border-color:color-mix(in srgb,var(--err) 45%,transparent);background:transparent}
+button.danger:hover{background:var(--err-bg)}
+button.danger.solid{background:var(--danger);border-color:var(--danger);color:#fff}
+button.danger.solid:hover{background:color-mix(in srgb,var(--danger) 85%,#000)}
+button.armed{background:var(--cool-bg);border-color:var(--cool);color:var(--cool)}
+button.busy{opacity:.75;cursor:progress}
+button.busy:before{content:"";flex:none;width:10px;height:10px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+select,input:not([type=checkbox]),textarea{height:28px;padding:0 var(--s2);border:1px solid var(--ctl);border-radius:var(--r1);background:var(--surface);font-size:var(--fs-s);max-width:100%;min-width:0}
+textarea{height:auto;padding:var(--s2);font-family:var(--mono);width:100%;resize:vertical}
+input[type=number]{width:64px;text-align:right;font-variant-numeric:tabular-nums}
+input[type=checkbox]{width:14px;height:14px;margin:0;accent-color:var(--fg)}
+label.chk{display:inline-flex;align-items:center;gap:var(--s1);font-size:var(--fs-s);color:var(--fg-2);white-space:nowrap;cursor:pointer}
+.sw{appearance:none;-webkit-appearance:none;width:28px!important;height:16px!important;border-radius:8px;background:var(--ctl);position:relative;margin:0;cursor:pointer;flex:none}
+.sw:after{content:"";position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:#fff;transition:transform .15s}
+.sw:checked{background:var(--ok)}.sw:checked:after{transform:translateX(12px)}
+.sw:disabled{opacity:.5}
+/* state tags */
+.tag{display:inline-flex;align-items:center;gap:var(--s1);height:20px;padding:0 var(--s2);border-radius:var(--r1);font-size:var(--fs-xs);font-weight:600;white-space:nowrap;background:var(--off-bg);color:var(--fg-2)}
+.tag.dot:before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.tag.ok{background:var(--ok-bg);color:var(--ok)}.tag.cool{background:var(--cool-bg);color:var(--cool)}.tag.err{background:var(--err-bg);color:var(--err)}
+.tag.proxy{background:var(--proxy-bg);color:var(--proxy)}.tag.off{background:var(--off-bg);color:var(--off)}
+.tag.line{background:transparent;box-shadow:inset 0 0 0 1px var(--line-2);color:var(--mut)}
+.sdot{display:inline-block;width:8px;height:8px;border-radius:50%;flex:none;background:var(--off)}
+.sdot.ok{background:var(--ok)}.sdot.cool{background:var(--cool)}.sdot.err{background:var(--err)}.sdot.off{background:transparent;box-shadow:inset 0 0 0 2px var(--off)}
+/* quota bar: shows REMAINING */
+.q{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:var(--s2);min-width:0}
+.q .lb{font-size:var(--fs-xs);color:var(--mut);min-width:2em}
+.q .pc{font-size:var(--fs-s);font-weight:600;font-variant-numeric:tabular-nums;text-align:right;min-width:3.2em}
+.bar{height:6px;background:var(--bar);border-radius:3px;overflow:hidden;min-width:48px}
+.bar>i{display:block;height:100%;background:var(--ok);border-radius:3px}
+.bar>i.w{background:var(--cool)}.bar>i.b{background:var(--err)}
+.pc.w{color:var(--cool)}.pc.b{color:var(--err)}
+.q.stale .bar>i{opacity:.4}.q.stale .pc{color:var(--mut)}
+/* tables */
+table{border-collapse:collapse;width:100%;font-size:var(--fs-m)}
+th,td{padding:var(--s2) var(--s3);text-align:left;vertical-align:middle;border-bottom:1px solid var(--line)}
+thead th{font-size:var(--fs-xs);font-weight:600;color:var(--mut);background:var(--surface-2);white-space:nowrap}
+th[title]{text-decoration:underline dotted var(--line-2);text-underline-offset:3px;cursor:help}
+tbody tr:last-child>td{border-bottom:0}
+tbody tr:hover>td{background:var(--surface-2)}
+th.n,td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+tr.hl>td{background:color-mix(in srgb,var(--focus) 9%,var(--surface))!important}
+tr.hl>td:first-child{box-shadow:inset 2px 0 0 var(--focus)}
+.who{display:flex;flex-direction:column;min-width:0;max-width:240px}
+.who b{font-weight:600}
+.empty{padding:var(--s6) var(--s4);text-align:center;color:var(--mut)}
+.empty b{display:block;color:var(--fg-2);font-size:var(--fs-m);margin-bottom:var(--s1)}
+.skel{display:block;height:12px;margin:var(--s2) 0;border-radius:var(--r1);background:var(--bar);animation:sk 1.2s ease-in-out infinite alternate}
+@keyframes sk{from{opacity:.5}to{opacity:1}}
+[aria-busy=true] tbody{opacity:.6;transition:opacity .2s}
+/* banners, toasts */
+.banner{display:flex;gap:var(--s2);align-items:baseline;flex-wrap:wrap;padding:var(--s2) var(--s3);border-radius:var(--r2);margin-bottom:var(--s4);font-size:var(--fs-s);border:1px solid color-mix(in srgb,var(--cool) 30%,transparent);background:var(--cool-bg)}
+.banner b{white-space:nowrap}
+.banner.err{background:var(--err-bg);border-color:color-mix(in srgb,var(--err) 30%,transparent)}
+.banner.err b{color:var(--err)}.banner.cool b{color:var(--cool)}
+.banner:empty{display:none}
+#toasts{position:fixed;right:var(--s5);bottom:var(--s5);z-index:60;display:flex;flex-direction:column;gap:var(--s2);align-items:flex-end;pointer-events:none;max-width:calc(100vw - 2 * var(--s5))}
+.toast{pointer-events:auto;display:flex;gap:var(--s3);align-items:center;max-width:440px;min-height:36px;padding:var(--s2) var(--s3);border-radius:var(--r2);background:var(--fg);color:var(--surface);box-shadow:var(--shadow);font-size:var(--fs-m);white-space:pre-line;overflow-wrap:anywhere}
+.toast.err{background:var(--danger);color:#fff}
+.toast span{flex:1}
+.toast button{height:28px;border-color:color-mix(in srgb,var(--surface) 40%,transparent);background:transparent;color:inherit;font-weight:650}
+.toast.out{opacity:0;transition:opacity .25s}
+.toast button.x{width:28px;padding:0;border-color:transparent}
+/* dialogs (bottom sheet on phone) */
+.modal{position:fixed;inset:0;z-index:40;display:flex;align-items:flex-start;justify-content:center;padding:10vh var(--s4) var(--s4);background:var(--scrim)}
+.mbox{width:min(480px,100%);max-height:84vh;overflow:auto;background:var(--surface);border-radius:var(--r2);border:1px solid var(--line);padding:var(--s4);display:flex;flex-direction:column;gap:var(--s3)}
+.mbox.dz{border-top:3px solid var(--err)}
+.mbox.wide{width:min(880px,100%)}
+.mbox h3{margin:0;font-size:var(--fs-l);font-weight:650;overflow-wrap:anywhere}
+.mbox p{margin:0}
+.warnp{padding:var(--s2) var(--s3);border-radius:var(--r1);background:var(--err-bg)}
+.hintp{padding:var(--s2) var(--s3);border-radius:var(--r1);background:var(--cool-bg);color:var(--fg)}
+.hintp b{color:var(--cool)}
+.kv{display:grid;grid-template-columns:auto minmax(0,1fr);gap:var(--s1) var(--s3);font-size:var(--fs-s);margin:0}
+.kv dt{color:var(--mut)}.kv dd{margin:0;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.mact{display:flex;gap:var(--s2);justify-content:flex-end;flex-wrap:wrap}
+.mact .alt{margin-right:auto}
+.res{font-size:var(--fs-s);white-space:pre-wrap;overflow-wrap:anywhere}
+.res:not(:empty){padding:var(--s2) var(--s3);border-radius:var(--r1);background:var(--surface-2);border:1px solid var(--line)}
+/* login */
+#login{max-width:400px;margin:14vh auto 0;padding:var(--s5);background:var(--surface);border:1px solid var(--line);border-radius:var(--r2)}
+#login h1{font-size:var(--fs-l);margin:0 0 var(--s2)}
+#login form{display:flex;gap:var(--s2);margin-top:var(--s4)}
+#login input{flex:1;height:40px}
+#login button{height:40px}
+#lerr{margin-top:var(--s2);color:var(--err)}
+.m-only{display:none}
+@media (prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
+@media (max-width:760px){
+:root{--hdr:44px;--tabbar:52px}
+header{padding:0 var(--s3);gap:var(--s2)}
+nav.tabs{position:fixed;left:0;right:0;bottom:0;height:calc(var(--tabbar) + env(safe-area-inset-bottom));z-index:30;background:var(--surface);border-top:1px solid var(--line);gap:0;padding-bottom:env(safe-area-inset-bottom)}
+nav.tabs a{flex:1;justify-content:center;border-bottom:0;border-top:2px solid transparent;margin:0;font-size:var(--fs-m)}
+nav.tabs a[aria-current]{border-top-color:var(--fg)}
+.hstat{gap:var(--s2)}
+main{padding:var(--s3) var(--s3) calc(var(--tabbar) + var(--s5))}
+section{margin-bottom:var(--s5)}
+.d-only{display:none!important}.m-only{display:revert}
+#toasts{left:var(--s3);right:var(--s3);bottom:calc(var(--tabbar) + var(--s2));align-items:stretch;max-width:none}.toast{max-width:none}
+.modal{align-items:flex-end;padding:var(--s3) var(--s3) calc(var(--s3) + env(safe-area-inset-bottom))}
+select,input:not([type=checkbox]),textarea{font-size:16px}select,input:not([type=checkbox]){height:40px}
+.toast button{height:40px}.toast button.x{width:40px}
+#rmore,#devbtn,#imf button,#kf button,#pcheck{height:40px}
+.mbox{max-height:88vh}
+.mact button{flex:1;height:44px;font-size:var(--fs-m)}
+.mact .alt{margin-right:0;flex-basis:100%}
+/* stacked lists: table rows become 2-3 line items */
+table.stk,table.stk tbody{display:block}
+table.stk thead{display:none}
+table.stk tr{display:grid;gap:var(--s1) var(--s2);padding:var(--s2) var(--s3);border-bottom:1px solid var(--line)}
+table.stk tbody tr:last-child{border-bottom:0}
+table.stk td{display:block;padding:0;border:0;min-width:0}
+table.stk tbody tr:hover>td{background:none}
+table.stk tr.hl{background:color-mix(in srgb,var(--focus) 9%,var(--surface));box-shadow:inset 2px 0 0 var(--focus)}
+table.stk tr.hl>td{background:none!important;box-shadow:none!important}
+}
+@media (pointer:coarse){
+header button,header a.tag,.cchip,label.chk,.toc a,.pop .pf a,.pop button,#acc .stack button,#acc .meta-c button,.sh button,.ptest button,#reload,#mstrip button,.banner a{position:relative}
+header button:after,header a.tag:after,.cchip:after,label.chk:after,.toc a:after,.pop .pf a:after,.pop button:after,#acc .stack button:after,#acc .meta-c button:after,.sh button:after,.ptest button:after,#reload:after,#mstrip button:after,.banner a:after{content:"";position:absolute;left:-2px;right:-2px;top:50%;height:44px;transform:translateY(-50%)}
+}
+main.noadm>:not(#noadm){display:none!important}
+#noadm{display:flex;flex-direction:column;gap:var(--s2);align-items:center;margin-top:var(--s6)}
+/* ==== shared:end ==== */
+/* settings */
+.slay{display:grid;grid-template-columns:168px minmax(0,1fr);gap:var(--s5);align-items:start;margin-top:var(--s2)}
+.toc{position:sticky;top:calc(var(--hdr) + var(--s5));display:flex;flex-direction:column;gap:var(--s1)}
+.toc a{display:flex;justify-content:space-between;gap:var(--s2);padding:var(--s1) var(--s2);border-radius:var(--r1);color:var(--fg-2);text-decoration:none;font-size:var(--fs-s)}
+.toc a:hover{background:var(--surface)}
+.toc a span{color:var(--mut);font-variant-numeric:tabular-nums}
+.sbar{display:flex;gap:var(--s2);align-items:center;flex-wrap:wrap;padding:var(--s2) var(--s3);border-bottom:1px solid var(--line)}
+.sbar input{flex:1 1 200px;max-width:320px}
+#hint:not(:empty){padding:var(--s2) var(--s3) 0}
+#cfg tr.sgrp th{background:var(--surface-2);font-size:var(--fs-s);color:var(--fg-2);font-weight:650;text-align:left;scroll-margin-top:calc(var(--hdr) + var(--s4))}
+#cfg td{vertical-align:top}
+#cfg td.k{width:44%}
+#cfg td.k b{display:block;font-weight:550}
+#cfg td.k code{font-size:var(--fs-xs);color:var(--mut);overflow-wrap:anywhere}
+#cfg td.e{width:72px;text-align:right}
+#cfg td.v .mono{overflow-wrap:anywhere}
+#cfg td.v .xs{margin-top:var(--s1)}
+#cfg [aria-invalid=true]{border-color:var(--err)}
+#cfg td.v input:not([type=checkbox]),#cfg td.v select{width:min(280px,100%)}
+#cfg td.v input[type=number]{width:140px}
+#cfg tr.chg>td{background:var(--surface-2)}#cfg tr.chg>td:first-child{box-shadow:inset 2px 0 0 var(--fg)}
+#cfg .chg:not(tr){border-color:var(--fg)}
+.diffv{color:var(--cool)}
+.ptest{display:flex;gap:var(--s2);align-items:center;flex-wrap:wrap;margin-top:var(--s1)}
+.editbar{position:sticky;bottom:var(--s4);z-index:20;display:flex;gap:var(--s2);align-items:center;margin:var(--s3) auto 0;max-width:480px;padding:var(--s2) var(--s3);border-radius:var(--r2);background:var(--fg);color:var(--surface);box-shadow:var(--shadow)}
+.editbar span{flex:1;font-weight:600}
+.editbar button{border-color:color-mix(in srgb,var(--surface) 40%,transparent);background:transparent;color:inherit}
+.editbar button.pri{background:var(--surface);color:var(--fg)}
+.editbar button.armed{background:var(--cool-bg);border-color:var(--cool);color:var(--cool)}
+.pad{padding:var(--s2) var(--s3)}
+#keys td:last-child{text-align:right}
+.newkey{margin:0 var(--s3) var(--s3);padding:var(--s2) var(--s3);border:1px solid color-mix(in srgb,var(--ok) 40%,transparent);background:var(--ok-bg);border-radius:var(--r1);display:flex;flex-wrap:wrap;gap:var(--s2);align-items:center}
+.newkey>div{flex-basis:100%;font-size:var(--fs-s)}
+#nkv{padding:var(--s1) var(--s2);border-radius:var(--r1);background:var(--surface);border:1px solid var(--line);overflow-wrap:anywhere;flex:1 1 260px}
+.kf{border-bottom:0;border-top:1px solid var(--line)}
+#audit td{font-size:var(--fs-s)}
+#audit td.c{overflow-wrap:anywhere}
+.mbox table{font-size:var(--fs-s);border:1px solid var(--line)}
+.mbox ul{margin:0;padding-left:var(--s5);font-size:var(--fs-s)}
+#dlgc{display:flex;flex-direction:column;gap:var(--s2)}
+@media (max-width:760px){
+.slay{grid-template-columns:minmax(0,1fr);gap:var(--s3)}
+.toc{position:static;flex-direction:row;overflow-x:auto;gap:var(--s1);padding-bottom:var(--s1)}
+.toc a{flex:none;background:var(--surface);border:1px solid var(--line)}
+#cfg tr{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"k e" "v v"}
+#cfg tr.sgrp{display:block;padding:var(--s2) var(--s3);background:var(--surface-2)}
+#cfg tr.sgrp th{display:block;padding:0;border:0;background:none}
+#cfg td.k{grid-area:k;width:auto}#cfg td.v{grid-area:v}#cfg td.e{grid-area:e;width:auto}
+#cfg td.v input:not([type=checkbox]),#cfg td.v select{width:100%}
+#cfg tr.chg{background:var(--surface-2);box-shadow:inset 2px 0 0 var(--fg)}
+#cfg tr.chg>td,#cfg tr.chg>td:first-child{background:none;box-shadow:none}
+#keys tr{grid-template-columns:minmax(0,1fr) auto}
+#keys td:nth-child(2){grid-row:2}#keys td:last-child{grid-row:1/3;grid-column:2;align-self:center}
+#keys td:last-child button{height:40px}
+#audit tr{grid-template-columns:auto minmax(0,1fr)}
+#audit td.c{grid-column:1/-1}
+.editbar{bottom:calc(var(--tabbar) + var(--s3))}
+.editbar button{height:36px}
+}
+</style>
+</head>
+<body>
+<div id="login" class="hide">
+  <h1>ciallopa 管理面板</h1>
+  <div class="mut sm">请输入访问密钥（与代理的 API key 相同）。只保存在本标签页的 sessionStorage 中，三个页面共用，关闭标签页即清除。</div>
+  <form id="lf"><input id="key" type="password" autocomplete="current-password" placeholder="sk-..." required aria-label="访问密钥"><button class="pri" type="submit">进入</button></form>
+  <div id="lerr" class="sm" role="alert"></div>
+</div>
+<div id="app" class="hide">
+<header><a class="skip" href="#main">跳到主要内容</a>
+  <span class="brand">ciallopa</span>
+  <nav class="tabs" aria-label="页面"><a href="/ui" data-p="overview">概览</a><a href="/ui/accounts" data-p="accounts">账号<span class="cnt"></span></a><a href="/ui/settings" data-p="settings" aria-current="page">设置</a></nav>
+  <div class="hstat"><a id="egress" class="hide" href="/ui/settings#g-upstream_opts"></a><span id="upd" class="d-only"></span>
+  <button id="refresh" class="xs" type="button" title="立即刷新">刷新</button><button id="theme" class="xs ghost" type="button"></button><button id="logout" class="xs ghost" type="button" title="清除本标签页保存的密钥（三个页面共用）">退出</button></div>
+</header>
+<main id="main" tabindex="-1">
+  <div class="sh"><span id="mode" class="tag"></span><span class="mono mut trunc" id="meta"></span><span class="sp"></span><span class="xs mut d-only" id="lastr"></span><button id="reload" class="xs" type="button" title="重新读取配置文件并应用（文件变化会自动应用，这里用于手动触发）">重新加载配置文件</button></div>
+  <div id="ferr" class="banner err hide" role="alert"></div>
+  <div id="msg" class="banner err" role="alert"></div>
+  <div id="draft" class="banner cool hide" role="status"></div>
+  <div id="pend" class="banner cool hide" role="status"></div>
+  <div id="phint" class="banner cool hide" role="status"></div>
+  <div class="slay">
+  <nav class="toc" id="toc" aria-label="设置分组"></nav>
+  <div>
+  <section>
+    <div class="panel">
+      <div class="sbar"><input id="q" type="search" placeholder="搜索设置项（名称或键名）" aria-label="搜索设置项"><span class="sp"></span><span class="xs mut row"><span class="faint">热更新</span>无需重启 <span class="tag cool">需重启</span>重启后才生效</span></div>
+      <div class="mut sm" id="hint"></div>
+      <div class="tw"><table class="stk" id="cfg"><tbody id="rows"><tr><td><span class="skel"></span><span class="skel"></span><span class="skel"></span></td></tr></tbody></table></div>
+      <div id="qnone" class="empty hide"><b>没有匹配的设置项</b>换个关键词试试</div>
+    </div>
+    <div class="editbar hide" id="editbar" role="region" aria-label="未保存的改动"><span id="nchg"></span><button id="discard" type="button">放弃并载入最新</button><button id="check" class="pri" type="button">检查并保存</button></div>
+  </section>
+  <section id="keysec">
+    <div class="sh"><h2>客户端密钥</h2><span class="mut sm">只显示标签和末 4 位；新密钥只显示一次</span></div>
+    <div class="panel">
+      <div class="mut sm pad">新密钥由服务端生成，默认只能转发和查看用量，不能管理。要开通管理权限，请在配置文件对应的 [[api_keys]] 条目里加上 admin = true。</div>
+      <div class="tw"><table class="stk" id="keys"><thead><tr><th scope="col">标签</th><th scope="col">密钥</th><th scope="col"><span class="hide">操作</span></th></tr></thead><tbody id="krows"></tbody></table></div>
+      <div id="newkey" class="newkey hide" role="status"><div>新密钥（只显示这一次，请立即保存；默认非管理员，管理权限需在配置文件中设置 admin = true）：</div><code id="nkv"></code><button id="nkc" class="xs" type="button">复制</button><button id="nkx" class="xs pri" type="button">我已保存</button></div>
+      <form id="kf" class="sbar kf hide"><input id="klabel" placeholder="新密钥标签，如 phone" maxlength="64" required aria-label="新密钥标签"><button class="pri" type="submit">生成新密钥</button></form>
+    </div>
+  </section>
+  <section id="prices">
+    <div class="sh"><h2>价格</h2><span class="mut sm">按 API 标价估算费用（不是实际扣费）；只在点「检查更新」时联网</span></div>
+    <div class="panel">
+      <div class="sbar"><span class="sm" id="pinfo"><span class="skel"></span></span><span class="sp"></span><button id="pcheck" class="pri" type="button">检查更新</button></div>
+      <div class="mut sm pad" id="pnote"></div>
+    </div>
+  </section>
+  <section>
+    <div class="sh"><h2>变更记录</h2><span class="mut sm">最近 20 条</span></div>
+    <div class="panel"><div class="tw"><table class="stk" id="audit"><thead><tr><th scope="col">时间</th><th scope="col">操作者</th><th scope="col">操作</th><th scope="col">内容</th></tr></thead><tbody id="arows"></tbody></table></div></div>
+  </section>
+  </div></div>
+</main>
+<div id="dlg" class="modal hide" role="dialog" aria-modal="true" aria-labelledby="dlgt"><div class="mbox" id="dlgb">
+  <h3 id="dlgt"></h3><div id="dlgc" class="sm"></div>
+  <div class="mact"><button id="dno" type="button">取消</button><button id="dyes" class="pri" type="button">确认</button></div>
+</div></div>
+</div>
+<div id="toasts" aria-live="polite"></div>
+<script>
+"use strict";
+(function(){
+/* ==== shared:begin (identical in ui.html, accounts.html, settings.html) ==== */
+const $=id=>document.getElementById(id);
+const KS="ciallopa_key",TH="ciallopa_theme";
+// All dynamic text goes through textContent / createTextNode: never parsed as HTML.
+function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined&&text!==null)e.textContent=String(text);return e}
+function h(tag,a,...kids){const e=document.createElement(tag);
+  if(typeof a==="string")e.className=a;
+  else if(a)for(const k in a){const v=a[k];if(v===null||v===undefined||v===false)continue;
+    if(k==="class")e.className=v;else if(k==="text")e.textContent=String(v);else if(k.startsWith("on"))e.addEventListener(k.slice(2),v);else e.setAttribute(k,v===true?"":String(v))}
+  add(e,kids);return e}
+function add(e,kids){for(const k of kids){if(k===null||k===undefined||k===false)continue;if(Array.isArray(k))add(e,k);else e.appendChild(typeof k==="object"?k:document.createTextNode(String(k)))}return e}
+function clear(e){while(e.firstChild)e.removeChild(e.firstChild)}
+// ---- formats
+const NF=new Intl.NumberFormat("zh-CN");
+const p2=x=>String(x).padStart(2,"0");
+function exact(n){return n===null||n===undefined?"":NF.format(n)}
+function fmtN(n){if(n===null||n===undefined)return"–";n=Number(n);const a=Math.abs(n);if(a>=1e9)return(n/1e9).toFixed(2)+"B";if(a>=1e6)return(n/1e6).toFixed(2)+"M";if(a>=1e3)return(n/1e3).toFixed(1)+"k";return String(Math.round(n))}
+function fmtMs(n){return n===null||n===undefined?"–":(n>=1000?(n/1e3).toFixed(n>=1e4?1:2)+" s":Math.round(n)+" ms")}
+function fmtUsd(c){if(c===null||c===undefined)return"–";if(c===0)return"$0.00";if(c<0.01)return"<$0.01";return"$"+c.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})}
+function exactUsd(c){return c===null||c===undefined?"":"$"+c.toFixed(6)}
+function tzOff(d){const o=-d.getTimezoneOffset(),a=Math.abs(o);return"UTC"+(o>=0?"+":"-")+p2(Math.floor(a/60))+":"+p2(a%60)}
+function isoLocal(ms){const d=new Date(ms);return d.getFullYear()+"-"+p2(d.getMonth()+1)+"-"+p2(d.getDate())+"T"+p2(d.getHours())+":"+p2(d.getMinutes())+":"+p2(d.getSeconds())+tzOff(d).slice(3)}
+function fmtTime(ms,noSec){const d=new Date(ms);return(d.getFullYear()!==new Date().getFullYear()?d.getFullYear()+"-":"")+p2(d.getMonth()+1)+"-"+p2(d.getDate())+" "+p2(d.getHours())+":"+p2(d.getMinutes())+(noSec?"":":"+p2(d.getSeconds()))}
+function hms(d){return p2(d.getHours())+":"+p2(d.getMinutes())+":"+p2(d.getSeconds())}
+// Compact countdown: 3天9时 / 1时06分 / 4分12秒.
+function dur(s){if(s<=0)return"已到期";const d=Math.floor(s/86400),hh=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return d?d+"天"+hh+"时":hh?hh+"时"+p2(m)+"分":m+"分"+p2(Math.floor(s%60))+"秒"}
+function ago(ms){const s=Math.max(0,(Date.now()-ms)/1000);if(s<60)return"刚刚";if(s<3600)return Math.floor(s/60)+" 分钟前";if(s<86400)return Math.floor(s/3600)+" 小时前";return Math.floor(s/86400)+" 天前"}
+// Elements carrying data-until (unix ms) show a live countdown.
+setInterval(()=>{for(const e of document.querySelectorAll("[data-until]"))e.textContent=(e.dataset.pre||"")+dur((Number(e.dataset.until)-Date.now())/1000)},1000);
+// ---- access key (sessionStorage of this tab, shared by all three pages) and API calls
+function key(){return sessionStorage.getItem(KS)||""}
+function adminMsg(j){return j&&j.error&&j.error.type==="admin_required"?"当前密钥没有管理权限。请用带 admin = true 的密钥登录，或在配置文件的 [[api_keys]] 里给该密钥加上 admin = true。":null}
+// o.timeout (ms): abort a request that gets no answer (the error then has kind "timeout").
+async function req(method,path,body,extra,o){
+  const auth=key(),hd={"Authorization":"Bearer "+auth};if(body!==undefined)hd["Content-Type"]="application/json";Object.assign(hd,extra||{});
+  const ac=o&&o.timeout?new AbortController():null,tm=ac?setTimeout(()=>ac.abort(),o.timeout):null;let r;
+  try{r=await fetch(path,{method,headers:hd,body:body===undefined?undefined:JSON.stringify(body),cache:"no-store",credentials:"omit",referrerPolicy:"no-referrer",signal:ac?ac.signal:undefined})}
+  catch(e){const x=new Error(ac&&ac.signal.aborted?"请求超时（"+Math.round(o.timeout/1000)+" 秒内没有响应）":"网络错误，连不上 ciallopa（"+e.message+"）");x.kind=ac&&ac.signal.aborted?"timeout":"network";throw x}
+  finally{clearTimeout(tm)}
+  if(r.status===401){if(key()===auth){sessionStorage.removeItem(KS);showApp(false,"密钥无效或已过期")}throw new Error("401")}
+  let j=null;try{j=await r.json()}catch(_){}
+  if(key()===auth&&r.status===403&&j&&j.error&&j.error.type==="admin_required")NOADMIN=true;
+  if(!r.ok){const e=new Error(adminMsg(j)||(j&&j.error&&j.error.message)||(path.split("?")[0]+" → HTTP "+r.status));e.status=r.status;e.body=j;throw e}
+  return {j,r}}
+async function get(p){return (await req("GET",p)).j}
+async function post(p,b){return (await req("POST",p,b||{})).j}
+// Reason of a failed call for a toast: timeout / network as such, HTTP errors with their status.
+function why(e){if(!e)return"未知错误";if(e.kind||!e.status)return e.message||String(e);return"HTTP "+e.status+" · "+e.message}
+// A button action: busy state (spinner, optional label) while it runs; a failure becomes an error
+// toast "<name>失败：<reason>". Returns false on failure. Calls pass `T` for a 45 s timeout.
+const T={timeout:45000};
+// Per-account result of an active quota query (刷新额度) → short reason.
+// Quota windows by length: up to a day → short column (5 小时), longer → long column (周, or the
+// free plan's single 30 天 window). Without window_minutes the slot decides (primary short).
+function wlab(m,d){if(!m)return d;if(m===300)return"5h";if(m===10080)return"周";if(m>=1440)return Math.round(m/1440)+" 天";if(m>=60)return Math.round(m/60)+"h";return m+" 分"}
+function wslots(q){const o={s:null,l:null};if(!q)return o;
+  for(const [w,d,k] of [[q.primary,"5h","s"],[q.secondary,"周","l"]]){if(!w||w.used_pct===null||w.used_pct===undefined)continue;
+    let s=w.window_minutes?(w.window_minutes>1440?"l":"s"):k;if(o[s])s=s==="s"?"l":"s";if(!o[s])o[s]=[wlab(w.window_minutes,d),w,s]}return o}
+function whead(labels,def){const L=[...new Set(labels.map(x=>x==="5h"?"5 小时":x))];return(L.length?L.join(" / "):def)+"剩余"}
+// 刷新额度 answered "asked moments ago": neutral, not a failure.
+const qskip=r=>!r.ok&&r.error&&r.error.kind==="rate_limited";
+function qsummary(j){const sk=j.skipped!==undefined?j.skipped:j.results.filter(qskip).length,p=[];if(j.ok)p.push("已刷新 "+j.ok+" 个账号的额度");if(sk)p.push(sk+" 个 30 秒内刚查询过，已跳过");return p.join("，")||"没有可刷新的账号"}
+function qerr(e){e=e||{};const m=e.message||"";return{rate_limited:"刚查询过，"+(e.retry_after_s||30)+" 秒后再试",http:"上游 HTTP "+e.status+(m?" · "+m:""),network:"连不上上游（"+m.replace(/^send: /,"")+"）",timeout:"上游 5 秒内没有响应",credentials:"获取令牌失败（"+m.replace(/^credentials: /,"")+"）",token_invalid:"令牌失效，需要重新登录",decode:"上游返回里没有额度数据"}[e.kind]||m||"未知错误"}
+// The button stays focusable while busy (aria-disabled), so keyboard focus is not dropped.
+async function busyRun(b,name,f,label){if(b.disabled||b._busy)return false;const t=b.textContent;b._busy=true;b.classList.add("busy");b.setAttribute("aria-disabled","true");b.setAttribute("aria-busy","true");if(label)b.textContent=label;
+  try{await f();return true}catch(e){if(e&&e.message!=="401")toast(name+(/[\w)]$/.test(name)?" ":"")+"失败："+why(e),{kind:"err"});return false}
+  finally{b._busy=false;b.classList.remove("busy");b.removeAttribute("aria-disabled");b.removeAttribute("aria-busy");if(label&&b.isConnected)b.textContent=t}}
+// set once the server says this key is not an admin: the overview then skips admin-only calls
+let onLogout=()=>{},NOADMIN=false;
+function showApp(on,err){$("app").classList.toggle("hide",!on);if(on){$("main").classList.remove("noadm");const n=$("noadm");if(n)n.remove()}else NOADMIN=false;$("login").classList.toggle("hide",on);$("lerr").textContent=err||"";if(!on){closeAllModals();onLogout()}}
+function login(verify,enter){
+  $("lf").addEventListener("submit",async e=>{e.preventDefault();sessionStorage.setItem(KS,$("key").value);$("key").value="";
+    try{await verify();showApp(true);enter()}catch(err){if(err.message!=="401")$("lerr").textContent=err.message}});
+  $("logout").addEventListener("click",()=>{sessionStorage.removeItem(KS);showApp(false)});
+  if(key()){showApp(true);enter()}else showApp(false)}
+// ---- theme (跟随系统 / 浅色 / 深色), remembered in this browser only
+function applyTheme(t){const r=document.documentElement;if(t==="light"||t==="dark")r.dataset.theme=t;else delete r.dataset.theme;
+  const n={light:"浅色",dark:"深色"}[t]||"跟随系统",b=$("theme");b.textContent={light:"☀",dark:"☾"}[t]||"◐";b.title="主题："+n+"（点击切换）";b.setAttribute("aria-label","切换主题，当前："+n)}
+applyTheme(localStorage.getItem(TH));
+$("theme").addEventListener("click",()=>{const c=localStorage.getItem(TH),n=c==="light"?"dark":c==="dark"?"":"light";if(n)localStorage.setItem(TH,n);else localStorage.removeItem(TH);applyTheme(n);toast("主题："+({light:"浅色",dark:"深色"}[n]||"跟随系统"))});
+// ---- toasts; o.undo adds 撤销 (10 s). Errors are alerts with a close button (10 s). The timer
+// pauses while the toast is hovered, touched or holds keyboard focus, and while the tab is hidden.
+function toast(t,o){o=o||{};const err=o.kind==="err",d=h("div",{class:"toast"+(o.kind?" "+o.kind:""),role:err?"alert":null},h("span",null,t));let tm=null,ptr=false,foc=false;
+  const bye=()=>{clearTimeout(tm);d.classList.add("out");setTimeout(()=>d.remove(),300)};
+  const arm=()=>{clearTimeout(tm);if(ptr||foc)return;tm=setTimeout(()=>{if(document.hidden)arm();else bye()},o.undo||err?10000:4000)};
+  if(o.undo){const b=h("button",{type:"button"},"撤销");b.addEventListener("click",async()=>{b.disabled=true;bye();try{await o.undo()}catch(e){toast("撤销失败："+e.message,{kind:"err"})}});d.appendChild(b)}
+  if(err){const x=h("button",{type:"button",class:"x","aria-label":"关闭"},"✕");x.addEventListener("click",bye);d.appendChild(x)}
+  for(const [ev,v] of [["pointerenter",true],["pointerdown",true],["pointerleave",false],["pointerup",false]])d.addEventListener(ev,()=>{ptr=v;arm()});
+  d.addEventListener("focusin",()=>{foc=true;arm()});d.addEventListener("focusout",e=>{if(!d.contains(e.relatedTarget)){foc=false;arm()}});
+  $("toasts").appendChild(d);arm();return d}
+// An error shown in a page banner that is scrolled out of view is repeated as an error toast.
+function inView(e){const r=e.getBoundingClientRect();return r.height>0&&r.bottom>0&&r.top<innerHeight}
+// ---- re-rendered lists: the last focused control carrying data-fk gets focus back after a render
+// that replaced it (row actions, settings fields). A pointer press elsewhere forgets it.
+let FK=null;
+document.addEventListener("focusin",e=>{const t=e.target.closest&&e.target.closest("[data-fk]");if(t)FK=t.dataset.fk;else if(!e.target.closest||!e.target.closest("#toasts"))FK=null});
+document.addEventListener("pointerdown",e=>{if(!e.target.closest||!e.target.closest("[data-fk],#toasts"))FK=null},true);
+function refocus(){if(!FK)return;const a=document.activeElement;if(a&&a!==document.body&&a.isConnected)return;
+  const t=document.querySelector('[data-fk="'+CSS.escape(FK)+'"]');if(t&&t.offsetParent!==null)t.focus({preventScroll:true})}
+// ---- steady re-render: f() replaces the children of `boxes`. Focus inside them is released
+// first (removing a focused node makes the browser lay out the half-empty page and commit a
+// clamped scroll), and the focused control, or else the row nearest the top of the view, keeps
+// its viewport position. Anchors carry data-fk, data-ak or data-acc, stable across renders.
+const ANK=["data-fk","data-ak","data-acc"],ANS=ANK.map(a=>"["+a+"]").join(",");
+function ankSel(e){for(const a of ANK)if(e.hasAttribute(a))return"["+a+'="'+CSS.escape(e.getAttribute(a))+'"]';return null}
+function ankPick(){const a=document.activeElement,hb=document.querySelector("header").getBoundingClientRect().bottom,vis=e=>{const r=e.getBoundingClientRect();return r.height>0&&r.bottom>hb&&r.top<innerHeight};
+  if(a&&a!==document.body&&a.closest){const e=a.closest(ANS);if(e&&vis(e))return e}
+  for(const f of [.5,.25,.75])for(let y=hb+8;y<innerHeight;y+=48){const e=document.elementFromPoint(innerWidth*f,y),t=e&&e.closest&&e.closest(ANS);if(t&&vis(t))return t}
+  return null}
+function steady(boxes,f){const a=document.activeElement;if(a&&a!==document.body&&boxes.some(b=>b&&b.contains(a)))a.blur();
+  const e=ankPick(),sel=e&&ankSel(e),top=e?e.getBoundingClientRect().top:0;f();
+  const n=sel&&document.querySelector(sel);if(n&&n.getBoundingClientRect().height>0){const d=n.getBoundingClientRect().top-top;if(Math.abs(d)>=1)scrollBy(0,d)}}
+// ---- dialogs: focus goes to 取消, Esc / backdrop close, Tab trapped, focus returns to the opener.
+// A [data-arm] button ignores clicks for its first 400 ms (no double tap through the opener).
+const MODALS=[];
+function openModal(m,focus,opener){if(!m.classList.contains("hide"))return;m.classList.remove("hide");m._opener=opener||document.activeElement;m._at=Date.now();MODALS.push(m);(focus||m.querySelector("button")).focus()}
+function closeModal(m){if(m.classList.contains("hide"))return;m.classList.add("hide");const i=MODALS.indexOf(m);if(i>=0)MODALS.splice(i,1);const o=m._opener;m._opener=null;if(m._onclose)m._onclose();if(o&&document.contains(o))o.focus({preventScroll:true})}
+function closeAllModals(){for(const m of MODALS.slice().reverse())closeModal(m)}
+document.addEventListener("keydown",e=>{const m=MODALS[MODALS.length-1];if(!m)return;
+  if(e.key==="Escape"){e.preventDefault();closeModal(m);return}
+  if(e.key!=="Tab")return;const f=Array.from(m.querySelectorAll("button,a[href],input,select,textarea,[tabindex]:not([tabindex='-1'])")).filter(x=>!x.disabled&&x.offsetParent!==null);if(!f.length)return;
+  const i=f.indexOf(document.activeElement);e.preventDefault();f[i<0?(e.shiftKey?f.length-1:0):(i+(e.shiftKey?f.length-1:1))%f.length].focus()});
+document.addEventListener("click",e=>{const b=e.target.closest&&e.target.closest("[data-arm]");if(!b)return;const m=b.closest(".modal");if(m&&Date.now()-m._at<400){e.preventDefault();e.stopImmediatePropagation()}},true);
+document.addEventListener("click",e=>{const m=MODALS[MODALS.length-1];if(m&&e.target===m)closeModal(m)});
+// ---- inline click-again: the first click turns the button into `label` for 3 s (armed after
+// 300 ms); a second click runs `act`; timeout, blur or Esc reverts.
+function disarm(b){if(!b._armed)return;clearTimeout(b._t);b._armed=0;b.textContent=b._orig;b.classList.remove("armed")}
+function clickAgain(b,label,act){if(b._armed){if(Date.now()-b._armed<300)return;disarm(b);return act()}
+  b._orig=b.textContent;b._armed=Date.now();b.textContent=label;b.classList.add("armed");b._t=setTimeout(()=>disarm(b),3000);
+  b.addEventListener("blur",()=>disarm(b),{once:true})}
+document.addEventListener("keydown",e=>{if(e.key==="Escape"&&document.activeElement&&document.activeElement._armed)disarm(document.activeElement)});
+// ---- shell: account count on the 账号 tab, egress tag in the header (admin keys only)
+function setTabCount(n){const c=document.querySelector("nav.tabs a[data-p=accounts] .cnt");if(c)c.textContent=n===null||n===undefined?"":String(n)}
+async function egressTag(cfg){const t=$("egress");try{if(!cfg&&NOADMIN)throw new Error("admin");const c=cfg||await get("/admin/v1/config"),eg=Object.assign({},c.egress||{},{runtime:c.runtime});
+  if(eg.direct){t.className="tag line";t.textContent="直连";t.title="出口：直连（未使用出口代理）· 点击查看出口设置";return eg}
+  let n=0;try{const since=Date.now()-36e5;for(const code of ["proxy_connect","proxy_timeout"])n+=(await get("/usage/v1/records?limit=1&from="+since+"&error="+code)).total||0}catch(_){}
+  t.className="tag proxy dot";t.textContent=n?"代理 · "+n+" 错误":"代理";t.title="出口："+eg.proxy+(n?"；近 1 小时 "+n+" 次代理错误":"；近 1 小时没有代理错误")+" · 点击查看出口设置";return eg}
+  catch(_){t.className="hide";return null}}
+// Accounts / settings need an admin key. A usage-only key (e.g. carried over from the overview in
+// this tab) gets a plain explanation instead of a half-loaded page.
+function needAdmin(e){if(!e||!e.body||!e.body.error||e.body.error.type!=="admin_required")return false;const m=$("main");
+  if(!$("noadm"))m.appendChild(h("div",{class:"empty panel",id:"noadm"},h("b",null,"这个页面需要管理密钥"),adminMsg(e.body),h("div",null,h("button",{type:"button",class:"pri",onclick:()=>{sessionStorage.removeItem(KS);showApp(false)}},"换一个密钥登录"))));
+  m.classList.add("noadm");$("msg").textContent="";return true}
+/* ==== shared:end ==== */
+// ---- settings
+let CFG=null,ETAG="",EDITS={},EDIT_REV=0,LOAD_SEQ=0,BASE_STALE=false;
+async function call(method,p,body,extra){return req(method,p,body,extra)}
+function fail(e){if(!e||e.message==="401")return;const m=$("msg"),t=e.status===412?(nEdits()?"配置已被修改，未保存的编辑已保留。请再点「检查并保存」，查看最新配置与草稿的差异后确认；也可放弃草稿并载入最新。":"配置已被修改。请刷新后重试。"):(adminMsg(e.body)||e.message||String(e));clear(m);m.appendChild(h("b",null,"操作失败"));
+  m.appendChild(document.createTextNode(t));if(!inView(m))toast("操作失败："+t,{kind:"err"})}
+function ok(t,o){$("msg").textContent="";return toast(t,o)}
+function fmt(v){if(v===null||v===undefined)return"（默认）";if(typeof v==="object")return JSON.stringify(v);if(v==="")return"（空）";return String(v)}
+const GROUPS=[["","基础"],["routing.","选号与会话"],["upstream_opts.","上游连接"],["images.","图片接口"],["log.","日志"],["usage.","用量日志"],["ui.","管理页"]];
+function group(k){let g="";for(const [p] of GROUPS)if(p&&k.startsWith(p))g=p;return g}
+function eff(f){return f.effect==="hot"?h("span",{class:"xs mut",title:"保存或修改文件后无需重启；具体生效时机因设置而异"},"热更新"):h("span",{class:"tag cool",title:"写入文件后，重启 ciallopa 才生效"},"需重启")}
+const BAD=new Set();
+function nEdits(){return new Set([...Object.keys(EDITS),...BAD]).size}
+function upd(){EDIT_REV++;const n=nEdits();disarm($("discard"));$("nchg").textContent=n+" 项未保存"+(BAD.size?" · "+BAD.size+" 项有误":"");$("check").disabled=BAD.size>0;$("editbar").classList.toggle("hide",!n||!CFG||!CFG.write_enabled);if(!n)$("draft").classList.add("hide")}
+// Leaving or reloading the page with unsaved edits asks first (native prompt; only then).
+addEventListener("beforeunload",e=>{if(nEdits()){e.preventDefault();e.returnValue=""}});
+function mark(e,tr,changed){e.classList.toggle("chg",changed);tr.classList.toggle("chg",!!tr.querySelector(".chg"))}
+function input(f,v,tr){
+  if(f.kind==="bool"){const orig=!!v,e=h("input",{type:"checkbox",class:"sw","aria-label":f.desc,"data-fk":f.key}),t=h("span",null,orig?"已开启":"已关闭");e.checked=orig;
+    e.addEventListener("change",()=>{t.textContent=e.checked?"已开启":"已关闭";const changed=BASE_STALE||e.checked!==orig;if(!changed)delete EDITS[f.key];else EDITS[f.key]=e.checked;mark(e,tr,changed);upd()});
+    return h("label","chk",e,t)}
+  let e;
+  if(f.kind==="enum"){e=h("select",{"aria-label":f.desc,"data-fk":f.key});for(const o of f.options)e.appendChild(h("option",{value:o},o));e.value=v}
+  else{e=h("input",{"aria-label":f.desc,"data-fk":f.key});e.value=v===null||v===undefined?"":String(v);if(f.kind==="int"||f.kind==="float"){e.type="number";e.step=f.kind==="int"?"1":"any";e.min="0"}else e.type="text"}
+  const orig=e.value,num=f.kind==="int"||f.kind==="float",fe=num?h("div",{class:"xs c-err hide",id:"fe-"+f.key.replace(/\W/g,"_")}):null;
+  if(fe)e.setAttribute("aria-describedby",fe.id);
+  e.addEventListener("input",()=>{let val=e.value;if(f.kind==="int")val=val===""?null:parseInt(val,10);else if(f.kind==="float")val=val===""?null:parseFloat(val);
+    if(num){const bad=e.validity.badInput||(e.value!==""&&(f.kind==="int"?!/^\d+$/.test(e.value):!(Number(e.value)>=0)));
+      fe.textContent=bad?(f.kind==="int"?"需要大于或等于 0 的整数":"需要大于或等于 0 的数字"):"";fe.classList.toggle("hide",!bad);e.setAttribute("aria-invalid",String(bad));if(bad)BAD.add(f.key);else BAD.delete(f.key)}
+    const changed=BASE_STALE||e.value!==orig;if(!changed)delete EDITS[f.key];else EDITS[f.key]=val;mark(e,tr,changed);upd()});
+  e.addEventListener("change",()=>e.dispatchEvent(new Event("input")));
+  return fe?h("div",null,e,fe):e}
+// ---- egress proxy / IPv6: the switch writes the file at once; the toast's 撤销 writes the old value back
+const IMM={proxy_enabled:["启用出口代理","已启用出口代理：新请求立即走代理，进行中的 WebSocket 会话在本轮结束后重连","已关闭出口代理：新请求立即直连，进行中的 WebSocket 会话在本轮结束后重连"],
+  ipv6:["允许 IPv6 出口","已允许 IPv6：新连接 IPv6/IPv4 竞速，进行中的 WebSocket 会话在本轮结束后重连","已改为只用 IPv4：新连接只走 IPv4，进行中的 WebSocket 会话在本轮结束后重连"]};
+async function writeImm(k,v){await call("PUT","/admin/v1/config",{changes:{[k]:v}},{"If-Match":ETAG});await load()}
+function immToggle(k,on){const e=h("input",{type:"checkbox",class:"sw","aria-label":IMM[k][0],"data-fk":k}),t=h("span",null,on?"已开启":"已关闭");e.checked=on;
+  e.addEventListener("change",async()=>{const v=e.checked;if(nEdits()){e.checked=!v;toast("请先保存或放弃其他未保存的改动",{kind:"err"});return}
+    e.disabled=true;try{await writeImm(k,v);ok(v?IMM[k][1]:IMM[k][2],{undo:async()=>{if(nEdits())throw new Error("有未保存的改动，请先保存或放弃");await writeImm(k,!v);toast("已改回："+IMM[k][0]+(v?"已关闭":"已开启"))}})}
+    catch(err){e.checked=!v;fail(err)}finally{e.disabled=false}});
+  return h("label","chk",e,t)}
+function proxyExtra(c){const eg=c.egress||{},box=h("div","xs mut");
+  box.append(h("div",null,"当前出口："+(eg.direct?"直连":"代理 "+eg.proxy)),h("div",null,"socks5:// 按 socks5h:// 处理，域名由代理解析。https:// 代理只用于 HTTP 请求，WebSocket 不支持，请用 http:// 或 socks5h://。"));
+  const btn=h("button",{class:"xs",type:"button","data-fk":"ptest"},"测试连接"),res=h("span",{class:"mono xs",role:"status"});box.appendChild(h("div","ptest",btn,res));
+  btn.addEventListener("click",()=>busyRun(btn,"测试连接",async()=>{res.textContent="";res.className="mono xs";try{
+    const {j}=await call("POST","/admin/v1/proxy/test","proxy_url" in EDITS?{proxy_url:EDITS.proxy_url}:{});const via=j.direct?"直连":"经代理";
+    res.textContent=j.ok?(via+" · 出口 IP "+j.ip+(j.loc?" · "+j.loc:"")+(j.colo?" · "+j.colo:"")+" · "+j.latency_ms+" ms"):(via+" 失败"+(j.status?"（HTTP "+j.status+"）":"")+"："+(j.error||"未知错误"));
+    res.className="mono xs "+(j.ok?"c-ok":"c-err")}catch(e){res.textContent="";fail(e)}},"测试中…"));
+  return box}
+function filt(){const q=$("q").value.trim().toLowerCase();let any=false,g=null,gn=0;const fin=()=>{if(g)g.classList.toggle("hide",!gn)};
+  for(const r of $("rows").children){if(r.classList.contains("sgrp")){fin();g=r;gn=0;continue}const m=!q||(r.dataset.q||"").includes(q);r.classList.toggle("hide",!m);if(m){gn++;any=true}}
+  fin();$("qnone").classList.toggle("hide",any)}
+$("q").addEventListener("input",filt);
+function render(){steady([$("rows"),$("toc"),$("krows")],renderNow);
+  // /ui/settings#g-…: the group rows exist only after the first render
+  if(!SCROLLED&&location.hash.startsWith("#g-")){SCROLLED=true;const g=document.getElementById(location.hash.slice(1));if(g)g.scrollIntoView({block:"start"})}}
+function renderNow(){const c=CFG,tb=$("rows");clear(tb);EDITS={};BAD.clear();BASE_STALE=false;upd();
+  $("mode").textContent=c.write_enabled?"可编辑":"只读";$("mode").className="tag "+(c.write_enabled?"ok":"off");
+  $("mode").title=c.write_enabled?"配置文件中 [ui] allow_config_write = true":"在配置文件中设置 [ui] allow_config_write = true 才能在这里修改（此开关只能在文件里改）";
+  $("meta").textContent=(c.path||"（未使用配置文件）")+" · 版本 "+c.version;
+  $("hint").textContent=c.write_enabled?"":"当前为只读。配置文件的修改会自动应用；也可以点右上角「重新加载配置文件」。";
+  const fe=$("ferr");clear(fe);if(c.file_error){fe.append(h("b",null,"配置文件有错误，未应用"),"仍在使用上一次的配置："+c.file_error)}fe.classList.toggle("hide",!c.file_error);
+  const toc=$("toc");clear(toc);
+  const pend=c.pending_restart||[],pe=$("pend");clear(pe);pe.classList.toggle("hide",!pend.length);
+  if(pend.length)pe.append(h("b",null,pend.length+" 项需重启后生效"),pend.map(p=>p.key+"（运行中 "+fmt(p.old)+" → 文件 "+fmt(p.new)+"）").join("；"));
+  const pk=new Set(pend.map(p=>p.key));
+  for(const [p,name] of GROUPS){const fs=c.schema.filter(f=>group(f.key)===p&&f.key!=="api_keys");if(!fs.length)continue;
+    const gid="g-"+(p.replace(/[^a-z_]/g,"")||"base");tb.appendChild(h("tr","sgrp",h("th",{colspan:"3",id:gid,scope:"colgroup"},name)));
+    toc.appendChild(h("a",{href:"#"+gid},name,h("span",null,String(fs.length))));
+    for(const f of fs){const r=h("tr",{"data-q":(f.key+" "+f.desc).toLowerCase(),"data-ak":"cfg|"+f.key}),b=h("td","v");
+      const run=c.running[f.key],file=c.values?c.values[f.key]:run;
+      if(IMM[f.key]&&c.write_enabled)b.appendChild(immToggle(f.key,f.key==="proxy_enabled"?file!==false:file===true));
+      else if(c.write_enabled&&f.editable)b.appendChild(input(f,file,r));else b.appendChild(h("span","mono",fmt(run)));
+      if(f.key==="proxy_enabled"&&file!==false&&!(c.values||c.running).proxy_url)b.appendChild(h("div","xs mut","已启用，但还没有填写代理地址：当前直连"));
+      if(f.key==="proxy_url")b.appendChild(proxyExtra(c));
+      if(f.key==="ipv6")b.appendChild(h("div","xs mut","使用代理时只影响连接代理主机本身；目标域名由代理解析"));
+      if(pk.has(f.key))b.appendChild(h("div","xs diffv","运行中："+fmt(run)));
+      if(!f.editable&&c.write_enabled)b.appendChild(h("div","xs mut","只能在配置文件中修改"));
+      if(f.key==="log.level"&&c.overrides&&c.overrides["log.level"])b.appendChild(h("div","xs mut","已被环境变量 RUST_LOG 覆盖"));
+      r.append(h("td","k",h("b",null,f.desc),h("code",null,f.key)),b,h("td","e",eff(f)));tb.appendChild(r)}}
+  filt();
+  renderKeys(c);
+  const lr=c.last_reload;$("lastr").textContent=lr?("上次应用 "+fmtTime(lr.at_ms)+(lr.ok?"":"（失败）")):"";$("upd").textContent="更新于 "+hms(new Date());refocus()}
+function renderKeys(c){const kt=$("krows");clear(kt);
+  for(const k of (c.running.api_keys||[])){const t=h("td");
+    if(c.write_enabled){const b=h("button",{class:"xs danger",type:"button","aria-haspopup":"dialog","aria-label":"删除密钥 "+k.label,"data-fk":"key|"+k.label},"删除");b.addEventListener("click",()=>delKey(k.label,b));t.appendChild(b)}
+    kt.appendChild(h("tr",null,h("td",null,k.label+" ",k.admin?h("span",{class:"tag line",title:"admin = true：可使用管理接口"},"管理员"):null),h("td","mono",k.hint),t))}
+  if(!(c.running.api_keys||[]).length)kt.appendChild(h("tr",null,h("td",{colspan:"3",class:"mut"},"没有密钥：所有代理请求都会被拒绝")));
+  $("kf").classList.toggle("hide",!c.write_enabled)}
+let SCROLLED=false;
+let PPATH="";
+function host(u){try{return new URL(u).host}catch(e){return u}}
+async function loadPrices(){const p=await get("/admin/v1/prices");PPATH=p.path||"";const info=$("pinfo"),note=$("pnote"),hint=$("phint");clear(info);clear(note);clear(hint);
+  if(!p.usage_enabled){info.textContent="用量记录已关闭（usage.enabled = false），不计算费用";$("pcheck").disabled=true;hint.classList.add("hide");return}
+  add(info,[p.models?h("b",null,p.models+" 个模型"):h("b",null,"还没有价格表"),p.updated_ms?" · 更新于 "+fmtTime(p.updated_ms,true):"",p.enabled?" · 来源 ":"",p.enabled?h("span",{class:"mono",title:p.source},host(p.source)):" · 未设置来源（usage.prices_source）"]);
+  $("pcheck").disabled=!p.enabled;$("pcheck").title=p.enabled?"下载最新价格并列出变化，确认后才写入":"usage.prices_source 为空：先在上面设置价格数据来源";
+  const un=p.unpriced||[];let msg=null;
+  if(!p.models)msg="还没有价格表，费用都显示为「未定价」。";
+  else if(un.length)msg="有 "+un.length+" 个模型未定价："+un.join("、")+"（最近 30 天用过）。";
+  if(msg){add(note,[msg,p.enabled?"点「检查更新」拉取价格。":""]);add(hint,[h("b",null,"价格"),msg,h("a",{href:"#prices"},"去检查更新")])}
+  else note.textContent="价格文件："+p.path+"。更新只改动有变化的模型，带日期的促销价不会被改。";
+  hint.classList.toggle("hide",!msg)}
+$("pcheck").addEventListener("click",()=>busyRun($("pcheck"),"检查更新",async()=>{const b=$("pcheck");
+  try{const {j}=await call("POST","/admin/v1/prices/check",{});const act=j.changes.filter(c=>c.kind==="add"||c.kind==="update"),rest=j.changes.filter(c=>c.kind==="skip_dated");
+    if(!j.token){toast("价格已是最新（来源里有 "+j.remote_models+" 个模型）");await loadPrices();return}
+    const box=h("div");box.appendChild(h("div","tw",h("table",null,h("thead",null,h("tr",null,["模型","原价","新价（美元 / 百万 token）"].map(x=>h("th",{scope:"col"},x)))),
+      h("tbody",null,act.map(c=>h("tr",null,h("td","mono",(c.kind==="add"?"+ ":"~ ")+c.model),h("td","mono mut",c.old||"（新增）"),h("td","mono",c.new)))))));
+    if(rest.length)box.appendChild(h("p","mut","有促销价的模型不改动："+rest.map(c=>c.model).join("、")));
+    box.appendChild(h("p","mut","写入 "+PPATH+" 前会把原文件备份为 .bak；新价格立即用于所有费用统计（含历史记录）。"));
+    dialog("新增 "+j.added+" 个、变化 "+j.updated+" 个模型的价格",box,"应用","pri",async()=>{const {j:r}=await call("POST","/admin/v1/prices/apply",{token:j.token});await loadPrices();ok("已更新 "+r.applied+" 项价格"+(r.backup?"，原文件已备份为 "+r.backup:""))},b)}
+  catch(e){fail(e)}finally{loadPrices().catch(()=>{})}},"正在下载…"));
+async function load(discard=false){const seq=++LOAD_SEQ,auth=key(),rev=EDIT_REV;let reply;
+  try{reply=await call("GET","/admin/v1/config")}catch(e){if(seq!==LOAD_SEQ||auth!==key())return false;throw e}
+  if(seq!==LOAD_SEQ||auth!==key())return false;
+  const {j,r}=reply;ETAG=r.headers.get("etag")||"";
+  // Keep the actual controls: invalid numeric text cannot be reconstructed from parsed EDITS.
+  const keep=nEdits()>0&&(!discard||rev!==EDIT_REV);
+  if(keep){if(CFG&&j.version!==CFG.version)BASE_STALE=true;renderKeys(j);$("draft").textContent="最新配置已读取，未保存的编辑已保留。检查并保存时会显示最新值与草稿的差异；放弃后载入最新配置。";$("draft").classList.remove("hide")}
+  else{CFG=j;render()}
+  egressTag(j);loadPrices().catch(()=>{});get("/usage/v1/quota").then(q=>setTabCount(q.accounts.filter(a=>a.configured!==false).length)).catch(()=>{});loadAudit().catch(()=>{});return !keep}
+onLogout=()=>{LOAD_SEQ++;$("nkv").textContent="";$("newkey").classList.add("hide")};
+async function loadAudit(){const j=await get("/admin/v1/config/audit?limit=20"),tb=$("arows");clear(tb);
+  for(const e of j.entries)tb.appendChild(h("tr",null,h("td","mono mut",fmtTime(e.ts_ms)),h("td","sm",e.actor||"（文件/信号）"),h("td","sm",e.action+" · "+e.source),h("td","mono c",(e.changes||[]).map(c=>c.key+": "+fmt(c.old)+" → "+fmt(c.new)).join("；"))));
+  if(!j.entries.length)tb.appendChild(h("tr",null,h("td",{colspan:"4",class:"empty"},"暂无变更记录")))}
+function dialog(title,body,yes,cls,cb,from){$("dlgt").textContent=title;clear($("dlgc"));$("dlgc").appendChild(body);$("dyes").textContent=yes;$("dyes").className=cls;$("dyes").toggleAttribute("data-arm",cls.includes("danger"));$("dyes").classList.toggle("hide",!cb);$("dno").textContent=cb?"取消":"知道了";
+  $("dlgb").classList.toggle("dz",cls.includes("danger"));$("dlgb").classList.toggle("wide",!!body.querySelector("table"));$("dlg")._yes=cb;openModal($("dlg"),$("dno"),from)}
+$("dno").addEventListener("click",()=>closeModal($("dlg")));
+$("dyes").addEventListener("click",()=>{const f=$("dlg")._yes;if(!f)return;const t=$("dyes").textContent;busyRun($("dyes"),t,async()=>{try{await f();closeModal($("dlg"))}catch(e){closeModal($("dlg"));fail(e)}},"处理中…")});
+async function reviewEdits(){const changes={...EDITS},rev=EDIT_REV,auth=key();const {j}=await call("POST","/admin/v1/config/validate",{changes});
+  if(auth!==key())return;if(rev!==EDIT_REV){toast("编辑已变化，请重新检查后保存");return}const box=h("div");
+  if(!j.ok){box.append(h("p",null,"有错误，无法保存："),h("ul",null,j.errors.map(e=>h("li",null,(e.key?e.key+"：":"")+e.message))));dialog("检查未通过",box,"","",null,$("check"));return}
+  box.appendChild(h("div","tw",h("table",null,h("thead",null,h("tr",null,["设置项","原值","新值","生效方式"].map(x=>h("th",{scope:"col"},x)))),h("tbody",null,j.diff.map(d=>h("tr",null,h("td","mono",d.key),h("td","mono",fmt(d.old)),h("td","mono",fmt(d.new)),h("td",null,eff(d))))))));
+  if(j.diff.some(d=>d.effect==="restart"))box.appendChild(h("p","mut","标为「需重启」的项会写入文件，重启 ciallopa 后才生效。"));
+  if(CFG&&j.version!==CFG.version)box.prepend(h("p","hintp","配置已更新。下方「原值」来自最新配置，请确认要用草稿覆盖这些值。"));
+  dialog("保存 "+j.diff.length+" 项改动？",box,"写入配置文件并应用","pri",async()=>{
+    if(auth!==key()||rev!==EDIT_REV)throw new Error("编辑或登录已变化，请重新检查后保存");
+    const {j:r}=await call("PUT","/admin/v1/config",{changes},{"If-Match":'"'+j.version+'"'});
+    if(auth!==key())return;
+    // Until a fresh render, the controls' original values are no longer a safe baseline.
+    BASE_STALE=true;
+    try{await load(rev===EDIT_REV)}catch(e){if(auth!==key())return;const m="已保存，但重新读取最新配置失败："+why(e)+"。草稿已保留，请刷新后重新检查。";$("msg").textContent=m;toast(m,{kind:"err"});return}
+    if(auth!==key())return;
+    ok("已保存："+r.applied.length+" 项已应用"+(r.pending_restart.length?"，"+r.pending_restart.length+" 项需重启":"")+(nEdits()?"；后续编辑已保留":""))},$("check"))}
+$("check").addEventListener("click",()=>busyRun($("check"),"检查",()=>reviewEdits().catch(fail),"检查中…"));
+// 放弃 loses typed work: click again to confirm.
+$("discard").addEventListener("click",()=>clickAgain($("discard"),"再点一次：放弃 "+nEdits()+" 项改动",()=>busyRun($("discard"),"载入最新配置",async()=>{if(await load(true))ok("已放弃未保存的改动，已载入最新配置");else toast("载入期间有新的编辑，草稿已保留")},"载入中…")));
+$("reload").addEventListener("click",()=>busyRun($("reload"),"重新加载",async()=>{try{const {j}=await call("POST","/admin/v1/config/reload",{});await load();ok("已重新加载："+(j.applied.length?j.applied.length+" 项改动已生效":"没有需要应用的改动"))}catch(e){fail(e);load().catch(()=>{})}},"加载中…"));
+function delKey(label,from){const b=h("div",null,h("p",null,"使用它的客户端会立即无法访问；此操作会写回配置文件。要恢复只能生成新密钥并更新客户端。"));
+  dialog("删除密钥 "+label+"？",b,"删除密钥 "+label,"danger solid",async()=>{await call("DELETE","/admin/v1/config/keys/"+encodeURIComponent(label),{},{"If-Match":ETAG});await load();ok("已删除密钥 "+label)},from)}
+$("kf").addEventListener("submit",e=>{e.preventDefault();const auth=key();busyRun($("kf").querySelector("button"),"生成密钥",async()=>{try{const {j}=await call("POST","/admin/v1/config/keys",{label:$("klabel").value},{"If-Match":ETAG});if(auth!==key())return;$("klabel").value="";await load();if(auth!==key())return;$("nkv").textContent=j.key;$("newkey").classList.remove("hide");$("nkc").focus()}catch(err){if(auth===key())fail(err)}},"生成中…")});
+$("nkc").addEventListener("click",()=>navigator.clipboard.writeText($("nkv").textContent).then(()=>toast("已复制新密钥"),()=>toast("复制失败，请手动选择复制",{kind:"err"})));
+$("nkx").addEventListener("click",()=>{$("nkv").textContent="";$("newkey").classList.add("hide")});
+$("refresh").addEventListener("click",()=>{$("msg").textContent="";load().catch(fail)});
+login(()=>call("GET","/admin/v1/config"),()=>load().catch(e=>{if(!needAdmin(e))fail(e)}));
+})();
+</script>
+</body>
+</html>

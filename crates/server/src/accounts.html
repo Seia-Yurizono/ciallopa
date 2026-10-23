@@ -1,0 +1,688 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
+<title>ciallopa 账号</title>
+<style>
+/* ==== shared:begin (identical in ui.html, accounts.html, settings.html) ==== */
+/* spacing: 4px base, only --s1..--s6. Colour is used only for state. */
+:root{color-scheme:light;
+--s1:4px;--s2:8px;--s3:12px;--s4:16px;--s5:24px;--s6:32px;--r1:4px;--r2:8px;
+--bg:#f3f4f6;--surface:#fff;--surface-2:#f8f9fa;--line:#e3e5e8;--line-2:#cdd1d6;
+--fg:#16181d;--fg-2:#3d424b;--mut:#5f6673;--faint:#6b7280;--bar:#e6e8eb;--ctl:#878d96;--scrim:rgba(10,12,16,.45);
+--ok:#15803d;--ok-bg:#e9f6ee;--cool:#b45309;--cool-bg:#fdf3e1;--err:#c2410c;--err-bg:#fdeee8;
+--proxy:#6d28d9;--proxy-bg:#f1ebfd;--off:#5f6673;--off-bg:#eef0f2;--focus:#2563eb;--danger:#c42b1c;
+--font:system-ui,-apple-system,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+--mono:ui-monospace,"SF Mono",Menlo,Consolas,"Noto Sans Mono CJK SC",monospace;
+--fs-xs:11px;--fs-s:12px;--fs-m:13px;--fs-l:15px;--hdr:48px;--tabbar:0px;--shadow:0 8px 24px rgba(0,0,0,.14)}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){color-scheme:dark;
+--bg:#0e1013;--surface:#16191e;--surface-2:#1b1f25;--line:#272b33;--line-2:#363b45;
+--fg:#e7e9ec;--fg-2:#c3c8cf;--mut:#a1a8b3;--faint:#858c97;--bar:#272c34;--ctl:#6a717c;--scrim:rgba(0,0,0,.6);
+--ok:#4ade80;--ok-bg:#12261a;--cool:#fbbf24;--cool-bg:#2a210c;--err:#fb7a55;--err-bg:#2c1712;
+--proxy:#b79cff;--proxy-bg:#221a38;--off:#a1a8b3;--off-bg:#20242a;--focus:#7aa2ff;--danger:#b4321f;--shadow:0 8px 28px rgba(0,0,0,.55)}}
+:root[data-theme=dark]{color-scheme:dark;
+--bg:#0e1013;--surface:#16191e;--surface-2:#1b1f25;--line:#272b33;--line-2:#363b45;
+--fg:#e7e9ec;--fg-2:#c3c8cf;--mut:#a1a8b3;--faint:#858c97;--bar:#272c34;--ctl:#6a717c;--scrim:rgba(0,0,0,.6);
+--ok:#4ade80;--ok-bg:#12261a;--cool:#fbbf24;--cool-bg:#2a210c;--err:#fb7a55;--err-bg:#2c1712;
+--proxy:#b79cff;--proxy-bg:#221a38;--off:#a1a8b3;--off-bg:#20242a;--focus:#7aa2ff;--danger:#b4321f;--shadow:0 8px 28px rgba(0,0,0,.55)}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:var(--fs-m)/1.45 var(--font);-webkit-font-smoothing:antialiased}
+a{color:var(--fg)}
+a.tag{text-decoration:none}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+code,.mono{font-family:var(--mono);font-size:var(--fs-s)}
+.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+.mut{color:var(--mut)}.faint{color:var(--faint)}
+.sm{font-size:var(--fs-s)}.xs{font-size:var(--fs-xs)}
+.trunc{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.hide{display:none!important}
+.sp{flex:1}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.skip{position:absolute;left:var(--s2);top:-48px;z-index:50;background:var(--fg);color:var(--surface);padding:var(--s1) var(--s3);border-radius:var(--r1)}
+.skip:focus{top:var(--s2)}
+.c-ok{color:var(--ok)}.c-cool{color:var(--cool)}.c-err{color:var(--err)}.c-proxy{color:var(--proxy)}.c-off{color:var(--off)}
+/* shell */
+header{position:sticky;top:0;z-index:30;height:var(--hdr);display:flex;align-items:center;gap:var(--s4);padding:0 var(--s5);background:var(--surface);border-bottom:1px solid var(--line)}
+.brand{font-weight:650;font-size:var(--fs-l);letter-spacing:.2px;white-space:nowrap}
+nav.tabs{display:flex;gap:var(--s1);height:100%}
+nav.tabs a{display:flex;align-items:center;padding:0 var(--s3);color:var(--mut);text-decoration:none;font-weight:550;border-bottom:2px solid transparent;margin-bottom:-1px;white-space:nowrap}
+nav.tabs a:hover{color:var(--fg)}
+nav.tabs a[aria-current]{color:var(--fg);border-bottom-color:var(--fg)}
+nav.tabs a .cnt{margin-left:var(--s1);font-size:var(--fs-xs);color:var(--faint);font-variant-numeric:tabular-nums}
+.hstat{display:flex;align-items:center;gap:var(--s3);font-size:var(--fs-s);color:var(--mut);white-space:nowrap;margin-left:auto}
+main{max-width:1440px;margin:0 auto;padding:var(--s5)}
+section{margin-bottom:var(--s6)}
+section:last-child{margin-bottom:0}
+.sh{display:flex;align-items:baseline;gap:var(--s2);margin-bottom:var(--s2);min-height:28px;flex-wrap:wrap}
+.sh h2{margin:0;font-size:var(--fs-l);font-weight:620}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--r2)}
+.tw{overflow-x:auto}
+.row{display:flex;align-items:center;gap:var(--s2);flex-wrap:wrap}
+.nw{flex-wrap:nowrap}
+/* controls */
+button,select,input,textarea{font:inherit;color:inherit}
+button,.btn{display:inline-flex;align-items:center;justify-content:center;gap:var(--s1);height:28px;padding:0 var(--s3);border:1px solid var(--line-2);border-radius:var(--r1);background:var(--surface);font-size:var(--fs-s);font-weight:550;cursor:pointer;white-space:nowrap;touch-action:manipulation;text-decoration:none;color:var(--fg)}
+button:hover,.btn:hover{background:var(--surface-2)}
+button:disabled{opacity:.45;cursor:not-allowed}
+button.xs,.btn.xs{height:24px;padding:0 var(--s2)}
+button.pri{background:var(--fg);border-color:var(--fg);color:var(--surface)}
+button.pri:hover{background:var(--fg-2)}
+button.ghost{border-color:transparent;background:transparent;color:var(--fg-2)}
+button.ghost:hover{background:var(--surface-2)}
+button.danger{color:var(--err);border-color:color-mix(in srgb,var(--err) 45%,transparent);background:transparent}
+button.danger:hover{background:var(--err-bg)}
+button.danger.solid{background:var(--danger);border-color:var(--danger);color:#fff}
+button.danger.solid:hover{background:color-mix(in srgb,var(--danger) 85%,#000)}
+button.armed{background:var(--cool-bg);border-color:var(--cool);color:var(--cool)}
+button.busy{opacity:.75;cursor:progress}
+button.busy:before{content:"";flex:none;width:10px;height:10px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+select,input:not([type=checkbox]),textarea{height:28px;padding:0 var(--s2);border:1px solid var(--ctl);border-radius:var(--r1);background:var(--surface);font-size:var(--fs-s);max-width:100%;min-width:0}
+textarea{height:auto;padding:var(--s2);font-family:var(--mono);width:100%;resize:vertical}
+input[type=number]{width:64px;text-align:right;font-variant-numeric:tabular-nums}
+input[type=checkbox]{width:14px;height:14px;margin:0;accent-color:var(--fg)}
+label.chk{display:inline-flex;align-items:center;gap:var(--s1);font-size:var(--fs-s);color:var(--fg-2);white-space:nowrap;cursor:pointer}
+.sw{appearance:none;-webkit-appearance:none;width:28px!important;height:16px!important;border-radius:8px;background:var(--ctl);position:relative;margin:0;cursor:pointer;flex:none}
+.sw:after{content:"";position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:#fff;transition:transform .15s}
+.sw:checked{background:var(--ok)}.sw:checked:after{transform:translateX(12px)}
+.sw:disabled{opacity:.5}
+/* state tags */
+.tag{display:inline-flex;align-items:center;gap:var(--s1);height:20px;padding:0 var(--s2);border-radius:var(--r1);font-size:var(--fs-xs);font-weight:600;white-space:nowrap;background:var(--off-bg);color:var(--fg-2)}
+.tag.dot:before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.tag.ok{background:var(--ok-bg);color:var(--ok)}.tag.cool{background:var(--cool-bg);color:var(--cool)}.tag.err{background:var(--err-bg);color:var(--err)}
+.tag.proxy{background:var(--proxy-bg);color:var(--proxy)}.tag.off{background:var(--off-bg);color:var(--off)}
+.tag.line{background:transparent;box-shadow:inset 0 0 0 1px var(--line-2);color:var(--mut)}
+.sdot{display:inline-block;width:8px;height:8px;border-radius:50%;flex:none;background:var(--off)}
+.sdot.ok{background:var(--ok)}.sdot.cool{background:var(--cool)}.sdot.err{background:var(--err)}.sdot.off{background:transparent;box-shadow:inset 0 0 0 2px var(--off)}
+/* quota bar: shows REMAINING */
+.q{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:var(--s2);min-width:0}
+.q .lb{font-size:var(--fs-xs);color:var(--mut);min-width:2em}
+.q .pc{font-size:var(--fs-s);font-weight:600;font-variant-numeric:tabular-nums;text-align:right;min-width:3.2em}
+.bar{height:6px;background:var(--bar);border-radius:3px;overflow:hidden;min-width:48px}
+.bar>i{display:block;height:100%;background:var(--ok);border-radius:3px}
+.bar>i.w{background:var(--cool)}.bar>i.b{background:var(--err)}
+.pc.w{color:var(--cool)}.pc.b{color:var(--err)}
+.q.stale .bar>i{opacity:.4}.q.stale .pc{color:var(--mut)}
+/* tables */
+table{border-collapse:collapse;width:100%;font-size:var(--fs-m)}
+th,td{padding:var(--s2) var(--s3);text-align:left;vertical-align:middle;border-bottom:1px solid var(--line)}
+thead th{font-size:var(--fs-xs);font-weight:600;color:var(--mut);background:var(--surface-2);white-space:nowrap}
+th[title]{text-decoration:underline dotted var(--line-2);text-underline-offset:3px;cursor:help}
+tbody tr:last-child>td{border-bottom:0}
+tbody tr:hover>td{background:var(--surface-2)}
+th.n,td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+tr.hl>td{background:color-mix(in srgb,var(--focus) 9%,var(--surface))!important}
+tr.hl>td:first-child{box-shadow:inset 2px 0 0 var(--focus)}
+.who{display:flex;flex-direction:column;min-width:0;max-width:240px}
+.who b{font-weight:600}
+.empty{padding:var(--s6) var(--s4);text-align:center;color:var(--mut)}
+.empty b{display:block;color:var(--fg-2);font-size:var(--fs-m);margin-bottom:var(--s1)}
+.skel{display:block;height:12px;margin:var(--s2) 0;border-radius:var(--r1);background:var(--bar);animation:sk 1.2s ease-in-out infinite alternate}
+@keyframes sk{from{opacity:.5}to{opacity:1}}
+[aria-busy=true] tbody{opacity:.6;transition:opacity .2s}
+/* banners, toasts */
+.banner{display:flex;gap:var(--s2);align-items:baseline;flex-wrap:wrap;padding:var(--s2) var(--s3);border-radius:var(--r2);margin-bottom:var(--s4);font-size:var(--fs-s);border:1px solid color-mix(in srgb,var(--cool) 30%,transparent);background:var(--cool-bg)}
+.banner b{white-space:nowrap}
+.banner.err{background:var(--err-bg);border-color:color-mix(in srgb,var(--err) 30%,transparent)}
+.banner.err b{color:var(--err)}.banner.cool b{color:var(--cool)}
+.banner:empty{display:none}
+#toasts{position:fixed;right:var(--s5);bottom:var(--s5);z-index:60;display:flex;flex-direction:column;gap:var(--s2);align-items:flex-end;pointer-events:none;max-width:calc(100vw - 2 * var(--s5))}
+.toast{pointer-events:auto;display:flex;gap:var(--s3);align-items:center;max-width:440px;min-height:36px;padding:var(--s2) var(--s3);border-radius:var(--r2);background:var(--fg);color:var(--surface);box-shadow:var(--shadow);font-size:var(--fs-m);white-space:pre-line;overflow-wrap:anywhere}
+.toast.err{background:var(--danger);color:#fff}
+.toast span{flex:1}
+.toast button{height:28px;border-color:color-mix(in srgb,var(--surface) 40%,transparent);background:transparent;color:inherit;font-weight:650}
+.toast.out{opacity:0;transition:opacity .25s}
+.toast button.x{width:28px;padding:0;border-color:transparent}
+/* dialogs (bottom sheet on phone) */
+.modal{position:fixed;inset:0;z-index:40;display:flex;align-items:flex-start;justify-content:center;padding:10vh var(--s4) var(--s4);background:var(--scrim)}
+.mbox{width:min(480px,100%);max-height:84vh;overflow:auto;background:var(--surface);border-radius:var(--r2);border:1px solid var(--line);padding:var(--s4);display:flex;flex-direction:column;gap:var(--s3)}
+.mbox.dz{border-top:3px solid var(--err)}
+.mbox.wide{width:min(880px,100%)}
+.mbox h3{margin:0;font-size:var(--fs-l);font-weight:650;overflow-wrap:anywhere}
+.mbox p{margin:0}
+.warnp{padding:var(--s2) var(--s3);border-radius:var(--r1);background:var(--err-bg)}
+.hintp{padding:var(--s2) var(--s3);border-radius:var(--r1);background:var(--cool-bg);color:var(--fg)}
+.hintp b{color:var(--cool)}
+.kv{display:grid;grid-template-columns:auto minmax(0,1fr);gap:var(--s1) var(--s3);font-size:var(--fs-s);margin:0}
+.kv dt{color:var(--mut)}.kv dd{margin:0;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.mact{display:flex;gap:var(--s2);justify-content:flex-end;flex-wrap:wrap}
+.mact .alt{margin-right:auto}
+.res{font-size:var(--fs-s);white-space:pre-wrap;overflow-wrap:anywhere}
+.res:not(:empty){padding:var(--s2) var(--s3);border-radius:var(--r1);background:var(--surface-2);border:1px solid var(--line)}
+/* login */
+#login{max-width:400px;margin:14vh auto 0;padding:var(--s5);background:var(--surface);border:1px solid var(--line);border-radius:var(--r2)}
+#login h1{font-size:var(--fs-l);margin:0 0 var(--s2)}
+#login form{display:flex;gap:var(--s2);margin-top:var(--s4)}
+#login input{flex:1;height:40px}
+#login button{height:40px}
+#lerr{margin-top:var(--s2);color:var(--err)}
+.m-only{display:none}
+@media (prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
+@media (max-width:760px){
+:root{--hdr:44px;--tabbar:52px}
+header{padding:0 var(--s3);gap:var(--s2)}
+nav.tabs{position:fixed;left:0;right:0;bottom:0;height:calc(var(--tabbar) + env(safe-area-inset-bottom));z-index:30;background:var(--surface);border-top:1px solid var(--line);gap:0;padding-bottom:env(safe-area-inset-bottom)}
+nav.tabs a{flex:1;justify-content:center;border-bottom:0;border-top:2px solid transparent;margin:0;font-size:var(--fs-m)}
+nav.tabs a[aria-current]{border-top-color:var(--fg)}
+.hstat{gap:var(--s2)}
+main{padding:var(--s3) var(--s3) calc(var(--tabbar) + var(--s5))}
+section{margin-bottom:var(--s5)}
+.d-only{display:none!important}.m-only{display:revert}
+#toasts{left:var(--s3);right:var(--s3);bottom:calc(var(--tabbar) + var(--s2));align-items:stretch;max-width:none}.toast{max-width:none}
+.modal{align-items:flex-end;padding:var(--s3) var(--s3) calc(var(--s3) + env(safe-area-inset-bottom))}
+select,input:not([type=checkbox]),textarea{font-size:16px}select,input:not([type=checkbox]){height:40px}
+.toast button{height:40px}.toast button.x{width:40px}
+#rmore,#devbtn,#imf button,#kf button,#pcheck{height:40px}
+.mbox{max-height:88vh}
+.mact button{flex:1;height:44px;font-size:var(--fs-m)}
+.mact .alt{margin-right:0;flex-basis:100%}
+/* stacked lists: table rows become 2-3 line items */
+table.stk,table.stk tbody{display:block}
+table.stk thead{display:none}
+table.stk tr{display:grid;gap:var(--s1) var(--s2);padding:var(--s2) var(--s3);border-bottom:1px solid var(--line)}
+table.stk tbody tr:last-child{border-bottom:0}
+table.stk td{display:block;padding:0;border:0;min-width:0}
+table.stk tbody tr:hover>td{background:none}
+table.stk tr.hl{background:color-mix(in srgb,var(--focus) 9%,var(--surface));box-shadow:inset 2px 0 0 var(--focus)}
+table.stk tr.hl>td{background:none!important;box-shadow:none!important}
+}
+@media (pointer:coarse){
+header button,header a.tag,.cchip,label.chk,.toc a,.pop .pf a,.pop button,#acc .stack button,#acc .meta-c button,.sh button,.ptest button,#reload,#mstrip button,.banner a{position:relative}
+header button:after,header a.tag:after,.cchip:after,label.chk:after,.toc a:after,.pop .pf a:after,.pop button:after,#acc .stack button:after,#acc .meta-c button:after,.sh button:after,.ptest button:after,#reload:after,#mstrip button:after,.banner a:after{content:"";position:absolute;left:-2px;right:-2px;top:50%;height:44px;transform:translateY(-50%)}
+}
+main.noadm>:not(#noadm){display:none!important}
+#noadm{display:flex;flex-direction:column;gap:var(--s2);align-items:center;margin-top:var(--s6)}
+/* ==== shared:end ==== */
+/* accounts */
+.counts{display:flex;gap:var(--s1);flex-wrap:wrap}
+#acc td.qc{width:150px}
+#acc .who{max-width:280px}
+#acc .stack{display:flex;flex-wrap:wrap;gap:var(--s1) var(--s2);align-items:center;max-width:360px}
+#acc .acts{display:flex;gap:var(--s1);justify-content:flex-end;flex-wrap:nowrap}
+#acc td.act-c{width:1%}
+#acc .use{font-size:var(--fs-s);line-height:1.5}
+#acc .wp{display:flex;gap:var(--s1);align-items:center;justify-content:flex-end}
+#acc tr{scroll-margin-top:calc(var(--hdr) + var(--s5))}
+#acc tr:focus{outline:none}
+.hint{margin-top:var(--s2)}
+.add{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--s4);align-items:start}
+.add .panel{padding:var(--s3)}
+.add .device-panel{display:flex;flex-direction:column;gap:var(--s2)}
+.add h3{margin:0;font-size:var(--fs-m);font-weight:620}
+#add{scroll-margin-top:calc(var(--hdr) + var(--s3));margin:var(--s4) 0}
+#paste summary{cursor:pointer;font-size:var(--fs-m);font-weight:620;min-height:28px}
+#paste form{margin-top:var(--s2)}
+#paste[open] summary{margin-top:0;margin-bottom:var(--s2)}
+#emptyadd{margin-top:var(--s3)}
+.devbox{display:flex;flex-direction:column;gap:var(--s1);padding:var(--s2) var(--s3);border-radius:var(--r1);background:var(--surface-2);border:1px solid var(--line)}
+.devbox a{overflow-wrap:anywhere}
+#devst{min-width:0;overflow-wrap:anywhere}
+.devcode{font:600 20px/28px var(--mono);letter-spacing:3px}
+#imt{min-height:96px}
+.mbox .mono{overflow-wrap:anywhere}
+@media (max-width:760px){
+.add{grid-template-columns:minmax(0,1fr)}
+/* line 1 = status dot + name + both bars; line 2 = state; line 3 = meta + 操作; line 4 = actions */
+#acc tr{grid-template-columns:minmax(0,1fr) 84px 84px;grid-template-areas:"who q5 qw" "st st st" "meta meta meta" "act act act"}
+#acc td.who-c{grid-area:who}#acc td.q5{grid-area:q5}#acc td.qw{grid-area:qw}
+#acc td.st-c{grid-area:st}#acc td.meta-c{grid-area:meta}#acc td.act-c{grid-area:act;width:auto}
+#acc td.qc{width:auto}
+#acc td[colspan]{grid-column:1/-1}
+#acc .q{grid-template-columns:1fr auto;gap:0 var(--s1)}
+#acc .q .lb{display:none}
+#acc .q .bar{grid-column:1/-1;grid-row:2;min-width:0}
+#acc .q .pc{min-width:0}
+#acc .q:before{content:attr(data-l);font-size:var(--fs-xs);color:var(--mut)}
+#acc .who{max-width:none}
+#acc td.st-c.nrm{display:none}
+#acc td.act-c.mclosed{display:none}
+#acc .acts{justify-content:flex-start;flex-wrap:wrap;gap:var(--s2);padding-top:var(--s1)}
+#acc .acts button{height:40px;padding:0 var(--s4);font-size:var(--fs-m)}
+#acc .acts .del{margin-left:auto}
+#acc .mrow{display:flex;align-items:center;gap:var(--s2);flex-basis:100%}
+#acc .mrow input{height:40px;width:72px;font-size:var(--fs-m)}
+#acc .mrow button{margin-left:auto}
+#acc .meta-c .row button{height:32px}
+#acc .sdot{margin-top:var(--s1);align-self:flex-start}
+}
+#dlgc{display:flex;flex-direction:column;gap:var(--s2)}
+#authf ul,#imrc ul{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:var(--s1);flex-basis:100%;min-width:0}
+#authf li,#imrc li{display:flex;gap:var(--s2);align-items:baseline;flex-wrap:wrap;min-width:0}
+#authf li .mono,#imrc li .mono{overflow-wrap:anywhere;min-width:0}
+#authf .fix{flex-basis:100%;display:flex;gap:var(--s2);align-items:center;flex-wrap:wrap}
+#authf .fix code{padding:var(--s1) var(--s2);border-radius:var(--r1);background:var(--surface);border:1px solid var(--line);overflow-wrap:anywhere;user-select:all}
+#imrc{display:flex;flex-direction:column;gap:var(--s3)}
+#imrc .gt{margin-bottom:var(--s1)}
+@media (max-width:760px){#impbtn,#rescan{height:32px}#addbtn,#addclose,#devx,#emptyadd{height:40px}#paste summary{min-height:40px;align-content:center}}
+</style>
+</head>
+<body>
+<div id="login" class="hide">
+  <h1>ciallopa 管理面板</h1>
+  <div class="mut sm">请输入访问密钥（与代理的 API key 相同）。只保存在本标签页的 sessionStorage 中，三个页面共用，关闭标签页即清除。</div>
+  <form id="lf"><input id="key" type="password" autocomplete="current-password" placeholder="sk-..." required aria-label="访问密钥"><button class="pri" type="submit">进入</button></form>
+  <div id="lerr" class="sm" role="alert"></div>
+</div>
+<div id="app" class="hide">
+<header><a class="skip" href="#main">跳到主要内容</a>
+  <span class="brand">ciallopa</span>
+  <nav class="tabs" aria-label="页面"><a href="/ui" data-p="overview">概览</a><a href="/ui/accounts" data-p="accounts" aria-current="page">账号<span class="cnt"></span></a><a href="/ui/settings" data-p="settings">设置</a></nav>
+  <div class="hstat"><a id="egress" class="hide" href="/ui/settings#g-upstream_opts"></a><span id="upd" class="d-only"></span>
+  <button id="refresh" class="xs" type="button" title="立即刷新">刷新</button><button id="theme" class="xs ghost" type="button"></button><button id="logout" class="xs ghost" type="button" title="清除本标签页保存的密钥（三个页面共用）">退出</button></div>
+</header>
+<main id="main" tabindex="-1">
+  <div id="msg" class="banner err" role="alert"></div>
+  <div id="noacc" class="banner err hide" role="status"></div>
+  <div id="coolb" class="banner cool hide" role="status"></div>
+  <div id="authf" class="banner err hide" role="status"></div>
+  <section id="tbl" aria-busy="true">
+    <div class="sh"><h2>全部账号</h2><span class="mut sm" id="meta"></span><span class="sp"></span><div class="counts" id="counts"></div><button id="rescan" class="ghost xs" type="button" title="重新扫描账号目录（目录变化也会自动扫描）">重新扫描目录</button><button id="qall" class="ghost xs hide" type="button" title="向上游查询全部账号当前的额度（只读，不消耗额度；同一账号 30 秒内只查一次）">刷新全部额度</button><button id="impbtn" class="xs hide" type="button" title="选择一个或多个账号文件（CPA 的 codex 账号文件或 Codex CLI 的 auth.json），由服务端检查后写入账号目录">导入文件</button><button id="addbtn" class="pri xs hide" type="button" aria-expanded="false" aria-controls="add">添加账号</button><input id="impf" type="file" accept=".json,application/json" multiple class="hide" aria-hidden="true" tabindex="-1"></div>
+  <div id="add" class="hide">
+    <div class="sh"><h2>添加账号</h2><span class="sp"></span><button id="addclose" class="ghost xs" type="button">收起</button></div>
+    <div class="add">
+      <div class="panel device-panel"><h3>设备码登录</h3>
+        <div class="mut sm">在浏览器里打开链接并输入一次性代码，完成后账号自动加入。</div>
+        <div><button id="devbtn" class="pri" type="button">开始设备码登录</button></div>
+        <div id="dev" class="devbox hide" role="status"><div id="devsteps" class="hide"><div class="sm">1. 打开 <a id="devurl" class="mono" target="_blank" rel="noopener noreferrer"></a> 并登录</div><div class="row sm">2. 输入代码 <span class="devcode" id="devcode"></span><span class="mut xs num" id="devexp"></span></div></div><div class="row"><span class="mut xs sp" id="devst"></span><button id="devx" class="xs" type="button">停止等待</button></div><div id="devnote" class="mut xs">停止等待后，仍可在浏览器完成授权；账号可能随后加入。</div></div>
+      </div>
+      <details id="paste" class="panel"><summary>粘贴 auth.json</summary>
+        <div class="mut sm">粘贴 Codex CLI 的 <code>~/.codex/auth.json</code> 或 CPA 的 codex 账号文件内容。内容只发送给本服务，用于写入账号目录。有文件可用「导入文件」一次选择多个。</div>
+        <form id="imf" class="row"><textarea id="imt" rows="4" aria-label="auth.json 内容" spellcheck="false" autocomplete="off" placeholder="{&quot;tokens&quot;: {…}}"></textarea><button class="pri" type="submit">导入</button></form>
+      </details>
+    </div>
+  </div>
+    <div id="readnote" class="banner cool hide" role="status"></div>
+    <div class="panel"><div class="tw"><table class="stk" id="acc"><thead><tr><th scope="col">账号</th><th scope="col">状态</th><th scope="col" id="hq5">5 小时剩余</th><th scope="col" id="hqw">周剩余</th><th scope="col" class="n d-only" title="加权轮询时使用；0 = 不参与">权重</th><th scope="col" class="n d-only" title="数值大的优先">优先级</th><th scope="col" class="n d-only">近 24 小时</th><th scope="col"><span class="hide">操作</span></th></tr></thead><tbody id="rows"><tr><td colspan="8"><span class="skel"></span><span class="skel"></span><span class="skel"></span></td></tr></tbody></table></div></div>
+    <div class="mut sm hint" id="hint"></div>
+    <div class="mut sm hint hide" id="ignored"></div>
+  </section>
+</main>
+<div id="dlg" class="modal hide" role="alertdialog" aria-modal="true" aria-labelledby="dlgt" aria-describedby="dlgc"><div class="mbox dz">
+  <h3 id="dlgt"></h3><div id="dlgc" class="sm"></div>
+  <div class="mact"><button id="dalt" class="alt hide" type="button">改为停用</button><button id="dno" type="button">取消</button><button id="dyes" class="danger solid" type="button" data-arm>删除账号</button></div>
+</div></div>
+</div>
+<div id="imr" class="modal hide" role="dialog" aria-modal="true" aria-labelledby="imrt"><div class="mbox wide">
+  <h3 id="imrt"></h3><div id="imrc" class="sm"></div>
+  <div class="mact"><button id="imrok" class="pri" type="button">知道了</button></div>
+</div></div>
+<div id="toasts" aria-live="polite"></div>
+<script>
+"use strict";
+(function(){
+/* ==== shared:begin (identical in ui.html, accounts.html, settings.html) ==== */
+const $=id=>document.getElementById(id);
+const KS="ciallopa_key",TH="ciallopa_theme";
+// All dynamic text goes through textContent / createTextNode: never parsed as HTML.
+function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined&&text!==null)e.textContent=String(text);return e}
+function h(tag,a,...kids){const e=document.createElement(tag);
+  if(typeof a==="string")e.className=a;
+  else if(a)for(const k in a){const v=a[k];if(v===null||v===undefined||v===false)continue;
+    if(k==="class")e.className=v;else if(k==="text")e.textContent=String(v);else if(k.startsWith("on"))e.addEventListener(k.slice(2),v);else e.setAttribute(k,v===true?"":String(v))}
+  add(e,kids);return e}
+function add(e,kids){for(const k of kids){if(k===null||k===undefined||k===false)continue;if(Array.isArray(k))add(e,k);else e.appendChild(typeof k==="object"?k:document.createTextNode(String(k)))}return e}
+function clear(e){while(e.firstChild)e.removeChild(e.firstChild)}
+// ---- formats
+const NF=new Intl.NumberFormat("zh-CN");
+const p2=x=>String(x).padStart(2,"0");
+function exact(n){return n===null||n===undefined?"":NF.format(n)}
+function fmtN(n){if(n===null||n===undefined)return"–";n=Number(n);const a=Math.abs(n);if(a>=1e9)return(n/1e9).toFixed(2)+"B";if(a>=1e6)return(n/1e6).toFixed(2)+"M";if(a>=1e3)return(n/1e3).toFixed(1)+"k";return String(Math.round(n))}
+function fmtMs(n){return n===null||n===undefined?"–":(n>=1000?(n/1e3).toFixed(n>=1e4?1:2)+" s":Math.round(n)+" ms")}
+function fmtUsd(c){if(c===null||c===undefined)return"–";if(c===0)return"$0.00";if(c<0.01)return"<$0.01";return"$"+c.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})}
+function exactUsd(c){return c===null||c===undefined?"":"$"+c.toFixed(6)}
+function tzOff(d){const o=-d.getTimezoneOffset(),a=Math.abs(o);return"UTC"+(o>=0?"+":"-")+p2(Math.floor(a/60))+":"+p2(a%60)}
+function isoLocal(ms){const d=new Date(ms);return d.getFullYear()+"-"+p2(d.getMonth()+1)+"-"+p2(d.getDate())+"T"+p2(d.getHours())+":"+p2(d.getMinutes())+":"+p2(d.getSeconds())+tzOff(d).slice(3)}
+function fmtTime(ms,noSec){const d=new Date(ms);return(d.getFullYear()!==new Date().getFullYear()?d.getFullYear()+"-":"")+p2(d.getMonth()+1)+"-"+p2(d.getDate())+" "+p2(d.getHours())+":"+p2(d.getMinutes())+(noSec?"":":"+p2(d.getSeconds()))}
+function hms(d){return p2(d.getHours())+":"+p2(d.getMinutes())+":"+p2(d.getSeconds())}
+// Compact countdown: 3天9时 / 1时06分 / 4分12秒.
+function dur(s){if(s<=0)return"已到期";const d=Math.floor(s/86400),hh=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return d?d+"天"+hh+"时":hh?hh+"时"+p2(m)+"分":m+"分"+p2(Math.floor(s%60))+"秒"}
+function ago(ms){const s=Math.max(0,(Date.now()-ms)/1000);if(s<60)return"刚刚";if(s<3600)return Math.floor(s/60)+" 分钟前";if(s<86400)return Math.floor(s/3600)+" 小时前";return Math.floor(s/86400)+" 天前"}
+// Elements carrying data-until (unix ms) show a live countdown.
+setInterval(()=>{for(const e of document.querySelectorAll("[data-until]"))e.textContent=(e.dataset.pre||"")+dur((Number(e.dataset.until)-Date.now())/1000)},1000);
+// ---- access key (sessionStorage of this tab, shared by all three pages) and API calls
+function key(){return sessionStorage.getItem(KS)||""}
+function adminMsg(j){return j&&j.error&&j.error.type==="admin_required"?"当前密钥没有管理权限。请用带 admin = true 的密钥登录，或在配置文件的 [[api_keys]] 里给该密钥加上 admin = true。":null}
+// o.timeout (ms): abort a request that gets no answer (the error then has kind "timeout").
+async function req(method,path,body,extra,o){
+  const auth=key(),hd={"Authorization":"Bearer "+auth};if(body!==undefined)hd["Content-Type"]="application/json";Object.assign(hd,extra||{});
+  const ac=o&&o.timeout?new AbortController():null,tm=ac?setTimeout(()=>ac.abort(),o.timeout):null;let r;
+  try{r=await fetch(path,{method,headers:hd,body:body===undefined?undefined:JSON.stringify(body),cache:"no-store",credentials:"omit",referrerPolicy:"no-referrer",signal:ac?ac.signal:undefined})}
+  catch(e){const x=new Error(ac&&ac.signal.aborted?"请求超时（"+Math.round(o.timeout/1000)+" 秒内没有响应）":"网络错误，连不上 ciallopa（"+e.message+"）");x.kind=ac&&ac.signal.aborted?"timeout":"network";throw x}
+  finally{clearTimeout(tm)}
+  if(r.status===401){if(key()===auth){sessionStorage.removeItem(KS);showApp(false,"密钥无效或已过期")}throw new Error("401")}
+  let j=null;try{j=await r.json()}catch(_){}
+  if(key()===auth&&r.status===403&&j&&j.error&&j.error.type==="admin_required")NOADMIN=true;
+  if(!r.ok){const e=new Error(adminMsg(j)||(j&&j.error&&j.error.message)||(path.split("?")[0]+" → HTTP "+r.status));e.status=r.status;e.body=j;throw e}
+  return {j,r}}
+async function get(p){return (await req("GET",p)).j}
+async function post(p,b){return (await req("POST",p,b||{})).j}
+// Reason of a failed call for a toast: timeout / network as such, HTTP errors with their status.
+function why(e){if(!e)return"未知错误";if(e.kind||!e.status)return e.message||String(e);return"HTTP "+e.status+" · "+e.message}
+// A button action: busy state (spinner, optional label) while it runs; a failure becomes an error
+// toast "<name>失败：<reason>". Returns false on failure. Calls pass `T` for a 45 s timeout.
+const T={timeout:45000};
+// Per-account result of an active quota query (刷新额度) → short reason.
+// Quota windows by length: up to a day → short column (5 小时), longer → long column (周, or the
+// free plan's single 30 天 window). Without window_minutes the slot decides (primary short).
+function wlab(m,d){if(!m)return d;if(m===300)return"5h";if(m===10080)return"周";if(m>=1440)return Math.round(m/1440)+" 天";if(m>=60)return Math.round(m/60)+"h";return m+" 分"}
+function wslots(q){const o={s:null,l:null};if(!q)return o;
+  for(const [w,d,k] of [[q.primary,"5h","s"],[q.secondary,"周","l"]]){if(!w||w.used_pct===null||w.used_pct===undefined)continue;
+    let s=w.window_minutes?(w.window_minutes>1440?"l":"s"):k;if(o[s])s=s==="s"?"l":"s";if(!o[s])o[s]=[wlab(w.window_minutes,d),w,s]}return o}
+function whead(labels,def){const L=[...new Set(labels.map(x=>x==="5h"?"5 小时":x))];return(L.length?L.join(" / "):def)+"剩余"}
+// 刷新额度 answered "asked moments ago": neutral, not a failure.
+const qskip=r=>!r.ok&&r.error&&r.error.kind==="rate_limited";
+function qsummary(j){const sk=j.skipped!==undefined?j.skipped:j.results.filter(qskip).length,p=[];if(j.ok)p.push("已刷新 "+j.ok+" 个账号的额度");if(sk)p.push(sk+" 个 30 秒内刚查询过，已跳过");return p.join("，")||"没有可刷新的账号"}
+function qerr(e){e=e||{};const m=e.message||"";return{rate_limited:"刚查询过，"+(e.retry_after_s||30)+" 秒后再试",http:"上游 HTTP "+e.status+(m?" · "+m:""),network:"连不上上游（"+m.replace(/^send: /,"")+"）",timeout:"上游 5 秒内没有响应",credentials:"获取令牌失败（"+m.replace(/^credentials: /,"")+"）",token_invalid:"令牌失效，需要重新登录",decode:"上游返回里没有额度数据"}[e.kind]||m||"未知错误"}
+// The button stays focusable while busy (aria-disabled), so keyboard focus is not dropped.
+async function busyRun(b,name,f,label){if(b.disabled||b._busy)return false;const t=b.textContent;b._busy=true;b.classList.add("busy");b.setAttribute("aria-disabled","true");b.setAttribute("aria-busy","true");if(label)b.textContent=label;
+  try{await f();return true}catch(e){if(e&&e.message!=="401")toast(name+(/[\w)]$/.test(name)?" ":"")+"失败："+why(e),{kind:"err"});return false}
+  finally{b._busy=false;b.classList.remove("busy");b.removeAttribute("aria-disabled");b.removeAttribute("aria-busy");if(label&&b.isConnected)b.textContent=t}}
+// set once the server says this key is not an admin: the overview then skips admin-only calls
+let onLogout=()=>{},NOADMIN=false;
+function showApp(on,err){$("app").classList.toggle("hide",!on);if(on){$("main").classList.remove("noadm");const n=$("noadm");if(n)n.remove()}else NOADMIN=false;$("login").classList.toggle("hide",on);$("lerr").textContent=err||"";if(!on){closeAllModals();onLogout()}}
+function login(verify,enter){
+  $("lf").addEventListener("submit",async e=>{e.preventDefault();sessionStorage.setItem(KS,$("key").value);$("key").value="";
+    try{await verify();showApp(true);enter()}catch(err){if(err.message!=="401")$("lerr").textContent=err.message}});
+  $("logout").addEventListener("click",()=>{sessionStorage.removeItem(KS);showApp(false)});
+  if(key()){showApp(true);enter()}else showApp(false)}
+// ---- theme (跟随系统 / 浅色 / 深色), remembered in this browser only
+function applyTheme(t){const r=document.documentElement;if(t==="light"||t==="dark")r.dataset.theme=t;else delete r.dataset.theme;
+  const n={light:"浅色",dark:"深色"}[t]||"跟随系统",b=$("theme");b.textContent={light:"☀",dark:"☾"}[t]||"◐";b.title="主题："+n+"（点击切换）";b.setAttribute("aria-label","切换主题，当前："+n)}
+applyTheme(localStorage.getItem(TH));
+$("theme").addEventListener("click",()=>{const c=localStorage.getItem(TH),n=c==="light"?"dark":c==="dark"?"":"light";if(n)localStorage.setItem(TH,n);else localStorage.removeItem(TH);applyTheme(n);toast("主题："+({light:"浅色",dark:"深色"}[n]||"跟随系统"))});
+// ---- toasts; o.undo adds 撤销 (10 s). Errors are alerts with a close button (10 s). The timer
+// pauses while the toast is hovered, touched or holds keyboard focus, and while the tab is hidden.
+function toast(t,o){o=o||{};const err=o.kind==="err",d=h("div",{class:"toast"+(o.kind?" "+o.kind:""),role:err?"alert":null},h("span",null,t));let tm=null,ptr=false,foc=false;
+  const bye=()=>{clearTimeout(tm);d.classList.add("out");setTimeout(()=>d.remove(),300)};
+  const arm=()=>{clearTimeout(tm);if(ptr||foc)return;tm=setTimeout(()=>{if(document.hidden)arm();else bye()},o.undo||err?10000:4000)};
+  if(o.undo){const b=h("button",{type:"button"},"撤销");b.addEventListener("click",async()=>{b.disabled=true;bye();try{await o.undo()}catch(e){toast("撤销失败："+e.message,{kind:"err"})}});d.appendChild(b)}
+  if(err){const x=h("button",{type:"button",class:"x","aria-label":"关闭"},"✕");x.addEventListener("click",bye);d.appendChild(x)}
+  for(const [ev,v] of [["pointerenter",true],["pointerdown",true],["pointerleave",false],["pointerup",false]])d.addEventListener(ev,()=>{ptr=v;arm()});
+  d.addEventListener("focusin",()=>{foc=true;arm()});d.addEventListener("focusout",e=>{if(!d.contains(e.relatedTarget)){foc=false;arm()}});
+  $("toasts").appendChild(d);arm();return d}
+// An error shown in a page banner that is scrolled out of view is repeated as an error toast.
+function inView(e){const r=e.getBoundingClientRect();return r.height>0&&r.bottom>0&&r.top<innerHeight}
+// ---- re-rendered lists: the last focused control carrying data-fk gets focus back after a render
+// that replaced it (row actions, settings fields). A pointer press elsewhere forgets it.
+let FK=null;
+document.addEventListener("focusin",e=>{const t=e.target.closest&&e.target.closest("[data-fk]");if(t)FK=t.dataset.fk;else if(!e.target.closest||!e.target.closest("#toasts"))FK=null});
+document.addEventListener("pointerdown",e=>{if(!e.target.closest||!e.target.closest("[data-fk],#toasts"))FK=null},true);
+function refocus(){if(!FK)return;const a=document.activeElement;if(a&&a!==document.body&&a.isConnected)return;
+  const t=document.querySelector('[data-fk="'+CSS.escape(FK)+'"]');if(t&&t.offsetParent!==null)t.focus({preventScroll:true})}
+// ---- steady re-render: f() replaces the children of `boxes`. Focus inside them is released
+// first (removing a focused node makes the browser lay out the half-empty page and commit a
+// clamped scroll), and the focused control, or else the row nearest the top of the view, keeps
+// its viewport position. Anchors carry data-fk, data-ak or data-acc, stable across renders.
+const ANK=["data-fk","data-ak","data-acc"],ANS=ANK.map(a=>"["+a+"]").join(",");
+function ankSel(e){for(const a of ANK)if(e.hasAttribute(a))return"["+a+'="'+CSS.escape(e.getAttribute(a))+'"]';return null}
+function ankPick(){const a=document.activeElement,hb=document.querySelector("header").getBoundingClientRect().bottom,vis=e=>{const r=e.getBoundingClientRect();return r.height>0&&r.bottom>hb&&r.top<innerHeight};
+  if(a&&a!==document.body&&a.closest){const e=a.closest(ANS);if(e&&vis(e))return e}
+  for(const f of [.5,.25,.75])for(let y=hb+8;y<innerHeight;y+=48){const e=document.elementFromPoint(innerWidth*f,y),t=e&&e.closest&&e.closest(ANS);if(t&&vis(t))return t}
+  return null}
+function steady(boxes,f){const a=document.activeElement;if(a&&a!==document.body&&boxes.some(b=>b&&b.contains(a)))a.blur();
+  const e=ankPick(),sel=e&&ankSel(e),top=e?e.getBoundingClientRect().top:0;f();
+  const n=sel&&document.querySelector(sel);if(n&&n.getBoundingClientRect().height>0){const d=n.getBoundingClientRect().top-top;if(Math.abs(d)>=1)scrollBy(0,d)}}
+// ---- dialogs: focus goes to 取消, Esc / backdrop close, Tab trapped, focus returns to the opener.
+// A [data-arm] button ignores clicks for its first 400 ms (no double tap through the opener).
+const MODALS=[];
+function openModal(m,focus,opener){if(!m.classList.contains("hide"))return;m.classList.remove("hide");m._opener=opener||document.activeElement;m._at=Date.now();MODALS.push(m);(focus||m.querySelector("button")).focus()}
+function closeModal(m){if(m.classList.contains("hide"))return;m.classList.add("hide");const i=MODALS.indexOf(m);if(i>=0)MODALS.splice(i,1);const o=m._opener;m._opener=null;if(m._onclose)m._onclose();if(o&&document.contains(o))o.focus({preventScroll:true})}
+function closeAllModals(){for(const m of MODALS.slice().reverse())closeModal(m)}
+document.addEventListener("keydown",e=>{const m=MODALS[MODALS.length-1];if(!m)return;
+  if(e.key==="Escape"){e.preventDefault();closeModal(m);return}
+  if(e.key!=="Tab")return;const f=Array.from(m.querySelectorAll("button,a[href],input,select,textarea,[tabindex]:not([tabindex='-1'])")).filter(x=>!x.disabled&&x.offsetParent!==null);if(!f.length)return;
+  const i=f.indexOf(document.activeElement);e.preventDefault();f[i<0?(e.shiftKey?f.length-1:0):(i+(e.shiftKey?f.length-1:1))%f.length].focus()});
+document.addEventListener("click",e=>{const b=e.target.closest&&e.target.closest("[data-arm]");if(!b)return;const m=b.closest(".modal");if(m&&Date.now()-m._at<400){e.preventDefault();e.stopImmediatePropagation()}},true);
+document.addEventListener("click",e=>{const m=MODALS[MODALS.length-1];if(m&&e.target===m)closeModal(m)});
+// ---- inline click-again: the first click turns the button into `label` for 3 s (armed after
+// 300 ms); a second click runs `act`; timeout, blur or Esc reverts.
+function disarm(b){if(!b._armed)return;clearTimeout(b._t);b._armed=0;b.textContent=b._orig;b.classList.remove("armed")}
+function clickAgain(b,label,act){if(b._armed){if(Date.now()-b._armed<300)return;disarm(b);return act()}
+  b._orig=b.textContent;b._armed=Date.now();b.textContent=label;b.classList.add("armed");b._t=setTimeout(()=>disarm(b),3000);
+  b.addEventListener("blur",()=>disarm(b),{once:true})}
+document.addEventListener("keydown",e=>{if(e.key==="Escape"&&document.activeElement&&document.activeElement._armed)disarm(document.activeElement)});
+// ---- shell: account count on the 账号 tab, egress tag in the header (admin keys only)
+function setTabCount(n){const c=document.querySelector("nav.tabs a[data-p=accounts] .cnt");if(c)c.textContent=n===null||n===undefined?"":String(n)}
+async function egressTag(cfg){const t=$("egress");try{if(!cfg&&NOADMIN)throw new Error("admin");const c=cfg||await get("/admin/v1/config"),eg=Object.assign({},c.egress||{},{runtime:c.runtime});
+  if(eg.direct){t.className="tag line";t.textContent="直连";t.title="出口：直连（未使用出口代理）· 点击查看出口设置";return eg}
+  let n=0;try{const since=Date.now()-36e5;for(const code of ["proxy_connect","proxy_timeout"])n+=(await get("/usage/v1/records?limit=1&from="+since+"&error="+code)).total||0}catch(_){}
+  t.className="tag proxy dot";t.textContent=n?"代理 · "+n+" 错误":"代理";t.title="出口："+eg.proxy+(n?"；近 1 小时 "+n+" 次代理错误":"；近 1 小时没有代理错误")+" · 点击查看出口设置";return eg}
+  catch(_){t.className="hide";return null}}
+// Accounts / settings need an admin key. A usage-only key (e.g. carried over from the overview in
+// this tab) gets a plain explanation instead of a half-loaded page.
+function needAdmin(e){if(!e||!e.body||!e.body.error||e.body.error.type!=="admin_required")return false;const m=$("main");
+  if(!$("noadm"))m.appendChild(h("div",{class:"empty panel",id:"noadm"},h("b",null,"这个页面需要管理密钥"),adminMsg(e.body),h("div",null,h("button",{type:"button",class:"pri",onclick:()=>{sessionStorage.removeItem(KS);showApp(false)}},"换一个密钥登录"))));
+  m.classList.add("noadm");$("msg").textContent="";return true}
+/* ==== shared:end ==== */
+// ---- accounts
+const CR={usage_limit:"额度用完",rate_limited:"上游限流",auth:"认证失败",transient:"上游连续 5xx",overloaded:"上游过载（overloaded）",challenge:"Cloudflare 拦截",model_unsupported:"模型不可用",not_found:"上游 404",payment_required:"上游 402 付费问题",workspace_deactivated:"工作区已停用（402）"};
+const ST={normal:["正常","ok","可以接收请求"],cooling:["冷却中","cool","上游限流或出错后暂停使用，到时自动恢复"],disabled:["已停用","off","手动停用，不参与选号"],token_invalid:["令牌失效","err","刷新令牌已失效，需要重新登录（设备码登录或导入）"]};
+let W=false,DATA=null,QM={},RCM={},poll=null;const OPEN=new Set();
+function fail(e){if(!e||e.message==="401"||(e.isCurrent&&!e.isCurrent()))return;const m=$("msg"),title=e.isCurrent?"账号读取失败":"操作失败",t=(adminMsg(e.body)||e.message||String(e))+(e.isCurrent&&DATA?" · 保留上次账号结果":"");clear(m);m.appendChild(h("b",null,title));m.appendChild(document.createTextNode(t));if(!inView(m))toast(title+"："+t,{kind:"err"})}
+function ok(t,o){$("msg").textContent="";return toast(t,o)}
+const nm=a=>a.email||a.id;
+const path=a=>"/admin/v1/accounts/"+encodeURIComponent(a.id);
+const usable=a=>a.status!=="disabled"&&a.status!=="token_invalid";
+// Taking `a` out leaves no account that can serve right now (cooling ones only come back later).
+function lastOne(a){const L=DATA.accounts,live=L.filter(x=>x.status==="normal").length;return a.status==="normal"?live===1:usable(a)&&!live&&L.filter(usable).length===1}
+// Row and section actions: busy button while running, failures as an error toast (see busyRun).
+function act(b,f,name,label){b.addEventListener("click",()=>busyRun(b,name||b.textContent,f,label));return b}
+// Writes from row actions get a client timeout so a hung call still ends with a visible error.
+const apost=async(p,b)=>(await req("POST",p,b||{},null,T)).j,apatch=(p,b)=>req("PATCH",p,b,null,T);
+// A window whose reset time has passed is full again, even if the last snapshot said otherwise.
+function rem(w){return w&&w.used_pct!==null&&w.used_pct!==undefined?(w.resets_at&&w.resets_at*1000<=Date.now()?100:Math.max(0,100-w.used_pct)):null}
+function qcell(cls,lb,w,stale){const td=h("td","qc "+cls),r=rem(w);if(r===null){td.appendChild(h("span","faint","–"));return td}
+  const c=r<20?"b":r<50?"w":"",i=h("i",c);i.style.width=Math.min(100,r)+"%";
+  td.appendChild(h("div",{class:"q"+(stale?" stale":""),"data-l":lb,title:"剩余 "+r.toFixed(1)+"%（已用 "+w.used_pct.toFixed(1)+"%）"+(w.resets_at?" · 重置 "+fmtTime(w.resets_at*1000,true):"")+(stale?" · 数据较旧":"")},h("span","lb",lb),h("div","bar",i),h("span","pc "+c,stale?h("span",{class:"c-cool",role:"img","aria-label":"数据较旧"},"⚠ "):null,r.toFixed(0)+"%")));return td}
+function numIn(v,label,fk){return h("input",{type:"number",step:"1",value:v,"aria-label":label,"data-fk":fk})}
+// Disabling the last usable account takes every proxied request down: that one click-agains.
+function toggle(a,b){const off=!a.disabled,name=off?"停用":"启用";
+  const run=()=>busyRun(b,name,async()=>{await apatch(path(a),{disabled:off});
+    if(off)ok("已停用 "+nm(a),{undo:async()=>{await req("PATCH",path(a),{disabled:false});toast("已恢复启用 "+nm(a));await load()}});else ok("已启用 "+nm(a));await load()},name+"中…");
+  if(off&&lastOne(a))return clickAgain(b,"再点一次：停用后没有可用账号",run);
+  return run()}
+function delAcct(a,from){const rc=RCM[a.id],n=rc&&rc.available_count,c=$("dlgc");clear(c);
+  $("dlgt").textContent="删除账号 "+nm(a)+"？";
+  c.append(h("p","mono",a.email?a.email+"（"+a.id+"）":a.id),
+    h("p",null,"会删除账号目录中的账号文件，并清掉它的连接、cookie 和会话绑定。已绑定到它的会话下一轮会改用其他账号。删除后只能重新登录或导入才能恢复。"));
+  if(n>0)c.appendChild(h("p","hintp","它还有 "+n+" 张未用的重置卡；卡属于上游账号，重新登录同一账号后仍可使用。"));
+  if(lastOne(a))c.appendChild(h("p","warnp","这是最后一个可用账号：删除后代理请求会失败。"));
+  if(!a.disabled&&a.status!=="token_invalid")c.appendChild(h("p","mut","只是暂时不想用它？「改为停用」可以随时再启用。"));
+  $("dalt").classList.toggle("hide",!!a.disabled||a.status==="token_invalid");
+  $("dlg")._yes=async()=>{await req("DELETE",path(a),{confirm:a.id},null,T);ok("已删除 "+nm(a));await load()};
+  $("dlg")._alt=async()=>{await apatch(path(a),{disabled:true});ok("已停用 "+nm(a),{undo:async()=>{await req("PATCH",path(a),{disabled:false});toast("已恢复启用 "+nm(a));await load()}});await load()};
+  openModal($("dlg"),$("dno"),from)}
+for(const [id,k,name] of [["dyes","_yes","删除"],["dalt","_alt","停用"]])$(id).addEventListener("click",async()=>{const f=$("dlg")[k];if(!f)return;await busyRun($(id),name,f,name+"中…");closeModal($("dlg"))});
+$("dno").addEventListener("click",()=>closeModal($("dlg")));
+function opLabel(b,o){clear(b);b.append("操作",h("span",{"aria-hidden":"true"},o?" ▴":" ▾"))}
+function row(a,usage_on){const s=ST[a.status]||[a.status,"off",""],full=a.email?a.email+"（"+a.id+"）":a.id,q=QM[a.id],qq=q&&q.quota;
+  const stale=!!(qq&&qq.observed_at_ms&&Date.now()-qq.observed_at_ms>36e5),ws=wslots(qq);
+  const dot=h("span","sdot "+s[1]);dot.title=s[0];
+  const who=h("td","who-c",h("div","row nw",h("span","m-only",dot),h("div",{class:"who",title:full},h("b","trunc",nm(a)),h("span","mut xs trunc",a.id+(a.plan?" · "+a.plan:"")))));
+  const stc=h("div","stack",h("span",{class:"tag dot "+s[1]+" d-only",title:s[2]},s[0]),h("span","m-only sm "+(s[1]==="cool"?"c-cool":s[1]==="err"?"c-err":"mut"),s[0]));
+  if(a.status==="cooling"&&a.cooling_until_ms){stc.append(h("span","sm c-cool",CR[a.cooling_reason]||a.cooling_reason||""),h("span",{class:"sm mut num","data-until":a.cooling_until_ms,"data-pre":"还剩 ",title:"至 "+fmtTime(a.cooling_until_ms,true)},"还剩 "+dur((a.cooling_until_ms-Date.now())/1000)));
+    stc.appendChild(act(h("button",{class:"xs",type:"button",title:"清除这个账号的全部冷却以及连续 5xx、overloaded 计数，立即参与选号","data-fk":a.id+"|cc"},"解除冷却"),async()=>{const j=await apost(path(a)+"/clear-cooldown",{});ok(j&&j.cleared?"已解除 "+nm(a)+" 的冷却，立即参与选号":nm(a)+" 已不在冷却中");await load()},"解除冷却","解除中…"))}
+  else if(a.status!=="normal")stc.appendChild(h("span","sm mut",s[2]));else stc.appendChild(h("span","sm mut d-only",s[2]));
+  if(QERR[a.id])stc.appendChild(h("span",{class:"sm c-err qerr",title:"最近一次刷新额度失败"},"额度刷新失败："+QERR[a.id]));
+  const u=a.usage_24h,use=h("div","use");
+  if(u){use.appendChild(h("div","num",NF.format(u.requests)+" 次 · "+fmtN(u.input_tokens+u.output_tokens)));if(u.errors)use.appendChild(h("div","num xs c-err",u.errors+" 次错误"))}else use.appendChild(h("span","faint sm",usage_on?"无请求":"–"));
+  const o=a.overload_24h;if(o&&o.overloaded)use.appendChild(h("div",{class:"xs mut",title:"近 24 小时上游回复 overloaded / at capacity 的次数与上游请求总数（内存统计，重启清零）"},"overloaded "+o.overloaded+"/"+o.attempts));
+  const r=h("tr",{"data-acc":a.id},who,h("td","st-c"+(a.status==="normal"&&!QERR[a.id]?" nrm":""),stc),qcell("q5",ws.s?ws.s[0]:"5h",ws.s&&ws.s[1],stale),qcell("qw",ws.l?ws.l[0]:"周",ws.l&&ws.l[1],stale));
+  // weight / priority: own cells on desktop, inside 操作 on phone
+  const wp=(cls)=>{const wi=numIn(a.weight,"权重："+nm(a),a.id+"|w"+cls),pi=numIn(a.priority,"优先级："+nm(a),a.id+"|p"+cls);wi.min="0";
+    const save=act(h("button",{class:"xs",type:"button",disabled:true,title:"改动后可保存","aria-label":"保存 "+nm(a)+" 的权重和优先级","data-fk":a.id+"|s"+cls},"保存"),async()=>{const w=parseInt(wi.value,10),p=parseInt(pi.value,10);if(isNaN(w)||isNaN(p))throw new Error("权重和优先级必须是整数");
+      const ow=a.weight,op=a.priority;await apatch(path(a),{weight:w,priority:p});
+      ok("已更新 "+nm(a)+" 的权重和优先级",{undo:async()=>{await req("PATCH",path(a),{weight:ow,priority:op});toast("已改回 "+nm(a)+" 的权重 "+ow+"、优先级 "+op);await load()}});await load()},"保存","保存中…");
+    const dirty=()=>{save.disabled=wi.value===String(a.weight)&&pi.value===String(a.priority)};wi.addEventListener("input",dirty);pi.addEventListener("input",dirty);
+    for(const i of [wi,pi])i.addEventListener("keydown",e=>{if(e.key==="Enter"&&!save.disabled)save.click()});return [wi,pi,save]};
+  if(W){const [wi,pi,sv]=wp("d");r.append(h("td","n d-only",wi),h("td","n d-only",h("div","wp",pi,sv)))}else r.append(h("td","n d-only",String(a.weight)),h("td","n d-only",String(a.priority)));
+  r.appendChild(h("td","n d-only",use));
+  const metaTxt=h("span","sm mut trunc sp","权重 "+a.weight+" · 优先级 "+a.priority+" · 24h "+(u?NF.format(u.requests)+" 次":usage_on?"无请求":"–"));if(u&&u.errors)metaTxt.appendChild(h("span","c-err"," · "+u.errors+" 错误"));
+  const open=OPEN.has(a.id),actc=h("td","act-c"+(open?"":" mclosed")),meta=h("td","meta-c m-only",h("div","row nw",metaTxt));
+  {const mb=h("button",{class:"xs",type:"button","aria-expanded":String(open),"data-fk":a.id+"|mb"});opLabel(mb,open);mb.addEventListener("click",()=>{const o=!OPEN.has(a.id);if(o)OPEN.add(a.id);else OPEN.delete(a.id);actc.classList.toggle("mclosed",!o);opLabel(mb,o);mb.setAttribute("aria-expanded",String(o))});meta.firstChild.appendChild(mb)}
+  r.appendChild(meta);
+  const ag=h("div","acts");actc.appendChild(ag);
+  if(W){const [wi,pi,sv]=wp("m");ag.appendChild(h("span","m-only mrow",h("span","xs mut","权重"),wi,h("span","xs mut","优先级"),pi,sv));
+    if(a.status!=="token_invalid"){const tb=h("button",{type:"button",class:"xs","data-fk":a.id+"|tg"},a.disabled?"启用":"停用");tb.addEventListener("click",()=>toggle(a,tb));ag.appendChild(tb)}
+    ag.appendChild(act(h("button",{class:"xs",type:"button",title:"立即用刷新令牌换新的访问令牌（ciallopa 也会自动更新）。若同一 auth.json 也在 Codex CLI 里用，更新后那边需要重新登录","data-fk":a.id+"|rt"},"更新令牌"),async()=>{await apost(path(a)+"/refresh",{});ok("已更新 "+nm(a)+" 的令牌");await load()},"更新令牌","更新中…"));
+  }
+  // read-only upstream query: admin keys, also without allow_config_write
+  ag.appendChild(act(h("button",{class:"xs",type:"button",title:"向上游查询这个账号当前的额度（只读，不消耗额度；同一账号 30 秒内只查一次）","data-fk":a.id+"|rq"},"刷新额度"),()=>quotaOne(a),"刷新额度","查询中…"));
+  if(W){const db=h("button",{class:"xs danger del",type:"button","aria-haspopup":"dialog","aria-label":"删除账号 "+nm(a),"data-fk":a.id+"|del"},"删除");db.addEventListener("click",()=>delAcct(a,db));ag.appendChild(db)}
+  r.appendChild(actc);return r}
+function render(){steady([$("rows"),$("authf")],renderNow)}
+function renderNow(){const j=DATA;W=j.write_enabled;setTabCount(j.accounts.length);
+  $("meta").textContent=j.accounts.length+" 个 · 选号策略 "+j.strategy+" · "+(W?"可编辑":"只读");
+  $("hint").textContent=W?"权重和优先级保存后立即生效，不影响冷却状态和已绑定的会话。":"当前为只读：在配置文件中设置 [ui] allow_config_write = true 后可启用、停用、调整、删除和添加账号。";
+  $("hint").classList.toggle("hide",W&&!j.accounts.length);
+  setAdd(addOpen);$("addbtn").classList.toggle("hide",!W);$("impbtn").classList.toggle("hide",!W);$("qall").classList.toggle("hide",!j.accounts.length);
+  const cn={},cb=$("counts");clear(cb);for(const a of j.accounts)cn[a.status]=(cn[a.status]||0)+1;
+  for(const k of ["normal","cooling","disabled","token_invalid"])if(cn[k])cb.appendChild(h("span",{class:"tag dot "+ST[k][1],title:ST[k][2]},ST[k][0]+" "+cn[k]));
+  const nu=j.accounts.filter(usable).length,nb=$("noacc");clear(nb);
+  if(!nu){nb.appendChild(h("b",null,"没有可用账号"));nb.appendChild(document.createTextNode(j.accounts.length?"所有账号都已停用或需要重新登录，代理请求会失败。":"还没有添加账号，代理请求会失败。"+(W?"":"用 ciallopa login 添加，或开启写入后在这里添加。")))}
+  nb.classList.toggle("hide",!!nu);
+  const cool=j.accounts.filter(a=>a.status==="cooling"),ws=cool.filter(a=>a.cooling_reason==="workspace_deactivated").length,cbn=$("coolb");clear(cbn);
+  if(cool.length){cbn.appendChild(h("b",null,cool.length+" 个账号冷却中"));cbn.appendChild(h("span","mut",ws?ws+" 个因 402 工作区已停用，不会自动换回；确认处理后可手动解除冷却。":"到时自动恢复；也可以手动解除冷却。"))}
+  cbn.classList.toggle("hide",!cool.length);
+  authFiles(j.auth_files);
+  const hw=j.accounts.map(a=>wslots(QM[a.id]&&QM[a.id].quota));$("hq5").textContent=whead(hw.filter(o=>o.s).map(o=>o.s[0]),"5 小时");$("hqw").textContent=whead(hw.filter(o=>o.l).map(o=>o.l[0]),"周");
+  const tb=$("rows");clear(tb);
+  if(!j.accounts.length)tb.appendChild(h("tr",null,h("td",{colspan:"8"},h("div","empty",h("b",null,"还没有账号"),W?h("button",{id:"emptyadd",class:"pri",type:"button",onclick:()=>setAdd(true,true)},"添加账号"):"用 ciallopa login 添加，或开启写入后在这里添加。"))));
+  for(const a of j.accounts)tb.appendChild(row(a,j.usage_enabled));
+  showReadState();anchor(false);refocus()}
+// /ui/accounts#acc=<id>: highlight that row (and open its 操作 on phone)
+function anchor(scroll){const m=/^#acc=(.+)$/.exec(location.hash);for(const r of document.querySelectorAll("#acc tr.hl"))r.classList.remove("hl");if(!m)return;
+  let id;try{id=decodeURIComponent(m[1])}catch(_){return}
+  const r=document.querySelector('#acc tr[data-acc="'+CSS.escape(id)+'"]');if(!r)return;r.classList.add("hl");
+  if(scroll){if(!OPEN.has(id)){OPEN.add(id);const td=r.querySelector(".act-c"),b=r.querySelector(".meta-c button");if(td)td.classList.remove("mclosed");if(b){opLabel(b,true);b.setAttribute("aria-expanded","true")}}
+    r.tabIndex=-1;r.scrollIntoView({block:"center"});r.focus({preventScroll:true})}}
+addEventListener("hashchange",()=>anchor(true));
+// ---- auth directory files that did not load (permission, broken JSON, ...) and import results
+const SKR={permission_denied:"没有读取权限",read_error:"读取失败",invalid_json:"不是有效的 JSON",missing_tokens:"缺少 access_token",unsupported_type:"不是 codex 账号",invalid_name:"文件名不可用",too_large:"文件超过 1 MiB",write_failed:"写入失败"};
+const SKH={invalid_json:"内容不完整或不是 JSON，重新复制原文件",missing_tokens:"Codex CLI 的 auth.json 请用「导入文件」，不要直接放进账号目录",invalid_name:"文件名不能以 . 开头，也不能含 % 或空格，改名后重新扫描",unsupported_type:"ciallopa 只使用 codex 账号，这个文件会被忽略"};
+const mode=m=>m===undefined||m===null?"?":m.toString(8).padStart(4,"0");
+function skipLine(f,up){const li=h("li",null,h("span","mono",f.file||f.name),h("b",null,(SKR[f.reason]||f.reason)+(f.reason==="unsupported_type"&&f.detail?"（"+f.detail+"）":f.reason==="read_error"&&f.detail?"（"+f.detail+"）":"")));
+  if(f.reason==="permission_denied"&&f.uid!==undefined)li.appendChild(h("span","mut","属主 "+f.uid+":"+f.gid+" · 权限 "+mode(f.mode)));
+  else if(up&&f.reason==="missing_tokens")li.appendChild(h("span","mut","没有 ChatGPT 登录令牌（API key 方式的 auth.json 不支持）"));else if(up&&f.reason==="write_failed")li.appendChild(h("span","mut","服务端写入账号目录失败"+(f.detail?"（"+f.detail+"）":"")+"，详情见服务日志"));else if(SKH[f.reason])li.appendChild(h("span","mut",SKH[f.reason]));return li}
+function authFiles(a){const b=$("authf"),ig=$("ignored");clear(b);if(!a){b.classList.add("hide");ig.classList.add("hide");return}
+  const bad=a.skipped.filter(f=>f.reason!=="unsupported_type"),other=a.skipped.filter(f=>f.reason==="unsupported_type");
+  b.classList.toggle("hide",!bad.length);
+  if(bad.length){b.appendChild(h("b",null,bad.length+" 个账号文件没有加载"));b.appendChild(h("span","mut","账号目录 "+(a.host_dir?a.host_dir+"（容器内 "+a.dir+"）":a.dir)));
+    b.appendChild(h("ul",null,bad.map(f=>skipLine(f))));
+    if(bad.some(f=>f.reason==="permission_denied")&&a.server_uid!==null&&a.server_uid!==undefined){const d=(a.host_dir||a.dir).replace(/\/$/,""),ids=a.server_uid+":"+a.server_gid;
+      const cmd="sudo chown "+ids+" "+d+"/*.json && sudo chmod 600 "+d+"/*.json";
+      b.appendChild(h("div","fix",h("span",null,(a.host_dir?"在主机上":"在服务器上")+"把文件交给服务进程用户（"+ids+"）后点「重新扫描目录」："),h("code",null,cmd),
+        act(h("button",{class:"xs",type:"button"},"复制命令"),async()=>{await navigator.clipboard.writeText(cmd);toast("已复制命令")},"复制")))}}
+  ig.classList.toggle("hide",!other.length);
+  ig.textContent=other.length?"已忽略 "+other.length+" 个非 codex 账号文件（"+[...new Set(other.map(f=>f.detail||"未知类型"))].join("、")+"）：ciallopa 只使用 codex 账号":""}
+function importResult(j){const c=$("imrc");clear(c);
+  $("imrt").textContent="导入 "+j.added+" 个"+(j.exists?" · 已存在 "+j.exists+" 个":"")+(j.skipped?" · 跳过 "+j.skipped+" 个":"");
+  const grp=(st,title)=>{const L=j.results.filter(r=>r.status===st);if(!L.length)return null;
+    return h("div",null,h("div","mut xs gt",title),h("ul",null,L.map(r=>st==="skipped"?skipLine(r,true):h("li",null,h("span","mono",r.name),h("span",{class:st==="added"?"c-ok":"mut"},st==="added"?"已导入":"已存在，未改动"),h("span","mut mono",r.account)))))};
+  add(c,[grp("added","新增的账号，立即参与选号"),grp("exists","同一账号已在账号目录中（按账号 ID / 邮箱判断）"),grp("skipped","未导入")]);
+  openModal($("imr"),$("imrok"))}
+$("imrok").addEventListener("click",()=>closeModal($("imr")));
+$("impbtn").addEventListener("click",()=>$("impf").click());
+$("impf").addEventListener("change",async()=>{const fs=Array.from($("impf").files||[]);$("impf").value="";if(!fs.length)return;
+  await busyRun($("impbtn"),"导入",async()=>{if(fs.length>100)throw new Error("一次最多导入 100 个文件");
+    const files=[];for(const f of fs)files.push({name:f.name,content:f.size>1048576?"":await f.text(),_big:f.size>1048576});
+    const big=files.filter(f=>f._big).map(f=>({name:f.name,status:"skipped",reason:"too_large"}));const send=files.filter(f=>!f._big).map(f=>({name:f.name,content:f.content}));
+    const j=send.length?await apost("/admin/v1/accounts/import-files",{files:send}):{added:0,exists:0,skipped:0,results:[]};
+    j.results=j.results.concat(big);j.skipped+=big.length;await load();
+    if(!j.exists&&!j.skipped)ok("已导入 "+j.added+" 个账号，立即参与选号");else importResult(j)},"导入中…")});
+// ---- active quota query: the answer patches the shown snapshot at once; the stored one follows
+// with the usage writer's next batch. A failure stays on the row until the next success.
+const QERR={};
+function applyQuota(r){if(r.ok){delete QERR[r.account];const q=r.quota||{},old=QM[r.account]||{account:r.account};
+    QM[r.account]=Object.assign({},old,{quota:{plan:q.plan,observed_at_ms:r.observed_at_ms,observed_by:"manual",primary:q.primary,secondary:q.secondary}})}
+  else if(r.error&&r.error.kind!=="rate_limited")QERR[r.account]=qerr(r.error)}
+async function quotaOne(a){const r=await apost(path(a)+"/quota-refresh",{});applyQuota(r);render();
+  if(qskip(r)){toast(qerr(r.error));return}
+  if(!r.ok)throw Object.assign(new Error(qerr(r.error)),{kind:r.error.kind});ok("已刷新 "+nm(a)+" 的额度")}
+act($("qall"),async()=>{const j=await apost("/admin/v1/accounts/quota-refresh",{});for(const r of j.results)applyQuota(r);render();
+  const bad=j.results.filter(r=>!r.ok&&r.error.kind!=="rate_limited"),sk=j.skipped!==undefined?j.skipped:j.results.filter(qskip).length,skt=sk?"，"+sk+" 个 30 秒内刚查询过，已跳过":"";if(!bad.length){ok(qsummary(j));return}
+  const nmOf=id=>{const a=DATA.accounts.find(x=>x.id===id);return a?nm(a):id};
+  toast("刷新额度："+j.ok+" 个成功，"+bad.length+" 个失败"+skt+"\n"+bad.slice(0,4).map(r=>nmOf(r.account)+"："+qerr(r.error)).join("\n")+(bad.length>4?"\n…另外 "+(bad.length-4)+" 个见各行":""),{kind:"err"})},"刷新额度","查询中…");
+// ---- add panel: disclosure preserves an in-progress login; logout clears its private content.
+let addOpen=false;
+function setAdd(open,focus){addOpen=!!open&&W;$("add").classList.toggle("hide",!addOpen);$("addbtn").setAttribute("aria-expanded",String(addOpen));
+  if(focus){if(addOpen){$("add").scrollIntoView({block:"nearest"});$("devbtn").focus({preventScroll:true})}else $("addbtn").focus()}}
+$("addbtn").addEventListener("click",()=>setAdd(true,true));$("addclose").addEventListener("click",()=>setAdd(false,true));
+// ---- account reads: independent snapshots, bound to this load and login identity
+let accountLoadSeq=0,snapshotAuth="",accountReadAt=0;
+const READ={quota:{at:0,note:""},credits:{at:0,note:""}};
+function resetAccountData(){DATA=null;QM={};RCM={};W=false;accountReadAt=0;OPEN.clear();setAdd(false);
+  for(const m of Object.values(READ)){m.at=0;m.note=""}for(const id of Object.keys(QERR))delete QERR[id];
+  for(const id of ["meta","counts","upd","readnote","hint","ignored","msg","authf"])clear($(id));
+  for(const id of ["readnote","noacc","coolb","authf","addbtn","impbtn","qall"])$(id).classList.add("hide");
+  clear($("rows"));$("rows").appendChild(h("tr",null,h("td",{colspan:"8"},h("div","empty","正在读取账号…"))));setTabCount(null)}
+function showReadState(){const notes=Object.values(READ).map(x=>x.note).filter(Boolean),n=$("readnote");n.textContent=notes.join("；");n.classList.toggle("hide",!notes.length);
+  $("upd").textContent=accountReadAt?"账号更新于 "+hms(new Date(accountReadAt)):""}
+// Unlike the shared action helper, a superseded read must not log out a newer login on 401.
+async function accountGet(path,auth,current){const ac=new AbortController(),tm=setTimeout(()=>ac.abort(),30000);let r,j;
+  try{r=await fetch(path,{method:"GET",headers:{Authorization:"Bearer "+auth},cache:"no-store",credentials:"omit",referrerPolicy:"no-referrer",signal:ac.signal});
+    if(!current())return null;
+    if(r.status===401){sessionStorage.removeItem(KS);showApp(false,"密钥无效或已过期");throw new Error("401")}
+    try{j=await r.json()}catch(e){if(ac.signal.aborted)throw e;j=null}
+    if(!current())return null;
+    if(r.status===403&&j&&j.error&&j.error.type==="admin_required")NOADMIN=true;
+    if(!r.ok){const e=new Error(adminMsg(j)||(j&&j.error&&j.error.message)||(path+" → HTTP "+r.status));e.status=r.status;e.body=j;throw e}
+    if(!j||!Array.isArray(j.accounts))throw new Error("账号接口返回格式无效");return {j,at:Date.now()};
+  }catch(e){if(ac.signal.aborted){const x=new Error("请求超时（30 秒内没有响应）");x.kind="timeout";throw x}throw e}
+  finally{clearTimeout(tm)}}
+function readPart(result,previous,meta,label,valueKey){if(result.status==="fulfilled"){const next={};for(const x of result.value.j.accounts)next[x.account]=valueKey?x[valueKey]:x;meta.at=result.value.at;meta.note="";return next}
+  const e=result.reason;if(e.status===403||e.status===404){meta.at=0;meta.note=label+(e.status===403?"无读取权限（HTTP 403）":label==="额度"&&DATA.usage_enabled===false?"：用量日志已关闭":"接口不可用（HTTP 404）");return {}}
+  meta.note=label+"读取失败："+why(e)+(meta.at?" · 保留已有数据（上次读取 "+fmtTime(meta.at)+"）":" · 暂无成功数据");return previous}
+async function load(){const seq=++accountLoadSeq,auth=key(),current=()=>seq===accountLoadSeq&&auth===key();
+  if(snapshotAuth!==auth){resetAccountData();snapshotAuth=auth}$("tbl").setAttribute("aria-busy","true");
+  try{const main=accountGet("/admin/v1/accounts",auth,current),parts=Promise.allSettled([accountGet("/usage/v1/quota",auth,current),accountGet("/usage/v1/reset-credits",auth,current)]);
+    const mainResult=await main;if(!current())return false;const [q,rc]=await parts;if(!current())return false;
+    DATA=mainResult.j;accountReadAt=mainResult.at;QM=readPart(q,QM,READ.quota,"额度");RCM=readPart(rc,RCM,READ.credits,"重置卡","reset_credits");render();return true;
+  }catch(e){if(!current())return false;if(e.body&&e.body.error&&e.body.error.type==="admin_required"){resetAccountData();needAdmin(e);return false}e.isCurrent=current;throw e}
+  finally{if(current())$("tbl").setAttribute("aria-busy","false")}}
+$("refresh").addEventListener("click",()=>{$("msg").textContent="";load().catch(fail);egressTag()});
+act($("rescan"),async()=>{const j=await apost("/admin/v1/accounts/reload",{});await load();
+  const bad=(j.auth_files?j.auth_files.skipped:[]).filter(f=>f.reason!=="unsupported_type").length;
+  const t="已重新扫描账号目录："+(j.added.length?"新增 "+j.added.length+" 个账号":"没有新账号")+(j.removed.length?"，移除了 "+j.removed.length+" 个":"")+"，共 "+j.accounts+" 个"+(bad?"\n"+bad+" 个文件没有加载，原因见页面上方":"");
+  if(bad){$("msg").textContent="";toast(t,{kind:"err"});$("authf").scrollIntoView({block:"nearest"})}else ok(t)},"重新扫描","扫描中…");
+$("imf").addEventListener("submit",async e=>{e.preventDefault();let doc;try{doc=JSON.parse($("imt").value)}catch(_){fail(new Error("内容不是有效的 JSON"));return}
+  try{const j=await post("/admin/v1/accounts/import",{auth_json:doc});$("imt").value="";ok("已导入账号 "+j.account);await load()}catch(err){fail(err)}});
+// Device-code login: stopping only ends this page's wait; the server may still finish authorization.
+let deviceSeq=0,deviceAbort=null,deviceBusy=false;
+function devEnd(t){deviceSeq++;if(deviceAbort){deviceAbort.abort();deviceAbort=null}clearInterval(poll);poll=null;deviceBusy=false;
+  const b=$("devbtn");b.textContent="开始设备码登录";b.classList.remove("busy");b.removeAttribute("aria-disabled");b.removeAttribute("aria-busy");
+  $("devurl").textContent="";$("devurl").removeAttribute("href");$("devcode").textContent="";$("devexp").removeAttribute("data-until");$("devexp").textContent="";
+  for(const id of ["devsteps","devx","devnote"])$(id).classList.add("hide");$("devst").textContent=t||"";$("dev").classList.toggle("hide",!t)}
+// Keep 401/403 side effects inside the same device flow, including a logout and login with the same key.
+async function deviceRequest(method,path,auth,current){const ac=new AbortController(),tm=setTimeout(()=>ac.abort(),45000);deviceAbort=ac;
+  try{const r=await fetch(path,{method,headers:{Authorization:"Bearer "+auth,...(method==="POST"?{"Content-Type":"application/json"}:{})},body:method==="POST"?"{}":undefined,cache:"no-store",credentials:"omit",referrerPolicy:"no-referrer",signal:ac.signal});if(!current())return null;
+    if(r.status===401){sessionStorage.removeItem(KS);showApp(false,"密钥无效或已过期");throw new Error("401")}
+    let j=null;try{j=await r.json()}catch(e){if(ac.signal.aborted)throw e}if(!current())return null;
+    if(r.status===403&&j&&j.error&&j.error.type==="admin_required")NOADMIN=true;
+    if(!r.ok){const e=new Error(adminMsg(j)||(j&&j.error&&j.error.message)||"HTTP "+r.status);e.status=r.status;throw e}
+    if(!j)throw new Error("设备码接口返回格式无效");return j;
+  }catch(e){if(ac.signal.aborted&&current())throw new Error("设备码请求超时，请重试");throw e}
+  finally{clearTimeout(tm);if(deviceAbort===ac)deviceAbort=null}}
+$("devx").addEventListener("click",()=>{devEnd();$("devbtn").focus()});
+$("devbtn").addEventListener("click",async()=>{if(deviceBusy)return;devEnd();const seq=deviceSeq,auth=key(),current=()=>seq===deviceSeq&&auth===key();deviceBusy=true;
+  const b=$("devbtn");b.textContent="请求中…";b.classList.add("busy");b.setAttribute("aria-disabled","true");b.setAttribute("aria-busy","true");
+  for(const id of ["dev","devx","devnote"])$(id).classList.remove("hide");$("devst").textContent="正在请求设备码…";
+  try{const j=await deviceRequest("POST","/admin/v1/accounts/login/device",auth,current);if(!current())return;
+    if(!j.url||!j.code||!j.login_id)throw new Error("设备码接口返回格式无效");const until=Date.now()+15*60000;
+    b.textContent="等待登录…";b.classList.remove("busy");b.removeAttribute("aria-busy");$("devurl").textContent=j.url;$("devurl").href=j.url;$("devcode").textContent=j.code;$("devsteps").classList.remove("hide");$("devst").textContent="等待完成… 每 3 秒检查一次";
+    const ex=$("devexp");ex.dataset.until=String(until);ex.dataset.pre="有效期还剩 ";ex.textContent="有效期还剩 "+dur(900);let polling=false;
+    poll=setInterval(async()=>{if(!current()||polling)return;if(Date.now()>until){devEnd("代码已过期，请重新开始");return}polling=true;
+      try{const s=await deviceRequest("GET","/admin/v1/accounts/login/"+encodeURIComponent(j.login_id),auth,current);if(!current())return;
+        if(s.status==="done"){devEnd("登录成功：已添加 "+s.account);load().catch(fail)}else if(s.status==="error")devEnd("登录失败："+s.message);
+      }catch(e){if(current())devEnd("登录检查失败："+why(e)+"。可重新开始。")}finally{polling=false}},3000);
+  }catch(e){if(current())devEnd("设备码登录失败："+why(e)+"。请重试。")}});
+onLogout=()=>{devEnd();$("imt").value="";$("impf").value="";$("paste").open=false;accountLoadSeq++;snapshotAuth="";resetAccountData();$("tbl").setAttribute("aria-busy","false")};
+login(()=>get("/admin/v1/accounts"),()=>{load().then(applied=>{if(applied)anchor(true)}).catch(fail);egressTag()});
+})();
+</script>
+</body>
+</html>

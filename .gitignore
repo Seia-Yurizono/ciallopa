@@ -1,0 +1,14 @@
+/target
+*.jsonl
+*.db
+*.db-wal
+*.db-shm
+*.sqlite*
+auths/
+*auth*.json
+codex-*.json
+/config.toml
+/prices.toml
+.env
+*.zip
+dist/

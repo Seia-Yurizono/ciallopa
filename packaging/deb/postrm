@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+
+#DEBHELPER#
+
+if [ "$1" = "purge" ]; then
+    # Remove package data only. Keep the system user/group so external data and backups
+    # retain their owner, and a later UID/GID allocation cannot give them to another account.
+    rm -rf /etc/ciallopa /var/lib/ciallopa
+fi
+
+exit 0

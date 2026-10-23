@@ -1,0 +1,185 @@
+name: release
+
+# Runs only for version tags (v*) and manual dry runs. A dry run (workflow_dispatch) runs the
+# checks, builds and smoke-tests the packages and the container image and uploads the packages as
+# workflow artifacts; only a tag push pushes the image to GHCR and creates the GitHub Release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TARGET: x86_64-unknown-linux-musl
+  # The rebuilt v0.1.0 is intentionally a prerelease despite its plain version tag.
+  RELEASE_PRERELEASE: ${{ github.ref_name == 'v0.1.0' || contains(github.ref_name, '-') }}
+
+jobs:
+  check:
+    uses: ./.github/workflows/checks.yml
+
+  package:
+    needs: check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain (rust-toolchain.toml) + musl target
+        run: rustup toolchain install && rustup target add "$TARGET"
+      - name: musl-tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ env.TARGET }}
+      - name: Build and package
+        run: scripts/package.sh
+      - name: Smoke test the .deb under systemd
+        run: scripts/deb-smoke.sh dist/ciallopa_*_amd64.deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ciallopa-packages
+          path: dist/*
+          if-no-files-found: error
+
+  docker:
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ciallopa-packages
+          path: dist
+      - name: Build context from the release tar.gz
+        id: ctx
+        run: |
+          mkdir ctx
+          tar -xzf dist/ciallopa-*-"$TARGET".tar.gz -C ctx --strip-components=1
+          ls -l ctx
+          version=$(ctx/ciallopa --version | awk '{ print $2 }')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "source_date_epoch=$(git log -1 --format=%ct)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.ctx.outputs.image }}
+          flavor: latest=false
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ env.RELEASE_PRERELEASE != 'true' }}
+            type=raw,value=latest,enable=${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+          labels: |
+            org.opencontainers.image.title=ciallopa
+            org.opencontainers.image.description=Lightweight AI gateway
+      - name: Build image (local)
+        id: smoke
+        uses: docker/build-push-action@v6
+        with:
+          context: ctx
+          file: packaging/docker/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: ciallopa:smoke
+          build-args: |
+            VERSION=${{ steps.ctx.outputs.version }}
+            REVISION=${{ github.sha }}
+            SOURCE_DATE_EPOCH=${{ steps.ctx.outputs.source_date_epoch }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: false
+          sbom: false
+      - name: Smoke test the image
+        run: scripts/docker-smoke.sh ciallopa:smoke
+      - uses: docker/login-action@v3
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload image by digest
+        id: upload
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        uses: docker/build-push-action@v6
+        with:
+          context: ctx
+          file: packaging/docker/Dockerfile
+          platforms: linux/amd64
+          # Keep version tags untouched until the runnable image has been compared below.
+          outputs: type=image,name=${{ steps.ctx.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            VERSION=${{ steps.ctx.outputs.version }}
+            REVISION=${{ github.sha }}
+            SOURCE_DATE_EPOCH=${{ steps.ctx.outputs.source_date_epoch }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Registry pushes retain attestations; the local smoke image above omits them
+          # because the default Docker image store cannot load attestation manifests.
+          provenance: mode=min
+          sbom: true
+      - name: Verify the smoke-tested image and publish tags
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        env:
+          SMOKE_METADATA: ${{ steps.smoke.outputs.metadata }}
+          UPLOAD_DIGEST: ${{ steps.upload.outputs.digest }}
+          IMAGE: ${{ steps.ctx.outputs.image }}
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          # Config digests cover runtime config + filesystem layer IDs. Attestations change
+          # the registry index digest, so comparing the top-level image IDs is insufficient.
+          digest_filter='."containerimage.config.digest" | select(type == "string") | select(test("^sha256:[0-9a-f]{64}$"))'
+          smoke_config=$(jq -er "$digest_filter" <<< "$SMOKE_METADATA")
+          loaded_config=$(docker image inspect --format '{{.Id}}' ciallopa:smoke)
+          [[ "$UPLOAD_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          # Attested exports return an index without containerimage.config.digest.
+          # Resolve the single runnable amd64 manifest from the uploaded index itself.
+          uploaded_index=$(docker buildx imagetools inspect --raw "$IMAGE@$UPLOAD_DIGEST")
+          runtime_digest=$(jq -er '
+            [.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")]
+            | if length == 1 then .[0].digest else error("expected one linux/amd64 image") end
+            | select(test("^sha256:[0-9a-f]{64}$"))' <<< "$uploaded_index")
+          runtime_manifest=$(docker buildx imagetools inspect --raw "$IMAGE@$runtime_digest")
+          upload_config=$(jq -er '.config.digest | select(type == "string")
+            | select(test("^sha256:[0-9a-f]{64}$"))' <<< "$runtime_manifest")
+          if [[ "$smoke_config" != "$upload_config" || "$smoke_config" != "$loaded_config" ]]; then
+            echo '::error::The uploaded runtime image differs from the smoke-tested image'
+            exit 1
+          fi
+          tags=()
+          while IFS= read -r tag; do
+            if [[ -n "$tag" ]]; then tags+=(--tag "$tag"); fi
+          done <<< "$IMAGE_TAGS"
+          (( ${#tags[@]} > 0 ))
+          docker buildx imagetools create "${tags[@]}" "$IMAGE@$UPLOAD_DIGEST"
+
+  release:
+    needs: [package, docker]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ciallopa-packages
+          path: dist
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release_flags=()
+          if [[ "$RELEASE_PRERELEASE" == true ]]; then
+            release_flags+=(--prerelease --latest=false)
+          fi
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "ciallopa ${GITHUB_REF_NAME#v}" \
+            --notes-file docs/RELEASE_NOTES.md \
+            --verify-tag "${release_flags[@]}"

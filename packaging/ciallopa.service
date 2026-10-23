@@ -1,0 +1,55 @@
+[Unit]
+Description=ciallopa AI gateway
+Documentation=https://github.com/Seia-Yurizono/ciallopa
+Wants=network-online.target
+After=network-online.target
+# Ships without a live config: create /etc/ciallopa/config.toml first.
+ConditionPathExists=/etc/ciallopa/config.toml
+
+[Service]
+Type=simple
+User=ciallopa
+Group=ciallopa
+# `~/.ciallopa/...` paths in the config resolve to /var/lib/ciallopa/.ciallopa/...
+Environment=HOME=/var/lib/ciallopa
+WorkingDirectory=/var/lib/ciallopa
+ExecStart=/usr/bin/ciallopa --config /etc/ciallopa/config.toml serve
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+# SIGTERM drains HTTP/SSE and WebSocket turns for up to 60 s, then closes and flushes.
+KillSignal=SIGTERM
+TimeoutStopSec=75
+UMask=0077
+StateDirectory=ciallopa
+StateDirectoryMode=0750
+# Settings / account writes from the management pages (allow_config_write) need this.
+ReadWritePaths=/etc/ciallopa
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target
