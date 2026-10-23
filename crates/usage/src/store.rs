@@ -201,12 +201,15 @@ pub(crate) fn open_rw(p: &Path) -> Result<Connection, UsageError> {
     Ok(c)
 }
 
+/// A short-lived query connection. All reads share the first SELECT's snapshot,
+/// so a concurrent writer cannot insert rows after we have loaded their labels.
 pub(crate) fn open_ro(p: &Path) -> Result<Connection, UsageError> {
     let c = Connection::open_with_flags(
         p,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     c.busy_timeout(std::time::Duration::from_secs(5))?;
+    c.execute_batch("BEGIN DEFERRED")?;
     Ok(c)
 }
 

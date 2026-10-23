@@ -7,7 +7,9 @@ the Codex backend; this release does not add other providers.
 
 This candidate corrects rc.1 packaging: the .deb asset now uses a GitHub-safe SemVer filename,
 while its internal Debian version retains the proper prerelease ordering. SHA256SUMS and
-installation links use the exact uploaded name. Product behavior is unchanged from rc.1.
+installation links use the exact uploaded name. It also fixes a concurrent usage-query race
+found during release validation: labels and records now share one read snapshot, so a newly
+committed request cannot appear with missing account or model names.
 
 **Stream reliability and diagnostics**
 
@@ -38,7 +40,7 @@ installation links use the exact uploaded name. Product behavior is unchanged fr
 
 **Validation and recovery limits**
 
-The implementation passed 339 workspace tests, the shared checks, 34 official Codex 0.164.0
+The implementation passed 340 workspace tests, the shared checks, 34 official Codex 0.164.0
 local-mock scenarios, six Caddy 2.11.7 reload scenarios, and desktop/375px browser checks.
 Release packaging runs its own checks, .deb/systemd smoke, Docker smoke and Compose
 recovery/active-stream shutdown before publication. No real model provider was used.
