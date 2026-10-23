@@ -1,9 +1,13 @@
-ciallopa v0.1.1-rc.1 — pre-release.
+ciallopa v0.1.1-rc.2 — pre-release.
 
 This release brings the validated mainline improvements since v0.1.0 to the Linux x86_64
 packages and Debian 13 container image. ciallopa remains a lightweight AI gateway: one Rust
 binary, local SQLite records and an embedded UI. The implemented upstream adapter is still
 the Codex backend; this release does not add other providers.
+
+This candidate corrects rc.1 packaging: the .deb asset now uses a GitHub-safe SemVer filename,
+while its internal Debian version retains the proper prerelease ordering. SHA256SUMS and
+installation links use the exact uploaded name. Product behavior is unchanged from rc.1.
 
 **Stream reliability and diagnostics**
 
@@ -46,12 +50,12 @@ Neither behavior provides exactly-once tools, output or billing.
 
 **Upgrade**
 
-- Image tags: `ghcr.io/seia-yurizono/ciallopa:0.1.1-rc.1` and `latest`, for `linux/amd64`.
+- Image tags: `ghcr.io/seia-yurizono/ciallopa:0.1.1-rc.2` and `latest`, for `linux/amd64`.
   This prerelease does not advance the `0.1` alias. Change a pinned old Compose tag before
   pulling and recreating; pulling `latest` alone does not replace a running container.
 - The existing config/data layout and SQLite schema are retained. Keep a data backup and the
   previous image locally. The configured cleanup policy retains only the newest two tag names,
-  so `latest` and `0.1.1-rc.1` count as both retained tags; old registry versions may be deleted.
+  so `latest` and `0.1.1-rc.2` count as both retained tags; old registry versions may be deleted.
 - Keep the supplied 75-second stop timeout. Remove new traffic and drain active work for
   planned replacement; normal drain has a 60-second application limit.
 - Download the .deb or static musl tarball and verify it against the accompanying SHA256SUMS.
@@ -61,8 +65,8 @@ Neither behavior provides exactly-once tools, output or billing.
 
 Licensed under the [MIT License][license].
 
-[install]: https://github.com/Seia-Yurizono/ciallopa/blob/v0.1.1-rc.1/README.md#quick-start-linux-x86_64
-[recovery]: https://github.com/Seia-Yurizono/ciallopa/blob/v0.1.1-rc.1/docs/RECOVERY.md
-[deploy]: https://github.com/Seia-Yurizono/ciallopa/blob/v0.1.1-rc.1/docs/DEPLOYMENT.md
-[docs]: https://github.com/Seia-Yurizono/ciallopa/blob/v0.1.1-rc.1/docs/README.md
-[license]: https://github.com/Seia-Yurizono/ciallopa/blob/v0.1.1-rc.1/LICENSE
+[install]: https://github.com/Seia-Yurizono/ciallopa/blob/v0.1.1-rc.2/README.md#quick-start-linux-x86_64
+[recovery]: https://github.com/Seia-Yurizono/ciallopa/blob/v0.1.1-rc.2/docs/RECOVERY.md
+[deploy]: https://github.com/Seia-Yurizono/ciallopa/blob/v0.1.1-rc.2/docs/DEPLOYMENT.md
+[docs]: https://github.com/Seia-Yurizono/ciallopa/blob/v0.1.1-rc.2/docs/README.md
+[license]: https://github.com/Seia-Yurizono/ciallopa/blob/v0.1.1-rc.2/LICENSE

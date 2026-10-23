@@ -40,6 +40,10 @@ install -m 644 config.example.toml README.md LICENSE \
 tar --owner=0 --group=0 --numeric-owner --sort=name -C "$DIST" -czf "$DIST/$NAME.tar.gz" "$NAME"
 rm -rf "${DIST:?}/$NAME"
 
-cargo deb -p ciallopa --target "$TARGET" --no-build --no-strip --locked -o "$DIST/"
+# Keep the SemVer filename: GitHub rewrites Debian's prerelease `~` to `.`, which
+# would otherwise make the uploaded asset disagree with SHA256SUMS and download URLs.
+# The package's internal Debian version still uses `~` for correct upgrade ordering.
+cargo deb -p ciallopa --target "$TARGET" --no-build --no-strip --locked \
+    -o "$DIST/ciallopa_${VERSION}-1_amd64.deb"
 
 (cd "$DIST" && sha256sum -- *.tar.gz *.deb > SHA256SUMS && cat SHA256SUMS)

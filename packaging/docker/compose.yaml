@@ -8,7 +8,7 @@
 # Deployment, backups and image updates: ../../docs/DEPLOYMENT.md
 services:
   ciallopa:
-    image: ghcr.io/seia-yurizono/ciallopa:0.1.1-rc.1
+    image: ghcr.io/seia-yurizono/ciallopa:0.1.1-rc.2
     # Run as your own account so config/ and data/ stay editable without sudo: put the output
     # of `id -u`:`id -g` here. Without `user:` the image runs as uid 65532, and both
     # directories must then belong to 65532 (sudo install -d -o 65532 -g 65532 -m 700 config data).
