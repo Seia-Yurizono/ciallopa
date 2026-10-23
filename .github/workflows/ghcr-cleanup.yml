@@ -1,0 +1,46 @@
+name: ghcr-cleanup
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Preview only (uncheck to delete)
+        type: boolean
+        default: true
+  schedule:
+    - cron: '23 19 * * 0'
+  workflow_run:
+    workflows: [release]
+    types: [completed]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  cleanup:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Shared with the release docker job: never remove a digest being published.
+    concurrency:
+      group: ghcr-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Check cleanup retention rules
+        run: python3 scripts/ghcr-cleanup-test.py
+      - name: Keep the newest two tags and delete other versions
+        env:
+          GH_TOKEN: ${{ secrets.GHCR_CLEANUP_TOKEN || github.token }}
+          PACKAGE_OWNER_TYPE: ${{ github.event.repository.owner.type }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: |
+          args=()
+          if [[ "$DRY_RUN" != 'true' ]]; then args+=(--apply); fi
+          python3 scripts/ghcr-cleanup.py "${args[@]}"

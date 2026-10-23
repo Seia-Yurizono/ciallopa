@@ -1,0 +1,43 @@
+name: checks
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain (rust-toolchain.toml)
+        run: rustup toolchain install && rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - name: Tag matches the crate version
+        if: github.ref_type == 'tag'
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 --locked |
+            jq -r '.packages[] | select(.name == "ciallopa") | .version')
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match crate version $version"
+            exit 1
+          fi
+      - run: cargo fmt --all --check
+      - name: Container cleanup retention rules
+        run: python3 scripts/ghcr-cleanup-test.py
+      - name: UI state regressions
+        run: node scripts/ui-state-check.cjs
+      - name: Settings draft regressions
+        run: node scripts/settings-state-check.cjs
+      - name: Account snapshot regressions
+        run: node scripts/accounts-state-check.cjs
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+      - run: cargo test --locked -p ciallopa --example loadbench
