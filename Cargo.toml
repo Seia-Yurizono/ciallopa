@@ -1,0 +1,56 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/auth", "crates/routing", "crates/upstream", "crates/forward", "crates/server", "crates/usage"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.1-rc.1"
+license = "MIT"
+
+# Network stack pinned (=) to codex-rs Cargo.lock so the TLS/h2
+# fingerprint matches Codex CLI. Bump only together with codex-rs + rerun scripts/fp-check.sh.
+[workspace.dependencies]
+reqwest = { version = "=0.12.28", default-features = false, features = ["json", "rustls-tls", "rustls-tls-native-roots", "stream", "http2", "socks", "cookies"] }
+rustls = { version = "=0.23.45", default-features = false, features = ["aws_lc_rs", "std"] }
+hyper = "=1.11.1"
+hyper-util = { version = "=0.1.20", features = ["tokio"] }
+h2 = "=0.4.19"
+tokio-tungstenite = { version = "=0.28.0", features = ["proxy", "rustls-tls-native-roots"] }
+tokio = { version = "=1.52.3", features = ["full"] }
+axum = { version = "=0.8.8", features = ["ws"] }
+# Same features codex-rs enables (permessage-deflate on the Responses WS).
+tungstenite = { version = "0.27.0", features = ["deflate", "proxy"] }
+rand = "0.9"
+zstd = "0.13"
+base64 = "0.22"
+http = "1"
+bytes = "1"
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+thiserror = "2"
+async-trait = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+regex = "1"
+subtle = "2.6"
+tempfile = "3"
+arc-swap = "=1.9.0"
+notify = { version = "=8.2.0", default-features = false }
+toml_edit = { version = "=0.24.0", default-features = false, features = ["parse", "display"] }
+clap = { version = "4", features = ["derive", "env"] }
+ciallopa-core = { path = "crates/core" }
+ciallopa-auth = { path = "crates/auth" }
+ciallopa-routing = { path = "crates/routing" }
+ciallopa-upstream = { path = "crates/upstream" }
+ciallopa-forward = { path = "crates/forward" }
+ciallopa-usage = { path = "crates/usage" }
+
+# Same forks codex-rs patches in (Cargo.toml [patch.crates-io]).
+[patch.crates-io]
+tokio-tungstenite = { git = "https://github.com/openai-oss-forks/tokio-tungstenite", rev = "0e5b2d73aa18dd9f0a50ee9ff199d5aef7594186" }
+tungstenite = { git = "https://github.com/openai-oss-forks/tungstenite-rs", rev = "4fffad30fe373adbdcffab9545e9e9bf4f2fc19f" }
+
+[workspace.lints.clippy]
+unwrap_used = "warn"

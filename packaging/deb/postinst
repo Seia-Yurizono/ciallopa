@@ -1,0 +1,42 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "configure" ]; then
+    if ! getent group ciallopa >/dev/null; then
+        groupadd --system ciallopa
+    fi
+    if ! getent passwd ciallopa >/dev/null; then
+        useradd --system --gid ciallopa --home-dir /var/lib/ciallopa --no-create-home \
+            --shell /usr/sbin/nologin --comment "ciallopa proxy" ciallopa
+    fi
+    # The service owns both directories: settings and account changes from the management
+    # pages replace config.toml through a temporary file + rename in /etc/ciallopa.
+    # A dpkg-statoverride entry, if present, wins.
+    for d in /etc/ciallopa /var/lib/ciallopa; do
+        if ! dpkg-statoverride --list "$d" >/dev/null 2>&1; then
+            install -d -o ciallopa -g ciallopa -m 0750 "$d"
+        fi
+    done
+fi
+
+#DEBHELPER#
+
+if [ "$1" = "configure" ]; then
+    # Example price table shipped by earlier packages; prices are now pulled on request
+    # (settings page 「价格」 or `ciallopa prices sync --write`) into the service's data.
+    rm -f /etc/ciallopa/prices.example.toml
+fi
+
+if [ "$1" = "configure" ] && [ ! -e /etc/ciallopa/config.toml ]; then
+    # No secrets here: init generates the key and prints it to the terminal that runs it.
+    cat <<'EOF'
+
+ciallopa is installed. Next steps:
+  sudo ciallopa -c /etc/ciallopa/config.toml init      # config with a random API key
+  sudo -u ciallopa HOME=/var/lib/ciallopa ciallopa -c /etc/ciallopa/config.toml login
+  sudo systemctl start ciallopa
+
+EOF
+fi
+
+exit 0

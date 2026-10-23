@@ -1,0 +1,30 @@
+[package]
+name = "ciallopa-upstream"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+ciallopa-core = { workspace = true }
+reqwest = { workspace = true }
+rustls = { workspace = true }
+hyper = { workspace = true }
+h2 = { workspace = true }
+tokio-tungstenite = { workspace = true }
+tungstenite = { workspace = true }
+rand = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+http = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+arc-swap = { workspace = true }
+
+[[bin]]
+name = "fp-probe"
+path = "src/bin/fp_probe.rs"
+
+[lints]
+workspace = true

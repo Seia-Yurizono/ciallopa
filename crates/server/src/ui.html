@@ -1,0 +1,1135 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
+<title>ciallopa 概览</title>
+<style>
+/* ==== shared:begin (identical in ui.html, accounts.html, settings.html) ==== */
+/* spacing: 4px base, only --s1..--s6. Colour is used only for state. */
+:root{color-scheme:light;
+--s1:4px;--s2:8px;--s3:12px;--s4:16px;--s5:24px;--s6:32px;--r1:4px;--r2:8px;
+--bg:#f3f4f6;--surface:#fff;--surface-2:#f8f9fa;--line:#e3e5e8;--line-2:#cdd1d6;
+--fg:#16181d;--fg-2:#3d424b;--mut:#5f6673;--faint:#6b7280;--bar:#e6e8eb;--ctl:#878d96;--scrim:rgba(10,12,16,.45);
+--ok:#15803d;--ok-bg:#e9f6ee;--cool:#b45309;--cool-bg:#fdf3e1;--err:#c2410c;--err-bg:#fdeee8;
+--proxy:#6d28d9;--proxy-bg:#f1ebfd;--off:#5f6673;--off-bg:#eef0f2;--focus:#2563eb;--danger:#c42b1c;
+--font:system-ui,-apple-system,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+--mono:ui-monospace,"SF Mono",Menlo,Consolas,"Noto Sans Mono CJK SC",monospace;
+--fs-xs:11px;--fs-s:12px;--fs-m:13px;--fs-l:15px;--hdr:48px;--tabbar:0px;--shadow:0 8px 24px rgba(0,0,0,.14)}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){color-scheme:dark;
+--bg:#0e1013;--surface:#16191e;--surface-2:#1b1f25;--line:#272b33;--line-2:#363b45;
+--fg:#e7e9ec;--fg-2:#c3c8cf;--mut:#a1a8b3;--faint:#858c97;--bar:#272c34;--ctl:#6a717c;--scrim:rgba(0,0,0,.6);
+--ok:#4ade80;--ok-bg:#12261a;--cool:#fbbf24;--cool-bg:#2a210c;--err:#fb7a55;--err-bg:#2c1712;
+--proxy:#b79cff;--proxy-bg:#221a38;--off:#a1a8b3;--off-bg:#20242a;--focus:#7aa2ff;--danger:#b4321f;--shadow:0 8px 28px rgba(0,0,0,.55)}}
+:root[data-theme=dark]{color-scheme:dark;
+--bg:#0e1013;--surface:#16191e;--surface-2:#1b1f25;--line:#272b33;--line-2:#363b45;
+--fg:#e7e9ec;--fg-2:#c3c8cf;--mut:#a1a8b3;--faint:#858c97;--bar:#272c34;--ctl:#6a717c;--scrim:rgba(0,0,0,.6);
+--ok:#4ade80;--ok-bg:#12261a;--cool:#fbbf24;--cool-bg:#2a210c;--err:#fb7a55;--err-bg:#2c1712;
+--proxy:#b79cff;--proxy-bg:#221a38;--off:#a1a8b3;--off-bg:#20242a;--focus:#7aa2ff;--danger:#b4321f;--shadow:0 8px 28px rgba(0,0,0,.55)}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:var(--fs-m)/1.45 var(--font);-webkit-font-smoothing:antialiased}
+a{color:var(--fg)}
+a.tag{text-decoration:none}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+code,.mono{font-family:var(--mono);font-size:var(--fs-s)}
+.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+.mut{color:var(--mut)}.faint{color:var(--faint)}
+.sm{font-size:var(--fs-s)}.xs{font-size:var(--fs-xs)}
+.trunc{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.hide{display:none!important}
+.sp{flex:1}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.skip{position:absolute;left:var(--s2);top:-48px;z-index:50;background:var(--fg);color:var(--surface);padding:var(--s1) var(--s3);border-radius:var(--r1)}
+.skip:focus{top:var(--s2)}
+.c-ok{color:var(--ok)}.c-cool{color:var(--cool)}.c-err{color:var(--err)}.c-proxy{color:var(--proxy)}.c-off{color:var(--off)}
+/* shell */
+header{position:sticky;top:0;z-index:30;height:var(--hdr);display:flex;align-items:center;gap:var(--s4);padding:0 var(--s5);background:var(--surface);border-bottom:1px solid var(--line)}
+.brand{font-weight:650;font-size:var(--fs-l);letter-spacing:.2px;white-space:nowrap}
+nav.tabs{display:flex;gap:var(--s1);height:100%}
+nav.tabs a{display:flex;align-items:center;padding:0 var(--s3);color:var(--mut);text-decoration:none;font-weight:550;border-bottom:2px solid transparent;margin-bottom:-1px;white-space:nowrap}
+nav.tabs a:hover{color:var(--fg)}
+nav.tabs a[aria-current]{color:var(--fg);border-bottom-color:var(--fg)}
+nav.tabs a .cnt{margin-left:var(--s1);font-size:var(--fs-xs);color:var(--faint);font-variant-numeric:tabular-nums}
+.hstat{display:flex;align-items:center;gap:var(--s3);font-size:var(--fs-s);color:var(--mut);white-space:nowrap;margin-left:auto}
+main{max-width:1440px;margin:0 auto;padding:var(--s5)}
+section{margin-bottom:var(--s6)}
+section:last-child{margin-bottom:0}
+.sh{display:flex;align-items:baseline;gap:var(--s2);margin-bottom:var(--s2);min-height:28px;flex-wrap:wrap}
+.sh h2{margin:0;font-size:var(--fs-l);font-weight:620}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--r2)}
+.tw{overflow-x:auto}
+.row{display:flex;align-items:center;gap:var(--s2);flex-wrap:wrap}
+.nw{flex-wrap:nowrap}
+/* controls */
+button,select,input,textarea{font:inherit;color:inherit}
+button,.btn{display:inline-flex;align-items:center;justify-content:center;gap:var(--s1);height:28px;padding:0 var(--s3);border:1px solid var(--line-2);border-radius:var(--r1);background:var(--surface);font-size:var(--fs-s);font-weight:550;cursor:pointer;white-space:nowrap;touch-action:manipulation;text-decoration:none;color:var(--fg)}
+button:hover,.btn:hover{background:var(--surface-2)}
+button:disabled{opacity:.45;cursor:not-allowed}
+button.xs,.btn.xs{height:24px;padding:0 var(--s2)}
+button.pri{background:var(--fg);border-color:var(--fg);color:var(--surface)}
+button.pri:hover{background:var(--fg-2)}
+button.ghost{border-color:transparent;background:transparent;color:var(--fg-2)}
+button.ghost:hover{background:var(--surface-2)}
+button.danger{color:var(--err);border-color:color-mix(in srgb,var(--err) 45%,transparent);background:transparent}
+button.danger:hover{background:var(--err-bg)}
+button.danger.solid{background:var(--danger);border-color:var(--danger);color:#fff}
+button.danger.solid:hover{background:color-mix(in srgb,var(--danger) 85%,#000)}
+button.armed{background:var(--cool-bg);border-color:var(--cool);color:var(--cool)}
+button.busy{opacity:.75;cursor:progress}
+button.busy:before{content:"";flex:none;width:10px;height:10px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+select,input:not([type=checkbox]),textarea{height:28px;padding:0 var(--s2);border:1px solid var(--ctl);border-radius:var(--r1);background:var(--surface);font-size:var(--fs-s);max-width:100%;min-width:0}
+textarea{height:auto;padding:var(--s2);font-family:var(--mono);width:100%;resize:vertical}
+input[type=number]{width:64px;text-align:right;font-variant-numeric:tabular-nums}
+input[type=checkbox]{width:14px;height:14px;margin:0;accent-color:var(--fg)}
+label.chk{display:inline-flex;align-items:center;gap:var(--s1);font-size:var(--fs-s);color:var(--fg-2);white-space:nowrap;cursor:pointer}
+.sw{appearance:none;-webkit-appearance:none;width:28px!important;height:16px!important;border-radius:8px;background:var(--ctl);position:relative;margin:0;cursor:pointer;flex:none}
+.sw:after{content:"";position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:#fff;transition:transform .15s}
+.sw:checked{background:var(--ok)}.sw:checked:after{transform:translateX(12px)}
+.sw:disabled{opacity:.5}
+/* state tags */
+.tag{display:inline-flex;align-items:center;gap:var(--s1);height:20px;padding:0 var(--s2);border-radius:var(--r1);font-size:var(--fs-xs);font-weight:600;white-space:nowrap;background:var(--off-bg);color:var(--fg-2)}
+.tag.dot:before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.tag.ok{background:var(--ok-bg);color:var(--ok)}.tag.cool{background:var(--cool-bg);color:var(--cool)}.tag.err{background:var(--err-bg);color:var(--err)}
+.tag.proxy{background:var(--proxy-bg);color:var(--proxy)}.tag.off{background:var(--off-bg);color:var(--off)}
+.tag.line{background:transparent;box-shadow:inset 0 0 0 1px var(--line-2);color:var(--mut)}
+.sdot{display:inline-block;width:8px;height:8px;border-radius:50%;flex:none;background:var(--off)}
+.sdot.ok{background:var(--ok)}.sdot.cool{background:var(--cool)}.sdot.err{background:var(--err)}.sdot.off{background:transparent;box-shadow:inset 0 0 0 2px var(--off)}
+/* quota bar: shows REMAINING */
+.q{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:var(--s2);min-width:0}
+.q .lb{font-size:var(--fs-xs);color:var(--mut);min-width:2em}
+.q .pc{font-size:var(--fs-s);font-weight:600;font-variant-numeric:tabular-nums;text-align:right;min-width:3.2em}
+.bar{height:6px;background:var(--bar);border-radius:3px;overflow:hidden;min-width:48px}
+.bar>i{display:block;height:100%;background:var(--ok);border-radius:3px}
+.bar>i.w{background:var(--cool)}.bar>i.b{background:var(--err)}
+.pc.w{color:var(--cool)}.pc.b{color:var(--err)}
+.q.stale .bar>i{opacity:.4}.q.stale .pc{color:var(--mut)}
+/* tables */
+table{border-collapse:collapse;width:100%;font-size:var(--fs-m)}
+th,td{padding:var(--s2) var(--s3);text-align:left;vertical-align:middle;border-bottom:1px solid var(--line)}
+thead th{font-size:var(--fs-xs);font-weight:600;color:var(--mut);background:var(--surface-2);white-space:nowrap}
+th[title]{text-decoration:underline dotted var(--line-2);text-underline-offset:3px;cursor:help}
+tbody tr:last-child>td{border-bottom:0}
+tbody tr:hover>td{background:var(--surface-2)}
+th.n,td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+tr.hl>td{background:color-mix(in srgb,var(--focus) 9%,var(--surface))!important}
+tr.hl>td:first-child{box-shadow:inset 2px 0 0 var(--focus)}
+.who{display:flex;flex-direction:column;min-width:0;max-width:240px}
+.who b{font-weight:600}
+.empty{padding:var(--s6) var(--s4);text-align:center;color:var(--mut)}
+.empty b{display:block;color:var(--fg-2);font-size:var(--fs-m);margin-bottom:var(--s1)}
+.skel{display:block;height:12px;margin:var(--s2) 0;border-radius:var(--r1);background:var(--bar);animation:sk 1.2s ease-in-out infinite alternate}
+@keyframes sk{from{opacity:.5}to{opacity:1}}
+[aria-busy=true] tbody{opacity:.6;transition:opacity .2s}
+/* banners, toasts */
+.banner{display:flex;gap:var(--s2);align-items:baseline;flex-wrap:wrap;padding:var(--s2) var(--s3);border-radius:var(--r2);margin-bottom:var(--s4);font-size:var(--fs-s);border:1px solid color-mix(in srgb,var(--cool) 30%,transparent);background:var(--cool-bg)}
+.banner b{white-space:nowrap}
+.banner.err{background:var(--err-bg);border-color:color-mix(in srgb,var(--err) 30%,transparent)}
+.banner.err b{color:var(--err)}.banner.cool b{color:var(--cool)}
+.banner:empty{display:none}
+#toasts{position:fixed;right:var(--s5);bottom:var(--s5);z-index:60;display:flex;flex-direction:column;gap:var(--s2);align-items:flex-end;pointer-events:none;max-width:calc(100vw - 2 * var(--s5))}
+.toast{pointer-events:auto;display:flex;gap:var(--s3);align-items:center;max-width:440px;min-height:36px;padding:var(--s2) var(--s3);border-radius:var(--r2);background:var(--fg);color:var(--surface);box-shadow:var(--shadow);font-size:var(--fs-m);white-space:pre-line;overflow-wrap:anywhere}
+.toast.err{background:var(--danger);color:#fff}
+.toast span{flex:1}
+.toast button{height:28px;border-color:color-mix(in srgb,var(--surface) 40%,transparent);background:transparent;color:inherit;font-weight:650}
+.toast.out{opacity:0;transition:opacity .25s}
+.toast button.x{width:28px;padding:0;border-color:transparent}
+/* dialogs (bottom sheet on phone) */
+.modal{position:fixed;inset:0;z-index:40;display:flex;align-items:flex-start;justify-content:center;padding:10vh var(--s4) var(--s4);background:var(--scrim)}
+.mbox{width:min(480px,100%);max-height:84vh;overflow:auto;background:var(--surface);border-radius:var(--r2);border:1px solid var(--line);padding:var(--s4);display:flex;flex-direction:column;gap:var(--s3)}
+.mbox.dz{border-top:3px solid var(--err)}
+.mbox.wide{width:min(880px,100%)}
+.mbox h3{margin:0;font-size:var(--fs-l);font-weight:650;overflow-wrap:anywhere}
+.mbox p{margin:0}
+.warnp{padding:var(--s2) var(--s3);border-radius:var(--r1);background:var(--err-bg)}
+.hintp{padding:var(--s2) var(--s3);border-radius:var(--r1);background:var(--cool-bg);color:var(--fg)}
+.hintp b{color:var(--cool)}
+.kv{display:grid;grid-template-columns:auto minmax(0,1fr);gap:var(--s1) var(--s3);font-size:var(--fs-s);margin:0}
+.kv dt{color:var(--mut)}.kv dd{margin:0;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.mact{display:flex;gap:var(--s2);justify-content:flex-end;flex-wrap:wrap}
+.mact .alt{margin-right:auto}
+.res{font-size:var(--fs-s);white-space:pre-wrap;overflow-wrap:anywhere}
+.res:not(:empty){padding:var(--s2) var(--s3);border-radius:var(--r1);background:var(--surface-2);border:1px solid var(--line)}
+/* login */
+#login{max-width:400px;margin:14vh auto 0;padding:var(--s5);background:var(--surface);border:1px solid var(--line);border-radius:var(--r2)}
+#login h1{font-size:var(--fs-l);margin:0 0 var(--s2)}
+#login form{display:flex;gap:var(--s2);margin-top:var(--s4)}
+#login input{flex:1;height:40px}
+#login button{height:40px}
+#lerr{margin-top:var(--s2);color:var(--err)}
+.m-only{display:none}
+@media (prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
+@media (max-width:760px){
+:root{--hdr:44px;--tabbar:52px}
+header{padding:0 var(--s3);gap:var(--s2)}
+nav.tabs{position:fixed;left:0;right:0;bottom:0;height:calc(var(--tabbar) + env(safe-area-inset-bottom));z-index:30;background:var(--surface);border-top:1px solid var(--line);gap:0;padding-bottom:env(safe-area-inset-bottom)}
+nav.tabs a{flex:1;justify-content:center;border-bottom:0;border-top:2px solid transparent;margin:0;font-size:var(--fs-m)}
+nav.tabs a[aria-current]{border-top-color:var(--fg)}
+.hstat{gap:var(--s2)}
+main{padding:var(--s3) var(--s3) calc(var(--tabbar) + var(--s5))}
+section{margin-bottom:var(--s5)}
+.d-only{display:none!important}.m-only{display:revert}
+#toasts{left:var(--s3);right:var(--s3);bottom:calc(var(--tabbar) + var(--s2));align-items:stretch;max-width:none}.toast{max-width:none}
+.modal{align-items:flex-end;padding:var(--s3) var(--s3) calc(var(--s3) + env(safe-area-inset-bottom))}
+select,input:not([type=checkbox]),textarea{font-size:16px}select,input:not([type=checkbox]){height:40px}
+.toast button{height:40px}.toast button.x{width:40px}
+#rmore,#devbtn,#imf button,#kf button,#pcheck{height:40px}
+.mbox{max-height:88vh}
+.mact button{flex:1;height:44px;font-size:var(--fs-m)}
+.mact .alt{margin-right:0;flex-basis:100%}
+/* stacked lists: table rows become 2-3 line items */
+table.stk,table.stk tbody{display:block}
+table.stk thead{display:none}
+table.stk tr{display:grid;gap:var(--s1) var(--s2);padding:var(--s2) var(--s3);border-bottom:1px solid var(--line)}
+table.stk tbody tr:last-child{border-bottom:0}
+table.stk td{display:block;padding:0;border:0;min-width:0}
+table.stk tbody tr:hover>td{background:none}
+table.stk tr.hl{background:color-mix(in srgb,var(--focus) 9%,var(--surface));box-shadow:inset 2px 0 0 var(--focus)}
+table.stk tr.hl>td{background:none!important;box-shadow:none!important}
+}
+@media (pointer:coarse){
+header button,header a.tag,.cchip,label.chk,.toc a,.pop .pf a,.pop button,#acc .stack button,#acc .meta-c button,.sh button,.ptest button,#reload,#mstrip button,.banner a{position:relative}
+header button:after,header a.tag:after,.cchip:after,label.chk:after,.toc a:after,.pop .pf a:after,.pop button:after,#acc .stack button:after,#acc .meta-c button:after,.sh button:after,.ptest button:after,#reload:after,#mstrip button:after,.banner a:after{content:"";position:absolute;left:-2px;right:-2px;top:50%;height:44px;transform:translateY(-50%)}
+}
+main.noadm>:not(#noadm){display:none!important}
+#noadm{display:flex;flex-direction:column;gap:var(--s2);align-items:center;margin-top:var(--s6)}
+/* ==== shared:end ==== */
+/* overview */
+.fbar{position:sticky;top:var(--hdr);z-index:15;display:flex;align-items:center;gap:var(--s3);margin:calc(-1 * var(--s5)) 0 var(--s3);padding:var(--s3) 0 var(--s2);background:var(--bg);border-bottom:1px solid var(--line)}
+.fbar .fl{display:inline-flex;align-items:center;gap:var(--s2);font-size:var(--fs-s);color:var(--mut);white-space:nowrap}
+.strip{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--r2);overflow:hidden;margin-bottom:var(--s5)}
+.kpi{background:var(--surface);padding:var(--s2) var(--s3);min-width:0}
+.kpi .k{font-size:var(--fs-xs);color:var(--mut);font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kpi .v{font-size:20px;font-weight:650;font-variant-numeric:tabular-nums;line-height:28px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kpi .v small{font-size:var(--fs-s);font-weight:500;color:var(--mut);margin-left:var(--s1)}
+.kpi .s{font-size:var(--fs-xs);color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.scope{margin-bottom:var(--s4)}
+.scope summary{padding:var(--s2) var(--s3);cursor:pointer;font-size:var(--fs-s);color:var(--mut)}
+.scope summary strong{font-weight:550;color:var(--fg-2)}
+.scope .filters{border-top:1px solid var(--line);border-bottom:0}
+.scope .filters label{display:flex;align-items:center;gap:var(--s2);font-size:var(--fs-s);color:var(--mut)}
+.scope .filters input{width:160px}
+.filterchips{display:flex;align-items:center;flex-wrap:wrap;gap:var(--s2);padding:var(--s2) var(--s3)}
+.scope>.filterchips{border-top:1px solid var(--line)}
+#recordchips{border-bottom:1px solid var(--line)}
+.filterchip{display:inline-flex;align-items:center;gap:var(--s2);max-width:100%;min-width:0;height:auto;min-height:32px;padding:var(--s1) var(--s2);font-size:var(--fs-xs);background:var(--surface-2)}
+.filterchip .filterlabel{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.filterchip .filterremove{flex:none;color:var(--mut);font-size:16px}
+.quiet{font-size:var(--fs-xs);color:var(--mut);margin:-12px 0 var(--s5);display:flex;gap:var(--s2);flex-wrap:wrap}
+.statlink{padding:0;border:0;height:auto;background:transparent!important;font:inherit;color:inherit;text-align:left}
+.statlink:hover{text-decoration:underline;text-underline-offset:3px}
+.kpi .k,.kpi .s{white-space:normal}
+.kpi .s{min-height:32px}
+.kpi .v{margin:var(--s1) 0}
+.scope-note{padding:var(--s2) var(--s3);font-size:var(--fs-s);color:var(--mut);border-bottom:1px solid var(--line);display:flex;gap:var(--s2);align-items:center;flex-wrap:wrap}
+.lookup{display:flex;gap:var(--s1)}
+.lookup input{width:164px;font-family:var(--mono)}
+#lookupresult{flex-basis:100%;font-size:var(--fs-s);color:var(--mut)}#lookupresult:empty{display:none}
+.request-extra{display:block}
+.request-extra summary{font-size:var(--fs-s);color:var(--mut);cursor:pointer;padding:var(--s1)}
+.request-extra[open]{flex-basis:100%}
+.request-extra>.row{padding-top:var(--s2)}
+#rwindow{background:var(--surface-2)}
+#rec .rid{font-size:10px;color:var(--mut);display:block;font-family:var(--mono)}
+.detail-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--s3);padding:var(--s3);background:var(--surface-2);border-radius:var(--r1)}
+.detail-stats .v{font-size:var(--fs-l);font-variant-numeric:tabular-nums;margin-top:var(--s1)}
+.detail-meta{padding:var(--s2) 0}
+.rowA{display:grid;grid-template-columns:auto minmax(0,1fr);gap:var(--s5);align-items:start;margin-bottom:var(--s6)}
+.rowA>section{margin-bottom:0;min-width:0}
+@media (max-width:1180px){.rowA{grid-template-columns:minmax(0,1fr)}}
+#quota td{padding-top:var(--s1);padding-bottom:var(--s1)}
+#quota td.qc{width:150px}
+#quota .rt{display:block;font-size:var(--fs-xs);color:var(--mut);line-height:16px;font-variant-numeric:tabular-nums;white-space:nowrap}
+#quota .q{margin-top:var(--s1)}
+#quota .who{max-width:220px}
+#quota .who a{color:var(--fg);font-weight:600;text-decoration:none}
+#quota .who a:hover{text-decoration:underline}
+#quota .sub{font-size:var(--fs-xs);line-height:16px}
+#quota .sdot{margin-top:var(--s1);align-self:flex-start}
+#quota .nod{font-size:var(--fs-xs);color:var(--faint)}
+.cchip{height:24px;padding:0 var(--s2);font-size:var(--fs-xs);font-weight:600;font-variant-numeric:tabular-nums}
+.cchip[aria-expanded=true]{background:var(--surface-2);border-color:var(--fg-2)}
+.cchip.soon{color:var(--cool);border-color:color-mix(in srgb,var(--cool) 50%,transparent)}
+.cchip.none{color:var(--faint);border-style:dashed}
+/* reset-card popover: hover = read-only preview; click = pinned, non-modal */
+.pop{position:absolute;z-index:35;width:320px;background:var(--surface);border:1px solid var(--line-2);border-radius:var(--r2);box-shadow:var(--shadow);padding:var(--s3);display:flex;flex-direction:column;gap:var(--s2);font-size:var(--fs-s)}
+.pop:focus{outline:none}
+.pop .ph{display:flex;align-items:baseline;gap:var(--s2);min-width:0}
+.pop .ph b{font-size:var(--fs-m);flex:none}
+.pop ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--s1);max-height:40vh;overflow:auto}
+.pop li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:0 var(--s2);align-items:center;padding:var(--s1) var(--s2);border-radius:var(--r1);border:1px solid var(--line)}
+.pop li .ex{font-variant-numeric:tabular-nums}
+.pop li.near{background:var(--surface-2);border-color:var(--fg-2)}
+.pop li.near.soon{background:var(--cool-bg);border-color:color-mix(in srgb,var(--cool) 50%,transparent)}
+.pop li.used{opacity:.65}
+.pop li .tt{grid-column:1/-1;font-size:var(--fs-xs);color:var(--mut)}
+.pop .pf{display:flex;gap:var(--s2);align-items:center;border-top:1px solid var(--line);padding-top:var(--s2)}
+.pop .pf a{font-size:var(--fs-s)}
+.pop:not(.pinned) .pin-only{display:none}
+.pop.pinned .prev-only{display:none}
+.pop .x{width:24px;padding:0}
+.pop-bg{position:fixed;inset:0;z-index:34;background:rgba(10,12,16,.3)}
+/* charts, summary */
+.chart{padding:var(--s3);position:relative}
+.chart svg{display:block;width:100%;height:auto}
+.legend{display:flex;gap:var(--s1) var(--s3);flex-wrap:wrap;font-size:var(--fs-xs);color:var(--mut);align-items:center}
+.legend i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:var(--s1)}
+.lg-req{background:var(--line-2)}.lg-err{background:var(--err)}.lg-tok{background:var(--fg-2);height:2px!important}
+.ax{fill:var(--faint);font-size:10px;font-variant-numeric:tabular-nums}
+.gl{stroke:var(--line)}
+.b-req{fill:var(--line-2)}.b-err{fill:var(--err)}.ln{fill:none;stroke:var(--fg-2);stroke-width:1.5}
+.b-now{fill:none;stroke:var(--line-2);stroke-dasharray:2 2}
+.hit{fill:transparent}.hit:hover{fill:color-mix(in srgb,var(--fg) 5%,transparent)}
+.hit{cursor:pointer}.hit:focus{outline:none;stroke:var(--focus);stroke-width:1.5;fill:color-mix(in srgb,var(--focus) 8%,transparent)}
+.b-cancel{fill:var(--ctl)}
+#ctip,#tt{position:fixed;z-index:70;pointer-events:none;background:var(--fg);color:var(--surface);border-radius:var(--r1);padding:var(--s1) var(--s2);font-size:var(--fs-s);line-height:1.45;box-shadow:var(--shadow)}
+#ctip{position:absolute;white-space:pre}
+#tt{white-space:pre-line;overflow-wrap:anywhere;max-width:min(360px,calc(100vw - 16px))}
+#sum tr.tot td{font-weight:650;background:var(--surface-2)}
+#sum td.l{max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wi{margin-left:var(--s1);color:var(--cool);cursor:help}
+/* recent requests */
+.filters{display:flex;gap:var(--s2);flex-wrap:wrap;align-items:center;padding:var(--s2) var(--s3);border-bottom:1px solid var(--line)}
+.filters input[type=text]{width:112px}
+#rec td{white-space:nowrap}
+#rec td.err{white-space:normal;min-width:140px;max-width:220px}
+#rec td.key{max-width:108px}
+#rec td.m{max-width:200px}
+#rec td.m>span{display:block;overflow:hidden;text-overflow:ellipsis}
+#rec td.a{max-width:110px;overflow:hidden;text-overflow:ellipsis}
+#rec tr.e>td:first-child{box-shadow:inset 2px 0 0 var(--err)}
+#rec tr.e.px>td:first-child{box-shadow:inset 2px 0 0 var(--proxy)}
+#rec tr.e.rl>td:first-child{box-shadow:inset 2px 0 0 var(--cool)}
+#rec tr.dim>td{color:var(--faint)}
+#rec tr.dt{cursor:pointer}
+#rec tr.dt:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
+.st{display:inline-block;min-width:32px;text-align:center;font-size:var(--fs-xs);font-weight:600;font-variant-numeric:tabular-nums;border-radius:var(--r1);line-height:20px;background:var(--off-bg);color:var(--fg-2)}
+.st.s4,.st.s5{background:var(--err-bg);color:var(--err)}.st.s429{background:var(--cool-bg);color:var(--cool)}
+.chip{font-size:var(--fs-xs);color:var(--mut);margin-left:var(--s1);white-space:nowrap}
+.chip.fast{color:var(--cool)}.chip.dg{color:var(--cool);text-decoration:line-through}
+.more{font-size:var(--fs-xs);color:var(--mut);margin-left:var(--s1);white-space:nowrap}
+#rec tr.dt:hover .more{color:var(--fg);text-decoration:underline}
+.rm{display:block;font-size:var(--fs-xs);color:var(--mut)}.rm.mm{color:var(--err)}
+.ef{display:block}.ef.fb{font-style:italic}.ef small{font-size:var(--fs-xs);color:var(--mut);margin-left:var(--s1);font-style:normal}.ef.fw{font-size:var(--fs-xs);color:var(--mut)}
+.pager{display:flex;gap:var(--s3);align-items:center;justify-content:center;padding:var(--s2) var(--s3);border-top:1px solid var(--line)}
+.pager:has(#rmore.hide):has(#rpage:empty){display:none}
+.foot{display:flex;gap:var(--s1) var(--s3);flex-wrap:wrap;font-size:var(--fs-xs);color:var(--mut);margin-top:var(--s3)}
+#cfp{cursor:help}
+/* detail dialog */
+#dp pre{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r1);padding:var(--s2) var(--s3);font:var(--fs-s)/1.55 var(--mono);white-space:pre-wrap;word-break:break-all;margin:0;max-height:40vh;overflow:auto}
+#dp h3{display:flex;gap:var(--s2);align-items:center}#dp h3 span{flex:1;min-width:0}
+#dmeta{font-family:var(--mono);font-size:var(--fs-xs)}
+#dmsg{font-size:var(--fs-s);white-space:pre-wrap;word-break:break-all}
+#dmsg:not(:empty){padding:var(--s2) var(--s3);border-radius:var(--r1);background:var(--surface-2)}
+#dmsg.error{color:var(--err);background:var(--err-bg)}
+.detail-load{display:flex;align-items:center;flex-wrap:wrap;gap:var(--s2);font-size:var(--fs-s);color:var(--mut)}
+#dstatus{flex:1 1 200px;min-width:0;overflow-wrap:anywhere}
+#dretry[aria-disabled=true]{opacity:.6;cursor:wait}
+.lab{font-size:var(--fs-s);font-weight:600;color:var(--mut)}
+.tl{margin:0;padding:0;list-style:none;font-size:var(--fs-s)}
+.tl li{padding:var(--s1) 0 var(--s2) var(--s4);border-left:2px solid var(--line);position:relative;margin-left:var(--s1)}
+.tl li:last-child{border-left-color:transparent}
+.tl li:before{content:"";position:absolute;left:-6px;top:7px;width:10px;height:10px;border-radius:50%;background:var(--mut);box-shadow:0 0 0 3px var(--surface)}
+.tl li.ok:before{background:var(--ok)}.tl li.bad:before{background:var(--err)}
+.tl code{font-size:var(--fs-xs);padding:0 var(--s1);border-radius:var(--r1);background:var(--surface-2)}
+@media (max-width:760px){
+.strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}
+.strip .kpi{padding:var(--s2)}
+.strip .kpi .s{min-height:0}
+.strip .kpi .v{font-size:20px}
+.strip .kpi .v small{font-size:10px;margin-left:2px}
+.scope .filters label{width:100%;display:grid;grid-template-columns:3em minmax(0,1fr)}
+.scope .filters input,.scope .filters select{width:100%}
+.quiet{margin-top:-12px}
+.lookup{width:100%;margin-left:0}.lookup input{flex:1;width:auto}.lookup button{height:40px}
+.detail-stats{grid-template-columns:repeat(2,minmax(0,1fr))}
+#dp h3{flex-wrap:wrap}#dp h3 span{flex:1 0 100%}
+#dp h3 button,#dp .row>button,#dretry,.filterchip{min-height:40px}
+.filters input[type=text]{flex:1 1 40%;width:auto}
+.fbar{margin:calc(-1 * var(--s3)) 0 var(--s3);padding:var(--s2) 0;gap:var(--s2);flex-wrap:wrap}
+.fbar .fl{flex:0 0 auto;min-width:0}.fbar select{width:132px;min-width:0}
+.fbar>.sp{display:none}#scopewhen{flex:1;white-space:nowrap}
+#scopewhen[data-fixed=true]{order:3;flex-basis:100%;white-space:normal}
+.fbar .chk{min-height:40px}
+.rowA{grid-template-columns:minmax(0,1fr);gap:var(--s5);margin-bottom:var(--s5)}
+/* quota: line 1 = dot + name + card chip; line 2 = both bars with reset text */
+#quota tr{grid-template-columns:repeat(4,minmax(0,1fr));grid-template-areas:"who who who rc" "q5 q5 qw qw";gap:var(--s1) var(--s3)}
+#quota td.who-c{grid-area:who}#quota td.q5{grid-area:q5}#quota td.qw{grid-area:qw}#quota td.rc-c{grid-area:rc;text-align:right}
+#quota td{padding:0}
+#quota .who{max-width:none}
+#quota .sub:empty,#quota .sub:has(>.d-only:only-child){display:none}
+#quota td.qc{width:auto;display:grid;grid-template-columns:auto auto minmax(0,1fr);grid-template-areas:"lb pc rt" "bar bar bar";gap:0 var(--s1);align-items:baseline}
+#quota td.qc .q{display:contents}
+#quota td.qc .lb{grid-area:lb;min-width:0}#quota td.qc .pc{grid-area:pc;min-width:0;text-align:left}
+#quota td.qc .bar{grid-area:bar;margin-top:var(--s1);min-width:0}
+#quota td.qc .rt{grid-area:rt;text-align:right;overflow:hidden;text-overflow:ellipsis}
+#quota td.qc .nod{grid-column:1/-1}
+.pop{position:fixed;left:var(--s2)!important;right:var(--s2);top:auto!important;bottom:calc(var(--tabbar) + var(--s2));width:auto;padding:var(--s4)}
+.pop button{height:40px;font-size:var(--fs-m)}
+.pop .x{width:40px}
+#sum th.x,#sum td.x{display:none}
+/* recent requests: line 1 = time · status · error · duration; line 2 = account · model */
+#rec tr{grid-template-columns:auto auto minmax(0,1fr) auto;grid-template-areas:"t s er d" "a a m m"}
+#rec td.t{grid-area:t}#rec td.s{grid-area:s}#rec td.err{grid-area:er;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#rec td.dur{grid-area:d}#rec td.a{grid-area:a;color:var(--mut);font-size:var(--fs-s);overflow:hidden;text-overflow:ellipsis}#rec td.m{grid-area:m;text-align:right;color:var(--mut);font-size:var(--fs-s);overflow:hidden;text-overflow:ellipsis}
+#rec td.x{display:none}
+#rec .more,#rec .rm{display:none}
+#rec tr.e{box-shadow:inset 2px 0 0 var(--err)}#rec tr.e.px{box-shadow:inset 2px 0 0 var(--proxy)}#rec tr.e.rl{box-shadow:inset 2px 0 0 var(--cool)}
+#rec tr.e>td:first-child{box-shadow:none}
+#rec td[colspan]{grid-column:1/-1}#rec tr:has(td[colspan]){display:block}
+.filters select{flex:1 1 40%;min-width:0}
+}
+</style>
+</head>
+<body>
+<div id="login" class="hide">
+  <h1>ciallopa 管理面板</h1>
+  <div class="mut sm">请输入访问密钥（与代理的 API key 相同）。只保存在本标签页的 sessionStorage 中，三个页面共用，关闭标签页即清除。</div>
+  <form id="lf"><input id="key" type="password" autocomplete="current-password" placeholder="sk-..." required aria-label="访问密钥"><button class="pri" type="submit">进入</button></form>
+  <div id="lerr" class="sm" role="alert"></div>
+</div>
+<div id="app" class="hide">
+<header><a class="skip" href="#main">跳到主要内容</a>
+  <span class="brand">ciallopa</span>
+  <nav class="tabs" aria-label="页面"><a href="/ui" data-p="overview" aria-current="page">概览</a><a href="/ui/accounts" data-p="accounts">账号<span class="cnt"></span></a><a href="/ui/settings" data-p="settings">设置</a></nav>
+  <div class="hstat"><a id="egress" class="hide" href="/ui/settings#g-upstream_opts"></a><span id="upd" class="d-only"></span><label class="chk d-only" title="每 15 秒自动刷新（标签页不可见或有对话框打开时暂停）"><input type="checkbox" id="auto" class="sw"><span>自动刷新</span></label>
+  <button id="refresh" class="xs" type="button" title="立即刷新">刷新</button><button id="theme" class="xs ghost" type="button"></button><button id="logout" class="xs ghost" type="button" title="清除本标签页保存的密钥（三个页面共用）">退出</button></div>
+</header>
+<main id="main" tabindex="-1">
+  <div class="fbar" role="group" aria-label="时间范围">
+    <label class="fl"><span class="d-only">范围</span><select id="range" aria-label="时间段"><option value="1h">最近 1 小时</option><option value="24h" selected>最近 24 小时</option><option value="7d">最近 7 天</option><option value="30d">最近 30 天</option></select></label>
+    <span class="xs mut" id="scopewhen"></span><span class="sp"></span><span class="m-only"><label class="chk" title="每 15 秒自动刷新"><input id="mauto" type="checkbox" class="sw" aria-label="每 15 秒自动刷新"><span>自动</span></label></span><button id="scopefreeze" class="ghost xs" type="button" title="固定当前时间范围，方便比较和分享">固定时间</button>
+  </div>
+  <div id="msg" class="banner err" role="alert"></div>
+  <div id="noacc" class="banner err hide" role="status"></div>
+  <div class="scope panel"><details id="scopefilters"><summary id="scopetoggle"><strong>筛选范围</strong><span id="scopesummary"> · 所有模型与账号</span></summary>
+    <div class="filters" aria-label="筛选概况、趋势和请求">
+      <label>账号<select id="facct" aria-label="按账号筛选"><option value="">全部账号</option></select></label>
+      <label>模型<input id="fmodel" type="text" placeholder="模型名称" aria-label="按请求模型筛选"></label>
+      <label>密钥<input id="fkey" type="text" placeholder="密钥标签" aria-label="按密钥标签筛选"></label>
+      <label>实例<input id="finstance" type="text" placeholder="实例名称" aria-label="按实例筛选"></label>
+      <button id="scopeclear" class="ghost xs hide" type="button">清除范围筛选</button>
+    </div>
+  </details><div class="filterchips hide" id="scopechips" role="group" aria-label="已应用范围筛选，影响概况、趋势和请求"></div></div>
+  <div class="strip" id="strip" aria-label="所选时间段概况"></div>
+  <div class="quiet" id="metricnote"></div>
+  <div class="quiet hide" id="runtime"></div>
+  <section id="st" aria-busy="true">
+    <div class="sh"><h2>调用趋势</h2><select id="tmetric" aria-label="趋势指标"><option value="requests">请求</option><option value="tokens">Token</option><option value="cost">估算费用</option></select><select id="tmode" aria-label="趋势粒度"><option value="auto">自动粒度</option><option value="day">按天</option><option value="hour">按小时</option></select><span class="sp"></span><span class="mut sm" id="trange"></span></div>
+    <div class="panel chart" id="chart"><svg id="svg" viewBox="0 0 1200 160" role="group" aria-label="时间趋势；选择时间桶查看请求"></svg><div id="ctip" class="hide" role="tooltip"></div></div>
+    <div class="foot"><span id="chartlegend">选择时间段查看请求</span></div>
+  </section>
+  <section id="sr" aria-busy="true">
+    <div class="sh"><h2>请求</h2><span class="mut sm" id="rcount"></span><span class="sp"></span><button id="lookupshow" class="ghost xs" type="button" aria-expanded="false" aria-controls="lookup">按 ID 查找</button><form class="lookup hide" id="lookup"><input id="recordid" type="text" placeholder="16 位记录 ID" aria-label="16 位记录 ID" maxlength="16" pattern="[0-9a-fA-F]{16}" required><button class="ghost xs" type="submit">查找</button></form><div id="lookupresult" role="status"></div></div>
+    <div class="panel">
+      <div class="scope-note hide" id="rwindow"><span id="rwindowtext"></span><button id="rwindowclear" class="ghost xs" type="button">返回整个范围</button></div>
+      <div class="filters" role="search" aria-label="仅筛选请求列表">
+        <span class="mut xs">请求筛选</span>
+        <select id="foutcome" aria-label="按请求结果筛选"><option value="">全部记录（含预热）</option><option value="business">业务请求（不含预热）</option><option value="completed">完成</option><option value="failed">失败</option><option value="cancelled">客户端取消</option><option value="incomplete">未完成 · incomplete</option><option value="unknown">结果未知 · 观察不完整</option><option value="prewarm">预热</option></select>
+        <details class="request-extra" id="recordextra"><summary>更多筛选<span id="fsummary"></span></summary><div class="row">
+        <select id="fsrc" aria-label="按错误来源筛选"><option value="">全部来源</option><option value="upstream">上游</option><option value="stream">流内</option><option value="network">网络</option><option value="local">ciallopa</option><option value="client">客户端</option><option value="upstream,stream,network,local">排除客户端</option></select>
+        <select id="ftier" aria-label="按档位筛选"><option value="">全部档位</option><option value="priority">Fast</option><option value="flex">Flex</option><option value="standard">标准</option><option value="dg">仅降级</option></select>
+        <input id="fcode" type="text" placeholder="错误码（回车）" aria-label="按错误码筛选，回车应用">
+        <label class="chk" title="只看重试过或换过账号的请求"><input type="checkbox" id="fretry"> 重试/换号</label>
+        <label class="chk hide" id="legacyerror"><input type="checkbox" id="ferr"> 旧错误筛选（含取消）</label>
+        </div></details>
+        <button id="fclear" class="ghost xs hide" type="button">清除请求筛选</button>
+      </div>
+      <div class="filterchips hide" id="recordchips" role="group" aria-label="已应用请求筛选，仅影响请求列表"></div>
+      <div class="tw" id="rw"><table class="stk" id="rec"><thead><tr><th scope="col">时间</th><th scope="col">状态</th><th scope="col">结果</th><th scope="col">账号</th><th scope="col" class="x">密钥</th><th scope="col">模型</th><th scope="col" class="x">推理</th><th scope="col" class="n x" title="流请求首输出延迟（TTFT）">首输出</th><th scope="col" class="n">耗时</th><th scope="col" class="n x">输入</th><th scope="col" class="n x">输出</th><th scope="col" class="n x" title="按 API 标价估算">估算 $</th></tr></thead><tbody><tr><td colspan="12"><span class="skel"></span><span class="skel"></span></td></tr></tbody></table></div>
+      <div class="pager"><button id="rmore" class="hide" type="button">加载更多</button><span class="mut sm" id="rpage"></span></div>
+    </div>
+    <div class="legend foot"><span><span class="chip fast">⚡Fast</span> 实际以 Fast 处理</span><span><span class="chip dg">Fast</span> 请求 Fast 但被降级</span><span>↳ 上游实际值（与请求不同）</span><span><span class="tag line">预热</span> 灰色行：WS 预热，不计入请求数</span></div>
+  </section>
+  <div class="rowA">
+  <section id="sq" aria-busy="true">
+    <div class="sh"><h2>账号额度</h2><span class="mut sm" title="已用百分比来自上游，包含其他客户端和其他实例的用量">剩余 % · 来自上游</span><span class="sp"></span><button id="qall" class="ghost xs hide" type="button" title="向上游查询全部账号当前的额度（只读，不消耗额度；同一账号 30 秒内只查一次）">刷新全部额度</button></div>
+    <div class="panel"><div class="tw"><table class="stk" id="quota"><thead><tr><th scope="col">账号</th><th scope="col" id="hq5">5 小时剩余</th><th scope="col" id="hqw">周剩余</th><th scope="col" class="n" title="可用重置卡">卡</th></tr></thead><tbody><tr><td colspan="4"><span class="skel"></span><span class="skel"></span><span class="skel"></span></td></tr></tbody></table></div></div>
+    <div id="qnote" class="foot" role="status"></div>
+  </section>
+  <section id="ss" aria-busy="true">
+    <div class="sh"><h2>分布</h2><select id="group" aria-label="汇总分组"><option value="account">按账号</option><option value="key">按密钥</option><option value="instance">按实例</option><option value="model">按模型</option><option value="response_model">按实际模型</option></select><span class="mut sm" id="snote"></span></div>
+    <div class="panel"><div class="tw" id="sw"><table id="sum"><thead><tr><th scope="col" id="gh">账号</th><th scope="col" class="n">请求</th><th scope="col" class="n" title="失败数 / 非预热请求数；客户端取消、incomplete 与未知结果单列">失败率</th><th scope="col" class="n x" title="流请求的首输出延迟（TTFT），包括文本或推理输出">首输出 p50</th><th scope="col" class="n x">耗时 p50</th><th scope="col" class="n">Token</th><th scope="col" class="n" title="按 API 标价估算，订阅实际费用不同">估算 $</th></tr></thead><tbody></tbody></table></div></div>
+    <div class="foot" id="unk"></div>
+  </section>
+  </div>
+  <div class="foot"><span id="tz"></span><span id="cfp" tabindex="0"></span></div>
+</main>
+<div id="tt" class="hide" role="tooltip"></div>
+<div id="cp" class="modal hide" role="alertdialog" aria-modal="true" aria-labelledby="cpt" aria-describedby="cpdesc"><div class="mbox dz">
+  <h3 id="cpt">使用重置卡？</h3>
+  <dl class="kv" id="cpdesc"><dt>账号</dt><dd id="cpacct"></dd><dt>当前可用</dt><dd id="cpn"></dd><dt>将使用</dt><dd id="cpwhich"></dd><dt>当前剩余</dt><dd id="cpq"></dd></dl>
+  <p id="cphint" class="hintp sm hide"></p>
+  <p class="warnp sm"><b>此操作不可撤销。</b>确认后会向上游消耗该账号的 1 张重置卡并重置其额度窗口，卡用掉无法退回。</p>
+  <div id="cpres" class="res" role="status"></div>
+  <div class="mact"><button id="cpno" type="button">取消</button><button id="cpyes" class="danger solid" type="button" data-arm>确认使用 1 张</button></div>
+</div></div>
+<div id="dp" class="modal hide" role="dialog" aria-modal="true" aria-labelledby="dtitle"><div class="mbox wide">
+  <h3><span id="dtitle">请求详情</span><button id="dlink" class="xs" type="button">复制链接</button><button id="dcopy" class="xs" type="button">复制 JSON</button><button id="dclose" class="xs" type="button">关闭</button></h3>
+  <div class="row" role="group" aria-label="浏览当前列表"><button id="dprev" class="ghost xs" type="button" aria-keyshortcuts="Alt+ArrowUp" title="上一条（Alt + ↑）">↑ 上一条</button><button id="dnext" class="ghost xs" type="button" aria-keyshortcuts="Alt+ArrowDown" title="下一条（Alt + ↓）">下一条 ↓</button><span class="mut xs" id="dposition" role="status"></span><span class="mut xs d-only">Alt + ↑ / ↓</span></div>
+  <div class="mut" id="dmeta"></div><div class="detail-stats" id="dstats"></div><dl class="kv detail-meta" id="dfields"></dl><div id="dmsg"></div>
+  <div class="detail-load hide" id="dload"><span id="dstatus" role="status" aria-atomic="true"></span><button id="dretry" class="ghost xs hide" type="button">重试详情</button></div>
+  <div class="lab" id="dtll">尝试过程</div><ol class="tl" id="dtl"></ol>
+  <div class="lab" id="dhlab">响应头</div><pre id="dhdr"></pre>
+  <div class="lab" id="dblab">响应体</div><pre id="dbody"></pre>
+</div></div>
+</div>
+<div id="toasts" aria-live="polite"></div>
+<script>
+"use strict";
+(function(){
+/* ==== shared:begin (identical in ui.html, accounts.html, settings.html) ==== */
+const $=id=>document.getElementById(id);
+const KS="ciallopa_key",TH="ciallopa_theme";
+// All dynamic text goes through textContent / createTextNode: never parsed as HTML.
+function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined&&text!==null)e.textContent=String(text);return e}
+function h(tag,a,...kids){const e=document.createElement(tag);
+  if(typeof a==="string")e.className=a;
+  else if(a)for(const k in a){const v=a[k];if(v===null||v===undefined||v===false)continue;
+    if(k==="class")e.className=v;else if(k==="text")e.textContent=String(v);else if(k.startsWith("on"))e.addEventListener(k.slice(2),v);else e.setAttribute(k,v===true?"":String(v))}
+  add(e,kids);return e}
+function add(e,kids){for(const k of kids){if(k===null||k===undefined||k===false)continue;if(Array.isArray(k))add(e,k);else e.appendChild(typeof k==="object"?k:document.createTextNode(String(k)))}return e}
+function clear(e){while(e.firstChild)e.removeChild(e.firstChild)}
+// ---- formats
+const NF=new Intl.NumberFormat("zh-CN");
+const p2=x=>String(x).padStart(2,"0");
+function exact(n){return n===null||n===undefined?"":NF.format(n)}
+function fmtN(n){if(n===null||n===undefined)return"–";n=Number(n);const a=Math.abs(n);if(a>=1e9)return(n/1e9).toFixed(2)+"B";if(a>=1e6)return(n/1e6).toFixed(2)+"M";if(a>=1e3)return(n/1e3).toFixed(1)+"k";return String(Math.round(n))}
+function fmtMs(n){return n===null||n===undefined?"–":(n>=1000?(n/1e3).toFixed(n>=1e4?1:2)+" s":Math.round(n)+" ms")}
+function fmtUsd(c){if(c===null||c===undefined)return"–";if(c===0)return"$0.00";if(c<0.01)return"<$0.01";return"$"+c.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})}
+function exactUsd(c){return c===null||c===undefined?"":"$"+c.toFixed(6)}
+function tzOff(d){const o=-d.getTimezoneOffset(),a=Math.abs(o);return"UTC"+(o>=0?"+":"-")+p2(Math.floor(a/60))+":"+p2(a%60)}
+function isoLocal(ms){const d=new Date(ms);return d.getFullYear()+"-"+p2(d.getMonth()+1)+"-"+p2(d.getDate())+"T"+p2(d.getHours())+":"+p2(d.getMinutes())+":"+p2(d.getSeconds())+tzOff(d).slice(3)}
+function fmtTime(ms,noSec){const d=new Date(ms);return(d.getFullYear()!==new Date().getFullYear()?d.getFullYear()+"-":"")+p2(d.getMonth()+1)+"-"+p2(d.getDate())+" "+p2(d.getHours())+":"+p2(d.getMinutes())+(noSec?"":":"+p2(d.getSeconds()))}
+function hms(d){return p2(d.getHours())+":"+p2(d.getMinutes())+":"+p2(d.getSeconds())}
+// Compact countdown: 3天9时 / 1时06分 / 4分12秒.
+function dur(s){if(s<=0)return"已到期";const d=Math.floor(s/86400),hh=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return d?d+"天"+hh+"时":hh?hh+"时"+p2(m)+"分":m+"分"+p2(Math.floor(s%60))+"秒"}
+function ago(ms){const s=Math.max(0,(Date.now()-ms)/1000);if(s<60)return"刚刚";if(s<3600)return Math.floor(s/60)+" 分钟前";if(s<86400)return Math.floor(s/3600)+" 小时前";return Math.floor(s/86400)+" 天前"}
+// Elements carrying data-until (unix ms) show a live countdown.
+setInterval(()=>{for(const e of document.querySelectorAll("[data-until]"))e.textContent=(e.dataset.pre||"")+dur((Number(e.dataset.until)-Date.now())/1000)},1000);
+// ---- access key (sessionStorage of this tab, shared by all three pages) and API calls
+function key(){return sessionStorage.getItem(KS)||""}
+function adminMsg(j){return j&&j.error&&j.error.type==="admin_required"?"当前密钥没有管理权限。请用带 admin = true 的密钥登录，或在配置文件的 [[api_keys]] 里给该密钥加上 admin = true。":null}
+// o.timeout (ms): abort a request that gets no answer (the error then has kind "timeout").
+async function req(method,path,body,extra,o){
+  const auth=key(),epoch=authEpoch,current=()=>key()===auth&&epoch===authEpoch&&(!o||!o.current||o.current()),hd={"Authorization":"Bearer "+auth};if(body!==undefined)hd["Content-Type"]="application/json";Object.assign(hd,extra||{});
+  const ac=o&&o.timeout?new AbortController():null,tm=ac?setTimeout(()=>ac.abort(),o.timeout):null;let r;
+  try{r=await fetch(path,{method,headers:hd,body:body===undefined?undefined:JSON.stringify(body),cache:"no-store",credentials:"omit",referrerPolicy:"no-referrer",signal:ac?ac.signal:undefined})}
+  catch(e){const x=new Error(ac&&ac.signal.aborted?"请求超时（"+Math.round(o.timeout/1000)+" 秒内没有响应）":"网络错误，连不上 ciallopa（"+e.message+"）");x.kind=ac&&ac.signal.aborted?"timeout":"network";throw x}
+  finally{clearTimeout(tm)}
+  if(r.status===401){if(current()){sessionStorage.removeItem(KS);showApp(false,"密钥无效或已过期")}throw new Error("401")}
+  let j=null;try{j=await r.json()}catch(_){}
+  if(current()&&r.status===403&&j&&j.error&&j.error.type==="admin_required")NOADMIN=true;
+  if(!r.ok){const e=new Error(adminMsg(j)||(j&&j.error&&j.error.message)||(path.split("?")[0]+" → HTTP "+r.status));e.status=r.status;e.body=j;throw e}
+  return {j,r}}
+async function get(p,o){return (await req("GET",p,undefined,undefined,o)).j}
+async function post(p,b){return (await req("POST",p,b||{})).j}
+// Reason of a failed call for a toast: timeout / network as such, HTTP errors with their status.
+function why(e){if(!e)return"未知错误";if(e.kind||!e.status)return e.message||String(e);return"HTTP "+e.status+" · "+e.message}
+// A button action: busy state (spinner, optional label) while it runs; a failure becomes an error
+// toast "<name>失败：<reason>". Returns false on failure. Calls pass `T` for a 45 s timeout.
+const T={timeout:45000};
+// Per-account result of an active quota query (刷新额度) → short reason.
+// Quota windows by length: up to a day → short column (5 小时), longer → long column (周, or the
+// free plan's single 30 天 window). Without window_minutes the slot decides (primary short).
+function wlab(m,d){if(!m)return d;if(m===300)return"5h";if(m===10080)return"周";if(m>=1440)return Math.round(m/1440)+" 天";if(m>=60)return Math.round(m/60)+"h";return m+" 分"}
+function wslots(q){const o={s:null,l:null};if(!q)return o;
+  for(const [w,d,k] of [[q.primary,"5h","s"],[q.secondary,"周","l"]]){if(!w||w.used_pct===null||w.used_pct===undefined)continue;
+    let s=w.window_minutes?(w.window_minutes>1440?"l":"s"):k;if(o[s])s=s==="s"?"l":"s";if(!o[s])o[s]=[wlab(w.window_minutes,d),w,s]}return o}
+function whead(labels,def){const L=[...new Set(labels.map(x=>x==="5h"?"5 小时":x))];return(L.length?L.join(" / "):def)+"剩余"}
+// 刷新额度 answered "asked moments ago": neutral, not a failure.
+const qskip=r=>!r.ok&&r.error&&r.error.kind==="rate_limited";
+function qsummary(j){const sk=j.skipped!==undefined?j.skipped:j.results.filter(qskip).length,p=[];if(j.ok)p.push("已刷新 "+j.ok+" 个账号的额度");if(sk)p.push(sk+" 个 30 秒内刚查询过，已跳过");return p.join("，")||"没有可刷新的账号"}
+function qerr(e){e=e||{};const m=e.message||"";return{rate_limited:"刚查询过，"+(e.retry_after_s||30)+" 秒后再试",http:"上游 HTTP "+e.status+(m?" · "+m:""),network:"连不上上游（"+m.replace(/^send: /,"")+"）",timeout:"上游 5 秒内没有响应",credentials:"获取令牌失败（"+m.replace(/^credentials: /,"")+"）",token_invalid:"令牌失效，需要重新登录",decode:"上游返回里没有额度数据"}[e.kind]||m||"未知错误"}
+// The button stays focusable while busy (aria-disabled), so keyboard focus is not dropped.
+async function busyRun(b,name,f,label){if(b.disabled||b._busy)return false;const t=b.textContent;b._busy=true;b.classList.add("busy");b.setAttribute("aria-disabled","true");b.setAttribute("aria-busy","true");if(label)b.textContent=label;
+  try{await f();return true}catch(e){if(e&&e.message!=="401")toast(name+(/[\w)]$/.test(name)?" ":"")+"失败："+why(e),{kind:"err"});return false}
+  finally{b._busy=false;b.classList.remove("busy");b.removeAttribute("aria-disabled");b.removeAttribute("aria-busy");if(label&&b.isConnected)b.textContent=t}}
+// set once the server says this key is not an admin: the overview then skips admin-only calls
+let onLogout=()=>{},NOADMIN=false,authEpoch=0;
+function showApp(on,err){$("app").classList.toggle("hide",!on);if(on){$("main").classList.remove("noadm");const n=$("noadm");if(n)n.remove()}else NOADMIN=false;$("login").classList.toggle("hide",on);$("lerr").textContent=err||"";if(!on){authEpoch++;clearEgress();closeAllModals();onLogout()}}
+function login(verify,enter){
+  $("lf").addEventListener("submit",async e=>{e.preventDefault();sessionStorage.setItem(KS,$("key").value);$("key").value="";
+    try{await verify();showApp(true);enter()}catch(err){if(err.message!=="401")$("lerr").textContent=err.message}});
+  $("logout").addEventListener("click",()=>{sessionStorage.removeItem(KS);showApp(false)});
+  if(key()){showApp(true);enter()}else showApp(false)}
+// ---- theme (跟随系统 / 浅色 / 深色), remembered in this browser only
+function applyTheme(t){const r=document.documentElement;if(t==="light"||t==="dark")r.dataset.theme=t;else delete r.dataset.theme;
+  const n={light:"浅色",dark:"深色"}[t]||"跟随系统",b=$("theme");b.textContent={light:"☀",dark:"☾"}[t]||"◐";b.title="主题："+n+"（点击切换）";b.setAttribute("aria-label","切换主题，当前："+n)}
+applyTheme(localStorage.getItem(TH));
+$("theme").addEventListener("click",()=>{const c=localStorage.getItem(TH),n=c==="light"?"dark":c==="dark"?"":"light";if(n)localStorage.setItem(TH,n);else localStorage.removeItem(TH);applyTheme(n);toast("主题："+({light:"浅色",dark:"深色"}[n]||"跟随系统"))});
+// ---- toasts; o.undo adds 撤销 (10 s). Errors are alerts with a close button (10 s). The timer
+// pauses while the toast is hovered, touched or holds keyboard focus, and while the tab is hidden.
+function toast(t,o){o=o||{};const err=o.kind==="err",d=h("div",{class:"toast"+(o.kind?" "+o.kind:""),role:err?"alert":null},h("span",null,t));let tm=null,ptr=false,foc=false;
+  const bye=()=>{clearTimeout(tm);d.classList.add("out");setTimeout(()=>d.remove(),300)};
+  const arm=()=>{clearTimeout(tm);if(ptr||foc)return;tm=setTimeout(()=>{if(document.hidden)arm();else bye()},o.undo||err?10000:4000)};
+  if(o.undo){const b=h("button",{type:"button"},"撤销");b.addEventListener("click",async()=>{b.disabled=true;bye();try{await o.undo()}catch(e){toast("撤销失败："+e.message,{kind:"err"})}});d.appendChild(b)}
+  if(err){const x=h("button",{type:"button",class:"x","aria-label":"关闭"},"✕");x.addEventListener("click",bye);d.appendChild(x)}
+  for(const [ev,v] of [["pointerenter",true],["pointerdown",true],["pointerleave",false],["pointerup",false]])d.addEventListener(ev,()=>{ptr=v;arm()});
+  d.addEventListener("focusin",()=>{foc=true;arm()});d.addEventListener("focusout",e=>{if(!d.contains(e.relatedTarget)){foc=false;arm()}});
+  $("toasts").appendChild(d);arm();return d}
+// An error shown in a page banner that is scrolled out of view is repeated as an error toast.
+function inView(e){const r=e.getBoundingClientRect();return r.height>0&&r.bottom>0&&r.top<innerHeight}
+// ---- re-rendered lists: the last focused control carrying data-fk gets focus back after a render
+// that replaced it (row actions, settings fields). A pointer press elsewhere forgets it.
+let FK=null;
+document.addEventListener("focusin",e=>{const t=e.target.closest&&e.target.closest("[data-fk]");if(t)FK=t.dataset.fk;else if(!e.target.closest||!e.target.closest("#toasts"))FK=null});
+document.addEventListener("pointerdown",e=>{if(!e.target.closest||!e.target.closest("[data-fk],#toasts"))FK=null},true);
+function refocus(){if(!FK)return;const a=document.activeElement;if(a&&a!==document.body&&a.isConnected)return;
+  const t=document.querySelector('[data-fk="'+CSS.escape(FK)+'"]');if(t&&t.offsetParent!==null)t.focus({preventScroll:true})}
+// ---- steady re-render: f() replaces the children of `boxes`. Focus inside them is released
+// first (removing a focused node makes the browser lay out the half-empty page and commit a
+// clamped scroll), and the focused control, or else the row nearest the top of the view, keeps
+// its viewport position. Anchors carry data-fk, data-ak or data-acc, stable across renders.
+const ANK=["data-fk","data-ak","data-acc"],ANS=ANK.map(a=>"["+a+"]").join(",");
+function ankSel(e){for(const a of ANK)if(e.hasAttribute(a))return"["+a+'="'+CSS.escape(e.getAttribute(a))+'"]';return null}
+function ankPick(){const a=document.activeElement,hb=document.querySelector("header").getBoundingClientRect().bottom,vis=e=>{const r=e.getBoundingClientRect();return r.height>0&&r.bottom>hb&&r.top<innerHeight};
+  if(a&&a!==document.body&&a.closest){const e=a.closest(ANS);if(e&&vis(e))return e}
+  for(const f of [.5,.25,.75])for(let y=hb+8;y<innerHeight;y+=48){const e=document.elementFromPoint(innerWidth*f,y),t=e&&e.closest&&e.closest(ANS);if(t&&vis(t))return t}
+  return null}
+function steady(boxes,f){const a=document.activeElement;if(a&&a!==document.body&&boxes.some(b=>b&&b.contains(a)))a.blur();
+  const e=ankPick(),sel=e&&ankSel(e),top=e?e.getBoundingClientRect().top:0;f();
+  const n=sel&&document.querySelector(sel);if(n&&n.getBoundingClientRect().height>0){const d=n.getBoundingClientRect().top-top;if(Math.abs(d)>=1)scrollBy(0,d)}}
+// ---- dialogs: focus goes to 取消, Esc / backdrop close, Tab trapped, focus returns to the opener.
+// A [data-arm] button ignores clicks for its first 400 ms (no double tap through the opener).
+const MODALS=[];
+function openModal(m,focus,opener){if(!m.classList.contains("hide"))return;m.classList.remove("hide");m._opener=opener||document.activeElement;m._at=Date.now();MODALS.push(m);(focus||m.querySelector("button")).focus()}
+function closeModal(m){if(m.classList.contains("hide"))return;m.classList.add("hide");const i=MODALS.indexOf(m);if(i>=0)MODALS.splice(i,1);const o=m._opener;m._opener=null;if(m._onclose)m._onclose();if(o&&document.contains(o))o.focus({preventScroll:true})}
+function closeAllModals(){for(const m of MODALS.slice().reverse())closeModal(m)}
+document.addEventListener("keydown",e=>{const m=MODALS[MODALS.length-1];if(!m)return;
+  if(e.key==="Escape"){e.preventDefault();closeModal(m);return}
+  if(e.key!=="Tab")return;const f=Array.from(m.querySelectorAll("button,a[href],input,select,textarea,[tabindex]:not([tabindex='-1'])")).filter(x=>!x.disabled&&x.offsetParent!==null);if(!f.length)return;
+  const i=f.indexOf(document.activeElement);e.preventDefault();f[i<0?(e.shiftKey?f.length-1:0):(i+(e.shiftKey?f.length-1:1))%f.length].focus()});
+document.addEventListener("click",e=>{const b=e.target.closest&&e.target.closest("[data-arm]");if(!b)return;const m=b.closest(".modal");if(m&&Date.now()-m._at<400){e.preventDefault();e.stopImmediatePropagation()}},true);
+document.addEventListener("click",e=>{const m=MODALS[MODALS.length-1];if(m&&e.target===m)closeModal(m)});
+// ---- inline click-again: the first click turns the button into `label` for 3 s (armed after
+// 300 ms); a second click runs `act`; timeout, blur or Esc reverts.
+function disarm(b){if(!b._armed)return;clearTimeout(b._t);b._armed=0;b.textContent=b._orig;b.classList.remove("armed")}
+function clickAgain(b,label,act){if(b._armed){if(Date.now()-b._armed<300)return;disarm(b);return act()}
+  b._orig=b.textContent;b._armed=Date.now();b.textContent=label;b.classList.add("armed");b._t=setTimeout(()=>disarm(b),3000);
+  b.addEventListener("blur",()=>disarm(b),{once:true})}
+document.addEventListener("keydown",e=>{if(e.key==="Escape"&&document.activeElement&&document.activeElement._armed)disarm(document.activeElement)});
+// ---- shell: account count on the 账号 tab, egress tag in the header (admin keys only)
+function setTabCount(n){const c=document.querySelector("nav.tabs a[data-p=accounts] .cnt");if(c)c.textContent=n===null||n===undefined?"":String(n)}
+let egressSeq=0;
+function clearEgress(){egressSeq++;const t=$("egress");t.className="hide";t.textContent="";t.title=""}
+async function egressTag(cfg){const seq=++egressSeq,auth=key(),current=()=>seq===egressSeq&&auth===key(),read=p=>get(p,{timeout:30000,current}),t=$("egress");
+  try{if(!cfg&&NOADMIN)throw new Error("admin");const c=cfg||await read("/admin/v1/config");if(!current())return;const eg=Object.assign({},c.egress||{},{runtime:c.runtime});
+    if(eg.direct){t.className="tag line";t.textContent="直连";t.title="出口：直连（未使用出口代理）· 点击查看出口设置";return eg}
+    let n=0;try{const since=Date.now()-36e5;for(const code of ["proxy_connect","proxy_timeout"]){n+=(await read("/usage/v1/records?limit=1&from="+since+"&error="+code)).total||0;if(!current())return}}catch(_){}
+    if(!current())return;t.className="tag proxy dot";t.textContent=n?"代理 · "+n+" 错误":"代理";t.title="出口："+eg.proxy+(n?"；近 1 小时 "+n+" 次代理错误":"；近 1 小时没有代理错误")+" · 点击查看出口设置";return eg}
+  catch(_){if(!current())return;clearEgress();return null}}
+// Accounts / settings need an admin key. A usage-only key (e.g. carried over from the overview in
+// this tab) gets a plain explanation instead of a half-loaded page.
+function needAdmin(e){if(!e||!e.body||!e.body.error||e.body.error.type!=="admin_required")return false;const m=$("main");
+  if(!$("noadm"))m.appendChild(h("div",{class:"empty panel",id:"noadm"},h("b",null,"这个页面需要管理密钥"),adminMsg(e.body),h("div",null,h("button",{type:"button",class:"pri",onclick:()=>{sessionStorage.removeItem(KS);showApp(false)}},"换一个密钥登录"))));
+  m.classList.add("noadm");$("msg").textContent="";return true}
+/* ==== shared:end ==== */
+// ---- overview
+const AS="ciallopa_auto",RANGE_MS={"1h":36e5,"24h":864e5,"7d":7*864e5,"30d":30*864e5},RANGE_N={"1h":"1 小时","24h":"24 小时","7d":"7 天","30d":"30 天"};
+const CR={usage_limit:"额度用完",rate_limited:"上游限流",auth:"认证失败",transient:"上游连续 5xx",overloaded:"上游过载（overloaded）",challenge:"Cloudflare 拦截",model_unsupported:"模型不可用",not_found:"上游 404",payment_required:"上游 402 付费问题",workspace_deactivated:"工作区已停用（402）"};
+const ST={normal:["正常","ok"],cooling:["冷却中","cool"],disabled:["已停用","off"],token_invalid:["需要重新登录","err"],unconfigured:["未配置","off"]};
+let timer=null,Q=null,RC=null,AC=null,EG=null,SUM=null,TREND=null,ACCTS=[],RECORDER=null,SUM_SCOPE="";
+let scopeWindow={from:0,to:0,fixed:false},recordWindow=null,activeRecord=null;
+function rollWindow(){const to=Date.now();scopeWindow={from:to-RANGE_MS[$("range").value],to,fixed:false}}
+function scopeFilters(){return {from:scopeWindow.from,to:scopeWindow.to,account:$("facct").value,model:$("fmodel").value.trim(),key:$("fkey").value.trim(),instance:$("finstance").value.trim()}}
+function scopeLabel(){return fmtTime(scopeWindow.from,true)+" – "+fmtTime(scopeWindow.to,true)}
+function showScope(){const count=SF.filter(id=>fval(id).trim()).length;
+  $("scopesummary").textContent=count?" · "+count+" 项条件":" · 所有模型与账号";$("scopeclear").classList.toggle("hide",!count);renderFilterChips($("scopechips"),SF,"范围",$("scopetoggle"));
+  $("scopewhen").textContent=scopeWindow.fixed?scopeLabel():"截至 "+hms(new Date(scopeWindow.to));$("scopewhen").dataset.fixed=String(scopeWindow.fixed);$("scopewhen").title=scopeLabel();
+  $("scopefreeze").textContent=scopeWindow.fixed?"返回最近":"固定时间";$("scopefreeze").title=scopeWindow.fixed?"恢复随刷新滚动的时间范围":scopeLabel();
+  $("rwindow").classList.toggle("hide",!recordWindow);$("rwindowtext").textContent=recordWindow?"选中时段 · "+fmtTime(recordWindow.from,true)+" – "+fmtTime(recordWindow.to,true):""}
+async function usageGet(path,current){return (await req("GET",path,undefined,undefined,{timeout:30000,current})).j}
+const narrow=()=>matchMedia("(max-width:760px)").matches;
+function winName(m){if(!m)return"窗口";if(m===300)return"5 小时窗口";if(m===10080)return"周窗口";if(m>=1440)return Math.round(m/1440)+" 天窗口";return Math.round(m/60)+" 小时窗口"}
+function fail(e){if(!e||e.message==="401"||(e.isCurrent&&!e.isCurrent()))return;const m=$("msg"),t=e.message||String(e);clear(m);m.appendChild(h("b",null,"更新失败"));m.appendChild(document.createTextNode(t+" · 保留最近一次结果"));if(!inView(m))toast("更新失败："+t,{kind:"err"})}
+async function busy(id,f){$(id).setAttribute("aria-busy","true");try{return await f()}finally{$(id).setAttribute("aria-busy","false")}}
+// A slow response must not overwrite a newer query, even during the input debounce.
+// Keep the last rendered snapshot until the current query succeeds; old failures are stale too.
+// Recheck failures when presented: loadAll can defer them behind slower jobs in allSettled.
+const loadSeq={},loading={};
+async function currentLoad(id,signature,fetcher,apply){const seq=loadSeq[id]=(loadSeq[id]||0)+1,q=signature(),auth=key();
+  const current=()=>loadSeq[id]===seq&&key()===auth&&signature()===q;
+  loading[id]=true;$(id).setAttribute("aria-busy","true");
+  try{const data=await fetcher(q,current);if(current())apply(data,q)}catch(e){if(current()){e.isCurrent=current;throw e}}
+  finally{if(loadSeq[id]===seq){loading[id]=false;$(id).setAttribute("aria-busy","false")}}}
+function emptyRow(tb,n,text,sub){const c=h("td",{colspan:n},h("div","empty",h("b",null,text),sub||""));tb.appendChild(h("tr",null,c))}
+function keepScroll(id,f){const w=$(id),x=w.scrollLeft;f();w.scrollLeft=x}
+
+// ---- accounts: quota observations (+ status from the admin list, + reset cards)
+// A window whose reset time has passed is full again, even if the last snapshot said otherwise.
+function rem(w){return w&&w.used_pct!==null&&w.used_pct!==undefined?(w.resets_at&&w.resets_at*1000<=Date.now()?100:Math.max(0,100-w.used_pct)):null}
+function wins(a){const o=wslots(a.q);return [o.s,o.l].filter(x=>x&&rem(x[1])!==null)}
+function mergeAccts(){const acm={},rcm={};if(AC)for(const a of AC.accounts)acm[a.id]=a;if(RC)for(const x of RC.accounts||[])rcm[x.account]=x.reset_credits;
+  const src=Q?Q.accounts:AC?AC.accounts.map(a=>({account:a.id,email:a.email,disabled:a.disabled})):[];
+  return src.map(x=>{const a=acm[x.account];const st=x.configured===false?"unconfigured":a?a.status:x.needs_relogin?"token_invalid":x.disabled?"disabled":"normal";
+    return {id:x.account,email:x.email||(a&&a.email)||null,plan:(x.quota&&x.quota.plan)||(a&&a.plan)||null,status:st,cooling_reason:a?a.cooling_reason:null,cooling_until_ms:a?a.cooling_until_ms:null,q:x.quota||null,rc:rcm[x.account],configured:x.configured!==false}})}
+function acctById(id){return ACCTS.find(a=>a.id===id)}
+function minRem(a){if(!a.configured)return 1e9;const r=wins(a).map(x=>rem(x[1]));return r.length?Math.min(...r):1e3}
+function staleAge(a){const o=a.q&&a.q.observed_at_ms;if(!o||Date.now()-o<=36e5)return"";const hh=Math.floor((Date.now()-o)/36e5);return hh<48?hh+" 小时前":Math.floor(hh/24)+" 天前"}
+function estTxt(e){e=e||{};if(e.status==="ok")return"\n容量≈"+fmtN(e.capacity_tokens)+" 加权 token，剩余≈"+fmtN(e.remaining_tokens)+"（估算）";if(e.status==="insufficient_data")return"\n容量估算：数据不足（两次额度快照之间本实例用量太少）";if(e.status==="window_reset")return"\n窗口已重置，等待新快照";return""}
+function qbar(lb,w,stale){const r=rem(w),c=r<20?"b":r<50?"w":"",i=h("i",c);i.style.width=Math.min(100,r)+"%";
+  const d=h("div","q"+(stale?" stale":""),h("span","lb",lb),h("div","bar",i),h("span","pc "+c,r.toFixed(0)+"%"));
+  d.title=winName(w.window_minutes)+"：剩余 "+r.toFixed(1)+"%"+(r===100&&w.used_pct>0?"（上次快照后窗口已重置）":"（已用 "+w.used_pct.toFixed(1)+"%）")+(w.resets_at?" · 重置 "+fmtTime(w.resets_at*1000,true):"")+estTxt(w.estimate);return d}
+function rt(w,a,stale){if(stale){const s=h("span","rt c-cool","⚠ 数据 "+stale);s.title="额度数据更新于 "+fmtTime(a.q.observed_at_ms)+"（"+ago(a.q.observed_at_ms)+"）"+(a.q.observed_by?" · "+a.q.observed_by:"")+"；该账号用到或手动刷新后更新";return s}
+  if(!w.resets_at)return h("span","rt faint","无重置时间");const t=w.resets_at*1000;if(t<Date.now())return h("span","rt faint","已过重置时间");
+  return h("span",{class:"rt",title:isoLocal(t),"data-until":t,"data-pre":"重置 "},"重置 "+dur((t-Date.now())/1000))}
+function chip(a){const r=a.rc;
+  if(!r||r.available_count===null||r.available_count===undefined){const b=h("button",{class:"cchip none",type:"button","data-pop":a.id,"data-fk":"rc|"+a.id,"aria-haspopup":"dialog","aria-expanded":"false","aria-label":r&&r.error?"重置卡获取失败":"重置卡尚未获取"},"卡 ?");return b}
+  const t=r.nearest_expires_at?Date.parse(r.nearest_expires_at):NaN,soon=!isNaN(t)&&t-Date.now()<864e5,n=r.available_count;
+  return h("button",{class:"cchip"+(n?"":" none")+(soon&&n?" soon":""),type:"button","data-pop":a.id,"data-fk":"rc|"+a.id,"aria-haspopup":"dialog","aria-expanded":"false","aria-label":"重置卡 "+n+" 张"+(soon&&n?"，有一张 24 小时内到期":"")},"卡 "+n)}
+function quotaRow(a){const s=ST[a.status],dot=h("span","sdot "+s[1]);dot.title=s[0];
+  const full=a.email?a.email+"（"+a.id+"）":a.id;
+  const link=a.configured?h("a",{class:"trunc",href:"/ui/accounts#acc="+encodeURIComponent(a.id),title:full+" · 在账号页查看"},a.email||a.id):h("b",{class:"trunc",title:full},a.email||a.id);
+  const sub=h("span","sub trunc");
+  if(a.status==="normal"){if(a.plan)sub.appendChild(h("span","mut d-only",a.plan))}
+  else{sub.classList.add(s[1]==="cool"?"c-cool":s[1]==="err"?"c-err":"mut");sub.appendChild(document.createTextNode(s[0]+(a.cooling_reason?" · "+(CR[a.cooling_reason]||a.cooling_reason):"")+(a.status==="unconfigured"?" · 只在用量记录中":"")));
+    if(a.status==="cooling"&&a.cooling_until_ms){sub.appendChild(document.createTextNode(" · "));sub.appendChild(h("span",{class:"num","data-until":a.cooling_until_ms},dur((a.cooling_until_ms-Date.now())/1000)))}}
+  const stale=staleAge(a),w=wins(a),q5=h("td","qc q5"),qw=h("td","qc qw");
+  const p=w.find(x=>x[2]==="s"),wk=w.find(x=>x[2]==="l");
+  if(!w.length){q5.appendChild(h("span",{class:"nod",title:"该账号还没有请求经过本代理，或上游没有返回额度"},"尚无额度数据"));qw.appendChild(h("span","nod","–"))}
+  else{for(const [cell,x,st] of [[q5,p,stale],[qw,wk,p?"":stale]]){if(!x){cell.appendChild(h("span","nod","–"));continue}cell.appendChild(qbar(x[0],x[1],!!stale));cell.appendChild(rt(x[1],a,st))}}
+  return h("tr",{"data-acc":a.id},h("td","who-c",h("div","row nw",dot,h("div","who",link,sub))),q5,qw,h("td","rc-c n",RC&&a.configured?chip(a):""))}
+function renderQuota(){steady([$("quota").tBodies[0]],renderQuotaNow)}
+function renderQuotaNow(){queueMicrotask(refocus);ACCTS=mergeAccts();const tb=$("quota").tBodies[0];clear(tb);
+  const rows=ACCTS.slice().sort((x,y)=>minRem(x)-minRem(y)),hw=rows.map(a=>wslots(a.q));$("hq5").textContent=whead(hw.filter(o=>o.s).map(o=>o.s[0]),"5 小时");$("hqw").textContent=whead(hw.filter(o=>o.l).map(o=>o.l[0]),"周");for(const a of rows)tb.appendChild(quotaRow(a));
+  if(!rows.length)emptyRow(tb,4,Q||AC?"没有账号":"暂无账号额度数据",Q||AC?"在「账号」页或用 ciallopa login 添加账号。":"查看下方读取状态，或刷新重试。");
+  const conf=ACCTS.filter(a=>a.configured);setTabCount(conf.length);
+  const usable=conf.filter(a=>a.status==="normal"||a.status==="cooling").length,nb=$("noacc");clear(nb);
+  if(!usable&&(Q||AC)){nb.appendChild(h("b",null,"没有可用账号"));nb.appendChild(document.createTextNode(conf.length?"所有账号都已停用或需要重新登录，代理请求会失败。":"代理请求会失败。在「账号」页或用 ciallopa login 添加账号。"))}
+  nb.classList.toggle("hide",!!usable||!(Q||AC));
+  const sel=$("facct"),cur=sel.value;while(sel.options.length>1)sel.remove(1);for(const a of ACCTS)sel.appendChild(h("option",{value:a.id},a.id));
+  if(Array.from(sel.options).some(o=>o.value===cur))sel.value=cur;else if(cur){sel.appendChild(h("option",{value:cur},cur));sel.value=cur}
+  renderKpis();refreshPop()}
+
+// ---- A small overview; every number has a population, and unknown is not zero.
+function pct(n){return n===null||n===undefined?"–":(n*100).toFixed(1)+"%"}
+function summaryCurrent(){return SUM_SCOPE===qs(scopeFilters())}
+function tokenValue(t){return t&&(t.usage_samples||!(t.count+t.prewarm_count))?fmtN((t.input_tokens||0)+(t.output_tokens||0)):"–"}
+function statLink(text,outcome){const b=h("button",{class:"statlink",type:"button",title:"在下方查看这些请求",disabled:SUM_SCOPE!==qs(scopeFilters())},text);b.addEventListener("click",()=>drillOutcome(outcome));return b}
+function renderKpis(){const t=SUM&&SUM.total,span=SUM?Math.max(1,SUM.to_ms-SUM.from_ms):0;
+  const cost=t&&t.cost_usd,u=t&&t.unknown_price,costV=!t?"–":u&&!cost?"未定价":(u?"≥":"")+fmtUsd(cost);
+  const tt=t&&t.stream_ttft_samples,ts=t&&t.tps_samples;
+  const cells=[
+    ["请求",t?statLink(fmtN(t.count),"business"):"–",t?(t.count*60000/span).toFixed(2)+" 次/分 · 窗口平均":"等待记录", "已结束的业务请求；不含预热。按请求开始时间归属窗口，不是实时入口 RPS。"],
+    ["失败率",t?statLink(pct(t.failure_rate),"failed"):"–",t?[statLink(exact(t.failures)+" 失败","failed")," · ",statLink(exact(t.cancelled)+" 取消","cancelled")]:"", "失败 / 业务请求；客户端取消、协议正常终止的 incomplete 与观察不完整的未知结果分开计数。"],
+    ["首输出 p50",t?fmtMs(t.stream_ttft_p50_ms):"–",t?"p90 "+fmtMs(t.stream_ttft_p90_ms)+" · "+exact(tt)+" 样本":"", "流请求从开始到首个文本、推理或工具参数输出。包括之后失败或取消但已产生首输出的样本；无输出的不填零。"],
+    ["生成速度",t&&t.generation_tps!==null&&t.generation_tps!==undefined?[t.generation_tps.toFixed(1),h("small",null,"tok/s")]:"–",t?exact(ts)+" 完成样本 · 估算":"", "完成流的总输出 Token / 总生成时长；缺首输出时间、取消、失败、incomplete 及未知结果不参与。包含尾部传输时间，不能当作纯模型解码速度。"],
+    ["Token",tokenValue(t),t?(t.usage_samples||!(t.count+t.prewarm_count)?"入 "+fmtN(t.input_tokens)+" · 出 "+fmtN(t.output_tokens):"上游未报告用量"):"", "仅累计实际报告的用量，含预热；输入含缓存命中，推理 Token 已包含在输出中。"],
+    ["估算费用",costV,u?exact(u)+" 条未定价":t?"按 API 标价 · 非账单":"", "按模型、档位和报告用量估算；订阅实际费用不同。未定价不会被算成免费。"]];
+  const st=$("strip");clear(st);for(const [k,v,sub,tip] of cells)st.appendChild(h("div",{class:"kpi",title:tip},h("div","k",k),h("div","v",v),h("div","s",sub)));
+  const note=$("metricnote");clear(note);if(!t)return;
+  if(SUM_SCOPE!==qs(scopeFilters()))note.appendChild(h("span",null,"概况为上次范围，等待更新 ·"));
+  note.append(h("span",{title:"缓存命中 Token / 有缓存字段样本的输入 Token"},"输入缓存 "+pct(t.cache_ratio)),h("span",null,"·"),statLink(exact(t.incomplete)+" 未完成","incomplete"));
+  if(t.unknown)note.append(h("span",null,"·"),statLink(exact(t.unknown)+" 结果未知","unknown"));
+  if(t.prewarm_count)note.append(h("span",null,"·"),statLink(exact(t.prewarm_count)+" 预热","prewarm"));
+  note.append(h("span",null,"· 用量为上游已报告部分（"+exact(t.usage_samples)+" 条）"));
+  if(RECORDER&&(RECORDER.dropped||RECORDER.write_errors))note.append(h("span",{class:"c-cool",title:"进程启动以来的记录器计数，非当前筛选范围；用量记录是尽力写入。"},"· 记录有缺口：丢弃 "+exact(RECORDER.dropped)+" / 写入失败 "+exact(RECORDER.write_errors)))}
+function drillOutcome(outcome){if(!summaryCurrent())return;recordWindow=null;$("foutcome").value=outcome;for(const id of ["fsrc","ftier","fcode"])$(id).value="";$("fretry").checked=false;$("ferr").checked=false;saveF();showScope();renderTrend();loadRecords(false).catch(fail);revealRecords()}
+function revealRecords(){const bar=document.querySelector(".fbar"),section=$("sr");
+  section.style.scrollMarginTop=(parseFloat(getComputedStyle(bar).top)+bar.offsetHeight+12)+"px";
+  section.scrollIntoView({block:"start"});$("foutcome").focus({preventScroll:true})}
+
+// ---- reset-card popover: hover / keyboard focus = read-only preview after 150 ms;
+// click / tap / Enter = pinned non-modal dialog with the actions; phone = bottom sheet.
+const pop=h("div",{class:"pop hide",id:"rcpop",role:"dialog","aria-labelledby":"rcpt"});document.body.appendChild(pop);
+const popBg=h("div","pop-bg hide");document.body.appendChild(popBg);
+let popFor=null,popTrig=null,hoverT=null,leaveT=null,noPrev=false,showUsed=localStorage.getItem("ciallopa_rc_used")==="1";
+const RCST={available:"可用",redeemed:"已使用",consumed:"已使用",used:"已使用",expired:"已过期"};
+const CODEN={reset:"已重置",nothing_to_reset:"无需重置（未扣卡）",no_credit:"没有可用的卡",already_redeemed:"该请求已兑换过（未重复扣卡）"};
+const isUsed=c=>["redeemed","consumed","used"].includes(c.status);
+const expOf=c=>{const t=c.expires_at?Date.parse(c.expires_at):NaN;return isNaN(t)?Infinity:t};
+function fullDate(ms){const d=new Date(ms);return d.getFullYear()+"-"+p2(d.getMonth()+1)+"-"+p2(d.getDate())+" "+p2(d.getHours())+":"+p2(d.getMinutes())}
+function fillPop(a){clear(pop);const r=a.rc,can=RC&&RC.can_consume,adm=RC&&RC.is_admin,acct=h("a",{href:"/ui/accounts#acc="+encodeURIComponent(a.id)},"账号页 ›");
+  pop.appendChild(h("div","ph",h("b",{id:"rcpt"},"重置卡"),h("span","mut trunc",a.email||a.id),h("span","sp"),h("button",{class:"ghost xs x pin-only",type:"button","data-popclose":"","aria-label":"关闭"},"✕")));
+  const refresh=adm?[h("button",{class:"xs",type:"button","data-rcref":a.id,title:"从上游重新获取该账号的重置卡列表（只读）"},"刷新卡"),a.configured?h("button",{class:"xs",type:"button","data-qref":a.id,title:"向上游查询这个账号当前的额度（只读，不消耗额度；同一账号 30 秒内只查一次）"},"刷新额度"):null]:null;
+  if(!r||r.available_count===null||r.available_count===undefined){
+    pop.appendChild(h("div","mut",r&&r.error?"获取失败："+r.error:"还没有从上游获取过该账号的重置卡"));
+    pop.appendChild(h("div","pf pin-only",refresh,acct));pop.appendChild(h("div","xs faint prev-only","点击「卡」固定此面板"+(adm?"后可刷新":"")));return}
+  const cs=(r.credits||[]).slice().sort((x,y)=>expOf(x)-expOf(y)),now=Date.now();
+  const av=cs.filter(c=>(!c.status||c.status==="available")&&expOf(c)>now),used=cs.filter(c=>!av.includes(c));
+  const near=r.nearest_expires_at?Date.parse(r.nearest_expires_at):NaN;
+  pop.appendChild(h("div","sm",["可用 ",h("b","num",String(r.available_count))," 张",!isNaN(near)?[" · 最近到期 ",h("span","num"+(near-now<864e5?" c-cool":""),fullDate(near))]:null,used.length?h("span","faint"," · 已使用/过期 "+used.length):null]));
+  if(r.error)pop.appendChild(h("div","xs c-cool","⚠ 最近一次刷新失败，显示的是上次数据："+r.error));
+  const ul=h("ul",{"aria-label":"重置卡列表"});
+  for(const c of av.concat(showUsed?used:[])){const t=expOf(c),u=!av.includes(c),isNear=!u&&t===near,soon=isNear&&t-now<864e5;
+    const ex=h("span","ex",t===Infinity?h("b",null,"永不过期"):[u?"":"到期 ",h("b",null,fullDate(t)),u?"":h("span",soon?"c-cool":"mut","（"+dur((t-now)/1000)+"后）")]);
+    const li=h("li",(isNear?"near":"")+(soon?" soon":"")+(u?" used":""),ex);
+    if(u)li.appendChild(h("span","tag off",RCST[c.status]||c.status||"未知"));
+    else if(can)li.appendChild(h("button",{class:"xs pin-only",type:"button","data-consume":a.id,"data-credit":c.id,"aria-label":"使用这张重置卡，"+(t===Infinity?"永不过期":"到期 "+fullDate(t))},"使用"));
+    else li.appendChild(h("span"));
+    li.appendChild(h("span","tt",[(c.title||"重置卡")+(c.granted_at&&!isNaN(Date.parse(c.granted_at))?" · 发放 "+fmtTime(Date.parse(c.granted_at),true):"")+(isNear?" · 最近到期":"")]));if(c.description)li.title=c.description;ul.appendChild(li)}
+  if(ul.children.length)pop.appendChild(ul);else pop.appendChild(h("div","mut","没有可用的重置卡"));
+  if(used.length)pop.appendChild(h("button",{class:"ghost xs pin-only",type:"button","data-rcused":"","aria-pressed":String(showUsed)},showUsed?"隐藏已使用":"显示已使用（"+used.length+"）"));
+  const last=(RC.attempts||[]).find(x=>x.account===a.id);
+  if(last)pop.appendChild(h("div",{class:"xs mut",title:isoLocal(last.started_ms)+" · redeem_request_id "+last.redeem_request_id},"上次使用："+fmtTime(last.started_ms,true)+" "+(last.code?CODEN[last.code]||last.code:last.status)));
+  pop.appendChild(h("div","pf pin-only",refresh,acct,h("span","sp"),can&&r.available_count>0?h("button",{class:"xs",type:"button","data-consume":a.id,title:"由上游挑选一张使用"},"使用…"):null));
+  pop.appendChild(h("div","xs faint prev-only",can?"点击「卡」固定此面板后可使用或刷新":adm?"点击「卡」固定此面板后可刷新":"只读：当前密钥不能使用重置卡"))}
+function place(t){if(narrow()){pop.style.left="";pop.style.top="";return}
+  const r=t.getBoundingClientRect(),w=pop.offsetWidth,hh=pop.offsetHeight,vw=document.documentElement.clientWidth,vh=innerHeight;
+  const left=Math.min(Math.max(8,r.right-w),vw-w-8);let top=r.bottom+8;if(top+hh>vh-8&&r.top-hh-8>0)top=r.top-hh-8;
+  pop.style.left=(left+scrollX)+"px";pop.style.top=(top+scrollY)+"px"}
+function openPop(t,pinned){const a=acctById(t.dataset.pop);if(!a)return;if(popFor&&popTrig!==t)closePop(false);
+  popFor=a.id;popTrig=t;fillPop(a);pop.classList.toggle("pinned",!!pinned);pop.classList.remove("hide");t.setAttribute("aria-expanded",pinned?"true":"false");
+  if(!pinned){pop.setAttribute("role","tooltip");t.setAttribute("aria-describedby","rcpop")}else{pop.setAttribute("role","dialog");t.removeAttribute("aria-describedby")}
+  popBg.classList.toggle("hide",!(pinned&&narrow()));place(t);if(pinned){pop.tabIndex=-1;pop.focus()}}
+function closePop(ret=true){if(!popFor)return;pop.classList.add("hide");popBg.classList.add("hide");
+  const t=popTrig;popFor=null;popTrig=null;if(t){t.setAttribute("aria-expanded","false");t.removeAttribute("aria-describedby");if(ret&&document.contains(t)){noPrev=true;t.focus();noPrev=false}}}
+const pinned=()=>!!popFor&&pop.classList.contains("pinned");
+// After a data refresh the rows are rebuilt: re-anchor an open popover to the new chip.
+function refreshPop(){if(!popFor)return;const t=document.querySelector('[data-pop="'+CSS.escape(popFor)+'"]'),a=acctById(popFor);if(!t||!a){closePop(false);return}
+  const had=pop.contains(document.activeElement),pin=pinned();popTrig=t;t.setAttribute("aria-expanded",pin?"true":"false");fillPop(a);place(t);if(had&&pin)pop.focus()}
+document.addEventListener("pointerover",e=>{if(e.pointerType!=="mouse")return;const t=e.target.closest("[data-pop]");
+  if(t){clearTimeout(leaveT);if(!pinned()&&popTrig!==t){clearTimeout(hoverT);hoverT=setTimeout(()=>openPop(t,false),150)}return}
+  if(e.target.closest("#rcpop")){clearTimeout(leaveT);return}
+  clearTimeout(hoverT);if(popFor&&!pinned()){clearTimeout(leaveT);leaveT=setTimeout(()=>closePop(false),200)}});
+document.addEventListener("focusin",e=>{const t=e.target.closest&&e.target.closest("[data-pop]");if(t&&!noPrev&&!pinned()&&e.target.matches(":focus-visible"))openPop(t,false)});
+document.addEventListener("focusout",e=>{const t=e.target.closest&&e.target.closest("[data-pop]");if(t&&!pinned())setTimeout(()=>{if(!pinned()&&popTrig===t&&document.activeElement!==t)closePop(false)},0)});
+document.addEventListener("click",async e=>{const t=e.target.closest("[data-pop]");
+  if(t){e.preventDefault();clearTimeout(hoverT);if(pinned()&&popTrig===t)closePop();else openPop(t,true);return}
+  if(e.target.closest("[data-popclose]")){closePop();return}
+  if(e.target.closest("[data-rcused]")){showUsed=!showUsed;localStorage.setItem("ciallopa_rc_used",showUsed?"1":"0");refreshPop();const b=pop.querySelector("[data-rcused]");if(b)b.focus();return}
+  const rb=e.target.closest("[data-rcref]");if(rb){const id=rb.dataset.rcref;await busyRun(rb,"刷新重置卡",async()=>{RC=(await req("POST","/usage/v1/reset-credits/refresh",{account:id},null,T)).j;renderQuota();toast("已刷新 "+nmOf(id)+" 的重置卡")},"刷新中…");return}
+  const qb=e.target.closest("[data-qref]");if(qb){const id=qb.dataset.qref;await busyRun(qb,"刷新额度",async()=>{const r=(await req("POST","/admin/v1/accounts/"+encodeURIComponent(id)+"/quota-refresh",{},null,T)).j;applyQuota(r);renderQuota();
+    if(qskip(r)){toast(qerr(r.error));return}
+    if(!r.ok)throw Object.assign(new Error(qerr(r.error)),{kind:r.error.kind});toast("已刷新 "+nmOf(id)+" 的额度")},"查询中…");return}
+  const cb=e.target.closest("[data-consume]");if(cb){const a=acctById(cb.dataset.consume);if(a){const c=cb.dataset.credit?(a.rc.credits||[]).find(x=>x.id===cb.dataset.credit):null;openConsume(a,c,cb)}return}
+  if(e.target.closest("#rcpop a")){closePop(false);return}
+  if(popFor&&!e.target.closest("#rcpop")&&!e.target.closest(".modal"))closePop(false)});
+document.addEventListener("keydown",e=>{if(e.key==="Escape"&&!e.defaultPrevented&&popFor){closePop();e.preventDefault()}});
+addEventListener("resize",()=>{if(popTrig)place(popTrig)});
+
+// ---- reset-card confirm dialog (manual only; the server also requires {confirm: <account>})
+let cpFor=null,cpCredit=null,cpRid=null;
+function openConsume(a,c,from){const r=a.rc,now=Date.now();cpFor=a.id;cpCredit=c?c.id:null;cpRid=null;
+  $("cpt").textContent="为 "+(a.email||a.id)+" 使用 1 张重置卡？";
+  $("cpacct").textContent=(a.email?a.email+"（"+a.id+"）":a.id)+(a.status==="disabled"?" · 已停用":"");
+  const near=r.nearest_expires_at?Date.parse(r.nearest_expires_at):NaN;
+  $("cpn").textContent=r.available_count+" 张"+(!isNaN(near)?"，最近一张 "+fullDate(near)+" 到期":"");
+  const t=c?expOf(c):null;$("cpwhich").textContent=c?((c.title?c.title+"，":"")+(t===Infinity?"永不过期":"到期 "+fullDate(t)+"（"+dur((t-now)/1000)+"后）")):"由上游选择";
+  const w=wins(a),cq=$("cpq");clear(cq);
+  if(!w.length)cq.textContent="未知（尚无额度数据）";
+  else w.forEach(([lb,x],i)=>{if(i)cq.appendChild(document.createTextNode(" · "));cq.appendChild(document.createTextNode(lb+" "));cq.appendChild(h("b",null,rem(x).toFixed(0)+"%"));
+    if(x.resets_at&&x.resets_at*1000>now)cq.appendChild(document.createTextNode("（"+dur(x.resets_at-now/1000)+"后自然重置）"))});
+  const st=staleAge(a);if(st)cq.appendChild(h("span","c-cool"," · 数据 "+st));
+  // Non-blocking hint: the card may be wasted when no window is low, or a low one resets soon.
+  const low=w.filter(x=>rem(x[1])<20),soon=low.find(x=>x[1].resets_at&&x[1].resets_at*1000>now&&x[1].resets_at*1000-now<30*6e4),hp=$("cphint");clear(hp);
+  if(w.length&&!low.length)hp.append(h("b",null,"额度还没用完。"),"各额度窗口都还剩 20% 以上，现在用卡可能浪费。");
+  else if(soon)hp.append(h("b",null,"很快会自然重置。"),soon[0]+" 窗口 "+dur(soon[1].resets_at-now/1000)+"后自然重置，现在用卡可能浪费。");
+  hp.classList.toggle("hide",!hp.textContent);
+  $("cpres").textContent="";$("cpyes").textContent="确认使用 1 张";$("cpyes").disabled=false;$("cpyes").classList.remove("hide");$("cpno").textContent="取消";
+  openModal($("cp"),$("cpno"),from)}
+$("cp")._onclose=()=>{cpFor=null;cpCredit=null;cpRid=null};
+$("cpno").addEventListener("click",()=>closeModal($("cp")));
+$("cpyes").addEventListener("click",async()=>{const acct=cpFor;if(!acct)return;$("cpyes").disabled=true;$("cpres").textContent="正在提交…";
+  try{const j=await post("/admin/v1/accounts/"+encodeURIComponent(acct)+"/reset-credits/consume",Object.assign({confirm:acct},cpCredit?{credit_id:cpCredit}:{},cpRid?{redeem_request_id:cpRid}:{}));
+    $("cpres").textContent="结果："+(CODEN[j.code]||j.code)+(j.code==="reset"?"，重置了 "+j.windows_reset+" 个窗口"+(j.cooldown_cleared?"，已解除额度冷却":""):"")+"\nredeem_request_id: "+j.redeem_request_id;
+    $("cpyes").classList.add("hide");$("cpno").textContent="关闭";$("cpno").focus();toast("重置卡："+(CODEN[j.code]||j.code));loadQuota().catch(fail)}
+  catch(e){if(e.message==="401")return;const pend=e.body&&e.body.status==="pending";
+    if(e.status===409&&e.body&&e.body.pending){const p=e.body.pending;cpCredit=p.credit_id||null;cpRid=p.redeem_request_id;
+      $("cpres").textContent="这个账号上一次使用的结果还未知"+(p.credit_id?"（卡 "+p.credit_id+"）":"（由上游选卡）")+"，为避免多扣一张，只能重试那一次。\nredeem_request_id: "+p.redeem_request_id;$("cpyes").disabled=false;$("cpyes").textContent="重试上一次";return}
+    $("cpres").textContent="失败："+e.message+(pend?"\n结果未知；再次点击会用同一个 redeem_request_id 重试，不会重复扣卡。":"");$("cpyes").disabled=false;if(pend)$("cpyes").textContent="用同一请求重试"}});
+
+// ---- summary
+const GN={account:"账号",key:"密钥",instance:"实例",model:"模型",response_model:"实际模型"};
+function unkIcon(unk,tip){const i=h("span",{class:"wi",tabindex:"0",role:"img","aria-label":"部分未定价"},"⚠");i.dataset.tt="部分未定价：实际成本不低于此值\n"+unk+" 条请求缺少价格；已定价部分 "+tip;return i}
+function costCell(c,unk){if(unk&&c)return h("td",{class:"n"},"≥"+c.toFixed(2),unkIcon(unk,exactUsd(c)));if(unk)return h("td",{class:"n",title:unk+" 条请求缺少价格"},"未定价");return h("td",{class:"n",title:exactUsd(c)},c===null||c===undefined?"–":c.toFixed(2))}
+function renderSummary(){const s=SUM;if(!s)return;ttHide();const g=$("group").value;$("gh").textContent=GN[g];$("snote").textContent="与上方范围一致";
+  const tb=$("sum").tBodies[0];
+  keepScroll("sw",()=>steady([tb],()=>{clear(tb);
+    const row=(name,x,tot)=>{const label=!tot&&x.group[g]&&g!=="response_model"?h("button",{class:"statlink",type:"button",title:"筛选到 "+name},name):name;
+      if(typeof label!=="string")label.addEventListener("click",()=>{const id={account:"facct",model:"fmodel",key:"fkey",instance:"finstance"}[g];if(id==="facct"&&!Array.from($(id).options).some(o=>o.value===x.group[g]))$(id).appendChild(h("option",{value:x.group[g]},x.group[g]));$(id).value=x.group[g];changeScope();$("main").scrollIntoView({block:"start"})});
+      return h("tr",{class:tot?"tot":null,"data-ak":"sum|"+(tot?"=":"-")+name},h("td",{class:"l",title:name},label),h("td",{class:"n",title:exact(x.count)+" 条"},fmtN(x.count)),
+      h("td",{class:"n",title:exact(x.failures)+" 失败 · "+exact(x.cancelled)+" 取消 · "+exact(x.incomplete)+" 未完成 · "+exact(x.unknown||0)+" 结果未知"},pct(x.failure_rate)),
+      h("td",{class:"n x",title:"p90 "+fmtMs(x.stream_ttft_p90_ms)+" · "+exact(x.stream_ttft_samples)+" 样本"},fmtMs(x.stream_ttft_p50_ms)),
+      h("td",{class:"n x",title:"p90 "+fmtMs(x.duration_p90_ms)+" · "+exact(x.duration_samples)+" 终结请求"},fmtMs(x.duration_p50_ms)),
+      h("td",{class:"n",title:"已报告 "+exact(x.usage_samples)+" 条 · 输入 "+exact(x.input_tokens)+"（缓存 "+exact(x.cached_tokens)+"）· 输出 "+exact(x.output_tokens)},tokenValue(x)),costCell(x.cost_usd,x.unknown_price))};
+    for(const x of s.groups){const v=x.group[g];tb.appendChild(row(v===null||v===undefined?"（无）":v,x))}
+    if(s.groups.length)tb.appendChild(row("合计",s.total,true));else emptyRow(tb,7,"该时间段无请求","换个时间段试试")}));
+  const unk=$("unk"),um=s.unknown_price_models||[];clear(unk);
+  if(s.price_models===0)add(unk,["⚠ 还没有价格表，费用不显示 · ",h("a",{href:"/ui/settings#prices"},"去拉取价格")]);
+  else if(um.length)add(unk,["⚠ 有 "+um.length+" 个模型未定价："+um.join("、")+" · ",h("a",{href:"/ui/settings#prices"},"检查价格更新")])}
+
+// ---- One scale at a time. Build every bucket intersecting the exact query window.
+const SVGNS="http://www.w3.org/2000/svg";
+function sv(tag,attrs,text){const e=document.createElementNS(SVGNS,tag);for(const k in attrs)e.setAttribute(k,String(attrs[k]));if(text!==undefined)e.textContent=String(text);return e}
+function tipAt(ev,text){const t=$("ctip"),box=$("chart").getBoundingClientRect();t.textContent=text;t.classList.remove("hide");
+  const x=Math.max(4,Math.min(ev.clientX-box.left+12,box.width-t.offsetWidth-4)),y=Math.max(4,ev.clientY-box.top-t.offsetHeight-8);t.style.left=x+"px";t.style.top=y+"px"}
+function trendPoints(summary,hourly,tz){const step=hourly?36e5:864e5,off=tz*60000,first=Math.floor((summary.from_ms+off)/step)*step-off;
+  const by=new Map((summary.buckets||[]).map(b=>[b.start_ms,b])),pts=[];
+  for(let start=first;start<=summary.to_ms;start+=step){const end=start+step,b=by.get(start),from=Math.max(start,summary.from_ms),to=Math.min(end-1,summary.to_ms);
+    pts.push({start,end,from,to,partial:from!==start||to!==end-1,n:b?b.count:0,f:b?b.failures:0,cancel:b?b.cancelled:0,inc:b?b.incomplete:0,unobserved:b?b.unknown||0:0,
+      records:b?b.count+b.prewarm_count:0,samples:b?b.usage_samples:0,tokens:b?(b.usage_samples?b.input_tokens+b.output_tokens:null):0,cost:b?b.cost_usd:0,unknown:b?b.unknown_price:0})}
+  return pts}
+function selectBucket(p){if(!summaryCurrent())return;recordWindow={from:p.from,to:p.to};scopeWindow.fixed=true;saveF();showScope();renderTrend();loadRecords(false).catch(fail);revealRecords()}
+function renderTrend(){if(!TREND)return;const {summary,hourly,tz}=TREND,pts=trendPoints(summary,hourly,tz),metric=$("tmetric").value,svg=$("svg");clear(svg);$("ctip").classList.add("hide");
+  const nar=narrow(),W=nar?360:1200,H=nar?130:160,L=nar?36:48,R=12,T=12,B=24,iw=W-L-R,ih=H-T-B;
+  const value=p=>metric==="tokens"?p.tokens:metric==="cost"?p.cost:p.n,values=pts.map(p=>value(p)||0),peak=Math.max(0,...values),max=metric==="cost"?Math.max(.01,peak*1.12):Math.max(4,Math.ceil(peak/4)*4);
+  svg.setAttribute("viewBox","0 0 "+W+" "+H);
+  const axis=n=>metric==="cost"?(n<1?n.toFixed(2):fmtN(n)):fmtN(n);
+  for(let i=0;i<=4;i++){const y=T+ih*i/4;svg.appendChild(sv("line",{x1:L,x2:W-R,y1:y,y2:y,class:"gl"}));svg.appendChild(sv("text",{x:L-6,y:y+3,"text-anchor":"end",class:"ax"},axis(max*(1-i/4))))}
+  const bw=iw/pts.length,every=Math.ceil(pts.length/(nar?4:10));
+  pts.forEach((p,i)=>{const x=L+i*bw,v=value(p),hgt=ih*(v||0)/max,selected=recordWindow&&recordWindow.from===p.from&&recordWindow.to===p.to;
+    if(v!==null&&v!==undefined)svg.appendChild(sv("rect",{x:x+bw*.14,y:T+ih-hgt,width:Math.max(.5,bw*.72),height:hgt,class:p.partial?"b-now":"b-req"}));
+    else svg.appendChild(sv("text",{x:x+bw/2,y:T+ih-3,"text-anchor":"middle",class:"ax"},"–"));
+    if(metric==="requests"){const hf=ih*p.f/max,hc=ih*p.cancel/max;
+      if(hf)svg.appendChild(sv("rect",{x:x+bw*.14,y:T+ih-hf,width:Math.max(.5,bw*.72),height:hf,class:"b-err"}));
+      if(hc)svg.appendChild(sv("rect",{x:x+bw*.14,y:T+ih-hf-hc,width:Math.max(.5,bw*.72),height:hc,class:"b-cancel"}))}
+    const d=new Date(p.start),lab=hourly?p2(d.getHours())+":00":p2(d.getMonth()+1)+"/"+p2(d.getDate());
+    if(i%every===0)svg.appendChild(sv("text",{x:x+bw/2,y:H-6,"text-anchor":"middle",class:"ax"},lab));
+    const tokenText=p.tokens===null?"未报告":exact(p.tokens)+(p.records?"（"+exact(p.samples)+" / "+exact(p.records)+" 条已报告，含预热）":"");
+    const txt=fmtTime(p.from,true)+" – "+fmtTime(p.to,true)+(p.partial?"（部分时段）":"")+"\n请求 "+exact(p.n)+" · 失败 "+exact(p.f)+" · 取消 "+exact(p.cancel)+(p.unobserved?" · 结果未知 "+exact(p.unobserved):"")+"\nToken "+tokenText+" · 估算费用 "+(p.unknown&&!p.cost?"未定价":(p.unknown?"≥":"")+fmtUsd(p.cost))+"\n选择以查看这段时间的请求";
+    const hit=sv("rect",{x,y:T,width:bw,height:ih,class:"hit",tabindex:summaryCurrent()?0:-1,role:"button","aria-label":txt,"aria-disabled":String(!summaryCurrent()),"aria-pressed":String(!!selected)});if(selected)hit.style.fill="color-mix(in srgb,var(--focus) 10%,transparent)";
+    hit.addEventListener("mousemove",ev=>tipAt(ev,txt));hit.addEventListener("mouseleave",()=>$("ctip").classList.add("hide"));
+    hit.addEventListener("focus",()=>{const r=hit.getBoundingClientRect();tipAt({clientX:r.left+r.width/2,clientY:r.top},txt)});hit.addEventListener("blur",()=>$("ctip").classList.add("hide"));
+    hit.addEventListener("click",()=>selectBucket(p));hit.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();selectBucket(p)}});svg.appendChild(hit)});
+  $("chartlegend").textContent=(metric==="requests"?"灰：请求 · 橙：失败 · 深灰：取消":metric==="tokens"?"输入 + 输出 Token（已报告部分，含预热）；– 表示未报告":"按 API 标价估算（含预热）；– 表示未定价")+" · 虚线：部分时段 · "+(summaryCurrent()?"选择柱查看请求":"上次范围，等待更新")}
+let lastNarrow=narrow();addEventListener("resize",()=>{if(narrow()!==lastNarrow){lastNarrow=narrow();renderTrend()}});
+
+// ---- custom tooltips for [data-tt]
+let ttFor=null;
+function ttShow(e){const t=$("tt");t.textContent=e.dataset.tt;t.classList.remove("hide");ttFor=e;
+  const r=e.getBoundingClientRect(),vw=document.documentElement.clientWidth,vh=document.documentElement.clientHeight,w=t.offsetWidth,hh=t.offsetHeight;
+  let top=r.bottom+6;if(top+hh>vh-4)top=Math.max(4,r.top-6-hh);t.style.left=Math.min(Math.max(4,r.left+r.width/2-w/2),vw-w-4)+"px";t.style.top=top+"px";e.setAttribute("aria-describedby","tt")}
+function ttHide(){if(!ttFor)return;$("tt").classList.add("hide");ttFor.removeAttribute("aria-describedby");ttFor=null}
+document.addEventListener("mouseover",e=>{const x=e.target.closest&&e.target.closest("[data-tt]");if(x&&x!==ttFor)ttShow(x);else if(!x&&ttFor&&ttFor!==document.activeElement)ttHide()});
+document.addEventListener("focusin",e=>{const x=e.target.closest&&e.target.closest("[data-tt]");if(x)ttShow(x);else ttHide()});
+document.addEventListener("focusout",ttHide);
+addEventListener("scroll",()=>{ttHide();$("ctip").classList.add("hide")},{passive:true,capture:true});
+
+// ---- recent requests
+function normTier(t){t=(t||"").trim().toLowerCase();if(!t)return null;if(t==="fast")return"priority";if(t==="auto"||t==="default"||t==="standard")return"standard";return t}
+const TIERN={priority:"Fast",flex:"Flex",standard:"标准"};
+function tierName(t){return t?TIERN[t]||t:"–"}
+function modelCell(r){const box=h("span"),req=r.model||"–";box.appendChild(h("span",null,req));
+  const rq=normTier(r.requested_service_tier),sv2=normTier(r.service_tier),down=rq&&rq!=="standard"&&rq!==sv2;
+  if(sv2==="priority"||sv2==="flex")box.appendChild(h("span","chip"+(sv2==="priority"?" fast":""),sv2==="priority"?"⚡Fast":"Flex"));
+  if(down)box.appendChild(h("span","chip dg",tierName(rq)));
+  const rm=r.response_model,mm=r.model_mismatch===true;
+  if(rm&&rm!==r.model)box.appendChild(h("span",{class:"rm"+(mm?" mm":""),title:rm},"↳ "+rm+(mm?"（不一致）":"（快照）")));
+  const tip=["模型：请求 "+req+(rm?" · 响应 "+rm+(rm===r.model?"":mm?"（不一致）":"（快照）"):"")];
+  if(rq||sv2)tip.push("档位：请求 "+tierName(rq||"standard")+" · 实际 "+tierName(sv2)+(down?"（已降级）":""));box.dataset.tip=tip.join("\n");return box}
+function effortCell(r){const box=h("span"),q=r.reasoning_effort,a=r.response_effort;let tip;
+  if(q){box.appendChild(h("span","ef",q));if(a&&a!==q){box.appendChild(h("span","ef fw","↳ "+a));tip="推理强度：请求 "+q+" · 实际 "+a}else tip="推理强度：请求 "+q+(a?" · 实际 "+a:"")}
+  else if(a){box.appendChild(h("span","ef fb",a,h("small",null,"响应")));tip="推理强度：请求未指定 · 实际 "+a}else{box.appendChild(h("span","ef","–"));tip="推理强度：–"}
+  box.dataset.tip=tip;return box}
+const SRC={client:["客户端","off","客户端断开或请求本身的问题"],local:["ciallopa","off","ciallopa 本地产生（没有可用账号、全部冷却等）"],network:["网络","err","连不上上游、超时或流空闲超时"],proxy:["代理","proxy","出口代理连不上、拒绝隧道或超时（不计入账号冷却）"],upstream:["上游","err","上游 HTTP 返回的错误，原样转给客户端"],stream:["流内","err","上游流里的错误事件或流被截断"]};
+const PROXY_ERR={proxy_connect:"出口代理连接失败",proxy_timeout:"经出口代理连接超时"};
+const ERR_LBL=Object.assign({invalid_encrypted_content:"加密推理被拒",usage_limit:"额度用完",usage_limit_reached:"额度用完",rate_limit_exceeded:"限流",server_is_overloaded:"上游过载",client_closed:"客户端断开",no_account:"没有账号",no_usable_account:"没有可用账号",all_cooling:"全部账号冷却中",all_quota_exhausted:"全部账号额度用完",first_quota_reset:"最早恢复的账号额度用完",stream_truncated:"流被截断",observation_incomplete:"观察不完整",connect_timeout:"连接超时",header_timeout:"等待响应头超时",preparation_timeout:"准备等待超时",error_body_timeout:"读取错误响应超时",error_body_too_large:"错误响应过大",error_body_read:"错误响应中断",upstream_5xx:"上游 5xx"},PROXY_ERR);
+const ERR_TIP={invalid_encrypted_content:"上游拒绝了对话历史里的加密推理内容（多为在另一个账号/组织下生成，原因见详情）。属于请求内容问题：不换号、不冷却、不重试；客户端收到明确提示，需新开会话",observation_incomplete:"响应已透传，但事件超过网关的有界观察范围，无法确认最终业务结果。未报告的用量不是零，未知结果不计为失败或客户端取消。"};
+function errorInfo(r){const known=r.error!=="observation_incomplete"||requestOutcome(r)==="unknown";return {label:known?ERR_LBL[r.error]:"",tip:known?ERR_TIP[r.error]:""}}
+function srcOf(r){return r.err_source==="network"&&PROXY_ERR[r.error]?"proxy":r.err_source}
+let recState={cursor:null,total:0,rows:[]};
+const OUTCOME={completed:"完成",failed:"失败",cancelled:"客户端取消",incomplete:"未完成",unknown:"结果未知",prewarm:"预热"};
+function requestOutcome(r){return r.endpoint==="prewarm"?"prewarm":r.error==="client_closed"||r.err_source==="client"?"cancelled":r.error==="observation_incomplete"&&r.err_source==="local"&&!(r.status>=400)?"unknown":r.error||r.status>=400?"failed":r.incomplete?"incomplete":"completed"}
+function streamRecord(r){return r.transport==="sse"||r.transport==="ws"}
+function recRow(r){const outcome=requestOutcome(r),isErr=outcome==="failed",es=srcOf(r),s=r.status,pw=outcome==="prewarm",error=errorInfo(r);
+  const tr=h("tr",{class:(isErr?"e":"")+(es==="proxy"?" px":"")+(s===429?" rl":"")+(pw?" dim":"")+" dt","data-ak":r.request_id?"rec|"+r.request_id:null});
+  const hint="\n点击或按 Enter 查看详情";
+  if(r.request_id)tr.addEventListener("click",e=>{if(e.target.closest("button")||!getSelection().toString())openDetail(r,tr.querySelector("button"))});
+  const today=new Date(r.ts_ms).toDateString()===new Date().toDateString();
+  const detail=h("button",{class:"statlink",type:"button","aria-label":"查看请求："+fmtTime(r.ts_ms)+" "+(r.account||"")+" "+OUTCOME[outcome]},today?hms(new Date(r.ts_ms)):fmtTime(r.ts_ms,true));
+  tr.appendChild(h("td",{class:"t num sm",title:isoLocal(r.ts_ms)+hint},detail));
+  const sc=h("td",{class:"s",title:(s?"客户端收到 HTTP "+s:"未记录 HTTP 状态")+(r.upstream_status&&r.upstream_status!==s&&r.error?"；最后一次上游响应 HTTP "+r.upstream_status:"")+(r.incomplete?"；response.incomplete："+r.incomplete+"（token 已计入，不算错误）":"")},h("span","st"+(isErr?(s===429?" s429":s>=500?" s5":s>=400?" s4":""):""),s||"–"));
+  if(r.incomplete)sc.appendChild(h("span","tag cool","未完成"));tr.appendChild(sc);
+  const ec=h("td",{class:"err",title:(error.tip?error.tip+"："+r.error:es&&SRC[es]?SRC[es][2]+"："+(r.error||""):(r.error||""))+hint});
+  if(pw){ec.appendChild(h("span","tag line","预热"));ec.title="Codex WS 预热（generate:false）：token 计入用量与费用，不计入请求数、错误率和延迟统计"}
+  else if(outcome==="unknown")ec.append(h("span","tag line","结果未知")," ",h("span","sm mut","观察不完整"));
+  else if(es&&SRC[es]){ec.append(h("span","tag "+SRC[es][1],SRC[es][0]+(es==="upstream"&&r.upstream_status?" "+r.upstream_status:""))," ",h("span","sm",error.label||r.error||"")," ");if(error.label)ec.appendChild(h("span","mono xs mut d-only",r.error))}
+  else if(r.switches&&r.first_account)ec.appendChild(h("span","sm mut","换号后成功 · "+r.first_account+" → "+(r.account||"")));
+  else ec.appendChild(h("span","sm mut",outcome==="incomplete"?r.incomplete:OUTCOME[outcome]));
+  ec.appendChild(h("span","more","详情 ›"));tr.appendChild(ec);
+  tr.appendChild(h("td",{class:"a",title:(r.account||"")+hint},r.account||"–"));
+  tr.appendChild(h("td",{class:"key x sm mut",title:(r.key||"")+hint},h("span","trunc",r.key||"–")));
+  const mc=modelCell(r);mc.appendChild(h("span","m-only"," · "+(r.reasoning_effort||r.response_effort||"–")+" · "+fmtN(r.output_tokens)+" 出"));tr.appendChild(h("td",{class:"m",title:mc.dataset.tip+hint},mc));
+  const ef=effortCell(r);tr.appendChild(h("td",{class:"x sm",title:ef.dataset.tip+hint},ef));
+  tr.appendChild(h("td",{class:"n x",title:streamRecord(r)?"首输出延迟":"非流请求无首输出样本"},fmtMs(streamRecord(r)?r.ttft_ms:null)));
+  tr.appendChild(h("td",{class:"n dur",title:exact(r.duration_ms)+" ms"},fmtMs(r.duration_ms)));
+  tr.appendChild(h("td",{class:"n x",title:exact(r.input_tokens)+(r.cached_tokens?"（缓存命中 "+exact(r.cached_tokens)+"）":"")},fmtN(r.input_tokens)));
+  tr.appendChild(h("td",{class:"n x",title:exact(r.output_tokens)},fmtN(r.output_tokens)));
+  tr.appendChild(r.price_status==="unknown_price"?h("td",{class:"n x",title:"模型/档位不在价格表中"},"未定价"):h("td",{class:"n x",title:exactUsd(r.cost_usd)},r.cost_usd===null||r.cost_usd===undefined?"–":r.cost_usd<0.01&&r.cost_usd>0?"<0.01":r.cost_usd.toFixed(2)));
+  return tr}
+const recordRows=new Map();let recordDay="";
+// RecordRow is a flat API snapshot. Preserve identical rows even when JSON supplies new objects.
+function sameRecord(a,b){const keys=Object.keys(a);return keys.length===Object.keys(b).length&&keys.every(k=>a[k]===b[k])}
+function renderRecords(){const tb=$("rec").tBodies[0],dp=$("dp"),opener=!dp.classList.contains("hide")&&dp._opener&&tb.contains(dp._opener)?dp._opener.closest("tr[data-ak]"):null,anchor=opener&&opener.dataset.ak;
+  keepScroll("rw",()=>steady([tb],()=>{
+    // Time-only labels become dated labels at midnight, even if the record is unchanged.
+    const day=new Date().toDateString();if(recordDay!==day){recordRows.clear();recordDay=day}
+    const live=new Set(recState.rows.map(r=>r.request_id));
+    for(const [id,entry] of recordRows)if(!live.has(id)){entry.node.remove();recordRows.delete(id)}
+    if(!recordRows.size)clear(tb);
+    let cursor=tb.firstElementChild;
+    for(const r of recState.rows){let entry=recordRows.get(r.request_id);
+      if(!entry||!sameRecord(entry.record,r)){const next={record:r,node:recRow(r)};
+        if(entry){if(cursor===entry.node)cursor=next.node;entry.node.replaceWith(next.node)}recordRows.set(r.request_id,next);entry=next}
+      if(entry.node!==cursor)tb.insertBefore(entry.node,cursor);cursor=entry.node.nextElementSibling}
+    if(!recState.rows.length)emptyRow(tb,12,"没有符合条件的请求",anyF()?"清除筛选或换个时间段试试":"换个时间段试试")}));
+  // A refresh already in flight can replace the opener while its detail dialog is open.
+  if(anchor)dp._opener=tb.querySelector('[data-ak="'+CSS.escape(anchor)+'"] button')||$("foutcome");
+  $("rcount").textContent="共 "+exact(recState.total)+" 条"+(!$("foutcome").value?"（含预热）":$("foutcome").value==="business"?"（不含预热）":"");
+  $("rmore").classList.toggle("hide",!recState.cursor);
+  $("rpage").textContent=(recState.cursor?"已显示 "+exact(recState.rows.length)+" 条":"")+(recState.rows.length>PAGE?" · 已暂停滚动更新；刷新查看最新":"");renderDetailNav()}
+const PAGE=50;
+function recordFilters(){const t=$("ftier").value,o=$("foutcome").value;return Object.assign({},scopeFilters(),recordWindow||{},{outcome:o==="business"?"":o,exclude_prewarm:o==="business"?1:"",errors:$("ferr").checked?1:"",source:$("fsrc").value,error:$("fcode").value.trim(),retried:$("fretry").checked?1:"",tier:t==="dg"?"":t,downgraded:t==="dg"?1:""})}
+async function loadRecords(append){const filters=recordFilters(),signature=qs(filters);
+  const base=append&&recState.signature===signature?recState:{cursor:null,total:0,rows:[]};
+  if(append&&base.rows.length&&!base.cursor)return;
+  const q=qs(Object.assign({},filters,{limit:PAGE,before_id:base.cursor}));
+  await currentLoad("sr",()=>qs(recordFilters()),(_q,current)=>usageGet("/usage/v1/records?"+q,current),d=>{
+    const rows=base.rows.concat(d.records);recState={cursor:d.next_before_id,total:d.total,rows,signature};renderRecords()})}
+function qs(o){const u=new URLSearchParams();for(const k in o)if(o[k]!==""&&o[k]!==null&&o[k]!==undefined)u.set(k,o[k]);return u.toString()}
+$("rmore").addEventListener("click",async()=>{$("rmore").disabled=true;try{await loadRecords(true)}catch(e){fail(e)}finally{$("rmore").disabled=false}});
+
+// ---- Request inspector. A late detail can never fill a different request's dialog.
+let dtext="",detailSeq=0,lookupSeq=0,detailRecord=null;
+function pretty(s){if(s===null||s===undefined)return"";try{return JSON.stringify(JSON.parse(s),null,2)}catch(_){return String(s)}}
+function field(name,value){if(value!==null&&value!==undefined&&value!=="")$("dfields").append(h("dt",null,name),h("dd",null,String(value)))}
+function detailStats(r){clear($("dstats"));const cells=[["首输出",fmtMs(streamRecord(r)?r.ttft_ms:null)],["总耗时",fmtMs(r.duration_ms)],["输入 / 输出",fmtN(r.input_tokens)+" / "+fmtN(r.output_tokens)],
+  ["缓存输入",fmtN(r.cached_tokens)],["估算费用",r.price_status==="unknown_price"?"未定价":fmtUsd(r.cost_usd)],["重试 / 换号",(r.retries||0)+" / "+(r.switches||0)]];
+  for(const [name,value] of cells)$("dstats").appendChild(h("div",null,h("div","mut xs",name),h("div","v",value)))}
+function renderDetailNav(){const index=recState.rows.findIndex(x=>x.request_id===activeRecord),prev=$("dprev"),next=$("dnext"),focused=document.activeElement;prev.disabled=index<=0;next.disabled=index<0||index>=recState.rows.length-1;$("dposition").textContent=index<0?"通过记录 ID 定位":(index+1)+" / "+recState.rows.length+" · 当前列表";
+  if((focused===prev||focused===next)&&focused.disabled)(!prev.disabled?prev:!next.disabled?next:$("dclose")).focus({preventScroll:true})}
+function hideDetailRetry(){if(document.activeElement===$("dretry"))$("dclose").focus({preventScroll:true});$("dretry").classList.add("hide")}
+async function openDetail(r,from,retry=false){if(!/^[0-9a-f]{16}$/.test(r.request_id||""))return;
+  lookupSeq++;const seq=++detailSeq,auth=key(),epoch=authEpoch,current=()=>detailSeq===seq&&key()===auth&&epoch===authEpoch&&activeRecord===r.request_id;activeRecord=r.request_id;detailRecord=r;
+  const outcome=requestOutcome(r),es=srcOf(r),error=errorInfo(r);$("dtitle").textContent=OUTCOME[outcome]+" · "+(r.model||"请求");
+  $("dmeta").textContent=fmtTime(r.ts_ms,true)+" · "+(r.status?"HTTP "+r.status:"未记录 HTTP 状态")+" · "+(r.transport||"–").toUpperCase();detailStats(r);clear($("dfields"));
+  for(const [name,value] of [["记录 ID",r.request_id],["账号",r.account],["密钥 / 实例",[r.key,r.instance].filter(Boolean).join(" / ")],["端点",r.endpoint],
+    ["实际模型",r.response_model],["推理强度",r.reasoning_effort||r.response_effort],["请求 / 实际档位",tierName(normTier(r.requested_service_tier))+" / "+tierName(normTier(r.service_tier))],
+    ["最初账号",r.first_account],["会话 / 轮次",[r.thread_id,r.turn_id].filter(Boolean).join(" / ")],["未完成原因",r.incomplete]])field(name,value);
+  $("dmsg").classList.toggle("error",outcome==="failed");
+  const message=(es&&SRC[es]?SRC[es][0]+" · ":"")+(r.error?(error.label?error.label+" ":"")+r.error:"")+(error.tip?"\n"+error.tip:"");$("dmsg").textContent=message;
+  for(const id of ["dhdr","dbody"])$(id).textContent="";clear($("dtl"));$("dtll").classList.add("hide");
+  for(const id of ["dhlab","dhdr","dblab","dbody"])$(id).classList.add("hide");
+  dtext=JSON.stringify({record:r},null,2);$("dcopy").disabled=!!r.has_detail;$("dcopy").textContent="复制 JSON";
+  $("dload").classList.toggle("hide",!r.has_detail);$("dstatus").textContent=r.has_detail?"正在加载详情…":"";$("dbody").setAttribute("aria-busy",String(!!r.has_detail));
+  $("dretry").setAttribute("aria-disabled","true");$("dretry").textContent=retry?"重试中…":"重试详情";if(!retry)hideDetailRetry();
+  renderDetailNav();
+  if($("dp").classList.contains("hide"))openModal($("dp"),$("dclose"),from);saveF();
+  if(!r.has_detail)return;$("dblab").textContent="响应体";
+  try{const d=await usageGet("/usage/v1/records/"+r.request_id+"/detail",current);if(!current())return;
+    for(const id of ["dhlab","dhdr","dblab","dbody"])$(id).classList.remove("hide");
+    $("dmsg").textContent=[message,d.message].filter(Boolean).join("\n");if(d.upstream_request_id)field("上游请求 ID",d.upstream_request_id);renderAttempts(d.attempts);
+    $("dhdr").textContent=d.headers&&Object.keys(d.headers).length?JSON.stringify(d.headers,null,2):"（无）";
+    $("dblab").textContent="响应体 · 原始 "+d.body_len+" 字节"+(d.truncated?" · 已截断":"")+" · 已脱敏";
+    $("dbody").textContent=d.body?pretty(d.body):"（无）";dtext=JSON.stringify({record:r,detail:d},null,2);$("dstatus").textContent="详情已加载";hideDetailRetry()}
+  catch(err){if(!current()||err.message==="401")return;$("dstatus").textContent=err.status===404?"详情已过保留期。请求概要仍可查看。":"详情加载失败："+why(err);if(err.status===404)hideDetailRetry();else $("dretry").classList.remove("hide");dtext=JSON.stringify({record:r,detail_error:err.message},null,2)}
+  finally{if(current()){$("dcopy").disabled=false;$("dbody").setAttribute("aria-busy","false");$("dretry").setAttribute("aria-disabled","false");$("dretry").textContent="重试详情"}}}
+async function lookupRecord(id,from){id=id.trim().toLowerCase();if(!/^[0-9a-f]{16}$/.test(id)){toast("记录 ID 是 16 位十六进制字符",{kind:"err"});return}
+  $("lookupresult").textContent="正在查找 "+id+"…";const seq=++lookupSeq,auth=key(),epoch=authEpoch,current=()=>seq===lookupSeq&&auth===key()&&epoch===authEpoch;try{const d=await usageGet("/usage/v1/records/"+id,current);if(current()){$("lookupresult").textContent="";openDetail(d.record,from)}}
+  catch(e){if(!current()||e.message==="401")return;$("lookupresult").textContent=e.status===404?"没有找到记录 "+id+"，可能已过保留期。":"查找失败："+e.message;$("lookup").classList.remove("hide");$("lookupshow").setAttribute("aria-expanded","true");$("recordid").value=id}}
+$("lookupshow").addEventListener("click",()=>{const open=$("lookup").classList.toggle("hide")===false;$("lookupshow").setAttribute("aria-expanded",String(open));if(open)$("recordid").focus()});
+$("lookup").addEventListener("submit",e=>{e.preventDefault();lookupRecord($("recordid").value,$("recordid"))});
+function moveDetail(step){const i=recState.rows.findIndex(r=>r.request_id===activeRecord),r=i<0?null:recState.rows[i+step];if(r)openDetail(r)}
+for(const [id,step] of [["dprev",-1],["dnext",1]])$(id).addEventListener("click",()=>moveDetail(step));
+document.addEventListener("keydown",e=>{if(e.defaultPrevented||!e.altKey||e.ctrlKey||e.metaKey||e.shiftKey||MODALS[MODALS.length-1]!==$("dp"))return;const step=e.key==="ArrowUp"?-1:e.key==="ArrowDown"?1:0;if(step){e.preventDefault();moveDetail(step)}});
+$("dretry").addEventListener("click",()=>{if(detailRecord&&detailRecord.request_id===activeRecord&&!$("dretry").classList.contains("hide")&&$("dretry").getAttribute("aria-disabled")!=="true")openDetail(detailRecord,undefined,true)});
+const ACT={ok:"成功",switch:"换号",stop:"停止，返回给客户端","refresh+retry":"更新令牌后重试"};
+function actText(a){if(!a)return"";if(ACT[a])return ACT[a];let m=a.match(/^retry\((\d+)ms\)$/);if(m)return"退避 "+(m[1]/1000).toFixed(1)+" 秒后重试同一账号";
+  m=a.match(/^cooldown\((\d+)s\)\+(\w+)$/);if(m)return"冷却 "+m[1]+"s，"+actText(m[2]);return a}
+function renderAttempts(at){const ol=$("dtl");clear(ol);if(!Array.isArray(at)||!at.length)return;$("dtll").classList.remove("hide");
+  for(const a of at){if(a.dropped){ol.appendChild(h("li","mut","…省略 "+a.dropped+" 次"));continue}
+    const li=h("li",a.action==="ok"?"ok":"bad",h("span","mut","+"+(a.t_ms/1000).toFixed(2)+" s "),h("b",null,a.account+" "),(a.status?"HTTP "+a.status:a.kind==="transport"?"网络错误":a.kind==="refresh"?"获取令牌失败":a.kind==="preparation"?"准备等待":a.kind)+(a.code?" ":""),a.code?h("code",null,a.code):null," → "+actText(a.action));
+    if(a.body)li.title=a.body;ol.appendChild(li)}}
+$("dp")._onclose=()=>{detailSeq++;lookupSeq++;dtext="";detailRecord=null;activeRecord=null;saveF()};
+$("dclose").addEventListener("click",()=>closeModal($("dp")));
+$("dcopy").addEventListener("click",async()=>{if(!dtext)return;try{await navigator.clipboard.writeText(dtext);toast("已复制请求 JSON")}catch(_){toast("复制失败，请检查浏览器剪贴板权限",{kind:"err"})}});
+$("dlink").addEventListener("click",async()=>{try{const u=new URL(location.href);u.searchParams.set("record",activeRecord);u.searchParams.set("from",scopeWindow.from);u.searchParams.set("to",scopeWindow.to);await navigator.clipboard.writeText(u.href);toast("已复制固定时间范围的请求链接")}catch(_){toast("复制链接失败",{kind:"err"})}});
+
+// ---- active quota query (admin): the answer patches the shown snapshot at once
+const nmOf=id=>(acctById(id)||{}).email||id;
+function applyQuota(r){if(!r.ok||!Q)return;const q=r.quota||{},x=Q.accounts.find(y=>y.account===r.account);if(!x)return;
+  x.quota=Object.assign({},x.quota||{},{account:r.account,plan:q.plan,observed_at_ms:r.observed_at_ms,observed_by:"manual",primary:Object.assign({estimate:{}},q.primary||{}),secondary:Object.assign({estimate:{}},q.secondary||{})})}
+$("qall").addEventListener("click",()=>busyRun($("qall"),"刷新额度",async()=>{const j=(await req("POST","/admin/v1/accounts/quota-refresh",{},null,T)).j;for(const r of j.results)applyQuota(r);renderQuota();
+  const bad=j.results.filter(r=>!r.ok&&r.error.kind!=="rate_limited"),sk=j.skipped!==undefined?j.skipped:j.results.filter(qskip).length,skt=sk?"，"+sk+" 个 30 秒内刚查询过，已跳过":"";if(!bad.length){toast(qsummary(j));return}
+  toast("刷新额度："+j.ok+" 个成功，"+bad.length+" 个失败"+skt+"\n"+bad.slice(0,4).map(r=>nmOf(r.account)+"："+qerr(r.error)).join("\n")+(bad.length>4?"\n…另外 "+(bad.length-4)+" 个":""),{kind:"err"})},"查询中…"));
+// ---- loading
+async function loadQuota(){await currentLoad("sq",key,(_q,current)=>Promise.allSettled([usageGet("/usage/v1/quota",current),usageGet("/usage/v1/reset-credits",current),NOADMIN?Promise.resolve(null):usageGet("/admin/v1/accounts",current)]),results=>{
+  const [q,r,a]=results;Q=quotaPart(q,Q,QUOTA_READ.quota,"额度");RC=quotaPart(r,RC,QUOTA_READ.credits,"重置卡");AC=quotaPart(a,AC,QUOTA_READ.accounts,"账号状态");
+  const notes=Object.values(QUOTA_READ).map(x=>x.note).filter(Boolean);$("qnote").textContent=notes.length?notes.join("；"):"当前上游快照，独立于上方请求范围";
+  $("qall").classList.toggle("hide",!AC||!AC.accounts.length);renderQuota()})}
+const QUOTA_READ={quota:{at:0,note:""},credits:{at:0,note:""},accounts:{at:0,note:""}};
+function quotaPart(result,previous,state,label){if(result.status==="fulfilled"){state.at=result.value?Date.now():0;state.note=result.value?"":label+"无读取权限";return result.value}
+  const e=result.reason;if(e.status===403||e.status===404){state.at=0;state.note=label+(e.status===403?"无读取权限（HTTP 403）":"接口不可用（HTTP 404）");return null}
+  state.note=label+"读取失败："+why(e)+(state.at?" · 保留已有数据（上次读取 "+fmtTime(state.at)+"）":" · 暂无成功数据");return previous}
+function resetQuotaReads(){for(const state of Object.values(QUOTA_READ)){state.at=0;state.note=""}$("qnote").textContent=""}
+function summaryQuery(){const q=new URLSearchParams(trendQuery());q.set("group",$("group").value);return q.toString()}
+// The API returns both grouped metrics and buckets. One scan serves the whole overview.
+async function loadSummary(){try{await currentLoad("ss",summaryQuery,(q,current)=>{$("st").setAttribute("aria-busy","true");return usageGet("/usage/v1/summary?"+q,current)},(s,q)=>{
+  const p=new URLSearchParams(q),hourly=p.get("bucket")==="hour";SUM=s.summary;SUM_SCOPE=qs(scopeFilters());RECORDER=s.recorder;
+  TREND={summary:s.summary,hourly,tz:Number(p.get("tz"))};$("trange").textContent=hourly?"每小时":"每天";renderSummary();renderKpis();renderTrend()})}
+  finally{if(!loading.ss)$("st").setAttribute("aria-busy","false")}}
+function trendQuery(){const mode=$("tmode").value,hourly=mode==="hour"||(mode==="auto"&&scopeWindow.to-scopeWindow.from<=2*864e5),tz=-new Date(scopeWindow.to).getTimezoneOffset();
+  return qs(Object.assign({},scopeFilters(),{bucket:hourly?"hour":"day",tz}))}
+function renderFp(f){const e=$("cfp");if(!f){e.textContent="";delete e.dataset.tt;return}
+  const m=/^[^/]+\/(\S+)/.exec(f.user_agent||""),learned=f.source==="learned";
+  e.textContent="内部请求 UA："+(f.originator||"")+" "+(m?m[1]:"")+(learned?"":"（默认）");
+  const t=learned&&f.learned_at_ms?"最近学习于 "+fmtTime(f.learned_at_ms)+"（"+ago(f.learned_at_ms)+"）"+(f.key?" · 密钥 "+f.key:""):"尚未从客户端学到，使用内置默认值";
+  e.dataset.tt="ciallopa 自己发往上游的请求（刷新 token、额度、重置卡）使用的指纹\nUser-Agent: "+f.user_agent+"\noriginator: "+f.originator+"\n"+t;e.setAttribute("aria-label",e.dataset.tt)}
+function renderRuntime(){const e=$("runtime"),r=EG&&EG.runtime;e.classList.toggle("hide",!r);if(!r){e.textContent="";return}
+  e.textContent="当前转发 "+exact(r.inflight)+" / "+(r.limit?exact(r.limit):"不限")+" · WS 连接 "+exact(r.ws_connections)+(r.rejected?" · 已拒绝 "+exact(r.rejected):"")+(r.draining?" · 正在关闭":"");
+  e.title="进程状态，读取于 "+hms(new Date())+"；不受历史范围筛选。HTTP 占用到响应结束，WS 含空闲连接；达到容量上限的拒绝数从进程启动起累计。达到上限立即返回 503，不排队。"}
+let allPending=0;
+async function loadAll(automatic=false){if(automatic&&allPending)return;allPending++;
+  try{$("msg").textContent="";const auth=key();usageGet("/usage/v1/client-fingerprint").then(f=>{if(key()===auth)renderFp(f)}).catch(()=>{});
+  // Preserve the whole query context while reading history, not just the list's scroll position.
+  const hold=automatic&&(recordWindow||recState.rows.length>PAGE||loading.sr);
+  if(!hold&&!scopeWindow.fixed){rollWindow();renderTrend()}showScope();renderKpis();
+  const jobs=[loadQuota(),egressTag().then(e=>{if(e!==undefined&&key()===auth){EG=e;renderRuntime()}})];
+  if(!hold)jobs.push(loadSummary(),loadRecords(false));
+  let ok=true;for(const r of await Promise.allSettled(jobs))if(r.status==="rejected"){ok=false;fail(r.reason)}
+  if(ok&&key()===auth)$("upd").textContent="更新于 "+hms(new Date())}finally{allPending--}}
+function stopAuto(){if(timer){clearInterval(timer);timer=null}}
+function startAuto(){stopAuto();timer=setInterval(()=>{if(!document.hidden&&!MODALS.length)loadAll(true)},15000)}
+onLogout=()=>{stopAuto();closePop(false);for(const id of Object.keys(loadSeq))loadSeq[id]++;resetQuotaReads();Q=RC=AC=EG=SUM=TREND=RECORDER=null;ACCTS=[];recState={cursor:null,total:0,rows:[]};renderKpis();renderRuntime();renderRecords();clear($("svg"));clear($("sum").tBodies[0]);clear($("quota").tBodies[0])};
+for(const id of ["auto","mauto"])$(id).addEventListener("change",e=>{const on=e.target.checked;$("auto").checked=$("mauto").checked=on;localStorage.setItem(AS,on?"1":"0");if(on)startAuto();else stopAuto()});
+$("refresh").addEventListener("click",()=>loadAll());
+function changeScope(){clearTimeout(kt);saveF();showScope();renderKpis();renderTrend();loadSummary().catch(fail);loadRecords(false).catch(fail)}
+function changeRecords(){saveF();loadRecords(false).catch(fail)}
+$("range").addEventListener("change",()=>{recordWindow=null;rollWindow();changeScope()});
+$("group").addEventListener("change",()=>{saveF();loadSummary().catch(fail)});
+$("tmode").addEventListener("change",()=>{saveF();loadSummary().catch(fail)});
+$("tmetric").addEventListener("change",()=>{saveF();renderTrend()});
+$("facct").addEventListener("change",changeScope);
+for(const id of ["ferr","ftier","fsrc","fretry","foutcome","fcode"])$(id).addEventListener("change",changeRecords);
+let kt;for(const id of ["fmodel","fkey","finstance"])$(id).addEventListener("input",()=>{saveF();showScope();clearTimeout(kt);kt=setTimeout(changeScope,400)});
+$("scopefreeze").addEventListener("click",()=>{if(scopeWindow.fixed){recordWindow=null;rollWindow();changeScope()}else{scopeWindow.fixed=true;saveF();showScope()}});
+$("rwindowclear").addEventListener("click",()=>{recordWindow=null;saveF();showScope();renderTrend();loadRecords(false).catch(fail)});
+{let n="";try{n=Intl.DateTimeFormat().resolvedOptions().timeZone||""}catch(_){}$("tz").textContent="时区："+(n?n+" ":"")+"("+tzOff(new Date())+")";$("tz").title="时间按浏览器本地时区显示；图表分桶使用范围结束时的 UTC 偏移"}
+// ---- URL keeps the query and inspector context; only display preferences use localStorage.
+const SF=["facct","fmodel","fkey","finstance"],RF=["foutcome","ftier","fsrc","fcode","ferr","fretry"],FIDS=["range","group","tmode","tmetric",...SF,...RF],FDEF={range:"24h",group:"account",tmode:"auto",tmetric:"requests"},FL="ciallopa_f_";
+function fval(id){const e=$(id);return e.type==="checkbox"?(e.checked?"1":""):e.value}
+function anyF(){return RF.some(id=>fval(id))}
+const FILTER_NAMES={facct:"账号",fmodel:"模型",fkey:"密钥",finstance:"实例",foutcome:"结果",ftier:"档位",fsrc:"来源",fcode:"错误码",ferr:"旧错误筛选（含取消）",fretry:"重试/换号"};
+function renderFilterChips(box,ids,scope,fallback){const parts=ids.filter(id=>fval(id).trim()).map(id=>{const e=$(id),value=fval(id).trim();return {id,label:FILTER_NAMES[id]+(e.type==="checkbox"?"":"："+(e.tagName==="SELECT"?e.options[e.selectedIndex].textContent:value))}}),signature=JSON.stringify(parts);
+  if(box._signature===signature)return;box._signature=signature;
+  const buttons=Array.from(box.querySelectorAll("button")),focused=document.activeElement,index=buttons.indexOf(focused);box.classList.toggle("hide",!parts.length);clear(box);
+  const next=parts.map(({id,label})=>{const b=h("button",{type:"button",class:"filterchip","data-clear-filter":id,"aria-label":"清除"+scope+"筛选："+label,title:"清除"+scope+"筛选："+label},h("span","filterlabel",label),h("span",{class:"filterremove","aria-hidden":"true"},"×"));b.addEventListener("click",()=>clearFilter(id));box.appendChild(b);return b});
+  if(index>=0)(next.find(b=>b.dataset.clearFilter===focused.dataset.clearFilter)||next[Math.min(index,next.length-1)]||fallback).focus({preventScroll:true})}
+function clearFilter(id){const e=$(id);if(e.type==="checkbox")e.checked=false;else e.value="";if(SF.includes(id))changeScope();else changeRecords()}
+function showRecordFilters(){const count=RF.filter(id=>id!=="foutcome"&&fval(id).trim()).length;$("fsummary").textContent=count?" · "+count+" 项":"";renderFilterChips($("recordchips"),RF,"请求",$("foutcome"))}
+function saveF(){const u=new URLSearchParams();for(const id of FIDS){const v=fval(id);if(v&&v!==FDEF[id])u.set(id,v)}
+  if(scopeWindow.fixed){u.set("from",scopeWindow.from);u.set("to",scopeWindow.to)}if(recordWindow){u.set("rfrom",recordWindow.from);u.set("rto",recordWindow.to)}if(activeRecord)u.set("record",activeRecord);
+  history.replaceState(null,"",location.pathname+(u.toString()?"?"+u:""));for(const id in FDEF)localStorage.setItem(FL+id,$(id).value);
+  $("fclear").classList.toggle("hide",!anyF());$("legacyerror").classList.toggle("hide",!$("ferr").checked);showRecordFilters()}
+function loadF(){const u=new URLSearchParams(location.search);
+  for(const id of FIDS){const e=$(id);let v=u.get(id);if(v===null&&FDEF[id])v=u.size?FDEF[id]:localStorage.getItem(FL+id)||FDEF[id];if(v===null)continue;
+    if(e.type==="checkbox")e.checked=v==="1";
+    else if(e.tagName==="SELECT"){if(id==="facct"&&v&&!Array.from(e.options).some(o=>o.value===v))e.appendChild(h("option",{value:v},v));if(Array.from(e.options).some(o=>o.value===v))e.value=v}
+    else e.value=v}
+  rollWindow();const from=Number(u.get("from")),to=Number(u.get("to"));if(u.has("from")&&u.has("to")&&Number.isSafeInteger(from)&&Number.isSafeInteger(to)&&from>=0&&to>from&&to-from<=31*864e5)scopeWindow={from,to,fixed:true};
+  const rf=Number(u.get("rfrom")),rt=Number(u.get("rto"));if(scopeWindow.fixed&&u.has("rfrom")&&rf>=scopeWindow.from&&rt<=scopeWindow.to&&rt>=rf)recordWindow={from:rf,to:rt};
+  const rid=u.get("record");if(/^[0-9a-f]{16}$/i.test(rid||""))activeRecord=rid.toLowerCase();
+  $("fclear").classList.toggle("hide",!anyF());$("legacyerror").classList.toggle("hide",!$("ferr").checked);showRecordFilters();showScope()}
+$("fclear").addEventListener("click",()=>{for(const id of RF){const e=$(id);if(e.type==="checkbox")e.checked=false;else e.value=""}changeRecords();$("foutcome").focus()});
+$("scopeclear").addEventListener("click",()=>{for(const id of SF)$(id).value="";changeScope();$("scopetoggle").focus({preventScroll:true})});
+loadF();renderKpis();
+login(()=>usageGet("/usage/v1/summary?range=1m"),()=>{if(localStorage.getItem(AS)==="1"){$("auto").checked=$("mauto").checked=true;startAuto()}loadAll();if(activeRecord)lookupRecord(activeRecord,$("recordid"))});
+})();
+</script>
+</body>
+</html>

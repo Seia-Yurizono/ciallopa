@@ -1,0 +1,505 @@
+//! Account management API (`/admin/v1/accounts*`): list with status and recent usage (never
+//! tokens), enable / disable, weight / priority, remove, import an auth file, device-code
+//! login and manual token refresh. Every change needs `[ui] allow_config_write = true` and the
+//! same CSRF rules as the reset-credit action; auth files are written under the same locks as
+//! token refresh.
+use crate::settings::{actor, csrf, err, Settings};
+use axum::{
+    extract::{Path, State},
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
+    routing::{get, post},
+    Json, Router,
+};
+use ciallopa_auth::file::valid_account_id;
+use ciallopa_core::{AccountPatch, AuthError, ImportOutcome};
+use ciallopa_forward::ClientKey;
+use serde::Deserialize;
+use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+type S = Arc<Settings>;
+
+pub fn routes(s: S) -> Router {
+    Router::new()
+        .route("/admin/v1/accounts", get(list))
+        .route("/admin/v1/accounts/reload", post(reload))
+        .route("/admin/v1/accounts/import", post(import))
+        .route("/admin/v1/accounts/import-files", post(import_files))
+        .route("/admin/v1/accounts/login/device", post(device_start))
+        .route("/admin/v1/accounts/login/{lid}", get(device_status))
+        .route(
+            "/admin/v1/accounts/{id}",
+            axum::routing::patch(update).delete(remove),
+        )
+        .route("/admin/v1/accounts/{id}/refresh", post(refresh))
+        .route(
+            "/admin/v1/accounts/{id}/clear-cooldown",
+            post(clear_cooldown),
+        )
+        .with_state(s)
+}
+
+fn ms(t: SystemTime) -> i64 {
+    t.duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn bad_id(id: &str) -> Option<Response> {
+    (!valid_account_id(id)).then(|| err(StatusCode::BAD_REQUEST, "invalid account id"))
+}
+
+fn auth_err(e: AuthError) -> Response {
+    let st = match e {
+        AuthError::NotFound(_) => StatusCode::NOT_FOUND,
+        AuthError::Invalid(_) => StatusCode::BAD_REQUEST,
+        AuthError::ReloginRequired => StatusCode::CONFLICT,
+        AuthError::Unimplemented => StatusCode::NOT_IMPLEMENTED,
+        AuthError::Refresh(_) => StatusCode::BAD_GATEWAY,
+        AuthError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    err(st, &e.to_string())
+}
+
+async fn list(State(s): State<S>) -> Response {
+    let st = &s.st;
+    let relogin = st.accounts.relogin_required().await;
+    let mut usage: HashMap<String, Value> = HashMap::new();
+    if let Some(rec) = &st.usage {
+        let now = ciallopa_usage::now_ms();
+        let q = ciallopa_usage::SummaryQuery {
+            from_ms: now - 86_400_000,
+            to_ms: now,
+            group_by: vec![ciallopa_usage::Dim::Account],
+            ..Default::default()
+        };
+        if let Ok(sum) = rec.summary(q).await {
+            for g in sum.groups {
+                if let Some(Some(a)) = g.group.get("account") {
+                    usage.insert(
+                        a.clone(),
+                        json!({
+                            "requests": g.count,
+                            "errors": g.errors,
+                            "input_tokens": g.input_tokens,
+                            "output_tokens": g.output_tokens,
+                            "cost_usd": g.cost_usd,
+                        }),
+                    );
+                }
+            }
+        }
+    }
+    let mut out = vec![];
+    for a in st.accounts.list().await {
+        let cool = st.router.cooling_until(&a.id);
+        let status = if relogin.contains(&a.id) {
+            "token_invalid"
+        } else if a.disabled {
+            "disabled"
+        } else if cool.is_some() {
+            "cooling"
+        } else {
+            "normal"
+        };
+        out.push(json!({
+            "id": a.id,
+            "email": a.email,
+            "plan": a.plan_type,
+            "status": status,
+            "disabled": a.disabled,
+            "cooling_until_ms": cool.map(ms),
+            "cooling_reason": cool.and_then(|_| st.router.cooling_reason(&a.id)),
+            "weight": a.weight,
+            "priority": a.priority,
+            "usage_24h": usage.get(&a.id),
+            "overload_24h": overload_json(st.router.overload_stats(&a.id)),
+        }));
+    }
+    let cfg = st.config.load();
+    Json(json!({
+        "write_enabled": cfg.ui.allow_config_write,
+        "strategy": cfg.routing.strategy,
+        "usage_enabled": st.usage.is_some(),
+        "accounts": out,
+        "auth_files": auth_files(&s).await,
+    }))
+    .into_response()
+}
+
+async fn update(
+    State(s): State<S>,
+    key: Option<axum::Extension<ClientKey>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Option<Json<AccountPatch>>,
+) -> Response {
+    if let Some(r) = bad_id(&id) {
+        return r;
+    }
+    if let Some(r) = s.write_guard(&headers) {
+        return r;
+    }
+    let Some(Json(p)) = body else {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "body must be JSON {\"disabled\"?, \"weight\"?, \"priority\"?}",
+        );
+    };
+    if p == AccountPatch::default() {
+        return err(StatusCode::BAD_REQUEST, "no changes");
+    }
+    match s.st.accounts.update_account(&id, &p).await {
+        Ok(a) => {
+            s.audit_account(actor(&key).as_deref(), "account-update", &id, json!(p));
+            Json(json!({"ok": true, "account": {"id": a.id, "disabled": a.disabled, "weight": a.weight, "priority": a.priority}}))
+                .into_response()
+        }
+        Err(e) => auth_err(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct ConfirmReq {
+    #[serde(default)]
+    confirm: String,
+}
+
+async fn remove(
+    State(s): State<S>,
+    key: Option<axum::Extension<ClientKey>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Option<Json<ConfirmReq>>,
+) -> Response {
+    if let Some(r) = bad_id(&id) {
+        return r;
+    }
+    if let Some(r) = s.write_guard(&headers) {
+        return r;
+    }
+    if body.map(|b| b.0.confirm) != Some(id.clone()) {
+        return err(StatusCode::BAD_REQUEST, "confirm must equal the account id");
+    }
+    match s.st.accounts.remove_account(&id).await {
+        Ok(()) => {
+            s.cleanup_account(&id);
+            s.audit_account(actor(&key).as_deref(), "account-remove", &id, Value::Null);
+            Json(json!({"ok": true})).into_response()
+        }
+        Err(e) => auth_err(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct ImportReq {
+    auth_json: Value,
+}
+
+async fn import(
+    State(s): State<S>,
+    key: Option<axum::Extension<ClientKey>>,
+    headers: HeaderMap,
+    body: Option<Json<ImportReq>>,
+) -> Response {
+    if let Some(r) = s.write_guard(&headers) {
+        return r;
+    }
+    let Some(Json(req)) = body else {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "body must be JSON {\"auth_json\": {...}}",
+        );
+    };
+    if !req.auth_json.is_object() {
+        return err(StatusCode::BAD_REQUEST, "auth_json must be an object");
+    }
+    match s.st.accounts.import_account(&req.auth_json).await {
+        Ok(id) => {
+            let _ = s.sync_accounts().await;
+            s.audit_account(actor(&key).as_deref(), "account-import", &id, Value::Null);
+            Json(json!({"ok": true, "account": id})).into_response()
+        }
+        Err(e) => auth_err(e),
+    }
+}
+
+async fn refresh(
+    State(s): State<S>,
+    key: Option<axum::Extension<ClientKey>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Some(r) = bad_id(&id) {
+        return r;
+    }
+    if let Some(r) = s.write_guard(&headers) {
+        return r;
+    }
+    match s.st.accounts.force_refresh(&id).await {
+        Ok(_) => {
+            s.audit_account(actor(&key).as_deref(), "account-refresh", &id, Value::Null);
+            Json(json!({"ok": true})).into_response()
+        }
+        Err(e) => auth_err(e),
+    }
+}
+
+/// Manual "clear cooldown": a runtime action (nothing is written to the config), so it needs
+/// an admin key and the CSRF header but not `allow_config_write`.
+async fn clear_cooldown(
+    State(s): State<S>,
+    key: Option<axum::Extension<ClientKey>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Some(r) = bad_id(&id) {
+        return r;
+    }
+    if let Some(r) = csrf(&headers) {
+        return r;
+    }
+    if !s.st.accounts.list().await.iter().any(|a| a.id == id) {
+        return err(StatusCode::NOT_FOUND, "no such account");
+    }
+    let cleared = s.st.router.clear_cooldown(&id);
+    if cleared {
+        s.audit_account(
+            actor(&key).as_deref(),
+            "account-clear-cooldown",
+            &id,
+            Value::Null,
+        );
+    }
+    Json(json!({"ok": true, "cleared": cleared})).into_response()
+}
+
+async fn reload(State(s): State<S>, headers: HeaderMap) -> Response {
+    if let Some(r) = csrf(&headers) {
+        return r;
+    }
+    match s.sync_accounts_diff().await {
+        Ok((added, gone)) => Json(json!({
+            "ok": true,
+            "added": added,
+            "removed": gone,
+            "accounts": s.st.accounts.list().await.len(),
+            "auth_files": auth_files(&s).await,
+        }))
+        .into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, &e),
+    }
+}
+
+/// Files of the auth directory that are not loaded (names, reasons and ownership only), with
+/// what the page needs to explain a fix: the server's uid:gid, the directory and, inside a
+/// container started from the example compose file, its host side.
+async fn auth_files(s: &Settings) -> Value {
+    let dir = s.st.config.load().auth_dir.clone();
+    json!({
+        "skipped": s.st.accounts.skipped().await,
+        "dir": dir.display().to_string(),
+        "host_dir": crate::host::compose_host_path(&dir),
+        "server_uid": crate::host::euid(),
+        "server_gid": crate::host::egid(),
+    })
+}
+
+/// Per-file size limit of [`import_files`].
+const IMPORT_FILE_MAX: usize = 1024 * 1024;
+/// Files and total bytes per [`import_files`] request.
+const IMPORT_FILES_MAX: usize = 100;
+const IMPORT_TOTAL_MAX: usize = 8 * 1024 * 1024;
+
+#[derive(Deserialize)]
+struct ImportFile {
+    name: String,
+    content: String,
+}
+#[derive(Deserialize)]
+struct ImportFilesReq {
+    files: Vec<ImportFile>,
+}
+
+/// One uploaded file → `{name, status: added|exists|skipped, account?, reason?, detail?}`.
+/// Never echoes file contents.
+async fn import_one(s: &Settings, f: &ImportFile) -> Value {
+    let name: String = f.name.chars().take(200).collect();
+    let skip = |reason: &str, detail: Option<String>| json!({"name": name, "status": "skipped", "reason": reason, "detail": detail});
+    if f.content.len() > IMPORT_FILE_MAX {
+        return skip("too_large", None);
+    }
+    let v: Value = match serde_json::from_str(&f.content) {
+        Ok(v @ Value::Object(_)) => v,
+        _ => return skip("invalid_json", None),
+    };
+    if let Some(t) = v.get("type").and_then(Value::as_str) {
+        if !t.eq_ignore_ascii_case("codex") {
+            let t: String = t
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+                .take(32)
+                .collect();
+            return skip("unsupported_type", Some(t));
+        }
+    }
+    if ciallopa_auth::login::imported_record(&v).is_err() {
+        return skip("missing_tokens", None);
+    }
+    match s.st.accounts.import_new_account(&v).await {
+        Ok(ImportOutcome::Added(id)) => json!({"name": name, "status": "added", "account": id}),
+        Ok(ImportOutcome::Exists(id)) => json!({"name": name, "status": "exists", "account": id}),
+        Err(AuthError::Io(e)) => skip("write_failed", Some(e.kind().to_string())),
+        Err(e) => {
+            tracing::warn!(file = %name, error = %e, "account import failed");
+            skip("write_failed", None)
+        }
+    }
+}
+
+/// Upload of one or more auth files (CPA codex files, Codex CLI `auth.json`): each is checked
+/// and written by the server itself (0600, hashed CPA name). Accounts that are already present
+/// are left as they are. New accounts take requests at once.
+async fn import_files(
+    State(s): State<S>,
+    key: Option<axum::Extension<ClientKey>>,
+    headers: HeaderMap,
+    body: Option<Json<ImportFilesReq>>,
+) -> Response {
+    if let Some(r) = s.write_guard(&headers) {
+        return r;
+    }
+    let Some(Json(req)) = body else {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "body must be JSON {\"files\": [{\"name\": ..., \"content\": ...}]}",
+        );
+    };
+    if req.files.is_empty() || req.files.len() > IMPORT_FILES_MAX {
+        return err(
+            StatusCode::BAD_REQUEST,
+            &format!("send 1 to {IMPORT_FILES_MAX} files per request"),
+        );
+    }
+    if req.files.iter().map(|f| f.content.len()).sum::<usize>() > IMPORT_TOTAL_MAX {
+        return err(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "files exceed 8 MiB per request; import them in smaller batches",
+        );
+    }
+    let mut results = Vec::with_capacity(req.files.len());
+    for f in &req.files {
+        results.push(import_one(&s, f).await);
+    }
+    let _ = s.sync_accounts().await;
+    let actor = actor(&key);
+    for r in &results {
+        if r["status"] == "added" {
+            if let Some(id) = r["account"].as_str() {
+                s.audit_account(actor.as_deref(), "account-import", id, Value::Null);
+            }
+        }
+    }
+    let n = |st: &str| results.iter().filter(|r| r["status"] == st).count();
+    Json(json!({
+        "ok": true,
+        "added": n("added"),
+        "exists": n("exists"),
+        "skipped": n("skipped"),
+        "results": results,
+    }))
+    .into_response()
+}
+
+// ---------------- device-code login ----------------
+
+static LOGINS: LazyLock<Mutex<HashMap<String, Value>>> = LazyLock::new(Default::default);
+
+fn logins() -> std::sync::MutexGuard<'static, HashMap<String, Value>> {
+    LOGINS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Start the existing device-code flow (`ciallopa login`): returns the verification URL and
+/// one-time code; the server polls in the background and saves the account when approved.
+async fn device_start(
+    State(s): State<S>,
+    key: Option<axum::Extension<ClientKey>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Some(r) = s.write_guard(&headers) {
+        return r;
+    }
+    if logins()
+        .values()
+        .any(|v| v.get("status").and_then(Value::as_str) == Some("pending"))
+    {
+        return err(
+            StatusCode::CONFLICT,
+            "a device login is already in progress",
+        );
+    }
+    let cfg = s.st.config.load();
+    let oauth = match crate::oauth_client(&cfg) {
+        Ok(o) => o,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    };
+    let lid = format!("{:016x}", rand::random::<u64>());
+    let (tx, rx) = tokio::sync::oneshot::channel::<(String, String)>();
+    let dir = cfg.auth_dir.clone();
+    let (s2, lid2, who) = (s.clone(), lid.clone(), actor(&key));
+    logins().insert(lid.clone(), json!({"status": "starting"}));
+    tokio::spawn(async move {
+        let mut tx = Some(tx);
+        let r = ciallopa_auth::login::device_code_with(
+            &oauth,
+            &dir,
+            ciallopa_auth::login::DEVICE_CODE_MAX_WAIT,
+            |url, code| {
+                if let Some(t) = tx.take() {
+                    let _ = t.send((url.to_string(), code.to_string()));
+                }
+            },
+        )
+        .await;
+        let v = match r {
+            Ok(id) => {
+                let _ = s2.sync_accounts().await;
+                s2.audit_account(who.as_deref(), "account-login", &id, Value::Null);
+                json!({"status": "done", "account": id})
+            }
+            Err(e) => json!({"status": "error", "message": e.to_string()}),
+        };
+        logins().insert(lid2, v);
+    });
+    match tokio::time::timeout(Duration::from_secs(30), rx).await {
+        Ok(Ok((url, code))) => {
+            let v = json!({"status": "pending", "url": url, "code": code});
+            logins().insert(lid.clone(), v.clone());
+            let mut out = v;
+            out["login_id"] = json!(lid);
+            Json(out).into_response()
+        }
+        _ => {
+            let msg = logins()
+                .get(&lid)
+                .and_then(|v| v.get("message").and_then(Value::as_str).map(str::to_owned))
+                .unwrap_or_else(|| "device code request failed".into());
+            logins().remove(&lid);
+            err(StatusCode::BAD_GATEWAY, &msg)
+        }
+    }
+}
+
+async fn device_status(Path(lid): Path<String>) -> Response {
+    match logins().get(&lid) {
+        Some(v) => Json(v.clone()).into_response(),
+        None => err(StatusCode::NOT_FOUND, "unknown login"),
+    }
+}
+
+fn overload_json((attempts, overloaded): (u64, u64)) -> serde_json::Value {
+    json!({"attempts": attempts, "overloaded": overloaded})
+}

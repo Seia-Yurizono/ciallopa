@@ -1,0 +1,67 @@
+[package]
+name = "ciallopa"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Lightweight AI gateway with streaming, account routing and request diagnostics"
+repository = "https://github.com/Seia-Yurizono/ciallopa"
+homepage = "https://github.com/Seia-Yurizono/ciallopa"
+readme = "../../README.md"
+
+[dependencies]
+ciallopa-core = { workspace = true }
+ciallopa-auth = { workspace = true }
+ciallopa-routing = { workspace = true }
+ciallopa-upstream = { workspace = true }
+ciallopa-forward = { workspace = true }
+ciallopa-usage = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+http = { workspace = true }
+subtle = { workspace = true }
+tracing = { workspace = true }
+clap = { workspace = true }
+reqwest = { workspace = true }
+sha2 = "=0.10.9"
+base64 = { workspace = true }
+rand = { workspace = true }
+notify = { workspace = true }
+toml_edit = { workspace = true }
+libc = "=0.2.186"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+tokio-tungstenite = { workspace = true }
+reqwest = { workspace = true }
+futures = { workspace = true }
+
+zstd = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+base64 = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
+
+[package.metadata.deb]
+name = "ciallopa"
+maintainer = "Kisaki <127221882+Seia-Yurizono@users.noreply.github.com>"
+copyright = "2026, Kisaki"
+license-file = ["../../LICENSE", "0"]
+section = "net"
+priority = "optional"
+depends = "ca-certificates, passwd"
+extended-description = """\
+A lightweight AI gateway with streaming forwarding, account routing and request diagnostics, \
+meant to sit behind a TLS-terminating reverse proxy. Runs as the ciallopa \
+system user from /etc/ciallopa/config.toml, keeping its data in /var/lib/ciallopa."""
+maintainer-scripts = "../../packaging/deb"
+assets = [
+    ["target/release/ciallopa", "usr/bin/", "755"],
+    ["../../config.example.toml", "etc/ciallopa/", "644"],
+    ["../../README.md", "usr/share/doc/ciallopa/", "644"],
+]
+systemd-units = { unit-scripts = "../../packaging", unit-name = "ciallopa", enable = true, start = true, restart-after-upgrade = true }
