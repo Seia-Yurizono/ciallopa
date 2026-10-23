@@ -521,6 +521,58 @@ mod tests {
         assert_eq!(a >> SEQ_BITS, 1000);
     }
 
+    #[test]
+    fn read_snapshot_keeps_labels_and_rows_together_during_write() {
+        let d = tempfile::tempdir().unwrap();
+        let r = Recorder::open(&cfg(d.path())).unwrap();
+        let reader = store::open_ro(r.path()).unwrap();
+        // Pin the same snapshot that label_map reads before fetching request rows.
+        let labels: i64 = reader
+            .query_row("SELECT count(*) FROM labels", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(labels, 0);
+        let now = now_ms();
+        qrec(&r, now, "new-account", "new-key", 10, 25.0, now / 1000 + 60);
+        r.flush_blocking().unwrap(); // Writer commits while the reader is still open.
+        let prices = PriceTable::default();
+        assert!(store::recent(&reader, &RecentQuery::default(), &prices)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            store::summary(&reader, &SummaryQuery::default(), &prices)
+                .unwrap()
+                .total
+                .count,
+            0
+        );
+        assert!(store::quota(&reader, &QuotaWeights::default(), now)
+            .unwrap()
+            .is_empty());
+        drop(reader);
+
+        let fresh = store::open_ro(r.path()).unwrap();
+        let rows = store::recent(&fresh, &RecentQuery::default(), &prices).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].account.as_deref(), Some("new-account"));
+        assert_eq!(rows[0].key.as_deref(), Some("new-key"));
+        assert_eq!(rows[0].model.as_deref(), Some("m"));
+        assert_eq!(
+            store::summary(&fresh, &SummaryQuery::default(), &prices)
+                .unwrap()
+                .total
+                .count,
+            1
+        );
+        assert_eq!(
+            store::quota(&fresh, &QuotaWeights::default(), now)
+                .unwrap()
+                .len(),
+            1
+        );
+        drop(fresh);
+        r.shutdown();
+    }
+
     #[tokio::test]
     async fn roundtrip_dedupe_summary_purge() {
         let d = tempfile::tempdir().unwrap();

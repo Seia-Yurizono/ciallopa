@@ -4692,7 +4692,7 @@ async fn ws_replayed_attempt_diagnostics_use_current_handshake_and_fresh_progres
             drop(ws);
             let rows = wait_rows(&e, 1).await;
             assert_eq!(rows.len(), 1);
-            assert_eq!(rows[0]["first_account"], "a");
+            assert_eq!(rows[0]["first_account"], "a", "{tag}: {rows:?}");
             assert_eq!(rows[0]["account"], "b");
             assert_eq!(rows[0]["switches"], 1);
             assert_eq!(e.mock.hits.load(Ordering::SeqCst), 2);
