@@ -1,3 +1,13 @@
+// jemalloc instead of the system allocator (musl in release builds): about half the CPU
+// per request. One arena keeps peak and retained RSS close to musl's after large bodies;
+// a background purge thread raised the peak in measurements, so pages decay on activity.
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+#[cfg(not(target_env = "msvc"))]
+#[allow(non_upper_case_globals)]
+#[unsafe(export_name = "_rjem_malloc_conf")]
+pub static malloc_conf: &[u8] = b"narenas:1\0";
 use ciallopa_core::{logging, Config};
 use ciallopa_forward::AppState;
 use clap::{Parser, Subcommand};
