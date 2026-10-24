@@ -1498,6 +1498,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn no_usage_counts_finished_business_rows_without_reported_usage() {
+        let d = tempfile::tempdir().unwrap();
+        let r = Recorder::open_as(&cfg(d.path()), "h").unwrap();
+        let base = now_ms();
+        // (endpoint, status, error, source, incomplete, input, output)
+        type Row<'a> = (
+            &'a str,
+            u16,
+            Option<&'a str>,
+            Option<&'static str>,
+            Option<&'a str>,
+            Option<i64>,
+            Option<i64>,
+        );
+        let rows: [Row; 9] = [
+            ("responses", 200, None, None, None, None, None), // counted
+            (
+                "responses",
+                200,
+                None,
+                None,
+                Some("max_output_tokens"),
+                None,
+                None,
+            ), // counted
+            ("responses", 200, None, None, None, Some(0), Some(0)), // explicit zero is reported
+            ("responses", 200, None, None, None, Some(5), None), // input alone is reported
+            ("responses", 500, None, Some("upstream"), None, None, None), // failure
+            (
+                "responses",
+                200,
+                Some("client_closed"),
+                Some("client"),
+                None,
+                None,
+                None,
+            ), // cancelled
+            (
+                "responses",
+                200,
+                Some("observation_incomplete"),
+                Some("local"),
+                None,
+                None,
+                None,
+            ), // unknown
+            (PREWARM_ENDPOINT, 200, None, None, None, None, None), // prewarm never counts
+            ("responses", 200, None, None, None, None, None), // counted
+        ];
+        for (endpoint, status, error, source, incomplete, input, output) in rows {
+            let mut row = Record::new(r.ids.next_at(base), Transport::Sse, endpoint);
+            row.status = status;
+            row.error = error.map(str::to_owned);
+            row.err_source = source;
+            row.incomplete = incomplete.map(str::to_owned);
+            row.input_tokens = input;
+            row.output_tokens = output;
+            assert!(r.record(row));
+        }
+        r.flush_blocking().unwrap();
+        for exclude_prewarm in [false, true] {
+            let s = r
+                .summary(SummaryQuery {
+                    from_ms: base,
+                    to_ms: base,
+                    exclude_prewarm,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(s.total.no_usage, 3, "exclude_prewarm={exclude_prewarm}");
+            assert_eq!(s.groups.iter().map(|g| g.no_usage).sum::<u64>(), 3);
+        }
+        r.shutdown();
+    }
+
+    #[tokio::test]
     async fn unobserved_outcome_is_separate_in_queries_groups_and_buckets() {
         let d = tempfile::tempdir().unwrap();
         let r = Recorder::open_as(&cfg(d.path()), "h").unwrap();

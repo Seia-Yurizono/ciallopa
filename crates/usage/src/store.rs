@@ -1074,6 +1074,9 @@ pub struct SummaryGroup {
     pub tps_samples: u64,
     /// Rows with input or output usage (includes prewarm, as do the token totals).
     pub usage_samples: u64,
+    /// Business requests (never prewarm) that ended without failure, cancellation or an
+    /// unknown outcome, yet carry no input or output usage: the upstream did not report it.
+    pub no_usage: u64,
     /// Token-weighted cache-read fraction over rows with both input and cached counts.
     pub cache_ratio: Option<f64>,
     pub cache_samples: u64,
@@ -1159,6 +1162,7 @@ struct Acc {
     stream_gen_out: i64,
     tps_samples: u64,
     usage_samples: u64,
+    no_usage: u64,
     cache_samples: u64,
     cache_input: i64,
     cache_read: i64,
@@ -1219,6 +1223,8 @@ impl Acc {
         self.failures += u64::from(err && !cancelled && !unknown);
         self.unknown_outcome += u64::from(unknown);
         self.incomplete += u64::from(incomplete && !err && !cancelled);
+        self.no_usage +=
+            u64::from(!err && !cancelled && !unknown && tok[0].is_none() && tok[1].is_none());
         if let Some(t) = ttft {
             self.ttft.push(t);
             if streaming {
@@ -1259,6 +1265,7 @@ impl Acc {
         self.stream_gen_out += o.stream_gen_out;
         self.tps_samples += o.tps_samples;
         self.usage_samples += o.usage_samples;
+        self.no_usage += o.no_usage;
         self.cache_samples += o.cache_samples;
         self.cache_input += o.cache_input;
         self.cache_read += o.cache_read;
@@ -1304,6 +1311,7 @@ impl Acc {
                 .then(|| self.stream_gen_out as f64 * 1000.0 / self.stream_gen_ms as f64),
             tps_samples: self.tps_samples,
             usage_samples: self.usage_samples,
+            no_usage: self.no_usage,
             cache_ratio: (self.cache_input > 0)
                 .then(|| self.cache_read as f64 / self.cache_input as f64),
             cache_samples: self.cache_samples,
