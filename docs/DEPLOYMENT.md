@@ -28,10 +28,10 @@ host account. Run it as a non-root account.
   rotate the config audit file or bound the usage database. Configure usage retention and
   monitor the filesystem containing both mounts.
 
-Use exact release tags or a registry digest for controlled upgrades. The `v0.1.1-rc.2`
-pre-release uses image tag `0.1.1-rc.2`. Update an older Compose image tag before pulling and recreating.
+Use exact release tags or a registry digest for controlled upgrades. The `v0.1.2`
+release uses image tag `0.1.2`. Update an older Compose image tag before pulling and recreating.
 The `latest` alias follows successful tagged builds, including prereleases.
-Only stable releases move the minor-version alias; this prerelease leaves `0.1` unchanged.
+Only stable releases move the minor-version alias; this release moves `0.1` to `0.1.2`.
 Keep the previous image locally, save it as an offline archive, and retain its image
 ID/digest plus a pre-upgrade data backup for rollback. A digest does not keep a deleted
 registry version pullable, and an image rollback alone does not reverse a data migration.

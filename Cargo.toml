@@ -4,7 +4,7 @@ members = ["crates/core", "crates/auth", "crates/routing", "crates/upstream", "c
 
 [workspace.package]
 edition = "2021"
-version = "0.1.1-rc.2"
+version = "0.1.2"
 license = "MIT"
 
 # Network stack pinned (=) to codex-rs Cargo.lock so the TLS/h2
