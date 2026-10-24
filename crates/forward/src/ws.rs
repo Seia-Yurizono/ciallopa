@@ -30,6 +30,7 @@ mod tungstenite_close {
 const CLOSE_REPLAY: u16 = 1012;
 const CLOSE_REPLAY_REASON: &str = "upstream requires HTTP replay";
 const CLOSE_INTERNAL: u16 = 1011;
+const CLOSE_TOO_BIG: u16 = 1009;
 
 pub(crate) async fn handler(
     State(st): State<AppState>,
@@ -41,6 +42,20 @@ pub(crate) async fn handler(
 ) -> Response {
     let Some(path) = map_path(pq(&uri)) else {
         return proxy::json_error(StatusCode::NOT_FOUND, "not_found", "unknown path");
+    };
+    // Each client connection can buffer several copies of its largest message before the
+    // relay can count it in the body budget: cap them (`ws_max_connections`) before dialing.
+    let (ws_limit, max_message) = {
+        let cfg = st.config.load();
+        let mib = usize::try_from(cfg.ws_max_message_mb).unwrap_or(usize::MAX);
+        (cfg.ws_max_connections, mib.saturating_mul(1 << 20))
+    };
+    let slot = match st.upstream.drain.ws_slot(ws_limit) {
+        Ok(s) => s,
+        Err(r) => {
+            tracing::warn!(limit = ws_limit, "websocket connection cap reached");
+            return crate::admission::refused(r);
+        }
     };
     let mut route = session_route(&headers, None);
     // Preparing a connection can be cancelled before any upstream response exists.
@@ -104,8 +119,9 @@ pub(crate) async fn handler(
     let hs_headers = resp_headers.clone();
     let compression = st.config.load().ws_compression;
     let drain = st.upstream.drain.clone();
-    let mut resp = ws.on_upgrade(compression, move |socket| async move {
+    let mut resp = ws.on_upgrade(compression, max_message, move |socket| async move {
         let _lease = lease;
+        let _slot = slot;
         finish_on_shutdown(
             drain,
             Duration::from_secs(2),
@@ -393,7 +409,7 @@ fn to_down(m: WsMessage) -> Option<Message> {
 }
 
 /// Answer to a client message refused by the buffered-body budget: the same 503
-/// `gateway_busy` wording and `Retry-After: 1` as HTTP, as an upstream-style wrapped error
+/// `gateway_busy` wording and `Retry-After: 1` (`retry-after-ms: 1000`) as HTTP, as an upstream-style wrapped error
 /// event (Codex maps it to a retryable HTTP 503). The message is not forwarded and no turn
 /// starts; the connection stays open.
 fn busy_frame() -> Message {
@@ -402,10 +418,46 @@ fn busy_frame() -> Message {
             "type": "error",
             "status": 503,
             "error": {"type": "gateway_busy", "message": "Gateway is busy; retry shortly."},
-            "headers": {"retry-after": "1"},
+            "headers": {"retry-after": "1", "retry-after-ms": "1000"},
         })
         .to_string(),
     )
+}
+
+/// A local error response (e.g. every account cooling down for the turn's model) as the
+/// upstream-style wrapped error event, same shape as [`busy_frame`]. Records it on `turn`.
+async fn error_event(resp: Response, turn: Option<Tracker>) -> Message {
+    let (parts, body) = resp.into_parts();
+    let b = axum::body::to_bytes(body, 1 << 20)
+        .await
+        .unwrap_or_default();
+    if let Some(mut t) = turn {
+        t.status(parts.status.as_u16());
+        t.finish_response();
+        t.error_headers(&parts.headers);
+        if let Some(m) = parts.extensions.get::<crate::errors::ErrMeta>() {
+            t.meta_err(m);
+        }
+        t.error_body(&b);
+    }
+    let error = serde_json::from_slice::<serde_json::Value>(&b)
+        .ok()
+        .and_then(|v| v.get("error").cloned())
+        .unwrap_or_else(
+            || serde_json::json!({"type": "unavailable", "message": "Service unavailable."}),
+        );
+    let mut headers = serde_json::Map::new();
+    for k in ["retry-after", "retry-after-ms"] {
+        if let Some(v) = parts.headers.get(k).and_then(|v| v.to_str().ok()) {
+            headers.insert(k.to_string(), v.into());
+        }
+    }
+    let mut ev =
+        serde_json::json!({"type": "error", "status": parts.status.as_u16(), "error": error});
+    if !headers.is_empty() {
+        ev["headers"] = serde_json::Value::Object(headers);
+    }
+    Message::text(ev.to_string())
 }
 
 fn close(code: u16, reason: &str) -> Message {
@@ -604,11 +656,16 @@ async fn relay(
                             _ => None,
                         };
                         if !awaiting {
-                            if let (Message::Text(t), Some(ep)) = (&m, endpoint) {
+                            if let Message::Text(t) = &m {
                                 if t.as_str().contains("response.create") {
-                                    st.router.note_attempt(&account);
-                                    turn = Tracker::start(&st, Transport::Ws, ep, ctx.key.as_deref()).map(|mut tr| {
-                                        let v = Head::parse(t.as_str()).map(|h| h.to_value());
+                                    let head = Head::parse(t.as_str());
+                                    // The handshake carries no model: each turn's model scopes this
+                                    // connection's routing reports and cooldown checks.
+                                    if let Some(model) = head.as_ref().and_then(|h| h.model.as_ref()).and_then(|v| v.as_str()).filter(|v| !v.is_empty()) {
+                                        route.model = model.to_string();
+                                    }
+                                    turn = endpoint.and_then(|ep| Tracker::start(&st, Transport::Ws, ep, ctx.key.as_deref())).map(|mut tr| {
+                                        let v = head.as_ref().map(Head::to_value);
                                         tr.headers(&ctx.headers);
                                         tr.meta(v.as_ref());
                                         if v.as_ref().and_then(|v| v.get("generate")).and_then(|g| g.as_bool()) == Some(false) {
@@ -619,6 +676,51 @@ async fn relay(
                                         tr.status(200);
                                         tr
                                     });
+                                    if !route.model.is_empty() && st.router.model_cooling_until(&account, &route.model).is_some() {
+                                        // This account is cooling down for the turn's model (HTTP would
+                                        // not pick it): move to an account that may serve it, or wait
+                                        // out a short cooldown, before anything is sent upstream.
+                                        if !replayable(t.as_str()) {
+                                            // Its `previous_response_id` lives on this connection only.
+                                            tracing::info!(account = %account, model = %route.model, "ws turn model cooling on this account; closing for client replay");
+                                            if let Some(tr) = turn.as_mut() { tr.fail_msg("model_cooldown", "account cooling down for this model; closed for client replay"); tr.source(crate::errors::SRC_LOCAL); }
+                                            let _ = dtx.send(close(CLOSE_REPLAY, CLOSE_REPLAY_REASON)).await;
+                                            break;
+                                        }
+                                        let accounts = st.accounts.list().await;
+                                        let mut r = route.clone();
+                                        if accounts.iter().any(|a| a.id != account && !a.disabled && !r.exclude.contains(&a.id) && st.router.model_cooling_until(&a.id, &r.model).is_none()) {
+                                            r.exclude.push(account.clone());
+                                        }
+                                        match preparation.run(connect(&st, &ctx.path, &ctx.headers, &mut r, proxy::WS_HOLD_MAX, None)).await {
+                                            Ok(Ok((ws, h, id, g))) => {
+                                                upstream_request_id = crate::errors::request_id(&h);
+                                                quota_h = h;
+                                                gen = g;
+                                                tracing::info!(from = %account, to = %id, model = %route.model, "ws turn model cooling on this account; redialed");
+                                                if let Some(tr) = turn.as_mut() { tr.switch_to(&id); tr.quota(&quota_h); }
+                                                account = id;
+                                                let (tx, rx) = ws.split();
+                                                let old_tx = std::mem::replace(&mut utx, tx);
+                                                let old_rx = std::mem::replace(&mut urx, rx);
+                                                tokio::spawn(drain_close(old_tx, old_rx));
+                                            }
+                                            Ok(Err(resp)) => {
+                                                // What HTTP would answer, as an upstream-style error event;
+                                                // the connection stays open and no turn starts.
+                                                let ev = error_event(resp, turn.take()).await;
+                                                pending = None;
+                                                drop(msg_permit.take());
+                                                if dtx.send(ev).await.is_err() { break; }
+                                                continue 'outer;
+                                            }
+                                            Err(_) => {
+                                                close_after_preparation_timeout(turn.as_mut(), &mut dtx).await;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    st.router.note_attempt(&account);
                                 }
                             }
                         }
@@ -657,7 +759,13 @@ async fn relay(
                         break;
                     }
                 }
-                _ => {
+                other => {
+                    if let Some(Err(tokio_tungstenite::tungstenite::Error::Capacity(e))) = &other {
+                        // Over `ws_max_message_mb` (checked while reading and inflating, so it
+                        // never grows past the limit). 1009 = message too big.
+                        tracing::warn!(account = %account, error = %e, "websocket message over ws_max_message_mb; closing 1009");
+                        let _ = dtx.send(close(CLOSE_TOO_BIG, "message too big")).await;
+                    }
                     if let Some(t) = turn.as_mut() { t.client_gone(); }
                     abandon_upstream = true;
                     break;

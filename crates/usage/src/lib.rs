@@ -10,8 +10,8 @@ mod writer;
 pub use detail::{DetailRow, ErrorDetail};
 pub use prices::{PriceTable, Tier};
 pub use store::{
-    AccountQuota, DayBucket, Dim, Estimate, Filters, Outcome, RecentQuery, RecordRow, Summary,
-    SummaryGroup, SummaryQuery, WindowQuota, PREWARM_ENDPOINT,
+    AccountQuota, DayBucket, Dim, Estimate, Filters, Outcome, RecentQuery, RecordRow, ScopeValue,
+    Summary, SummaryGroup, SummaryQuery, WindowQuota, PREWARM_ENDPOINT,
 };
 
 use ciallopa_core::config::{QuotaWeights, UsageConfig};
@@ -371,6 +371,15 @@ impl Recorder {
     pub async fn models_since(&self, since_ms: i64) -> Result<Vec<String>, UsageError> {
         let p = self.path.clone();
         tokio::task::spawn_blocking(move || store::models_since(&store::open_ro(&p)?, since_ms))
+            .await
+            .map_err(|_| UsageError::Gone)?
+    }
+
+    /// Distinct models, key labels and instances of the newest `max_rows` rows, most used
+    /// first (see [`ScopeValue`]).
+    pub async fn scope_values(&self, max_rows: u32) -> Result<[Vec<ScopeValue>; 3], UsageError> {
+        let p = self.path.clone();
+        tokio::task::spawn_blocking(move || store::scope_values(&store::open_ro(&p)?, max_rows))
             .await
             .map_err(|_| UsageError::Gone)?
     }

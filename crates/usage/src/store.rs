@@ -758,6 +758,62 @@ pub(crate) fn models_since(c: &Connection, since_ms: i64) -> Result<Vec<String>,
     Ok(out.into_iter().filter(|m| !m.is_empty()).collect())
 }
 
+/// One distinct model / key label / instance from recent rows (scope-filter suggestions).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ScopeValue {
+    pub value: String,
+    pub count: u64,
+    pub last_ms: i64,
+}
+
+/// Distinct `model`, `key` and `instance` labels over the newest `max_rows` rows (the table
+/// only holds the retention window), each sorted by use count, then most recent.
+/// One bounded scan of the primary key; callers cache the result.
+pub(crate) fn scope_values(
+    c: &Connection,
+    max_rows: u32,
+) -> Result<[Vec<ScopeValue>; 3], UsageError> {
+    let names = label_map(c)?;
+    let mut st = c.prepare(
+        "SELECT model,key,instance,count(*),max(id) FROM \
+         (SELECT model,key,instance,id FROM requests ORDER BY id DESC LIMIT ?) \
+         GROUP BY model,key,instance",
+    )?;
+    let mut acc: [HashMap<i64, (u64, i64)>; 3] = Default::default();
+    let mut rows = st.query([max_rows])?;
+    while let Some(r) = rows.next()? {
+        let n: i64 = r.get(3)?;
+        let last: i64 = r.get(4)?;
+        for (i, m) in acc.iter_mut().enumerate() {
+            if let Some(id) = r.get::<_, Option<i64>>(i)? {
+                let e = m.entry(id).or_insert((0, 0));
+                e.0 += n.max(0) as u64;
+                e.1 = e.1.max(last >> SEQ_BITS);
+            }
+        }
+    }
+    Ok(acc.map(|m| {
+        let mut v: Vec<ScopeValue> = m
+            .into_iter()
+            .filter_map(|(id, (count, last_ms))| {
+                let value = names.get(&id)?.trim();
+                (!value.is_empty()).then(|| ScopeValue {
+                    value: value.to_string(),
+                    count,
+                    last_ms,
+                })
+            })
+            .collect();
+        v.sort_by(|a, b| {
+            b.count
+                .cmp(&a.count)
+                .then(b.last_ms.cmp(&a.last_ms))
+                .then_with(|| a.value.cmp(&b.value))
+        });
+        v
+    }))
+}
+
 /// Row cost + status. Rows without any token counts (errors before output) are `no_tokens`.
 fn row_cost(
     prices: &crate::PriceTable,
@@ -964,6 +1020,9 @@ pub struct SummaryQuery {
     pub bucket_day: Option<i32>,
     /// With `bucket_day`: hourly instead of daily buckets (`day` = `YYYY-MM-DD HH`).
     pub bucket_hour: bool,
+    /// Leave out `endpoint=prewarm` rows entirely: their tokens, cost and `prewarm_count`
+    /// (request counts and latency never include them). Same rows as the records filter.
+    pub exclude_prewarm: bool,
 }
 impl Default for SummaryQuery {
     fn default() -> Self {
@@ -974,6 +1033,7 @@ impl Default for SummaryQuery {
             filters: Filters::default(),
             bucket_day: None,
             bucket_hour: false,
+            exclude_prewarm: false,
         }
     }
 }
@@ -1280,11 +1340,15 @@ pub(crate) fn summary(
         group_by: dims.iter().map(|d| d.name()).collect(),
         ..Default::default()
     };
-    let Some((fsql, fparams)) = q.filters.sql(c)? else {
+    let Some((mut fsql, mut fparams)) = q.filters.sql(c)? else {
         out.total = Acc::default().finish(Default::default());
         out.buckets = q.bucket_day.map(|_| vec![]);
         return Ok(out);
     };
+    if q.exclude_prewarm {
+        fsql.push_str(" AND (endpoint IS NULL OR endpoint != ?)");
+        fparams.push(label_id(c, PREWARM_ENDPOINT)?.unwrap_or(-1));
+    }
     let dim_cols: Vec<&str> = dims.iter().map(|d| d.col()).collect();
     let sql = format!(
         "SELECT status,error,ttft_ms,duration_ms,in_tok,out_tok,cached_tok,reasoning_tok,model,id,tier,cw_tok,endpoint,err_source,incomplete,transport,{} \

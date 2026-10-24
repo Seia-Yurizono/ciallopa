@@ -547,7 +547,7 @@ function row(a,usage_on){const s=ST[a.status]||[a.status,"off",""],full=a.email?
   if(lim)stc.appendChild(h("span",{class:"sm c-err",title:"最近一次刷新额度时上游报告这个账号已达额度上限"},"已达额度上限"));
   if(QERR[a.id])stc.appendChild(h("span",{class:"sm c-err qerr",title:"最近一次刷新额度失败"},"额度刷新失败："+QERR[a.id]));
   const u=a.usage_24h,use=h("div","use");
-  if(u){use.appendChild(h("div","num",NF.format(u.requests)+" 次 · "+fmtN(u.input_tokens+u.output_tokens)));if(u.errors)use.appendChild(h("div","num xs c-err",u.errors+" 次错误"))}else use.appendChild(h("span","faint sm",usage_on?"无请求":"–"));
+  if(u){use.title="近 24 小时业务请求数与 Token"+(pwOn()?"（Token 含预热，跟随概览「含预热」）":"（不含预热，可在概览筛选范围勾选「含预热」）");use.appendChild(h("div","num",NF.format(u.requests)+" 次 · "+fmtN(u.input_tokens+u.output_tokens)));if(u.errors)use.appendChild(h("div","num xs c-err",u.errors+" 次错误"))}else use.appendChild(h("span","faint sm",usage_on?"无请求":"–"));
   const o=a.overload_24h;if(o&&o.overloaded)use.appendChild(h("div",{class:"xs mut",title:"近 24 小时上游回复 overloaded / at capacity 的次数与上游请求总数（内存统计，重启清零）"},"overloaded "+o.overloaded+"/"+o.attempts));
   const r=h("tr",{"data-acc":a.id},who,h("td","st-c"+(a.status==="normal"&&!QERR[a.id]&&!lim?" nrm":""),stc),qcell("q5",ws.s?ws.s[0]:"5h",ws.s&&ws.s[1],stale),qcell("qw",ws.l?ws.l[0]:"周",ws.l&&ws.l[1],stale));
   // weight / priority: own cells on desktop, inside 操作 on phone
@@ -653,6 +653,8 @@ function setAdd(open,focus){addOpen=!!open&&W;$("add").classList.toggle("hide",!
   if(focus){if(addOpen){$("add").scrollIntoView({block:"nearest"});$("devbtn").focus({preventScroll:true})}else $("addbtn").focus()}}
 $("addbtn").addEventListener("click",()=>setAdd(true,true));$("addclose").addEventListener("click",()=>setAdd(false,true));
 // ---- account reads: independent snapshots, bound to this load and login identity
+// 概览「含预热」 is a browser preference; 24 h account usage follows it (business requests only by default).
+function pwOn(){try{return localStorage.getItem("ciallopa_prewarm")==="1"}catch(e){return false}}
 let accountLoadSeq=0,snapshotAuth="",accountReadAt=0;
 const READ={quota:{at:0,note:""},credits:{at:0,note:""}};
 function resetAccountData(){DATA=null;QM={};RCM={};AUTO={};AUTOTOP=null;W=false;accountReadAt=0;OPEN.clear();setAdd(false);
@@ -680,7 +682,7 @@ function readPart(result,previous,meta,label,valueKey){if(result.status==="fulfi
   meta.note=label+"读取失败："+why(e)+(meta.at?" · 保留已有数据（上次读取 "+fmtTime(meta.at)+"）":" · 暂无成功数据");return previous}
 async function load(){const seq=++accountLoadSeq,auth=key(),current=()=>seq===accountLoadSeq&&auth===key();
   if(snapshotAuth!==auth){resetAccountData();snapshotAuth=auth}$("tbl").setAttribute("aria-busy","true");
-  try{const main=accountGet("/admin/v1/accounts",auth,current),parts=Promise.allSettled([accountGet("/usage/v1/quota",auth,current),accountGet("/usage/v1/reset-credits",auth,current)]);
+  try{const main=accountGet("/admin/v1/accounts"+(pwOn()?"?include_prewarm=1":""),auth,current),parts=Promise.allSettled([accountGet("/usage/v1/quota",auth,current),accountGet("/usage/v1/reset-credits",auth,current)]);
     const mainResult=await main;if(!current())return false;const [q,rc]=await parts;if(!current())return false;
     DATA=mainResult.j;accountReadAt=mainResult.at;QM=readPart(q,QM,READ.quota,"额度");RCM=readPart(rc,RCM,READ.credits,"重置卡","reset_credits");readAuto(rc);render();return true;
   }catch(e){if(!current())return false;if(e.body&&e.body.error&&e.body.error.type==="admin_required"){resetAccountData();needAdmin(e);return false}e.isCurrent=current;throw e}

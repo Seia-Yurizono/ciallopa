@@ -87,7 +87,7 @@ previously finalized at headers.
 | `account` / `first_account` | final selected account; first selected account only when failover changed it. HTTP and initial WS handshake cancellation before headers retain the selected candidate, even if credential acquisition or the network attempt has not completed; null when none was selected. Successful WS handshakes add no separate business row |
 | `model`, `effort` | from body / `response.create` (`reasoning.effort`) |
 | `transport` | 1 sse, 2 ws, 3 http (ordinary JSON/non-stream; Images follows its actual reply) |
-| `endpoint` | `responses`, `compact`, `images`, `prewarm` (Codex WS `response.create` with `generate:false`: tokens and cost count; excluded from request counts, error rate and TTFT/duration percentiles; shown greyed with a 预热 badge in the panel) |
+| `endpoint` | `responses`, `compact`, `images`, `prewarm` (Codex WS `response.create` with `generate:false`: tokens and cost count unless `exclude_prewarm=1` (the built-in UI default); excluded from request counts, error rate and TTFT/duration percentiles; shown greyed with a 预热 badge in the panel) |
 | `status` | recorded HTTP response status (WS turn: 200 or handshake status); 0 when no status was recorded, such as cancellation before response headers. UI shows “–” / “未记录 HTTP 状态” for 0 |
 | `error` | error code, NULL = ok. Upstream HTTP errors keep the upstream's own `error.code` / `error.type` (e.g. `server_is_overloaded`, `invalid_prompt`, `usage_limit_reached`), else `http_<status>`. Local / network / stream codes: see [Error sources](#error-sources). |
 | `err_source` | v9: `client`, `local`, `network`, `upstream` or `stream` (NULL = ok) |
@@ -410,6 +410,16 @@ CREATE TABLE error_detail(id INTEGER PRIMARY KEY, message TEXT, body TEXT,
 ## API (behind the same client key)
 Filters on both list endpoints: `account=`, `model=`, `key=<label>`, `instance=`.
 See [METRICS.md](METRICS.md) for the current outcome, sampling, cursor and bucket contracts.
+- `GET /usage/v1/summary?…&exclude_prewarm=1` drops prewarm rows from every aggregate in the
+  answer (total, groups, buckets, tokens and estimated cost). Default: tokens and cost include
+  prewarm (request counts, failures and latency never do). The dashboard sends `1` unless 「含预热」
+  is ticked. `GET /admin/v1/accounts` reports `usage_24h` without prewarm; `?include_prewarm=1`
+  counts it. Nothing is deleted; the rows stay in the database.
+- `GET /usage/v1/scope-values` → `{"model":[…],"key":[…],"instance":[…],"rows_scanned_max":200000,"cache_secs":60}`;
+  each entry is `{"value","count","last_ms"}`, most used first, then most recent, at most 50 per
+  field. Computed from the newest 200 000 rows (within retention) and cached 60 s; configured key
+  labels and this `instance_id` without traffic are appended with `"configured":true`. Feeds the
+  筛选范围 suggestions; free text is still accepted.
 - `GET /usage/v1/records?limit=100&before=<ms>&since=<ms>&errors=1&<filters>`
   → `{"records":[…],"total":…, "next_before_id":…}` newest first (limit ≤ 1000).
   Use `before_id=<16-hex-id>` for exclusive ID pagination; it takes precedence over legacy offset.

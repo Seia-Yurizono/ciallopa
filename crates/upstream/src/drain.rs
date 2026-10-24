@@ -32,12 +32,18 @@ pub struct Drain {
     /// Bytes of buffered HTTP request bodies currently reserved (see [`BodyPermit`]).
     body_bytes: AtomicU64,
     body_freed: Notify,
+    /// Client WebSocket connections from handshake to close (see [`WsSlot`]).
+    ws: AtomicUsize,
+    /// Part of `body_bytes` held by client WebSocket messages.
+    ws_bytes: AtomicU64,
 }
 
 /// A share of the global buffered-request-body budget. Dropping it returns the bytes.
 pub struct BodyPermit {
     drain: Arc<Drain>,
     held: u64,
+    /// Also counted in [`Drain::ws_bytes`].
+    ws: bool,
 }
 impl BodyPermit {
     pub fn held(&self) -> u64 {
@@ -48,6 +54,9 @@ impl Drop for BodyPermit {
     fn drop(&mut self) {
         if self.held > 0 {
             self.drain.body_bytes.fetch_sub(self.held, Ordering::AcqRel);
+            if self.ws {
+                self.drain.ws_bytes.fetch_sub(self.held, Ordering::AcqRel);
+            }
             self.drain.body_freed.notify_waiters();
         }
     }
@@ -60,6 +69,15 @@ impl Drop for Session {
         if self.0.active.fetch_sub(1, Ordering::AcqRel) == 1 {
             self.0.idle.notify_waiters();
         }
+    }
+}
+
+/// One client WebSocket connection counted against `ws_max_connections`, from the
+/// handshake until the relay ends.
+pub struct WsSlot(Arc<Drain>);
+impl Drop for WsSlot {
+    fn drop(&mut self) {
+        self.0.ws.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -123,7 +141,42 @@ impl Drain {
         BodyPermit {
             drain: self.clone(),
             held: 0,
+            ws: false,
         }
+    }
+    /// Like [`Self::body_permit`], for a client WebSocket message (also counted in
+    /// [`Self::ws_bytes`]).
+    pub fn ws_permit(self: &Arc<Self>) -> BodyPermit {
+        BodyPermit {
+            drain: self.clone(),
+            held: 0,
+            ws: true,
+        }
+    }
+    /// Count a client WebSocket connection, at most `limit` at once (0 = unlimited). No
+    /// queue; a refusal counts as [`Self::rejected`]. A lower hot limit only affects new
+    /// connections.
+    pub fn ws_slot(self: &Arc<Self>, limit: usize) -> Result<WsSlot, Refused> {
+        let r = self
+            .ws
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (limit == 0 || n < limit)
+                    .then(|| n.checked_add(1))
+                    .flatten()
+            });
+        if r.is_err() {
+            self.rejected.fetch_add(1, Ordering::Relaxed);
+            return Err(Refused::Busy);
+        }
+        Ok(WsSlot(self.clone()))
+    }
+    /// Client WebSocket connections currently counted (handshaking or open).
+    pub fn ws_connections(&self) -> usize {
+        self.ws.load(Ordering::Acquire)
+    }
+    /// Buffered body bytes currently held by client WebSocket messages.
+    pub fn ws_bytes(&self) -> u64 {
+        self.ws_bytes.load(Ordering::Acquire)
     }
 
     /// Grow `permit` by `n` bytes within `limit` total buffered body bytes (0 = unlimited),
@@ -155,6 +208,9 @@ impl Drain {
                 .is_ok()
             {
                 permit.held += n;
+                if permit.ws {
+                    self.ws_bytes.fetch_add(n, Ordering::AcqRel);
+                }
                 return Ok(());
             }
             if tokio::time::timeout_at(deadline, freed).await.is_err() {
@@ -288,6 +344,32 @@ mod tests {
         let mut u = d.body_permit();
         d.reserve_body(&mut u, u64::MAX / 2, 0, wait).await.unwrap();
         assert_eq!(d.body_bytes(), u64::MAX / 2, "0 = unlimited still counts");
+    }
+
+    #[tokio::test]
+    async fn ws_slots_and_bytes_are_counted_and_released() {
+        let d = Arc::new(Drain::default());
+        let a = d.ws_slot(2).unwrap();
+        let b = d.ws_slot(2).unwrap();
+        assert_eq!(d.ws_slot(2).err(), Some(Refused::Busy));
+        assert_eq!((d.ws_connections(), d.rejected()), (2, 1));
+        drop(a);
+        let c = d.ws_slot(2).unwrap();
+        let unlimited: Vec<_> = (0..5).map(|_| d.ws_slot(0).unwrap()).collect();
+        assert_eq!(d.ws_connections(), 7);
+        drop((b, c, unlimited));
+        assert_eq!(d.ws_connections(), 0);
+        let mut m = d.ws_permit();
+        let mut h = d.body_permit();
+        d.reserve_body(&mut m, 300, 0, Duration::ZERO)
+            .await
+            .unwrap();
+        d.reserve_body(&mut h, 200, 0, Duration::ZERO)
+            .await
+            .unwrap();
+        assert_eq!((d.body_bytes(), d.ws_bytes()), (500, 300));
+        drop(m);
+        assert_eq!((d.body_bytes(), d.ws_bytes()), (200, 0));
     }
 
     #[tokio::test]

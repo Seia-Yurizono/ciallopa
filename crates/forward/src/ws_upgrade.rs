@@ -167,7 +167,8 @@ pub(crate) fn negotiate(offers: &[HeaderValue]) -> Option<(DeflateConfig, String
 impl Upgrade {
     /// 101 response; `cb` runs with the stream once hyper hands the connection over.
     /// `compression`: accept a `permessage-deflate` offer (`ws_compression`).
-    pub(crate) fn on_upgrade<F, Fut>(self, compression: bool, cb: F) -> Response
+    /// `max_message`: largest incoming message (and frame) in bytes, after inflating.
+    pub(crate) fn on_upgrade<F, Fut>(self, compression: bool, max_message: usize, cb: F) -> Response
     where
         F: FnOnce(DownWs) -> Fut + Send + 'static,
         Fut: Future<Output = ()> + Send + 'static,
@@ -179,6 +180,8 @@ impl Upgrade {
         };
         let mut cfg = WebSocketConfig::default();
         cfg.extensions.permessage_deflate = agreed.as_ref().map(|(d, _)| *d);
+        cfg.max_message_size = Some(max_message);
+        cfg.max_frame_size = Some(max_message);
         let on = self.on_upgrade;
         tokio::spawn(async move {
             let Ok(up) = on.await else { return };

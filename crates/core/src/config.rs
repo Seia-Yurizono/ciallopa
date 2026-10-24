@@ -161,7 +161,7 @@ impl Default for ImagesConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            main_model: "gpt-5.5".into(),
+            main_model: "gpt-6.1-sol".into(),
             default_originator: "codex_exec".into(),
             default_user_agent: format!("codex_exec/{PINNED_CODEX_VERSION}"),
         }
@@ -370,6 +370,17 @@ pub struct Config {
     /// Codex always offers it). Read at each handshake; open connections keep what they
     /// negotiated. Off, or without an offer, the client leg is uncompressed.
     pub ws_compression: bool,
+    /// Client WebSocket connections open at once, including idle ones (default 24; 0 =
+    /// unlimited). Each one can hold several copies of its largest message (receive,
+    /// inflate and send buffers) before the message can be counted in
+    /// `max_buffered_body_mb`, so this and `ws_max_message_mb` bound WebSocket memory. A
+    /// handshake over the cap gets 503 `gateway_busy` (`Retry-After: 1`); Codex retries,
+    /// then uses HTTP for that session. Read at each handshake.
+    pub ws_max_connections: usize,
+    /// Largest client WebSocket message in MiB after decompression (default 16, 1..=4096).
+    /// A larger message closes the connection with 1009; Codex retries, then uses HTTP,
+    /// where `max_body_mb` applies. Read at each handshake.
+    pub ws_max_message_mb: u64,
     pub routing: RoutingConfig,
     pub upstream_opts: UpstreamOpts,
     pub images: ImagesConfig,
@@ -392,6 +403,8 @@ impl Default for Config {
             max_buffered_body_mb: 256,
             max_inflight_requests: 64,
             ws_compression: true,
+            ws_max_connections: 24,
+            ws_max_message_mb: 16,
             routing: RoutingConfig::default(),
             upstream_opts: UpstreamOpts::default(),
             images: ImagesConfig::default(),
@@ -432,6 +445,11 @@ impl Config {
         if budget != 0 && !(self.max_body_mb..=65536).contains(&budget) {
             return Err(ConfigError::Invalid(
                 "max_buffered_body_mb must be 0 or in max_body_mb..=65536".into(),
+            ));
+        }
+        if !(1..=4096).contains(&self.ws_max_message_mb) {
+            return Err(ConfigError::Invalid(
+                "ws_max_message_mb must be in 1..=4096".into(),
             ));
         }
         self.routing.ttl()?;
@@ -647,6 +665,13 @@ mod tests {
     #[test]
     fn buffered_body_budget_must_fit_one_body() {
         assert_eq!(Config::default().max_buffered_body_mb, 256);
+        assert_eq!(Config::default().ws_max_connections, 24);
+        assert_eq!(Config::default().ws_max_message_mb, 16);
+        assert!(Config::parse("ws_max_connections = 0\nws_max_message_mb = 4096").is_ok());
+        for bad in ["ws_max_message_mb = 0", "ws_max_message_mb = 4097"] {
+            let e = Config::parse(bad).unwrap_err();
+            assert!(e.to_string().contains("ws_max_message_mb"), "{bad}: {e}");
+        }
         assert!(Config::parse("max_buffered_body_mb = 0").is_ok());
         assert!(Config::parse("max_buffered_body_mb = 64").is_ok());
         assert!(Config::parse("max_body_mb = 8\nmax_buffered_body_mb = 8").is_ok());

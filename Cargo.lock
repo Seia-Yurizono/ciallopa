@@ -304,6 +304,7 @@ dependencies = [
  "sha2",
  "subtle",
  "tempfile",
+ "tikv-jemalloc-sys",
  "tikv-jemallocator",
  "tokio",
  "tokio-tungstenite",
