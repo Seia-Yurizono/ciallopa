@@ -352,6 +352,7 @@ pub struct Config {
     /// Allow IPv6 for direct upstream connections and for reaching the proxy host (Happy
     /// Eyeballs). `false` (default): IPv4 only. Target DNS behind a proxy is the proxy's.
     pub ipv6: bool,
+    /// Incoming HTTP request body limit in MiB (default 64, the WebSocket message limit).
     pub max_body_mb: u64,
     /// Simultaneous forwarded HTTP requests and WebSocket connections. Zero disables
     /// rejection, but existing requests are still counted for reload and shutdown.
@@ -378,7 +379,7 @@ impl Default for Config {
             proxy_url: String::new(),
             proxy_enabled: true,
             ipv6: false,
-            max_body_mb: 16,
+            max_body_mb: 64,
             max_inflight_requests: 64,
             ws_compression: true,
             routing: RoutingConfig::default(),

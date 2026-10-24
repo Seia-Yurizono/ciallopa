@@ -98,7 +98,7 @@ HTTP 请求占一个槽直到 Body EOF、错误或丢弃；WS 从握手到整条
 拒绝发生在 `Tracker` 之前，只有进程累计拒绝数，不伪造某个模型的usage记录。
 管理配置API的 `runtime` 返回 `inflight/limit/rejected/ws_connections/draining`，这些不是历史窗口指标。
 
-并发数量不等于字节或RSS上界。请求体默认实际16MiB；解压后的JSON inspection最多读取256MiB，
+并发数量不等于字节或RSS上界。请求体默认实际64MiB；解压后的JSON inspection最多读取256MiB，
 WS消息及图像结果另有大小成本，SSE通道的16个槽按chunk计数。
 Images wrapper的SSE单行与结果收集尚无显式总字节上限，不能把整个进程描述为已具有严格内存界限。
 

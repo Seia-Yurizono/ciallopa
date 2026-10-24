@@ -18,8 +18,9 @@ ipv6 = false
 # Forwarded HTTP requests (through response EOF/drop) and whole WebSocket connections.
 # 0 disables rejection but keeps counting; hot lowering only rejects new requests.
 max_inflight_requests = 64
-# HTTP request body bytes, including uploads; restart required. No hidden minimum.
-max_body_mb = 16
+# HTTP request body bytes, including uploads; restart required. No hidden minimum. The default
+# matches the WebSocket message limit: Codex inlines images and resends history over HTTP.
+max_body_mb = 64
 
 [routing]
 strategy = "round-robin"
