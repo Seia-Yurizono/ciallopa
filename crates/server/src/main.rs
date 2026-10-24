@@ -257,17 +257,29 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     ciallopa::client_fp::install(&cfg, usage.clone());
     let oauth = oauth_client(&cfg)?;
     let oauth_pools = oauth.pools.clone();
+    let router = Arc::new(ciallopa_routing::CpaRouter::new(cfg.routing.clone()));
+    let affinity =
+        ciallopa::affinity_store::Store::new(router.clone(), ciallopa::affinity_store::path(&cfg));
     let state = AppState {
         usage: usage.clone(),
         accounts: Arc::new(
             ciallopa_auth::FileAccountStore::open_with(cfg.auth_dir.clone(), oauth).await?,
         ),
-        router: Arc::new(ciallopa_routing::CpaRouter::new(cfg.routing.clone())),
+        router: router.clone(),
         upstream: Arc::new(ciallopa_upstream::UpstreamClient::new(&cfg)?),
         config: Arc::new(cfg.into()),
         egress: Default::default(),
     };
-    if state.accounts.list().await.is_empty() {
+    let known: std::collections::HashSet<String> = state
+        .accounts
+        .list()
+        .await
+        .into_iter()
+        .map(|a| a.id)
+        .collect();
+    affinity.load(&|id| known.contains(id));
+    let _affinity_writer = affinity.spawn();
+    if known.is_empty() {
         tracing::warn!(auth_dir = %state.config.load().auth_dir.display(), "no accounts yet: proxied requests fail until one is added with `ciallopa login` or on /ui/accounts");
     }
     let listen = state.config.load().listen;
@@ -352,6 +364,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         _ = &mut shutdown => Ok(()),
     };
     let flush = tokio::task::spawn_blocking(move || {
+        affinity.flush();
         ciallopa::client_fp::flush();
         if let Some(u) = usage {
             u.shutdown();

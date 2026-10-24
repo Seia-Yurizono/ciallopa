@@ -14,6 +14,7 @@ pub use quota::{
 };
 pub use session::{bound_session_identity, extract_session, normalize_explicit_id};
 
+pub use cache::AffinityBinding;
 use cache::SessionCache;
 use ciallopa_core::config::{RebindOn, RoutingConfig, Strategy};
 use ciallopa_core::{
@@ -232,6 +233,28 @@ impl CpaRouter {
             self.lock().cache.set_ttl(ttl);
         }
         self.cfg.store(Arc::new(cfg));
+    }
+
+    /// Changes whenever session bindings change (persistence writes only then).
+    pub fn affinity_generation(&self) -> u64 {
+        self.lock().cache.generation()
+    }
+
+    /// Live session bindings, oldest first, for persisting across restarts.
+    pub fn affinity_export(&self) -> Vec<AffinityBinding> {
+        let now = (self.clock)();
+        self.lock().cache.export(now)
+    }
+
+    /// Restore persisted bindings at startup: expired ones and ones whose account `known`
+    /// rejects are dropped. Returns the number restored.
+    pub fn affinity_import(
+        &self,
+        bindings: Vec<AffinityBinding>,
+        known: &dyn Fn(&str) -> bool,
+    ) -> usize {
+        let now = (self.clock)();
+        self.lock().cache.import(bindings, now, known)
     }
 
     /// Everything kept about an account (bindings, cooldowns, quota) — account removed.

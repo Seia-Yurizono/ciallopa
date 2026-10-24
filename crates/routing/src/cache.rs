@@ -20,6 +20,23 @@ pub(crate) struct SessionCache {
     entries: HashMap<String, u64>, // alias -> group seq
     groups: BTreeMap<u64, Group>,  // insertion order = eviction order
     next: u64,
+    /// Bumped by every change (including sliding-TTL refreshes); persistence compares it.
+    generation: u64,
+}
+
+/// One binding group as persisted across restarts.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AffinityBinding {
+    pub account: String,
+    /// Unix seconds.
+    pub expires: u64,
+    pub aliases: Vec<String>,
+}
+
+fn unix(t: SystemTime) -> u64 {
+    t.duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn is_pck(alias: &str) -> bool {
@@ -72,6 +89,7 @@ impl SessionCache {
             entries: HashMap::new(),
             groups: BTreeMap::new(),
             next: 0,
+            generation: 0,
         }
     }
 
@@ -84,6 +102,7 @@ impl SessionCache {
 
     fn remove_group(&mut self, seq: u64) -> Option<Group> {
         let g = self.groups.remove(&seq)?;
+        self.generation += 1;
         for a in &g.aliases {
             if self.entries.get(a) == Some(&seq) {
                 self.entries.remove(a);
@@ -96,6 +115,7 @@ impl SessionCache {
         if aliases.is_empty() {
             return;
         }
+        self.generation += 1;
         // An alias can belong to only one group: steal it from older groups.
         for a in &aliases {
             if let Some(old) = self.entries.get(a).copied() {
@@ -215,6 +235,49 @@ impl SessionCache {
         }
     }
 
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Live groups, oldest first (the eviction order).
+    pub fn export(&self, now: SystemTime) -> Vec<AffinityBinding> {
+        self.groups
+            .values()
+            .filter(|g| g.expires > now)
+            .map(|g| AffinityBinding {
+                account: g.auth.clone(),
+                expires: unix(g.expires),
+                aliases: g.aliases.clone(),
+            })
+            .collect()
+    }
+
+    /// Add persisted groups (oldest first). Expired ones, ones for accounts `keep` rejects
+    /// and empty ones are dropped; a deadline beyond the current TTL is shortened to it.
+    /// Returns the number of groups restored.
+    pub fn import(
+        &mut self,
+        bindings: Vec<AffinityBinding>,
+        now: SystemTime,
+        keep: &dyn Fn(&str) -> bool,
+    ) -> usize {
+        let mut n = 0;
+        for b in bindings {
+            let expires =
+                (SystemTime::UNIX_EPOCH + Duration::from_secs(b.expires)).min(now + self.ttl);
+            if expires <= now || b.account.is_empty() || !keep(&b.account) {
+                continue;
+            }
+            let aliases = compact(merge(vec![], &b.aliases));
+            if aliases.is_empty() {
+                continue;
+            }
+            self.insert_group(b.account, expires, aliases);
+            n += 1;
+        }
+        n
+    }
+
     #[cfg(test)]
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -286,6 +349,45 @@ mod tests {
         assert!(c.len() <= 3);
         assert_eq!(c.get("k9", t0()).as_deref(), Some("a"));
         assert_eq!(c.get("k0", t0()), None);
+    }
+
+    #[test]
+    fn export_import_round_trip_drops_expired_and_unknown_accounts() {
+        let mut c = SessionCache::new(Duration::from_secs(100), DEFAULT_MAX_ENTRIES);
+        c.set_aliases("a", &["p".into(), "f".into()], t0());
+        c.set("q", "gone", t0());
+        c.set("old", "a", t0() - Duration::from_secs(90));
+        let g = c.generation();
+        let saved = c.export(t0());
+        assert_eq!(c.generation(), g, "export is read-only");
+        assert_eq!(saved.len(), 3);
+        // Restart 20 s after saving; the `old` binding expired at t0+10.
+        let later = t0() + Duration::from_secs(20);
+        let mut d = SessionCache::new(Duration::from_secs(100), DEFAULT_MAX_ENTRIES);
+        let n = d.import(saved, later, &|id| id == "a");
+        assert_eq!(n, 1);
+        assert_eq!(d.get("p", later).as_deref(), Some("a"));
+        assert_eq!(d.get("f", later).as_deref(), Some("a"));
+        assert_eq!(d.get("q", later), None);
+        assert_eq!(d.get("old", later), None);
+        // The original deadline is kept (no fresh TTL from the restart).
+        assert_eq!(d.get("p", t0() + Duration::from_secs(101)), None);
+    }
+
+    #[test]
+    fn import_caps_deadlines_at_the_current_ttl() {
+        let far = AffinityBinding {
+            account: "a".into(),
+            expires: unix(t0()) + 86_400,
+            aliases: vec!["s".into()],
+        };
+        let mut c = SessionCache::new(Duration::from_secs(60), DEFAULT_MAX_ENTRIES);
+        assert_eq!(c.import(vec![far], t0(), &|_| true), 1);
+        assert_eq!(
+            c.get("s", t0() + Duration::from_secs(59)).as_deref(),
+            Some("a")
+        );
+        assert_eq!(c.get("s", t0() + Duration::from_secs(61)), None);
     }
 
     #[test]

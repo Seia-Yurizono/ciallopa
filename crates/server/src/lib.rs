@@ -14,6 +14,7 @@ use std::sync::Arc;
 use subtle::ConstantTimeEq;
 
 pub mod accounts_api;
+pub mod affinity_store;
 pub mod client_fp;
 pub mod host;
 pub mod init;
