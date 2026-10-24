@@ -268,6 +268,9 @@ until it is fixed or removed: the server user may not read it (with its owner, m
 `chown` command for the server's uid:gid), it is not valid JSON, it has no `access_token` (a Codex
 CLI `auth.json` goes through import instead), or it belongs to another provider (ignored). The
 log names each such file once, and again only when it changes.
+Only a file that is gone removes its account: if an already loaded account's file becomes
+unreadable or invalid (for example half-written by another tool), the account keeps its last good
+content, cooldowns, session bindings and connections until the file is fixed or deleted.
 
 While no account is usable (none added yet, or all disabled or waiting for a new login), proxied
 requests are answered with HTTP 503 `server_is_overloaded` ("The server is overloaded or not

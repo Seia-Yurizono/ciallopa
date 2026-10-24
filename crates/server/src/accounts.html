@@ -570,7 +570,8 @@ const SKH={invalid_json:"内容不完整或不是 JSON，重新复制原文件",
 const mode=m=>m===undefined||m===null?"?":m.toString(8).padStart(4,"0");
 function skipLine(f,up){const li=h("li",null,h("span","mono",f.file||f.name),h("b",null,(SKR[f.reason]||f.reason)+(f.reason==="unsupported_type"&&f.detail?"（"+f.detail+"）":f.reason==="read_error"&&f.detail?"（"+f.detail+"）":"")));
   if(f.reason==="permission_denied"&&f.uid!==undefined)li.appendChild(h("span","mut","属主 "+f.uid+":"+f.gid+" · 权限 "+mode(f.mode)));
-  else if(up&&f.reason==="missing_tokens")li.appendChild(h("span","mut","没有 ChatGPT 登录令牌（API key 方式的 auth.json 不支持）"));else if(up&&f.reason==="write_failed")li.appendChild(h("span","mut","服务端写入账号目录失败"+(f.detail?"（"+f.detail+"）":"")+"，详情见服务日志"));else if(SKH[f.reason])li.appendChild(h("span","mut",SKH[f.reason]));return li}
+  else if(up&&f.reason==="missing_tokens")li.appendChild(h("span","mut","没有 ChatGPT 登录令牌（API key 方式的 auth.json 不支持）"));else if(up&&f.reason==="write_failed")li.appendChild(h("span","mut","服务端写入账号目录失败"+(f.detail?"（"+f.detail+"）":"")+"，详情见服务日志"));else if(SKH[f.reason])li.appendChild(h("span","mut",SKH[f.reason]));
+  if(f.kept)li.appendChild(h("span","mut","已加载的账号保留上次读到的内容，冷却和会话绑定不变"));return li}
 function authFiles(a){const b=$("authf"),ig=$("ignored");clear(b);if(!a){b.classList.add("hide");ig.classList.add("hide");return}
   const bad=a.skipped.filter(f=>f.reason!=="unsupported_type"),other=a.skipped.filter(f=>f.reason==="unsupported_type");
   b.classList.toggle("hide",!bad.length);

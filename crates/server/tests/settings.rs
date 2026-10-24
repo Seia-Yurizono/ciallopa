@@ -934,3 +934,67 @@ async fn account_id_path_traversal_rejected_before_lock() {
         .collect();
     assert!(leaked.is_empty(), "{leaked:?}");
 }
+
+// Regression (rescan): a half-written or unreadable auth file used to count as a removed
+// account: the watcher and the rescan API dropped its cooldowns, bindings and pool.
+#[tokio::test]
+async fn rescan_and_watcher_keep_accounts_whose_file_exists_but_cannot_load() {
+    use std::os::unix::fs::PermissionsExt;
+    let e = env("").await;
+    let _w = ciallopa::settings::spawn_watcher(e.settings.clone());
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let a = "a".to_string();
+    e.upstream.pools.get("a").unwrap();
+    ciallopa_core::Router::report(
+        &*e.router,
+        &RouteRequest {
+            model: "m".into(),
+            ..Default::default()
+        },
+        &a,
+        &Outcome::AuthFailed,
+    );
+    let until = e.router.cooling_until_any(&a).unwrap();
+    let fa = e.auth.join("a.json");
+    let full = std::fs::read_to_string(&fa).unwrap();
+    let rescan = || async {
+        e.req(reqwest::Method::POST, "/admin/v1/accounts/reload")
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap()
+    };
+    let check = |r: &Value, reason: &str| {
+        assert_eq!(r["removed"], json!([]), "{r}");
+        assert_eq!(r["accounts"], 2, "{r}");
+        let sk = &r["auth_files"]["skipped"][0];
+        assert_eq!(sk["file"], "a.json", "{r}");
+        assert_eq!(sk["reason"], reason, "{r}");
+        assert_eq!(sk["kept"], true, "{r}");
+        assert!(!r.to_string().contains("tok-"), "{r}");
+        assert_eq!(e.router.cooling_until_any(&a), Some(until));
+        assert!(!e.upstream.pools.is_empty(), "pool of a kept");
+    };
+    // Half-written in place (non-atomic writer): the watcher fires on the partial write.
+    std::fs::write(&fa, &full[..full.len() / 2]).unwrap();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    check(&rescan().await, "invalid_json");
+    // Unreadable.
+    std::fs::write(&fa, &full).unwrap();
+    std::fs::set_permissions(&fa, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&fa).is_err() {
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        check(&rescan().await, "permission_denied");
+    }
+    std::fs::set_permissions(&fa, std::fs::Permissions::from_mode(0o600)).unwrap();
+    // Actually gone: removed and cleaned up.
+    std::fs::remove_file(&fa).unwrap();
+    let r = rescan().await;
+    assert_eq!(r["removed"], json!(["a"]), "{r}");
+    assert_eq!(r["auth_files"]["skipped"], json!([]), "{r}");
+    assert!(e.router.cooling_until_any(&a).is_none());
+    assert!(e.upstream.pools.is_empty(), "pool of a dropped");
+}

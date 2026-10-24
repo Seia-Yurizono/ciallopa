@@ -399,6 +399,7 @@ fn classify(p: &Path, name: &str) -> Result<AuthFile, SkippedAuthFile> {
         uid: md.as_ref().map(|m| m.uid()),
         gid: md.as_ref().map(|m| m.gid()),
         mode: md.as_ref().map(|m| m.mode() & 0o7777),
+        kept: false,
     };
     let id = name.trim_end_matches(".json").to_string();
     if !valid_account_id(&id) {
@@ -454,6 +455,10 @@ pub fn scan_dir(dir: &Path) -> Result<Scan, AuthError> {
         }
         match classify(&p, &name) {
             Ok(f) => out.files.push(f),
+            // Deleted between listing and reading (or a dangling link): gone, not skipped.
+            Err(_)
+                if std::fs::metadata(&p)
+                    .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) => {}
             Err(s) => {
                 let md = std::fs::metadata(&p).ok();
                 let mtime = md.as_ref().and_then(|m| m.modified().ok());
@@ -666,12 +671,14 @@ impl FileAccountStore {
                         file = %s.file,
                         owner = %format!("{}:{}", opt(s.uid), opt(s.gid)),
                         mode = mode.as_deref().unwrap_or("?"),
+                        kept_loaded_account = s.kept,
                         "auth file not loaded: permission denied (make it readable by the server user)"
                     ),
                     r => tracing::warn!(
                         file = %s.file,
                         reason = ?r,
                         detail = s.detail.as_deref().unwrap_or(""),
+                        kept_loaded_account = s.kept,
                         "auth file not loaded"
                     ),
                 }
@@ -719,9 +726,27 @@ impl AccountStore for FileAccountStore {
             .collect()
     }
     async fn reload(&self) -> Result<(), AuthError> {
-        let sc = scan_dir(&self.dir)?;
+        let mut sc = scan_dir(&self.dir)?;
+        let mut files = self.files.write().await;
+        // Only a file that is gone removes its account. One that exists but cannot be read or
+        // parsed (permissions, a half-written copy) keeps the loaded record, so the runtime
+        // state keyed by the account (cooldowns, bindings, pools) is not dropped.
+        let mut kept = vec![];
+        for (s, _, _) in sc.skipped.iter_mut() {
+            if !s.reason.keeps_account() {
+                continue;
+            }
+            let id = s.file.strip_suffix(".json").unwrap_or(&s.file);
+            if let Some(f) = files.iter().find(|f| f.id == id) {
+                s.kept = true;
+                kept.push(f.clone());
+            }
+        }
+        sc.files.extend(kept);
+        sc.files.sort_by(|a, b| a.id.cmp(&b.id));
         self.log_skipped(&sc.skipped);
-        *self.files.write().await = sc.files;
+        *files = sc.files;
+        drop(files);
         *self.skipped.write().await = sc.skipped.into_iter().map(|k| k.0).collect();
         Ok(())
     }
@@ -982,6 +1007,69 @@ mod tests {
         let before = s.logged.lock().unwrap().clone();
         s.reload().await.unwrap();
         assert_eq!(*s.logged.lock().unwrap(), before);
+    }
+
+    // Regression (rescan): an unreadable or half-written file used to remove its account
+    // (and so its cooldowns, bindings and pool) until it became readable again.
+    #[tokio::test]
+    async fn rescan_keeps_accounts_whose_file_is_unreadable_or_half_written() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().to_path_buf();
+        let (ja, jb) = (cpa("a@x", "acc-a", "plus"), cpa("b@x", "acc-b", "team"));
+        let (ia, ib) = (account_id_for(&ja), account_id_for(&jb));
+        let fb = dir.join(format!("{ib}.json"));
+        std::fs::write(dir.join(format!("{ia}.json")), ja.to_string()).unwrap();
+        std::fs::write(&fb, jb.to_string()).unwrap();
+        let s = FileAccountStore::open(dir.clone()).await.unwrap();
+        let ids = |l: Vec<Account>| l.into_iter().map(|a| a.id).collect::<Vec<_>>();
+        let mut both = vec![ia.clone(), ib.clone()];
+        both.sort();
+        assert_eq!(ids(s.list().await), both);
+        let skipped = |s: Vec<SkippedAuthFile>| {
+            s.into_iter()
+                .map(|f| (f.file, f.reason, f.kept))
+                .collect::<Vec<_>>()
+        };
+        // Permission denied: kept, reported.
+        std::fs::set_permissions(&fb, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&fb).is_err() {
+            s.reload().await.unwrap();
+            assert_eq!(ids(s.list().await), both);
+            assert_eq!(
+                skipped(s.skipped().await),
+                [(format!("{ib}.json"), SkipReason::PermissionDenied, true)]
+            );
+        }
+        std::fs::set_permissions(&fb, std::fs::Permissions::from_mode(0o600)).unwrap();
+        // Half-written: kept with its last good contents.
+        let full = jb.to_string();
+        std::fs::write(&fb, &full[..full.len() / 2]).unwrap();
+        s.reload().await.unwrap();
+        assert_eq!(ids(s.list().await), both);
+        let b = s.get(&ib).await.unwrap();
+        assert_eq!(b.raw, jb);
+        assert_eq!(
+            skipped(s.skipped().await),
+            [(format!("{ib}.json"), SkipReason::InvalidJson, true)]
+        );
+        // Written completely again: loaded normally, nothing skipped.
+        std::fs::write(&fb, &full).unwrap();
+        s.reload().await.unwrap();
+        assert_eq!(ids(s.list().await), both);
+        assert!(s.skipped().await.is_empty());
+        // Gone: removed.
+        std::fs::remove_file(&fb).unwrap();
+        s.reload().await.unwrap();
+        assert_eq!(ids(s.list().await), vec![ia.clone()]);
+        assert!(s.skipped().await.is_empty());
+        // A broken file never loaded before is reported but creates no account.
+        std::fs::write(&fb, &full[..10]).unwrap();
+        s.reload().await.unwrap();
+        assert_eq!(ids(s.list().await), [ia]);
+        assert_eq!(
+            skipped(s.skipped().await),
+            [(format!("{ib}.json"), SkipReason::InvalidJson, false)]
+        );
     }
 
     #[tokio::test]
