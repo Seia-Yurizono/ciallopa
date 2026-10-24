@@ -83,7 +83,7 @@ async fn discard(mut stream: axum::body::BodyDataStream, r: Response) -> Respons
 pub(crate) async fn reserve_message(st: &AppState, n: usize) -> Option<BodyPermit> {
     let budget = st.config.load().max_buffered_body_mb.saturating_mul(MIB);
     let drain = &st.upstream.drain;
-    let mut permit = drain.body_permit();
+    let mut permit = drain.ws_permit();
     let n = n as u64;
     let want = if budget == 0 { n } else { n.min(budget) };
     drain

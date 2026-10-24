@@ -5,7 +5,7 @@
 //! token refresh.
 use crate::settings::{actor, csrf, err, Settings};
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -64,8 +64,16 @@ fn auth_err(e: AuthError) -> Response {
     err(st, &e.to_string())
 }
 
-async fn list(State(s): State<S>) -> Response {
+#[derive(Deserialize, Default)]
+struct ListQ {
+    /// `1` ⇒ count prewarm tokens and cost in `usage_24h` (default: business requests only,
+    /// like the overview page).
+    include_prewarm: Option<String>,
+}
+
+async fn list(State(s): State<S>, Query(lq): Query<ListQ>) -> Response {
     let st = &s.st;
+    let include_prewarm = matches!(lq.include_prewarm.as_deref().map(str::trim), Some(v) if !v.is_empty() && v != "0");
     let relogin = st.accounts.relogin_required().await;
     let mut usage: HashMap<String, Value> = HashMap::new();
     if let Some(rec) = &st.usage {
@@ -74,6 +82,7 @@ async fn list(State(s): State<S>) -> Response {
             from_ms: now - 86_400_000,
             to_ms: now,
             group_by: vec![ciallopa_usage::Dim::Account],
+            exclude_prewarm: !include_prewarm,
             ..Default::default()
         };
         if let Ok(sum) = rec.summary(q).await {

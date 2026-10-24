@@ -173,9 +173,18 @@ fn with_json(status: StatusCode, v: serde_json::Value) -> Response {
 }
 
 fn retry_after(r: &mut Response, d: Duration) {
-    if let Ok(v) = HeaderValue::from_str(&d.as_secs().max(1).to_string()) {
-        r.headers_mut().insert(http::header::RETRY_AFTER, v);
-    }
+    set_retry_after(r.headers_mut(), d.as_secs().max(1));
+}
+
+/// `retry-after-ms`: the same delay in milliseconds, as OpenAI's API sends it next to
+/// `Retry-After`. Clients that read it (OpenAI SDKs, AI SDK / opencode) prefer it; the
+/// others ignore it, so it never changes what a client does.
+pub(crate) const RETRY_AFTER_MS: http::HeaderName = http::HeaderName::from_static("retry-after-ms");
+
+/// `Retry-After: secs` plus the matching `retry-after-ms`.
+pub(crate) fn set_retry_after(h: &mut http::HeaderMap, secs: u64) {
+    h.insert(http::header::RETRY_AFTER, HeaderValue::from(secs));
+    h.insert(RETRY_AFTER_MS, HeaderValue::from(secs.saturating_mul(1000)));
 }
 
 /// Log (at most once a minute) that a request found no account to route to. The client gets
@@ -314,17 +323,36 @@ pub(crate) const MAX_CLIENT_RETRY_AFTER: u64 = 20;
 
 /// Response filter for every client route: on a 429 / 5xx keep `Retry-After` only when it is a
 /// delay of 1..=[`MAX_CLIENT_RETRY_AFTER`] seconds; drop it otherwise (zero, long, HTTP date).
+/// `retry-after-ms` always states the same delay: derived from the kept `Retry-After`, or,
+/// when the upstream sent only `retry-after-ms`, kept if it is within the same bound (then
+/// `Retry-After` is its rounded-up seconds). Otherwise both are dropped.
 pub(crate) async fn clamp_retry_after(mut r: Response) -> Response {
     let s = r.status().as_u16();
     if s == 429 || s >= 500 {
-        let keep = r
-            .headers()
+        let h = r.headers_mut();
+        let secs = h
             .get(http::header::RETRY_AFTER)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.trim().parse::<u64>().ok())
-            .is_some_and(|n| (1..=MAX_CLIENT_RETRY_AFTER).contains(&n));
-        if !keep {
-            r.headers_mut().remove(http::header::RETRY_AFTER);
+            .filter(|n| (1..=MAX_CLIENT_RETRY_AFTER).contains(n));
+        let ms = h
+            .get(&RETRY_AFTER_MS)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .filter(|m| m.is_finite() && *m > 0.0 && *m <= (MAX_CLIENT_RETRY_AFTER * 1000) as f64)
+            .map(|m| m.ceil() as u64);
+        h.remove(http::header::RETRY_AFTER);
+        h.remove(&RETRY_AFTER_MS);
+        match (secs, ms) {
+            (Some(secs), _) => set_retry_after(h, secs),
+            (None, Some(ms)) => {
+                h.insert(
+                    http::header::RETRY_AFTER,
+                    HeaderValue::from(ms.div_ceil(1000)),
+                );
+                h.insert(RETRY_AFTER_MS, HeaderValue::from(ms));
+            }
+            (None, None) => {}
         }
     }
     r
@@ -434,6 +462,64 @@ mod tests {
             let r = clamp_retry_after(mk(st, v)).await;
             assert_eq!(ra(&r).is_some(), keep, "{st} {v}");
         }
+    }
+    #[tokio::test]
+    async fn retry_after_ms_matches_the_kept_retry_after() {
+        let mk = |st: u16, ra: Option<&str>, ms: Option<&str>| {
+            let mut r = Response::new(axum::body::Body::empty());
+            *r.status_mut() = StatusCode::from_u16(st).unwrap();
+            if let Some(v) = ra {
+                r.headers_mut()
+                    .insert(http::header::RETRY_AFTER, HeaderValue::from_str(v).unwrap());
+            }
+            if let Some(v) = ms {
+                r.headers_mut()
+                    .insert(RETRY_AFTER_MS, HeaderValue::from_str(v).unwrap());
+            }
+            r
+        };
+        let get = |r: &Response| {
+            let g = |n: &str| r.headers().get(n).map(|v| v.to_str().unwrap().to_string());
+            (g("retry-after"), g("retry-after-ms"))
+        };
+        let s = |v: &str| Some(v.to_string());
+        for (st, ra, ms, want) in [
+            // Retry-After wins; the ms value always states the same delay.
+            (503, Some("5"), None, (s("5"), s("5000"))),
+            (429, Some("2"), Some("1500"), (s("2"), s("2000"))),
+            (429, Some("2"), Some("90000"), (s("2"), s("2000"))),
+            // Only retry-after-ms upstream: kept within the bound, seconds rounded up.
+            (429, None, Some("1500"), (s("2"), s("1500"))),
+            (503, None, Some("250.4"), (s("1"), s("251"))),
+            (503, None, Some("20000"), (s("20"), s("20000"))),
+            // Out of bound or invalid: both dropped.
+            (503, Some("3600"), Some("3600000"), (None, None)),
+            (503, None, Some("20001"), (None, None)),
+            (503, None, Some("0"), (None, None)),
+            (503, None, Some("soon"), (None, None)),
+            (
+                502,
+                Some("Wed, 21 Oct 2026 07:28:00 GMT"),
+                None,
+                (None, None),
+            ),
+            // Not an error the client retries: left alone.
+            (200, Some("3600"), None, (s("3600"), None)),
+            (400, None, Some("0"), (None, s("0"))),
+        ] {
+            let r = clamp_retry_after(mk(st, ra, ms)).await;
+            assert_eq!(get(&r), want, "{st} {ra:?} {ms:?}");
+        }
+    }
+    #[test]
+    fn local_retry_after_sets_both_headers() {
+        let mut r = Response::new(axum::body::Body::empty());
+        retry_after(&mut r, Duration::from_millis(300));
+        assert_eq!(r.headers()[http::header::RETRY_AFTER], "1");
+        assert_eq!(r.headers()[RETRY_AFTER_MS], "1000");
+        retry_after(&mut r, Duration::from_secs(7));
+        assert_eq!(r.headers()[http::header::RETRY_AFTER], "7");
+        assert_eq!(r.headers()[RETRY_AFTER_MS], "7000");
     }
     #[test]
     fn quota_exhausted_has_no_retry_after_or_plan_type() {

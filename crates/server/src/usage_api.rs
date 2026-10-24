@@ -1,15 +1,17 @@
 //! Read-only usage API (behind the client key): records, record metadata/detail,
-//! summary and quota under `/usage/v1`.
+//! summary, quota and scope-filter suggestions under `/usage/v1`.
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
+use ciallopa_core::settings::SharedConfig;
 use ciallopa_core::AccountStore;
 use ciallopa_forward::EgressStatus;
 use ciallopa_usage::{now_ms, Dim, Filters, Outcome, RecentQuery, Recorder, SummaryQuery};
 use serde::Deserialize;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 type Rec = Option<Arc<Recorder>>;
 #[derive(Clone)]
@@ -17,19 +19,40 @@ struct St {
     rec: Rec,
     accounts: Arc<dyn AccountStore>,
     egress: Arc<EgressStatus>,
+    config: Option<Arc<SharedConfig>>,
+    /// Last scope-values scan and when it ran (`SCOPE_TTL`).
+    scope_cache: Arc<Mutex<Option<(Instant, ScopeLists)>>>,
 }
 
-pub fn routes(rec: Rec, accounts: Arc<dyn AccountStore>, egress: Arc<EgressStatus>) -> Router {
+/// Suggested model / key / instance names, in that order.
+type ScopeLists = Arc<[Vec<ciallopa_usage::ScopeValue>; 3]>;
+
+/// Scope suggestions are reused this long; new names show up after at most this delay.
+const SCOPE_TTL: Duration = Duration::from_secs(60);
+/// Newest rows scanned for suggestions (one bounded primary-key read).
+const SCOPE_ROWS: u32 = 200_000;
+/// Suggestions returned per field.
+const SCOPE_MAX: usize = 50;
+
+pub fn routes(
+    rec: Rec,
+    accounts: Arc<dyn AccountStore>,
+    egress: Arc<EgressStatus>,
+    config: Option<Arc<SharedConfig>>,
+) -> Router {
     Router::new()
         .route("/usage/v1/records", get(records))
         .route("/usage/v1/records/{id}", get(record))
         .route("/usage/v1/records/{id}/detail", get(detail))
         .route("/usage/v1/summary", get(summary))
         .route("/usage/v1/quota", get(quota))
+        .route("/usage/v1/scope-values", get(scope_values))
         .with_state(St {
             rec,
             accounts,
             egress,
+            config,
+            scope_cache: Default::default(),
         })
 }
 
@@ -238,6 +261,9 @@ struct SummaryQ {
     bucket: Option<String>,
     /// Minutes east of UTC for day boundaries (e.g. 480). String: `flatten` breaks numbers.
     tz: Option<String>,
+    /// `1` ⇒ leave prewarm rows out of every figure (tokens, cost, buckets, groups).
+    /// String for the same `flatten` reason.
+    exclude_prewarm: Option<String>,
     #[serde(flatten)]
     f: FiltersQ,
 }
@@ -311,11 +337,69 @@ async fn summary(State(St { rec, .. }): State<St>, Query(q): Query<SummaryQ>) ->
         filters: q.f.into(),
         bucket_day,
         bucket_hour: q.bucket.as_deref() == Some("hour"),
+        exclude_prewarm: matches!(q.exclude_prewarm.as_deref().map(str::trim), Some(v) if !v.is_empty() && v != "0"),
     };
     match rec.summary(sq).await {
         Ok(s) => Json(serde_json::json!({"summary": s, "recorder": rec.stats()})).into_response(),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     }
+}
+
+/// Suggestions for the model / key / instance scope inputs: distinct values of recent rows
+/// (most used first, then most recent) plus configured key labels and this instance, which
+/// may not have traffic yet. Cached for `SCOPE_TTL`; never writes.
+async fn scope_values(State(st): State<St>) -> Response {
+    let cached = {
+        let g = st.scope_cache.lock().unwrap_or_else(|e| e.into_inner());
+        g.as_ref()
+            .filter(|(at, _)| at.elapsed() < SCOPE_TTL)
+            .map(|(_, v)| v.clone())
+    };
+    let used = match (cached, &st.rec) {
+        (Some(v), _) => v,
+        (None, None) => Arc::new(Default::default()),
+        (None, Some(rec)) => match rec.scope_values(SCOPE_ROWS).await {
+            Ok(v) => {
+                let v = Arc::new(v);
+                *st.scope_cache.lock().unwrap_or_else(|e| e.into_inner()) =
+                    Some((Instant::now(), v.clone()));
+                v
+            }
+            Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+        },
+    };
+    let (keys, instance) = match &st.config {
+        Some(c) => (
+            c.keys().iter().map(|k| k.label.clone()).collect::<Vec<_>>(),
+            Some(c.load().instance_id.clone()),
+        ),
+        None => (vec![], None),
+    };
+    let field = |used: &[ciallopa_usage::ScopeValue], configured: &[String]| {
+        let mut out: Vec<serde_json::Value> = used
+            .iter()
+            .take(SCOPE_MAX)
+            .map(|v| serde_json::json!({"value": v.value, "count": v.count, "last_ms": v.last_ms}))
+            .collect();
+        for c in configured {
+            let c = c.trim();
+            if !c.is_empty()
+                && !used.iter().any(|v| v.value == c)
+                && out.len() < SCOPE_MAX + configured.len()
+            {
+                out.push(serde_json::json!({"value": c, "count": 0, "last_ms": null, "configured": true}));
+            }
+        }
+        out
+    };
+    Json(serde_json::json!({
+        "model": field(&used[0], &[]),
+        "key": field(&used[1], &keys),
+        "instance": field(&used[2], instance.as_slice()),
+        "rows_scanned_max": SCOPE_ROWS,
+        "cache_secs": SCOPE_TTL.as_secs(),
+    }))
+    .into_response()
 }
 
 /// Per account: latest upstream used %, reset times, capacity estimate, relogin flags.
@@ -324,6 +408,7 @@ async fn quota(
         rec,
         accounts,
         egress,
+        ..
     }): State<St>,
 ) -> Response {
     let Some(rec) = rec else {
@@ -414,7 +499,12 @@ mod tests {
             "demo",
         )
         .unwrap();
-        let app = routes(Some(rec.clone()), Arc::new(NoAccounts), Default::default());
+        let app = routes(
+            Some(rec.clone()),
+            Arc::new(NoAccounts),
+            Default::default(),
+            None,
+        );
         let base = now_ms();
         let make = |ms| {
             let mut row = Record::new(rec.ids.next_at(ms), Transport::Sse, "responses");
@@ -508,6 +598,142 @@ mod tests {
             query(&app, "/usage/v1/records/0000000000000000").await.0,
             StatusCode::NOT_FOUND
         );
+        rec.shutdown();
+    }
+
+    #[tokio::test]
+    async fn summary_can_exclude_prewarm_and_scope_values_suggest_recent_names() {
+        let temp = tempfile::tempdir().unwrap();
+        let rec = Recorder::open_as(
+            &ciallopa_core::config::UsageConfig {
+                path: temp.path().join("usage.db"),
+                retention_days: 0,
+                ..Default::default()
+            },
+            "demo",
+        )
+        .unwrap();
+        let cfg = ciallopa_core::Config {
+            instance_id: "box-a".into(),
+            api_keys: vec![
+                ciallopa_core::config::ApiKeyEntry::Labeled {
+                    label: "laptop".into(),
+                    key: "sk-local-test-0000000000000000".into(),
+                    admin: false,
+                },
+                ciallopa_core::config::ApiKeyEntry::Labeled {
+                    label: "unused".into(),
+                    key: "sk-local-test-1111111111111111".into(),
+                    admin: false,
+                },
+            ],
+            ..Default::default()
+        };
+        let shared = Arc::new(SharedConfig::new(cfg));
+        let app = routes(
+            Some(rec.clone()),
+            Arc::new(NoAccounts),
+            Default::default(),
+            Some(shared),
+        );
+        let base = now_ms() - 10_000;
+        let row = |ms: i64, model: &str, endpoint: &'static str, tokens: i64| {
+            let mut r = Record::new(rec.ids.next_at(ms), Transport::Ws, endpoint);
+            r.status = 200;
+            r.account = Some("a".into());
+            r.model = Some(model.into());
+            r.key = Some("laptop".into());
+            r.input_tokens = Some(tokens);
+            r.output_tokens = Some(1);
+            r
+        };
+        for r in [
+            row(base, "gpt-5.5", "responses", 100),
+            row(base + 1, "gpt-5.5", "prewarm", 1000),
+            row(base + 2, "gpt-5.5", "responses", 100),
+            row(base + 3, "gpt-6.1-sol", "responses", 10),
+        ] {
+            assert!(rec.record(r));
+        }
+        rec.flush_blocking().unwrap();
+        let to = base + 5;
+        let scope = format!("from={base}&to={to}&bucket=hour&group=account");
+        let (_, all) = query(&app, &format!("/usage/v1/summary?{scope}")).await;
+        let (status, biz) = query(
+            &app,
+            &format!("/usage/v1/summary?{scope}&exclude_prewarm=1"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (all, biz) = (&all["summary"], &biz["summary"]);
+        assert_eq!(all["total"]["count"], 3);
+        assert_eq!(
+            biz["total"]["count"], 3,
+            "request counts never include prewarm"
+        );
+        assert_eq!(all["total"]["prewarm_count"], 1);
+        assert_eq!(biz["total"]["prewarm_count"], 0);
+        assert_eq!(all["total"]["input_tokens"], 1210);
+        assert_eq!(biz["total"]["input_tokens"], 210, "prewarm tokens left out");
+        assert_eq!(
+            biz["groups"][0]["input_tokens"], 210,
+            "groups agree with the total"
+        );
+        assert_eq!(
+            biz["buckets"][0]["input_tokens"], 210,
+            "chart buckets agree too"
+        );
+        assert_eq!(biz["buckets"][0]["prewarm_count"], 0);
+        if let (Some(a), Some(b)) = (
+            all["total"]["cost_usd"].as_f64(),
+            biz["total"]["cost_usd"].as_f64(),
+        ) {
+            assert!(b < a, "prewarm cost left out: {b} vs {a}");
+        }
+        let (_, zero) = query(
+            &app,
+            &format!("/usage/v1/summary?{scope}&exclude_prewarm=0"),
+        )
+        .await;
+        assert_eq!(zero["summary"]["total"]["input_tokens"], 1210);
+        // Records with the same flag hold exactly the rows behind those figures.
+        let (_, recs) = query(
+            &app,
+            &format!("/usage/v1/records?from={base}&to={to}&exclude_prewarm=1"),
+        )
+        .await;
+        assert_eq!(recs["total"], 3);
+
+        let (status, v) = query(&app, "/usage/v1/scope-values").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(v["model"][0]["value"], "gpt-5.5", "most used first");
+        assert_eq!(v["model"][0]["count"], 3);
+        assert_eq!(v["model"][1]["value"], "gpt-6.1-sol");
+        assert_eq!(v["model"][1]["last_ms"], base + 3);
+        let keys: Vec<&str> = v["key"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| k["value"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            keys,
+            ["laptop", "unused"],
+            "configured labels without traffic follow, once"
+        );
+        assert_eq!(v["key"][1]["configured"], true);
+        let inst: Vec<&str> = v["instance"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| k["value"].as_str().unwrap())
+            .collect();
+        assert_eq!(inst, ["demo", "box-a"]);
+        // Cached: a new name appears only after SCOPE_TTL, the scan is not repeated per keystroke.
+        assert!(rec.record(row(base + 4, "brand-new", "responses", 1)));
+        rec.flush_blocking().unwrap();
+        let (_, again) = query(&app, "/usage/v1/scope-values").await;
+        assert_eq!(again["model"].as_array().unwrap().len(), 2);
         rec.shutdown();
     }
 

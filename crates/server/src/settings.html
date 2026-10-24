@@ -242,10 +242,7 @@ fieldset.sc{border:0;margin:0;padding:0;min-width:0;justify-self:end;display:fle
 .kd .defs{margin-left:var(--s2)}
 .cdt .defs{display:flex;margin-top:var(--s1)}
 button.lnk{border:0;background:none;padding:0;height:auto;color:var(--focus);font-size:inherit;text-decoration:underline;cursor:pointer}
-.unsv{display:none;font-size:var(--fs-xs);color:var(--cool)}
-/* a switch whose change is not saved yet; isolated so it can be restyled on its own (provisional amber) */
 /* pending (changed, not saved) switch: diagonal stripes in the new value's colour; restyle here only */
-.srow.chg .unsv{display:inline}
 .sw.pending{--b:var(--ctl);background:repeating-linear-gradient(135deg,var(--b) 0 var(--w,3px),color-mix(in srgb,var(--b) calc(100% - var(--k,55%)),var(--mt,#fff)) var(--w,3px) calc(var(--w,3px)*2))}
 .sw.pending:checked{--b:var(--ok)}
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]) .sw.pending:checked{--mt:var(--surface)}}
@@ -592,7 +589,7 @@ function rowChg(tr){tr.classList.toggle("chg",!!tr.querySelector(".chg,.pending"
 // Stripes drift at most 2 cycles after a toggle (none under prefers-reduced-motion), then stay still.
 function pend(e,p){e.classList.toggle("pending",p);e.classList.remove("anim");if(p){void e.offsetWidth;e.classList.add("anim")}}
 function mark(e,tr,changed){e.classList.toggle("chg",changed);if(e.classList.contains("sw"))pend(e,changed);rowChg(tr)}
-const UNIT={"usage.retention_days":"天","max_inflight_requests":"个"};
+const UNIT={"usage.retention_days":"天","max_inflight_requests":"个","ws_max_connections":"个"};
 function unit(f){if(UNIT[f.key])return UNIT[f.key];const m=/（(秒|分钟|毫秒|MiB|次|%)）$/.exec(f.desc||"");return m?m[1]:""}
 function input(f,v,tr){
   if(f.kind==="bool"){const orig=!!v,e=h("input",{type:"checkbox",class:"sw","aria-label":f.desc,"data-fk":f.key}),t=h("span",null,orig?"已开启":"已关闭");e.checked=orig;e.addEventListener("animationend",()=>e.classList.remove("anim"));
@@ -614,7 +611,7 @@ function input(f,v,tr){
 // "0 = 关闭" numbers: a switch plus the value. Off writes 0 and keeps the typed value
 // (greyed) for switching back; on with an empty or 0 value is an error, not a silent off.
 const ZO={"routing.quota_avoid_threshold":["关闭",0.9],"routing.cooldown_wait_secs":["不等待",20],
-  "max_buffered_body_mb":["不限",256],"max_inflight_requests":["不限",64],
+  "max_buffered_body_mb":["不限",256],"max_inflight_requests":["不限",64],"ws_max_connections":["不限",24],
   "upstream_opts.transient_cooldown_secs":["不冷却",15],"upstream_opts.overload_streak":["不冷却",2],"upstream_opts.overload_retry_wait_secs":["不重试",3],
   "upstream_opts.deactivated_cooldown_secs":["不冷却",86400],"upstream_opts.payment_required_cooldown_secs":["不冷却",1800],"upstream_opts.not_found_cooldown_secs":["只换号不冷却",600],
   "usage.retention_days":["永久保留",90],"ui.reset_credits_refresh_mins":["只手动刷新",60]};
@@ -656,7 +653,7 @@ const PAGES=[
     {t:"连接",rows:["ipv6","upstream_opts.connect_timeout_secs"]}],
     adv:["upstream","ws_compression","upstream_opts.compress_requests","upstream_opts.cloudflare_cookies"]},
   {g:"转发",id:"forward",name:"限流与容错",sub:"资源上限、超时和重试，以及上游出错时账号冷却多久",secs:[
-    {t:"资源上限",rows:["max_body_mb","max_buffered_body_mb","max_inflight_requests"]},
+    {t:"资源上限",rows:["max_body_mb","max_buffered_body_mb","max_inflight_requests","ws_max_connections","ws_max_message_mb"]},
     {t:"超时与重试",rows:["upstream_opts.max_attempts","upstream_opts.preparation_timeout_secs"]},
     {t:"出错时冷却",note:"冷却中的账号不接新请求；最后一个可用账号不冷却",cool:true}],
     adv:["upstream_opts.response_header_timeout_secs","upstream_opts.stream_idle_timeout_secs","upstream_opts.overload_retry_wait_secs"]},
@@ -717,7 +714,7 @@ function rowFor(sp){if(typeof sp==="string")sp={k:sp};if(sp.fn)return sp.fn();co
   const r=h("div",{class:"srow"+(sp.p?" child":""),"data-ak":"cfg|"+f.key}),defs=h("span","defs"),why=h("div","why hide");
   if(f.kind==="enum"&&f.choices&&f.choices.length&&CFG.write_enabled&&f.editable||f.key==="proxy_url")r.classList.add("wide");
   const {b,set}=ctl(f,r),sc=h("fieldset","sc",b);
-  r.append(h("div","sl",h("div","st",h("b",null,f.desc),f.effect==="restart"?eff(f):null,f.key==="ui.allow_reset_consume"?h("span",{class:"tag err",title:"重置卡用掉后不能撤销"},"不可逆"):null,h("span","unsv","未保存")),
+  r.append(h("div","sl",h("div","st",h("b",null,f.desc),f.effect==="restart"?eff(f):null,f.key==="ui.allow_reset_consume"?h("span",{class:"tag err",title:"重置卡用掉后不能撤销"},"不可逆"):null),
     f.help?h("div","hp",f.help):null,h("div","kd",h("code",null,f.key),defs),why),sc);
   r.dataset.q=(f.key+" "+f.desc+" "+(f.help||"")+" "+(f.choices||[]).map(c=>c.label).join(" ")).toLowerCase();
   reg(f.key,{row:r,set,defs,f,multi:false});

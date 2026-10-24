@@ -326,6 +326,9 @@ max_inflight_requests = 64              # HTTP response / whole WS connection; 0
                                         # at capacity: 503 + Retry-After: 1, no queue; hot-reloadable
 ws_compression = true                   # permessage-deflate on the client WebSocket when the client
                                         # offers it (Codex always does); applies to new connections
+ws_max_connections = 24                 # client WebSockets open at once (idle too); over: handshake 503,
+                                        # Codex then uses HTTP; 0 = unlimited; new connections
+ws_max_message_mb = 16                  # largest client WS message after inflating; over: close 1009
 
 [routing]
 strategy = "round-robin"                # | weighted-round-robin | fill-first
@@ -384,7 +387,7 @@ cloudflare_cookies = false # true = per-account in-memory jar of ChatGPT infrast
 
 [images]
 enabled = true
-main_model = "gpt-5.5"             # wrapper model for non-gpt-image-* Images requests
+main_model = "gpt-6.1-sol"         # wrapper model for non-gpt-image-* Images requests
 default_originator = "codex_exec"       # only for clients that don't send one
 default_user_agent = "codex_exec/0.164.0"   # used when client UA doesn't start with "codex"
 ```

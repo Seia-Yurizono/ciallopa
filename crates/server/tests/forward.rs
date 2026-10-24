@@ -1195,6 +1195,7 @@ fn sized_post(len: usize, chunked: bool) -> http::Request<Body> {
 async fn busy_json(r: Response) -> serde_json::Value {
     assert_eq!(r.status(), 503);
     assert_eq!(r.headers()["retry-after"], "1");
+    assert_eq!(r.headers()["retry-after-ms"], "1000");
     serde_json::from_slice(&axum::body::to_bytes(r.into_body(), 4096).await.unwrap()).unwrap()
 }
 
@@ -1334,13 +1335,14 @@ async fn admission_holds_http_body_and_hot_limit_keeps_existing_occupancy() {
     let busy = e.app.clone().oneshot(req).await.unwrap();
     assert_eq!(busy.status(), 503);
     assert_eq!(busy.headers()["retry-after"], "1");
+    assert_eq!(busy.headers()["retry-after-ms"], "1000");
     let json: serde_json::Value =
         serde_json::from_slice(&axum::body::to_bytes(busy.into_body(), 4096).await.unwrap())
             .unwrap();
     assert!(json.to_string().contains("gateway_busy"));
     assert_eq!(e.mock.hits.load(Ordering::SeqCst), 1);
 
-    for path in ["/healthz", "/admin/v1/config"] {
+    for path in ["/healthz", "/admin/v1/config", "/admin/v1/memory"] {
         let r = e
             .app
             .clone()
@@ -1353,13 +1355,23 @@ async fn admission_holds_http_body_and_hot_limit_keeps_existing_occupancy() {
             .await
             .unwrap();
         assert_eq!(r.status(), 200, "{path} remains available at capacity");
+        let body = axum::body::to_bytes(r.into_body(), 100_000).await.unwrap();
         if path.ends_with("config") {
-            let value: serde_json::Value = serde_json::from_slice(
-                &axum::body::to_bytes(r.into_body(), 100_000).await.unwrap(),
-            )
-            .unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
             assert_eq!(value["runtime"]["inflight"], 1);
             assert_eq!(value["runtime"]["rejected"], 1);
+        }
+        if path.ends_with("memory") {
+            let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(v["buffered_body_limit_bytes"], 256u64 << 20);
+            assert_eq!(v["ws_max_connections"], 24);
+            assert_eq!(v["ws_max_message_bytes"], 16u64 << 20);
+            assert_eq!(v["now"]["ws_connections"], 0);
+            assert_eq!(v["jemalloc"], false, "tests use the system allocator");
+            assert!(v["history"].is_array());
+            if cfg!(target_os = "linux") {
+                assert!(v["now"]["rss_bytes"].as_u64().unwrap() > 0);
+            }
         }
     }
     cfg.max_inflight_requests = 0;
@@ -1464,6 +1476,113 @@ async fn admission_keeps_websocket_slot_after_upgrade_until_close() {
     drop(ws);
     assert!(stopped.await.unwrap() > 0);
     assert_eq!(e.drain.inflight(), 0);
+}
+
+#[tokio::test]
+async fn ws_connection_cap_refuses_handshakes_until_one_closes() {
+    use tokio_tungstenite::tungstenite::Message as M;
+    let e = env(300).await;
+    let mut cfg = (*e.config.load()).clone();
+    cfg.ws_max_connections = 1;
+    e.config.store(cfg.clone());
+    let (mut first, r) = tokio_tungstenite::connect_async(ws_req(&e)).await.unwrap();
+    assert_eq!(r.status(), 101);
+    assert_eq!(e.drain.ws_connections(), 1);
+    // Over the cap: the admission 503 wording and headers, no upstream dial.
+    match tokio_tungstenite::connect_async(ws_req(&e)).await {
+        Err(tokio_tungstenite::tungstenite::Error::Http(r)) => {
+            assert_eq!(r.status(), 503);
+            assert_eq!(r.headers()["retry-after"], "1");
+            assert_eq!(r.headers()["retry-after-ms"], "1000");
+            let body: serde_json::Value =
+                serde_json::from_slice(r.body().as_deref().unwrap()).unwrap();
+            assert_eq!(body["error"]["type"], "gateway_busy");
+            assert_eq!(body["error"]["message"], "Gateway is busy; retry shortly.");
+        }
+        other => panic!("expected 503, got {other:?}"),
+    }
+    assert_eq!(e.drain.rejected(), 1);
+    // HTTP is not limited by the WebSocket cap.
+    assert_eq!(held_response(&e).await.status(), 200);
+    // 0 = unlimited (hot, next handshake).
+    cfg.ws_max_connections = 0;
+    e.config.store(cfg.clone());
+    let (second, _) = tokio_tungstenite::connect_async(ws_req(&e)).await.unwrap();
+    assert_eq!(e.drain.ws_connections(), 2);
+    drop(second);
+    cfg.ws_max_connections = 1;
+    e.config.store(cfg);
+    first.send(M::Close(None)).await.unwrap();
+    while let Some(Ok(m)) = first.next().await {
+        if matches!(m, M::Close(_)) {
+            break;
+        }
+    }
+    drop(first);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while e.drain.ws_connections() > 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let (_third, r) = tokio_tungstenite::connect_async(ws_req(&e)).await.unwrap();
+    assert_eq!(r.status(), 101);
+}
+
+#[tokio::test]
+async fn ws_message_over_the_limit_closes_1009_even_when_compressed() {
+    use tokio_tungstenite::tungstenite::{protocol::frame::coding::CloseCode, Message as M};
+    let e = env(300).await;
+    let mut cfg = (*e.config.load()).clone();
+    cfg.ws_max_message_mb = 1;
+    e.config.store(cfg);
+    let msg = |len: usize| {
+        let head = r#"{"type":"response.create","model":"gpt-5.5","pad":""#;
+        M::text(format!("{head}{}\"}}", "x".repeat(len - head.len() - 2)))
+    };
+    async fn closed_with<S>(ws: &mut tokio_tungstenite::WebSocketStream<S>) -> Option<CloseCode>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        loop {
+            match tokio::time::timeout(Duration::from_secs(5), ws.next())
+                .await
+                .unwrap()
+            {
+                Some(Ok(M::Close(f))) => return f.map(|f| f.code),
+                Some(Ok(_)) => continue,
+                _ => return None,
+            }
+        }
+    }
+    // Plain: just under the limit passes, just over closes with 1009.
+    let (mut ws, _) = tokio_tungstenite::connect_async(ws_req(&e)).await.unwrap();
+    ws.send(msg(1024 * 1024 - 64)).await.unwrap();
+    let got = ws.next().await.unwrap().unwrap();
+    assert!(
+        got.to_text().unwrap().contains("response.completed"),
+        "{got:?}"
+    );
+    ws.send(msg(1024 * 1024 + 1)).await.unwrap();
+    assert_eq!(closed_with(&mut ws).await, Some(CloseCode::Size));
+    // Deflated: a 4 MiB message that compresses to a few KiB is still refused by size.
+    let (mut ws, _) = tokio_tungstenite::connect_async_with_config(
+        ws_req(&e),
+        Some(deflate_client(|d| d)),
+        false,
+    )
+    .await
+    .unwrap();
+    ws.send(msg(4 * 1024 * 1024)).await.unwrap();
+    assert_eq!(closed_with(&mut ws).await, Some(CloseCode::Size));
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while e.drain.ws_connections() > 0 || e.drain.body_bytes() > 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -2275,10 +2394,11 @@ async fn websocket_messages_share_the_buffered_body_budget() {
             "type": "error",
             "status": 503,
             "error": {"type": "gateway_busy", "message": "Gateway is busy; retry shortly."},
-            "headers": {"retry-after": "1"},
+            "headers": {"retry-after": "1", "retry-after-ms": "1000"},
         })
     );
     assert_eq!(e.drain.body_bytes(), 900 * 1024);
+    assert_eq!(e.drain.ws_bytes(), 0, "the refused message holds nothing");
 
     // Room again: the connection is still usable and the next reply is for this message.
     drop(other);
@@ -2303,6 +2423,7 @@ async fn websocket_messages_share_the_buffered_body_budget() {
         e.drain.body_bytes(),
         r#"{"type":"response.create","tag":"held"}"#.len() as u64
     );
+    assert_eq!(e.drain.ws_bytes(), e.drain.body_bytes());
 
     // A message larger than the whole budget is not refused forever: it waits for all of it.
     ws.send(msg("whole", (3 * mib / 2) as usize)).await.unwrap();
@@ -2316,6 +2437,7 @@ async fn websocket_messages_share_the_buffered_body_budget() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert_eq!(e.drain.body_bytes(), 0);
+    assert_eq!(e.drain.ws_bytes(), 0);
 }
 
 async fn sse_text(e: &Env, mode: &str) -> String {
@@ -2385,7 +2507,7 @@ async fn images_wrap_and_direct() {
         serde_json::from_slice(&e.mock.seen.lock().unwrap()[0].1).unwrap();
     assert_eq!(sent["tools"][0]["type"], "image_generation");
     assert_eq!(sent["tools"][0]["model"], "gpt-image-2");
-    assert_eq!(sent["model"], "gpt-5.5");
+    assert_eq!(sent["model"], "gpt-6.1-sol");
     assert!(
         !e.mock.seen.lock().unwrap()[0]
             .0

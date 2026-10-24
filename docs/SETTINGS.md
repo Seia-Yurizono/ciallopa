@@ -40,7 +40,9 @@ streaming, including Images; a reload cannot shorten an already-running stream's
 |---|---|
 | `api_keys` | New keys work and removed keys get 401 from the next request. Open WebSockets stay open. |
 | `max_inflight_requests` | Default 64. HTTP holds one slot from before reading the body through response EOF/drop; a WS holds the same slot through its entire connection, including idle time. At capacity, new forwarding requests receive 503 `gateway_busy` with `Retry-After: 1`, without a queue or reading their bodies. Lowering the limit never interrupts existing work. `0` disables rejection but continues counting; re-enabling the limit includes that existing work. Health, admin and usage routes are outside the limit. |
-| `max_buffered_body_mb` | Default 256 MiB; `0` = unlimited, otherwise at least `max_body_mb` (max 65536). Total request bytes buffered at once across all forwarding routes: HTTP request bodies and client WebSocket messages. A body reserves its declared `Content-Length` before any byte is read (chunked bodies reserve as they arrive) and keeps it until every copy is freed (retries, in-stream replay, the zstd-compressed copy). Without room a request waits at most 1 s, then gets the same 503 `gateway_busy` with `Retry-After: 1`; the rest of its body is read and discarded first (at most 10 s) so the client sees the response, not a reset. The next body reads the new value. A client WebSocket message reserves its size (at most the whole budget) when it arrives and keeps it until its turn ends, because it is held for replay; without room it waits at most 1 s, then the client gets an error frame with status 503 `gateway_busy` and `retry-after: 1`, and the connection stays open. Process memory is about 1.4–2× this budget for HTTP (the parsed JSON and the compressed copy exist at the same time). For WebSocket the budget does not bound peak memory: per-connection receive and inflate buffers exist before a message can be counted, so `max_inflight_requests` × the 64 MiB message limit remains the bound. Responses are not counted. `runtime.buffered_body_bytes` reports the current reservation. |
+| `max_buffered_body_mb` | Default 256 MiB; `0` = unlimited, otherwise at least `max_body_mb` (max 65536). Total request bytes buffered at once across all forwarding routes: HTTP request bodies and client WebSocket messages. A body reserves its declared `Content-Length` before any byte is read (chunked bodies reserve as they arrive) and keeps it until every copy is freed (retries, in-stream replay, the zstd-compressed copy). Without room a request waits at most 1 s, then gets the same 503 `gateway_busy` with `Retry-After: 1`; the rest of its body is read and discarded first (at most 10 s) so the client sees the response, not a reset. The next body reads the new value. A client WebSocket message reserves its size (at most the whole budget) when it arrives and keeps it until its turn ends, because it is held for replay; without room it waits at most 1 s, then the client gets an error frame with status 503 `gateway_busy` and `retry-after: 1`, and the connection stays open. Process memory is about 1.4–2× this budget for HTTP (the parsed JSON and the compressed copy exist at the same time). For WebSocket the budget does not bound peak memory: per-connection receive and inflate buffers exist before a message can be counted, so `ws_max_connections` × `ws_max_message_mb` is the bound. Responses are not counted. `runtime.buffered_body_bytes` reports the current reservation. |
+| `ws_max_connections` | Default 24; `0` = unlimited. Client WebSockets open at once, idle ones included. Over the cap the handshake gets 503 `gateway_busy` with `Retry-After: 1` / `retry-after-ms: 1000` and Codex falls back to HTTP for that turn. Lowering it never closes open connections; the next handshake reads the new value. |
+| `ws_max_message_mb` | Default 16 MiB (1–4096). Largest client WebSocket message (and frame) after permessage-deflate inflation; a larger one closes the connection with 1009 *message too big*. Applies to new connections. Together with `ws_max_connections` this bounds WS receive memory: the defaults (24 × 16 MiB) peaked at 1026 MiB RSS in the worst-case test, fitting a 2 GB host. |
 | `max_body_mb` | The next request reads the new limit, on forwarding and management routes. A request already reading its body keeps the limit it started with. |
 | `proxy_url`, `proxy_enabled`, `ipv6` | Per-account clients (and token-refresh clients) are dropped and rebuilt on next use. An already-issued HTTP attempt keeps its client and uses that client's egress when classifying connection errors; the next attempt, including a retry of the same request, can use the new egress. When the effective egress changes (`proxy_enabled` and a non-empty `proxy_url`), open client WebSockets finish the running turn on the old connection and are then closed normally (1000) on both legs; Codex reconnects on its next request through the new egress. Not counted as an error, no cooldown. A change of `ipv6` counts as an egress change. |
 | `upstream_opts.connect_timeout_secs` | Model-upstream HTTP clients are rebuilt on next use; the next WS handshake reads the new value. Already-issued attempts retain their clients. OAuth token refresh keeps its separate fixed 10-second connect limit and 30-second whole-request limit. |
@@ -69,7 +71,7 @@ shown as a banner until the process restarts): `listen`, `instance_id`, `upstrea
 `max_body_mb` is honored exactly (MiB, 1–4096; default 64). A larger declared `Content-Length`
 gets a JSON 413 before the body is read. It applies to incoming HTTP bytes,
 not decompressed JSON or WS frames (a zstd request body is inspected only up to the same decoded
-size; a larger one is forwarded uninspected) (WebSocket messages are limited to 64 MiB, frames to 16 MiB).
+size; a larger one is forwarded uninspected) (WebSocket messages and frames are limited by `ws_max_message_mb`, default 16 MiB).
 The default was 16 until Codex 0.164 support. Real Codex requests can exceed 16 MiB: Codex keeps
 images inline as base64 data URLs, resends the whole history on every HTTP request
 (`store: false`), never compresses HTTP bodies for a custom provider, and keeps PNG/JPEG/WebP
@@ -149,3 +151,23 @@ Every applied change is appended to `<config file>.audit.jsonl` (mode 0600) and 
 `ciallopa::audit` target: time, actor (client key label; empty for file / signal), action,
 source and the changed keys with masked old and new values. Account actions record the account
 id and the changed fields, never tokens.
+
+## `Retry-After` and `retry-after-ms`
+
+Every response that carries `Retry-After` (admission 503 `gateway_busy`, buffered-body 503, the
+WS handshake cap, and local cooldown / no-account 429/503 answers) also carries
+`retry-after-ms` with the same delay in milliseconds, matching the OpenAI header pair that Codex
+already prefers (`retry-after-ms` first, then `retry-after`). WS error frames carry the same pair
+in their `headers`. Upstream 429/5xx values go through the same client filter: a delay of
+1–20 s is kept and both headers then state it (an upstream that sent only `retry-after-ms` gets
+the rounded-up `Retry-After`); zero, longer delays and HTTP dates drop both. Bodies and wording
+stay the neutral upstream-style errors.
+
+## `GET /admin/v1/memory`
+
+Admin only. `{"now":{at_ms,rss_bytes,allocated_bytes,resident_bytes,buffered_body_bytes,
+ws_connections,ws_bytes},"rss_peak_bytes","jemalloc","buffered_body_limit_bytes",
+"ws_max_connections","ws_max_message_bytes","sample_every_secs","history":[samples]}`. RSS comes from `/proc/self/status`
+(Linux, including Docker Desktop on macOS) and is `null` elsewhere; jemalloc figures appear only
+in the release binary. A sample is kept every 10 s for 15 minutes, in memory only. The 概览
+内存 panel reads it on each refresh.

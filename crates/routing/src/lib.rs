@@ -473,6 +473,9 @@ impl Router for CpaRouter {
     fn cooling_reason(&self, id: &AccountId) -> Option<&'static str> {
         self.cooling_reason_any(id)
     }
+    fn model_cooling_until(&self, id: &AccountId, model: &str) -> Option<SystemTime> {
+        self.cooldown_until(id, model)
+    }
     fn clear_cooldown(&self, id: &AccountId) -> bool {
         self.clear(id)
     }

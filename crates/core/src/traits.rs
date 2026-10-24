@@ -70,6 +70,11 @@ pub trait Router: Send + Sync + 'static {
     fn cooling_until(&self, _id: &AccountId) -> Option<std::time::SystemTime> {
         None
     }
+    /// When the account is usable again for `model` (account- or model-level cooldown;
+    /// None = usable now). Lets a connection pinned to an account re-check each request's model.
+    fn model_cooling_until(&self, _id: &AccountId, _model: &str) -> Option<std::time::SystemTime> {
+        None
+    }
     /// Why the account is cooling down (`usage_limit`, `rate_limited`, `auth`, `transient`,
     /// `overloaded`, `challenge`, `model_unsupported`, `not_found`, `payment_required`,
     /// `workspace_deactivated`); None = not cooling.

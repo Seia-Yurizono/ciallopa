@@ -79,6 +79,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(not(target_env = "msvc"))]
+    ciallopa::memory::jemalloc_is_global();
     let cli = Cli::parse();
     let env_cfg = ciallopa_core::config::env_var("CONFIG");
     let config_path = cli

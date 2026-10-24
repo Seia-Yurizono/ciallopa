@@ -3,7 +3,7 @@ use crate::{errors, AppState};
 use axum::{
     body::{Body, Bytes},
     extract::State,
-    http::{header, Request, StatusCode},
+    http::{Request, StatusCode},
     middleware::Next,
     response::Response,
 };
@@ -21,8 +21,8 @@ pub(crate) fn refused(reason: Refused) -> Response {
         Refused::Draining => ("shutdown", "Gateway is shutting down; retry shortly."),
     };
     let mut r = crate::proxy::json_error(StatusCode::SERVICE_UNAVAILABLE, code, message);
-    r.headers_mut()
-        .insert(header::RETRY_AFTER, "1".parse().expect("static header"));
+    // Outside the Retry-After filter: set both headers here.
+    errors::set_retry_after(r.headers_mut(), 1);
     r.extensions_mut().insert(errors::ErrMeta {
         source: errors::SRC_LOCAL,
         code: code.into(),

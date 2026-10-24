@@ -334,12 +334,28 @@ function resetCardDisplay() {
   assert.equal(run('AUTO.a.on && AUTOTOP.lead'), 15);
 }
 
+// 24 h account usage follows the overview's 「含预热」 preference (business only by default).
+async function prewarmFollowsOverview() {
+  const t = harness(), urls = [];
+  t.replies(async url => {urls.push(url); return response(payload(url, 'v1'));});
+  await t.run('load()');
+  assert.ok(urls.includes('/admin/v1/accounts'), 'no localStorage: business only');
+  t.c.localStorage = {getItem: k => k === 'ciallopa_prewarm' ? '1' : null};
+  await t.run('load()');
+  assert.ok(urls.includes('/admin/v1/accounts?include_prewarm=1'), 'toggle on: prewarm tokens included');
+  t.c.localStorage = {getItem: () => '0'};
+  urls.length = 0;
+  await t.run('load()');
+  assert.ok(urls.includes('/admin/v1/accounts'));
+}
+
 (async () => {
   resetCardDisplay();
   await partialReads();
+  await prewarmFollowsOverview();
   await supersededReads();
   await loginChanges();
   await deviceLoginIsolation();
   await accessGate();
-  console.log('PASS: reset-card display and auto-use switch state, account snapshots, read/login races, device start/poll cancellation and identity isolation, Cloudflare Access expiry');
+  console.log('PASS: reset-card display and auto-use switch state, account snapshots, prewarm preference, read/login races, device start/poll cancellation and identity isolation, Cloudflare Access expiry');
 })().catch(error => {console.error(error); process.exitCode = 1;}).finally(() => clearTimeout(watchdog));

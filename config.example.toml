@@ -27,6 +27,16 @@ max_body_mb = 64
 # 1.4-2x this value; 256 fits a ~1 GiB process budget on a 2 GB host. 0 = unlimited, otherwise
 # at least max_body_mb.
 max_buffered_body_mb = 256
+# Client WebSocket connections open at once, idle ones included (hot: new handshakes; 0 =
+# unlimited). Each connection can hold a few copies of its largest message (receive, inflate,
+# send) before max_buffered_body_mb can count it, so this times ws_max_message_mb bounds
+# WebSocket memory; 24 x 16 fits a 2 GB host. Over the cap a handshake gets 503 gateway_busy +
+# Retry-After: 1; Codex retries, then uses HTTP for that session.
+ws_max_connections = 24
+# Largest client WebSocket message in MiB after decompression (hot: new handshakes; 1-4096).
+# A larger one closes the connection with 1009; Codex retries, then falls back to HTTP, where
+# max_body_mb applies.
+ws_max_message_mb = 16
 
 [routing]
 strategy = "round-robin"
@@ -55,6 +65,10 @@ reset_credits_refresh_mins = 60   # read-only listing refresh; 0 = on demand onl
 allow_reset_consume = false       # true = allow manually spending a 重置卡 (irreversible)
 reset_credits_auto_lead_mins = 10 # accounts with 快到期时自动使用 on: use a card this many minutes before it expires (5-1440)
 allow_config_write = false        # true = allow settings / key / account changes from /ui/settings and /ui/accounts (file only)
+
+[images]
+enabled = true
+main_model = "gpt-6.1-sol"        # wrapper model for non-gpt-image-* Images requests
 
 [upstream_opts]
 # HTTP header bound (seconds): one attempt includes sending the request and waiting for headers.

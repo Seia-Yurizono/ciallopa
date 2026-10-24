@@ -19,6 +19,7 @@ pub mod auto_reset;
 pub mod client_fp;
 pub mod host;
 pub mod init;
+pub mod memory;
 pub mod prices;
 pub mod reset_credits;
 pub mod settings;
@@ -181,6 +182,7 @@ pub fn build_app_with(s: Arc<settings::Settings>) -> Router {
         state.usage.clone(),
         state.accounts.clone(),
         state.egress.clone(),
+        Some(state.config.clone()),
     );
     let ui_on = cfg.ui.enabled;
     let rc = s.rc.clone();
@@ -190,11 +192,13 @@ pub fn build_app_with(s: Arc<settings::Settings>) -> Router {
     }
     reset_credits::spawn_poller(state.clone(), rc.clone());
     auto_reset::spawn(state.clone(), rc.clone());
+    memory::spawn_sampler(state.clone());
     let resets = reset_credits::routes(state.clone(), rc);
     let live_cfg = state.config.clone();
     let admin = usage
         .merge(resets)
         .merge(client_fp::routes())
+        .merge(memory::routes(state.clone()))
         .merge(settings::routes(s.clone()))
         .merge(accounts_api::routes(s))
         .layer(middleware::from_fn_with_state(live_cfg, live_body_limit))

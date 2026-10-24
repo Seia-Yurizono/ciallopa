@@ -215,6 +215,7 @@ select.ivl{height:24px;padding:0 var(--s1);font-size:var(--fs-xs)}
 .scope .filters{border-top:1px solid var(--line);border-bottom:0}
 .scope .filters label{display:flex;align-items:center;gap:var(--s2);font-size:var(--fs-s);color:var(--mut)}
 .scope .filters input{width:160px}
+.scope .filters label.chk input{width:auto}
 .filterchips{display:flex;align-items:center;flex-wrap:wrap;gap:var(--s2);padding:var(--s2) var(--s3)}
 .scope>.filterchips{border-top:1px solid var(--line)}
 #recordchips{border-bottom:1px solid var(--line)}
@@ -222,6 +223,20 @@ select.ivl{height:24px;padding:0 var(--s1);font-size:var(--fs-xs)}
 .filterchip .filterlabel{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .filterchip .filterremove{flex:none;color:var(--mut);font-size:16px}
 .quiet{font-size:var(--fs-xs);color:var(--mut);margin:-12px 0 var(--s5);display:flex;gap:var(--s2);flex-wrap:wrap}
+.memstrip{grid-template-columns:repeat(4,minmax(0,1fr)) minmax(0,2fr)}
+.memstrip .spark{display:flex;flex-direction:column}
+.memstrip .spark svg{display:block;width:100%;height:44px;margin-top:var(--s1)}
+.cbx{position:relative;display:block}
+.cbl{position:absolute;z-index:40;left:0;top:calc(100% + 2px);min-width:100%;width:max-content;max-width:min(360px,calc(100vw - 24px));max-height:264px;overflow-y:auto;overscroll-behavior:contain;margin:0;padding:var(--s1) 0;list-style:none;background:var(--surface);border:1px solid var(--line-2);border-radius:var(--r2);box-shadow:var(--shadow);font-size:var(--fs-s);color:var(--fg)}
+.cbl li{display:flex;align-items:center;justify-content:space-between;gap:var(--s3);min-height:30px;padding:var(--s1) var(--s3);cursor:pointer;white-space:nowrap}
+.cbl li[aria-selected=true]{background:var(--surface-2);box-shadow:inset 2px 0 0 var(--focus)}
+@media (hover:hover){.cbl li:hover{background:var(--surface-2)}}
+.cbl .cbv{min-width:0;overflow:hidden;text-overflow:ellipsis;font-family:var(--mono)}
+.cbl .cbm{flex:none;color:var(--faint);font-size:var(--fs-xs);font-variant-numeric:tabular-nums}
+.cbl mark{background:none;color:inherit;font-weight:650}
+.spark .ln{fill:none;stroke:var(--focus);stroke-width:1.5;vector-effect:non-scaling-stroke}
+.spark .ln2{fill:none;stroke:var(--ctl);stroke-width:1;stroke-dasharray:3 2;vector-effect:non-scaling-stroke}
+.kpi.hot .v{color:var(--cool)}
 .statlink{padding:0;border:0;height:auto;background:transparent!important;font:inherit;color:inherit;text-align:left}
 .statlink:hover{text-decoration:underline;text-underline-offset:3px}
 .kpi .k,.kpi .s{white-space:normal}
@@ -341,12 +356,17 @@ select.ivl{height:24px;padding:0 var(--s1);font-size:var(--fs-xs)}
 .tl code{font-size:var(--fs-xs);padding:0 var(--s1);border-radius:var(--r1);background:var(--surface-2)}
 @media (max-width:760px){
 .strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}
+.memstrip{grid-template-columns:repeat(2,minmax(0,1fr))}
+.memstrip .spark{grid-column:1/-1}
 .strip .kpi{padding:var(--s2)}
 .strip .kpi .s{min-height:0}
 .strip .kpi .v{font-size:20px}
 .strip .kpi .v small{font-size:10px;margin-left:2px}
 .scope .filters label{width:100%;display:grid;grid-template-columns:3em minmax(0,1fr)}
 .scope .filters input,.scope .filters select{width:100%}
+.scope .filters label.chk{display:flex}
+.cbl{max-width:none;width:100%}
+.cbl li{min-height:44px}
 .quiet{margin-top:-12px}
 .lookup{width:100%;margin-left:0}.lookup input{flex:1;width:auto}.lookup button{height:40px}
 .detail-stats{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -413,15 +433,20 @@ select.ivl{height:24px;padding:0 var(--s1);font-size:var(--fs-xs)}
   <div class="scope panel"><details id="scopefilters"><summary id="scopetoggle"><strong>筛选范围</strong><span id="scopesummary"> · 所有模型与账号</span></summary>
     <div class="filters" aria-label="筛选概况、趋势和请求">
       <label>账号<select id="facct" aria-label="按账号筛选"><option value="">全部账号</option></select></label>
-      <label>模型<input id="fmodel" type="text" placeholder="模型名称" aria-label="按请求模型筛选"></label>
-      <label>密钥<input id="fkey" type="text" placeholder="密钥标签" aria-label="按密钥标签筛选"></label>
-      <label>实例<input id="finstance" type="text" placeholder="实例名称" aria-label="按实例筛选"></label>
+      <label>模型<span class="cbx"><input id="fmodel" type="text" placeholder="模型名称" aria-label="按请求模型筛选" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="lfmodel" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"><ul id="lfmodel" class="cbl hide" role="listbox" aria-label="模型候选"></ul></span></label>
+      <label>密钥<span class="cbx"><input id="fkey" type="text" placeholder="密钥标签" aria-label="按密钥标签筛选" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="lfkey" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"><ul id="lfkey" class="cbl hide" role="listbox" aria-label="密钥候选"></ul></span></label>
+      <label>实例<span class="cbx"><input id="finstance" type="text" placeholder="实例名称" aria-label="按实例筛选" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="lfinstance" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"><ul id="lfinstance" class="cbl hide" role="listbox" aria-label="实例候选"></ul></span></label>
+      <label class="chk" title="默认不含 Codex WebSocket 预热（generate:false）：概况、Token、费用、趋势、分组和请求列表都只算业务请求。勾选后把预热的 Token 与费用计入，并在请求列表中显示预热行；请求数、失败率和延迟始终不含预热。此设置保存在本浏览器"><input type="checkbox" id="fprewarm"> 含预热</label>
       <button id="scopeclear" class="ghost xs hide" type="button">清除范围筛选</button>
     </div>
   </details><div class="filterchips hide" id="scopechips" role="group" aria-label="已应用范围筛选，影响概况、趋势和请求"></div></div>
   <div class="strip" id="strip" aria-label="所选时间段概况"></div>
   <div class="quiet" id="metricnote"></div>
   <div class="quiet hide" id="runtime"></div>
+  <section id="mem" class="hide" aria-label="内存">
+    <div class="sh"><h2>内存</h2><span class="sp"></span><span class="mut sm" id="memwhen"></span></div>
+    <div class="strip memstrip" id="memstrip"></div>
+  </section>
   <section id="st" aria-busy="true">
     <div class="sh"><h2>调用趋势</h2><select id="tmetric" aria-label="趋势指标"><option value="requests">请求</option><option value="tokens">Token</option><option value="cost">估算费用</option></select><select id="tmode" aria-label="趋势粒度"><option value="auto">自动粒度</option><option value="day">按天</option><option value="hour">按小时</option></select><span class="sp"></span><span class="mut sm" id="trange"></span></div>
     <div class="panel chart" id="chart"><svg id="svg" viewBox="0 0 1200 160" role="group" aria-label="时间趋势；选择时间桶查看请求"></svg><div id="ctip" class="hide" role="tooltip"></div></div>
@@ -433,7 +458,7 @@ select.ivl{height:24px;padding:0 var(--s1);font-size:var(--fs-xs)}
       <div class="scope-note hide" id="rwindow"><span id="rwindowtext"></span><button id="rwindowclear" class="ghost xs" type="button">返回整个范围</button></div>
       <div class="filters" role="search" aria-label="仅筛选请求列表">
         <span class="mut xs">请求筛选</span>
-        <select id="foutcome" aria-label="按请求结果筛选"><option value="">全部记录（含预热）</option><option value="business">业务请求（不含预热）</option><option value="completed">完成</option><option value="failed">失败</option><option value="cancelled">客户端取消</option><option value="incomplete">未完成 · incomplete</option><option value="unknown">结果未知 · 观察不完整</option><option value="prewarm">预热</option></select>
+        <select id="foutcome" aria-label="按请求结果筛选"><option value="">全部结果</option><option value="business">业务请求（不含预热）</option><option value="completed">完成</option><option value="failed">失败</option><option value="cancelled">客户端取消</option><option value="incomplete">未完成 · incomplete</option><option value="unknown">结果未知 · 观察不完整</option><option value="prewarm">预热</option></select>
         <details class="request-extra" id="recordextra"><summary>更多筛选<span id="fsummary"></span></summary><div class="row">
         <select id="fsrc" aria-label="按错误来源筛选"><option value="">全部来源</option><option value="upstream">上游</option><option value="stream">流内</option><option value="network">网络</option><option value="local">ciallopa</option><option value="client">客户端</option><option value="upstream,stream,network,local">排除客户端</option></select>
         <select id="ftier" aria-label="按档位筛选"><option value="">全部档位</option><option value="priority">Fast</option><option value="flex">Flex</option><option value="standard">标准</option><option value="dg">仅降级</option></select>
@@ -646,10 +671,13 @@ const ST={normal:["正常","ok"],cooling:["冷却中","cool"],disabled:["已停�
 let timer=null,Q=null,RC=null,AC=null,EG=null,SUM=null,TREND=null,ACCTS=[],RECORDER=null,SUM_SCOPE="";
 let scopeWindow={from:0,to:0,fixed:false},recordWindow=null,activeRecord=null;
 function rollWindow(){const to=Date.now();scopeWindow={from:to-RANGE_MS[$("range").value],to,fixed:false}}
-function scopeFilters(){return {from:scopeWindow.from,to:scopeWindow.to,account:$("facct").value,model:$("fmodel").value.trim(),key:$("fkey").value.trim(),instance:$("finstance").value.trim()}}
+function scopeFilters(){return {from:scopeWindow.from,to:scopeWindow.to,account:$("facct").value,model:$("fmodel").value.trim(),key:$("fkey").value.trim(),instance:$("finstance").value.trim(),exclude_prewarm:withPrewarm()?"":1}}
+// Prewarm is left out of every figure and the request list unless 「含预热」 is ticked (a browser preference).
+const PW="ciallopa_prewarm";function withPrewarm(){return $("fprewarm").checked}
+function pwText(){return withPrewarm()?"含预热":"不含预热"}
 function scopeLabel(){return fmtTime(scopeWindow.from,true)+" – "+fmtTime(scopeWindow.to,true)}
 function showScope(){const count=SF.filter(id=>fval(id).trim()).length;
-  $("scopesummary").textContent=count?" · "+count+" 项条件":" · 所有模型与账号";$("scopeclear").classList.toggle("hide",!count);renderFilterChips($("scopechips"),SF,"范围",$("scopetoggle"));
+  $("scopesummary").textContent=(count?" · "+count+" 项条件":" · 所有模型与账号")+(withPrewarm()?" · 含预热":"");$("scopeclear").classList.toggle("hide",!count);renderFilterChips($("scopechips"),SF,"范围",$("scopetoggle"));
   $("scopewhen").textContent=scopeWindow.fixed?scopeLabel():"截至 "+hms(new Date(scopeWindow.to));$("scopewhen").dataset.fixed=String(scopeWindow.fixed);$("scopewhen").title=scopeLabel();
   $("scopefreeze").textContent=scopeWindow.fixed?"返回最近":"固定时间";$("scopefreeze").title=scopeWindow.fixed?"恢复随刷新滚动的时间范围":scopeLabel();
   $("rwindow").classList.toggle("hide",!recordWindow);$("rwindowtext").textContent=recordWindow?"选中时段 · "+fmtTime(recordWindow.from,true)+" – "+fmtTime(recordWindow.to,true):""}
@@ -735,14 +763,15 @@ function renderKpis(){const t=SUM&&SUM.total,span=SUM?Math.max(1,SUM.to_ms-SUM.f
     ["失败率",t?statLink(pct(t.failure_rate),"failed"):"–",t?[statLink(exact(t.failures)+" 失败","failed")," · ",statLink(exact(t.cancelled)+" 取消","cancelled")]:"", "失败 / 业务请求；客户端取消、协议正常终止的 incomplete 与观察不完整的未知结果分开计数。"],
     ["首输出 p50",t?fmtMs(t.stream_ttft_p50_ms):"–",t?"p90 "+fmtMs(t.stream_ttft_p90_ms)+" · "+exact(tt)+" 样本":"", "流请求从开始到首个文本、推理或工具参数输出。包括之后失败或取消但已产生首输出的样本；无输出的不填零。"],
     ["生成速度",t&&t.generation_tps!==null&&t.generation_tps!==undefined?[t.generation_tps.toFixed(1),h("small",null,"tok/s")]:"–",t?exact(ts)+" 完成样本 · 估算":"", "完成流的总输出 Token / 总生成时长；缺首输出时间、取消、失败、incomplete 及未知结果不参与。包含尾部传输时间，不能当作纯模型解码速度。"],
-    ["Token",tokenValue(t),t?(t.usage_samples||!(t.count+t.prewarm_count)?"入 "+fmtN(t.input_tokens)+" · 出 "+fmtN(t.output_tokens):"上游未报告用量"):"", "仅累计实际报告的用量，含预热；输入含缓存命中，推理 Token 已包含在输出中。"],
-    ["估算费用",costV,u?exact(u)+" 条未定价":t?"按 API 标价 · 非账单":"", "按模型、档位和报告用量估算；订阅实际费用不同。未定价不会被算成免费。"]];
+    ["Token",tokenValue(t),t?(t.usage_samples||!(t.count+t.prewarm_count)?"入 "+fmtN(t.input_tokens)+" · 出 "+fmtN(t.output_tokens):"上游未报告用量"):"", "仅累计实际报告的用量，"+pwText()+"；输入含缓存命中，推理 Token 已包含在输出中。"],
+    ["估算费用",costV,u?exact(u)+" 条未定价":t?"按 API 标价 · 非账单":"", "按模型、档位和报告用量估算，"+pwText()+"；订阅实际费用不同。未定价不会被算成免费。"]];
   const st=$("strip");clear(st);for(const [k,v,sub,tip] of cells)st.appendChild(h("div",{class:"kpi",title:tip},h("div","k",k),h("div","v",v),h("div","s",sub)));
   const note=$("metricnote");clear(note);if(!t)return;
   if(SUM_SCOPE!==qs(scopeFilters()))note.appendChild(h("span",null,"概况为上次范围，等待更新 ·"));
   note.append(h("span",{title:"缓存命中 Token / 有缓存字段样本的输入 Token"},"输入缓存 "+pct(t.cache_ratio)),h("span",null,"·"),statLink(exact(t.incomplete)+" 未完成","incomplete"));
   if(t.unknown)note.append(h("span",null,"·"),statLink(exact(t.unknown)+" 结果未知","unknown"));
   if(t.prewarm_count)note.append(h("span",null,"·"),statLink(exact(t.prewarm_count)+" 预热","prewarm"));
+  else if(!withPrewarm())note.append(h("span",{title:"Token、费用和趋势不含预热；在筛选范围中勾选「含预热」可计入"},"· 不含预热"));
   note.append(h("span",null,"· 用量为上游已报告部分（"+exact(t.usage_samples)+" 条）"));
   if(RECORDER&&(RECORDER.dropped||RECORDER.write_errors))note.append(h("span",{class:"c-cool",title:"进程启动以来的记录器计数，非当前筛选范围；用量记录是尽力写入。"},"· 记录有缺口：丢弃 "+exact(RECORDER.dropped)+" / 写入失败 "+exact(RECORDER.write_errors)))}
 function drillOutcome(outcome){if(!summaryCurrent())return;recordWindow=null;$("foutcome").value=outcome;for(const id of ["fsrc","ftier","fcode"])$(id).value="";$("fretry").checked=false;$("ferr").checked=false;saveF();showScope();renderTrend();loadRecords(false).catch(fail);revealRecords()}
@@ -898,13 +927,13 @@ function renderTrend(){if(!TREND)return;const {summary,hourly,tz}=TREND,pts=tren
       if(hc)svg.appendChild(sv("rect",{x:x+bw*.14,y:T+ih-hf-hc,width:Math.max(.5,bw*.72),height:hc,class:"b-cancel"}))}
     const d=new Date(p.start),lab=hourly?p2(d.getHours())+":00":p2(d.getMonth()+1)+"/"+p2(d.getDate());
     if(i%every===0)svg.appendChild(sv("text",{x:x+bw/2,y:H-6,"text-anchor":"middle",class:"ax"},lab));
-    const tokenText=p.tokens===null?"未报告":exact(p.tokens)+(p.records?"（"+exact(p.samples)+" / "+exact(p.records)+" 条已报告，含预热）":"");
+    const tokenText=p.tokens===null?"未报告":exact(p.tokens)+(p.records?"（"+exact(p.samples)+" / "+exact(p.records)+" 条已报告，"+pwText()+"）":"");
     const txt=fmtTime(p.from,true)+" – "+fmtTime(p.to,true)+(p.partial?"（部分时段）":"")+"\n请求 "+exact(p.n)+" · 失败 "+exact(p.f)+" · 取消 "+exact(p.cancel)+(p.unobserved?" · 结果未知 "+exact(p.unobserved):"")+"\nToken "+tokenText+" · 估算费用 "+(p.unknown&&!p.cost?"未定价":(p.unknown?"≥":"")+fmtUsd(p.cost))+"\n选择以查看这段时间的请求";
     const hit=sv("rect",{x,y:T,width:bw,height:ih,class:"hit",tabindex:summaryCurrent()?0:-1,role:"button","aria-label":txt,"aria-disabled":String(!summaryCurrent()),"aria-pressed":String(!!selected)});if(selected)hit.style.fill="color-mix(in srgb,var(--focus) 10%,transparent)";
     hit.addEventListener("mousemove",ev=>tipAt(ev,txt));hit.addEventListener("mouseleave",()=>$("ctip").classList.add("hide"));
     hit.addEventListener("focus",()=>{const r=hit.getBoundingClientRect();tipAt({clientX:r.left+r.width/2,clientY:r.top},txt)});hit.addEventListener("blur",()=>$("ctip").classList.add("hide"));
     hit.addEventListener("click",()=>selectBucket(p));hit.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();selectBucket(p)}});svg.appendChild(hit)});
-  $("chartlegend").textContent=(metric==="requests"?"灰：请求 · 橙：失败 · 深灰：取消":metric==="tokens"?"输入 + 输出 Token（已报告部分，含预热）；– 表示未报告":"按 API 标价估算（含预热）；– 表示未定价")+" · 虚线：部分时段 · "+(summaryCurrent()?"选择柱查看请求":"上次范围，等待更新")}
+  $("chartlegend").textContent=(metric==="requests"?"灰：请求 · 橙：失败 · 深灰：取消":metric==="tokens"?"输入 + 输出 Token（已报告部分，"+pwText()+"）；– 表示未报告":"按 API 标价估算（"+pwText()+"）；– 表示未定价")+" · 虚线：部分时段 · "+(summaryCurrent()?"选择柱查看请求":"上次范围，等待更新")}
 let lastNarrow=narrow();addEventListener("resize",()=>{if(narrow()!==lastNarrow){lastNarrow=narrow();renderTrend()}});
 
 // ---- custom tooltips for [data-tt]
@@ -995,11 +1024,11 @@ function renderRecords(){const tb=$("rec").tBodies[0],dp=$("dp"),opener=!dp.clas
     if(!recState.rows.length)emptyRow(tb,12,"没有符合条件的请求",anyF()?"清除筛选或换个时间段试试":"换个时间段试试")}));
   // A refresh already in flight can replace the opener while its detail dialog is open.
   if(anchor)dp._opener=tb.querySelector('[data-ak="'+CSS.escape(anchor)+'"] button')||$("foutcome");
-  $("rcount").textContent="共 "+exact(recState.total)+" 条"+(!$("foutcome").value?"（含预热）":$("foutcome").value==="business"?"（不含预热）":"");
+  $("rcount").textContent="共 "+exact(recState.total)+" 条"+(!$("foutcome").value?"（"+pwText()+"）":$("foutcome").value==="business"?"（不含预热）":"");
   $("rmore").classList.toggle("hide",!recState.cursor);
   $("rpage").textContent=(recState.cursor?"已显示 "+exact(recState.rows.length)+" 条":"")+(recState.rows.length>PAGE?" · 已暂停滚动更新；刷新查看最新":"");renderDetailNav()}
 const PAGE=50;
-function recordFilters(){const t=$("ftier").value,o=$("foutcome").value;return Object.assign({},scopeFilters(),recordWindow||{},{outcome:o==="business"?"":o,exclude_prewarm:o==="business"?1:"",errors:$("ferr").checked?1:"",source:$("fsrc").value,error:$("fcode").value.trim(),retried:$("fretry").checked?1:"",tier:t==="dg"?"":t,downgraded:t==="dg"?1:""})}
+function recordFilters(){const t=$("ftier").value,o=$("foutcome").value;return Object.assign({},scopeFilters(),recordWindow||{},{outcome:o==="business"?"":o,exclude_prewarm:o==="business"||(o!=="prewarm"&&!withPrewarm())?1:"",errors:$("ferr").checked?1:"",source:$("fsrc").value,error:$("fcode").value.trim(),retried:$("fretry").checked?1:"",tier:t==="dg"?"":t,downgraded:t==="dg"?1:""})}
 async function loadRecords(append){const filters=recordFilters(),signature=qs(filters);
   const base=append&&recState.signature===signature?recState:{cursor:null,total:0,rows:[]};
   if(append&&base.rows.length&&!base.cursor)return;
@@ -1098,19 +1127,65 @@ function renderFp(f){const e=$("cfp");if(!f){e.textContent="";delete e.dataset.t
 function renderRuntime(){const e=$("runtime"),r=EG&&EG.runtime;e.classList.toggle("hide",!r);if(!r){e.textContent="";return}
   e.textContent="当前转发 "+exact(r.inflight)+" / "+(r.limit?exact(r.limit):"不限")+" · WS 连接 "+exact(r.ws_connections)+(r.rejected?" · 已拒绝 "+exact(r.rejected):"")+(r.draining?" · 正在关闭":"");
   e.title="进程状态，读取于 "+hms(new Date())+"；不受历史范围筛选。HTTP 占用到响应结束，WS 含空闲连接；达到容量上限的拒绝数从进程启动起累计。达到上限立即返回 503，不排队。"}
+// ---- memory panel (admin keys only): /admin/v1/memory is an in-memory 10 s sampler, no disk
+// ---- Scope suggestions: model / key / instance comboboxes. Values come from recent usage rows
+// plus configured keys and this instance (cached 60 s on the server and here); free text stays allowed.
+let SV=null,svAt=0,svLoad=null;
+const CBX={fmodel:"model",fkey:"key",finstance:"instance"};
+function loadScopeValues(){if(SV&&Date.now()-svAt<60e3)return Promise.resolve(SV);if(svLoad)return svLoad;
+  svLoad=usageGet("/usage/v1/scope-values").then(j=>{SV=j;svAt=Date.now();return j}).catch(()=>SV).finally(()=>{svLoad=null});return svLoad}
+function cbxOptions(id){const all=(SV&&SV[CBX[id]])||[],q=$(id).value.trim().toLowerCase();
+  return (q?all.filter(v=>v.value.toLowerCase().includes(q)&&v.value.toLowerCase()!==q):all).slice(0,8)}
+function cbxLabel(v,q){const i=q?v.value.toLowerCase().indexOf(q):-1;return i<0?v.value:[v.value.slice(0,i),h("mark",null,v.value.slice(i,i+q.length)),v.value.slice(i+q.length)]}
+function cbxRender(id){const inp=$(id),ul=$("l"+id),q=inp.value.trim().toLowerCase(),opts=cbxOptions(id),open=document.activeElement===inp&&opts.length>0;clear(ul);
+  opts.forEach((v,i)=>{const li=h("li",{role:"option",id:"l"+id+"-"+i,"aria-selected":"false","data-value":v.value},h("span","cbv",cbxLabel(v,q)),h("span","cbm",v.configured?"已配置 · 暂无请求":exact(v.count)+" 次 · "+ago(v.last_ms)));
+    for(const ev of ["pointerdown","mousedown"])li.addEventListener(ev,e=>e.preventDefault());li.addEventListener("click",e=>{e.preventDefault();cbxPick(id,v.value)});ul.appendChild(li)});
+  inp._cbi=-1;inp.removeAttribute("aria-activedescendant");ul.classList.toggle("hide",!open);inp.setAttribute("aria-expanded",String(open))}
+function cbxMove(id,d){const inp=$(id),items=Array.from($("l"+id).children);if(!items.length)return;let i=inp._cbi+d;if(i<0)i=items.length-1;if(i>=items.length)i=0;inp._cbi=i;
+  items.forEach((li,j)=>li.setAttribute("aria-selected",String(j===i)));inp.setAttribute("aria-activedescendant",items[i].id);items[i].scrollIntoView({block:"nearest"})}
+function cbxClose(id){const inp=$(id);$("l"+id).classList.add("hide");inp.setAttribute("aria-expanded","false");inp.removeAttribute("aria-activedescendant");inp._cbi=-1}
+function cbxPick(id,v){$(id).value=v;cbxClose(id);changeScope()}
+for(const id in CBX){const inp=$(id);
+  inp.addEventListener("focus",()=>{loadScopeValues().then(()=>cbxRender(id))});
+  inp.addEventListener("input",()=>cbxRender(id));
+  inp.addEventListener("blur",()=>setTimeout(()=>{if(document.activeElement!==inp)cbxClose(id)},150));
+  inp.addEventListener("keydown",e=>{const open=inp.getAttribute("aria-expanded")==="true";
+    if(e.key==="ArrowDown"||e.key==="ArrowUp"){e.preventDefault();if(!open)cbxRender(id);cbxMove(id,e.key==="ArrowDown"?1:-1)}
+    else if(e.key==="Enter"&&open&&inp._cbi>=0){e.preventDefault();cbxPick(id,$("l"+id).children[inp._cbi].dataset.value)}
+    else if(e.key==="Escape"&&open){e.preventDefault();e.stopPropagation();cbxClose(id)}})}
+let MEM=null;
+function fmtB(n){if(n===null||n===undefined)return"–";const u=["B","KiB","MiB","GiB"];let i=0;n=Number(n);while(n>=1024&&i<u.length-1){n/=1024;i++}return(i&&n<100?n.toFixed(1):Math.round(n))+" "+u[i]}
+function spark(hist,key,key2){const W=300,H=44,pts=hist.filter(s=>s[key]!==null&&s[key]!==undefined),svg=sv("svg",{viewBox:"0 0 "+W+" "+H,preserveAspectRatio:"none","aria-hidden":"true"});
+  if(pts.length<2)return svg;const max=Math.max(1,...pts.map(s=>Math.max(s[key],key2&&s[key2]!=null?s[key2]:0))),t0=pts[0].at_ms,span=Math.max(1,pts[pts.length-1].at_ms-t0);
+  const path=k=>pts.filter(s=>s[k]!==null&&s[k]!==undefined).map((s,i)=>(i?"L":"M")+((s.at_ms-t0)/span*W).toFixed(1)+" "+(H-2-(s[k]/max)*(H-4)).toFixed(1)).join("");
+  if(key2)svg.appendChild(sv("path",{class:"ln2",d:path(key2)}));svg.appendChild(sv("path",{class:"ln",d:path(key)}));return svg}
+function renderMem(){const sec=$("mem"),m=MEM;sec.classList.toggle("hide",!m);const st=$("memstrip");clear(st);if(!m){$("memwhen").textContent="";return}
+  const n=m.now,lim=m.buffered_body_limit_bytes,used=n.buffered_body_bytes,pctB=lim?used/lim:0,wsCap=m.ws_max_connections;
+  const cells=[
+    ["进程 RSS",fmtB(n.rss_bytes),m.rss_peak_bytes!=null?"峰值 "+fmtB(m.rss_peak_bytes):"此系统不提供","操作系统统计的常驻内存（/proc/self/status VmRSS）；峰值为进程启动以来的最高值（VmHWM）。macOS 上的 Docker 运行在 Linux 虚拟机里，同样可读",false],
+    ["jemalloc 已分配",m.jemalloc?fmtB(n.allocated_bytes):"不可用",m.jemalloc?"驻留 "+fmtB(n.resident_bytes):"未使用 jemalloc 分配器","已分配：程序正在使用的堆内存；驻留：分配器占用的物理页，含尚未归还系统的空闲页",false],
+    ["缓冲请求体",fmtB(used),"上限 "+fmtB(lim)+" · "+Math.round(pctB*100)+"%","正在内存中的请求体和 WebSocket 消息（含重放副本）占用的预算；上限为 max_buffered_body_mb，满了新的请求返回 503，WebSocket 消息收到可重试的 busy 事件",pctB>=0.8],
+    ["WebSocket 连接",exact(n.ws_connections)+(wsCap?" / "+exact(wsCap):""),"缓冲 "+fmtB(n.ws_bytes),"已建立的下游 WebSocket 连接数 / ws_max_connections（0 为不限）；缓冲为这些连接当前占用的消息预算",wsCap>0&&n.ws_connections>=wsCap]];
+  for(const [k,v,sub,tip,hot] of cells)st.appendChild(h("div",{class:hot?"kpi hot":"kpi",title:tip},h("div","k",k),h("div","v",v),h("div","s",sub)));
+  const hist=m.history.concat([n]),mins=Math.round((hist[hist.length-1].at_ms-hist[0].at_ms)/60000);
+  const key=hist.some(s=>s.rss_bytes!=null)?"rss_bytes":"allocated_bytes",key2=m.jemalloc&&key==="rss_bytes"?"allocated_bytes":null;
+  st.appendChild(h("div",{class:"kpi spark",title:"每 "+m.sample_every_secs+" 秒采样一次，只保存在内存里（最近 15 分钟，重启后清空）；实线为 RSS，虚线为 jemalloc 已分配"},h("div","k",hist.length<2?"内存趋势 · 采集中":"内存趋势 · 近 "+Math.max(1,mins)+" 分钟"),spark(hist,key,key2)));
+  $("memwhen").textContent="读取于 "+hms(new Date(n.at_ms))}
+async function loadMem(){if(NOADMIN){MEM=null;renderMem();return}const auth=key();
+  try{const m=await get("/admin/v1/memory",{timeout:15000});if(key()===auth){MEM=m;renderMem()}}catch(_){if(key()===auth){MEM=null;renderMem()}}}
 let allPending=0;
 async function loadAll(automatic=false){if(automatic&&allPending)return;allPending++;
   try{$("msg").textContent="";const auth=key();usageGet("/usage/v1/client-fingerprint").then(f=>{if(key()===auth)renderFp(f)}).catch(()=>{});
   // Preserve the whole query context while reading history, not just the list's scroll position.
   const hold=automatic&&(recordWindow||recState.rows.length>PAGE||loading.sr);
   if(!hold&&!scopeWindow.fixed){rollWindow();renderTrend()}showScope();renderKpis();
-  const jobs=[loadQuota(),egressTag().then(e=>{if(e!==undefined&&key()===auth){EG=e;renderRuntime()}})];
+  const jobs=[loadQuota(),egressTag().then(e=>{if(e!==undefined&&key()===auth){EG=e;renderRuntime()}return loadMem()})];
   if(!hold)jobs.push(loadSummary(),loadRecords(false));
   let ok=true;for(const r of await Promise.allSettled(jobs))if(r.status==="rejected"){ok=false;fail(r.reason)}
   if(ok&&key()===auth)$("upd").textContent="更新于 "+hms(new Date())}finally{allPending--}}
 function stopAuto(){if(timer){clearInterval(timer);timer=null}}
 function startAuto(){stopAuto();timer=setInterval(()=>{if(!document.hidden&&!MODALS.length)loadAll(true)},autoSecs()*1000)}
-onLogout=()=>{stopAuto();closePop(false);for(const id of Object.keys(loadSeq))loadSeq[id]++;resetQuotaReads();Q=RC=AC=EG=SUM=TREND=RECORDER=null;ACCTS=[];recState={cursor:null,total:0,rows:[]};renderKpis();renderRuntime();renderRecords();clear($("svg"));clear($("sum").tBodies[0]);clear($("quota").tBodies[0])};
+onLogout=()=>{stopAuto();closePop(false);for(const id of Object.keys(loadSeq))loadSeq[id]++;resetQuotaReads();Q=RC=AC=EG=SUM=TREND=RECORDER=MEM=SV=null;svAt=0;ACCTS=[];recState={cursor:null,total:0,rows:[]};renderKpis();renderRuntime();renderMem();renderRecords();clear($("svg"));clear($("sum").tBodies[0]);clear($("quota").tBodies[0])};
 for(const id of ["auto","mauto"])$(id).addEventListener("change",e=>{const on=e.target.checked;$("auto").checked=$("mauto").checked=on;localStorage.setItem(AS,on?"1":"0");if(on)startAuto();else stopAuto()});
 // Auto-refresh interval (5/15/30/60 s, default 15), kept per browser; a change restarts a running timer.
 const AIV="ciallopa_auto_secs",AUTO_SECS=[5,15,30,60];
@@ -1126,6 +1201,7 @@ $("group").addEventListener("change",()=>{saveF();loadSummary().catch(fail)});
 $("tmode").addEventListener("change",()=>{saveF();loadSummary().catch(fail)});
 $("tmetric").addEventListener("change",()=>{saveF();renderTrend()});
 $("facct").addEventListener("change",changeScope);
+$("fprewarm").addEventListener("change",()=>{localStorage.setItem(PW,withPrewarm()?"1":"0");changeScope()});
 for(const id of ["ferr","ftier","fsrc","fretry","foutcome","fcode"])$(id).addEventListener("change",changeRecords);
 let kt;for(const id of ["fmodel","fkey","finstance"])$(id).addEventListener("input",()=>{saveF();showScope();clearTimeout(kt);kt=setTimeout(changeScope,400)});
 $("scopefreeze").addEventListener("click",()=>{if(scopeWindow.fixed){recordWindow=null;rollWindow();changeScope()}else{scopeWindow.fixed=true;saveF();showScope()}});
@@ -1158,7 +1234,7 @@ function loadF(){const u=new URLSearchParams(location.search);
   $("fclear").classList.toggle("hide",!anyF());$("legacyerror").classList.toggle("hide",!$("ferr").checked);showRecordFilters();showScope()}
 $("fclear").addEventListener("click",()=>{for(const id of RF){const e=$(id);if(e.type==="checkbox")e.checked=false;else e.value=""}changeRecords();$("foutcome").focus()});
 $("scopeclear").addEventListener("click",()=>{for(const id of SF)$(id).value="";changeScope();$("scopetoggle").focus({preventScroll:true})});
-loadF();renderKpis();
+$("fprewarm").checked=localStorage.getItem(PW)==="1";loadF();renderKpis();
 login(()=>usageGet("/usage/v1/summary?range=1m"),()=>{if(localStorage.getItem(AS)==="1"){$("auto").checked=$("mauto").checked=true;startAuto()}loadAll();if(activeRecord)lookupRecord(activeRecord,$("recordid"))});
 })();
 </script>

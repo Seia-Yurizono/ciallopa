@@ -30,7 +30,7 @@ const context = vm.createContext({
   h: (_tag, _attrs, text) => ({textContent: text}), document: {createTextNode: text => ({textContent: text})},
   inView: () => false, toast: text => context.toasts.push(text), toasts: [],
   get: async () => ({}), usageGet: async () => ({}), renderFp() {}, renderKpis() {}, renderRuntime() {}, renderTrend() {}, loadQuota: () => quota.promise,
-  loadTrend: async () => {}, egressTag: async () => ({}), loadRecords: async () => {},
+  loadTrend: async () => {}, egressTag: async () => ({}), loadMem: async () => {}, loadRecords: async () => {},
   recState: {rows: []}, recordWindow: null, scopeWindow: {fixed: true}, showScope() {}, rollWindow() {}, PAGE: 50, hms: () => 'now', Date, Promise,
   query: 'A', staleError, rendered: [],
 });
@@ -60,7 +60,7 @@ async function queryAndPaging() {
       return {};
     },
     renderRecords() {}, renderKpis() {}, renderFp() {}, renderTrend() {}, renderRuntime() {}, showScope() {}, saveF() {}, fmtN: String, fail(error) {throw error;},
-    loadQuota: async () => {}, egressTag: async () => ({}), hms: () => 'now',
+    loadQuota: async () => {}, egressTag: async () => ({}), loadMem: async () => {}, hms: () => 'now',
     rollWindow() {rolls++; c.scopeWindow = {...c.scopeWindow, from: c.scopeWindow.from + 1000, to: c.scopeWindow.to + 1000};},
   });
   vm.runInContext([
@@ -192,7 +192,28 @@ async function queryAndPaging() {
   assert.equal(outcome.value, 'business', 'request-count card selects visible business scope');
   assert.equal(calls.at(-1).searchParams.get('exclude_prewarm'), '1');
   assert.equal(calls.at(-1).searchParams.has('outcome'), false);
-  assert.equal(new URLSearchParams(vm.runInContext('summaryQuery()', c)).has('exclude_prewarm'), false, 'record investigation keeps the global denominator');
+  assert.equal(new URLSearchParams(vm.runInContext('summaryQuery()', c)).get('exclude_prewarm'), '1', 'record investigation keeps the scope denominator (business only by default)');
+  // 「含预热」 widens every figure and the 全部结果 list; the 业务请求 and 预热 outcomes stay explicit.
+  {
+    const params = q => new URLSearchParams(vm.runInContext(q, c));
+    const saved = outcome.value;
+    input('fprewarm').checked = true;
+    assert.equal(params('summaryQuery()').has('exclude_prewarm'), false, 'toggle includes prewarm in the summary');
+    assert.equal(params('trendQuery()').has('exclude_prewarm'), false, 'toggle includes prewarm in the chart');
+    outcome.value = '';
+    assert.equal(params('qs(recordFilters())').has('exclude_prewarm'), false, 'toggle shows prewarm rows in 全部结果');
+    outcome.value = 'business';
+    assert.equal(params('qs(recordFilters())').get('exclude_prewarm'), '1', '业务请求 always excludes prewarm');
+    input('fprewarm').checked = false;
+    assert.equal(params('trendQuery()').get('exclude_prewarm'), '1', 'chart excludes prewarm by default');
+    outcome.value = '';
+    assert.equal(params('qs(recordFilters())').get('exclude_prewarm'), '1', '全部结果 hides prewarm rows by default');
+    outcome.value = 'prewarm';
+    const pw = params('qs(recordFilters())');
+    assert.equal(pw.get('outcome'), 'prewarm', 'prewarm rows stay reachable through the filter');
+    assert.equal(pw.has('exclude_prewarm'), false, 'the prewarm outcome is never self-excluded');
+    outcome.value = saved;
+  }
   assert.equal(new URLSearchParams(c.location.search).get('foutcome'), 'business');
   outcome.value = '';
   vm.runInContext('loadF()', c);
@@ -202,12 +223,85 @@ async function queryAndPaging() {
   assert.equal(calls.at(-1).searchParams.get('exclude_prewarm'), '1');
   assert.equal(c.recState.total, 7);
   outcome.value = '';
+  input('fprewarm').checked = true;
   await vm.runInContext('loadRecords(false)', c);
-  assert.equal(calls.at(-1).searchParams.has('exclude_prewarm'), false, 'all records still includes prewarm');
+  assert.equal(calls.at(-1).searchParams.has('exclude_prewarm'), false, '全部结果 + 含预热 includes prewarm');
   assert.equal(calls.at(-1).searchParams.has('before_id'), false, 'changing population resets pagination');
+  input('fprewarm').checked = false;
   c.location.search = '?foutcome=old-unknown-value';
   vm.runInContext('loadF()', c);
   assert.equal(outcome.value, '', 'unknown old URL values keep the default');
+}
+// 筛选范围 suggestions: most-used first, substring filter, keyboard pick, free text, one cached fetch.
+async function scopeSuggestions() {
+  const els = new Map(), document = {activeElement: null};
+  const el = (tag, attrs = {}) => {
+    const e = {tag, attrs: {...attrs}, children: [], hidden: false, value: '', dataset: {}, events: {},
+      classList: {add(c) {if (c === 'hide') e.hidden = true;}, toggle(c, on) {if (c === 'hide') e.hidden = on;}},
+      setAttribute(k, v) {e.attrs[k] = String(v); if (k === 'id') e.id = String(v); if (k.startsWith('data-')) e.dataset[k.slice(5)] = String(v);},
+      getAttribute(k) {return k in e.attrs ? e.attrs[k] : null;}, removeAttribute(k) {delete e.attrs[k];},
+      addEventListener(t, fn) {(e.events[t] ||= []).push(fn);}, fire(t, ev = {}) {for (const fn of e.events[t] || []) fn({preventDefault() {ev.prevented = true;}, stopPropagation() {}, ...ev}); return ev;},
+      appendChild(c) {e.children.push(c);}, scrollIntoView() {},
+      get text() {const t = x => typeof x === 'string' ? x : (x.children || []).map(t).join(''); return t(e);}};
+    for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+    return e;
+  };
+  const $ = id => {if (!els.has(id)) els.set(id, el(id.startsWith('l') ? 'ul' : 'input')); return els.get(id);};
+  const h = (tag, a, ...kids) => {const e = el(tag, typeof a === 'string' ? {class: a} : a || {}); for (const k of kids.flat()) if (k != null) e.children.push(k); return e;};
+  let fetches = 0, picked = 0;
+  const now = 1_000_000_000;
+  const c = vm.createContext({$, h, document, clear: e => {e.children = [];}, exact: String, ago: () => '刚刚', setTimeout: fn => fn(),
+    Date: {now: () => now}, Promise, Array,
+    changeScope() {picked++;},
+    usageGet: async url => {fetches++; assert.equal(url, '/usage/v1/scope-values'); return {
+      model: [{value: 'gpt-6.1', count: 90, last_ms: now - 1}, {value: 'gpt-6.1-sol', count: 12, last_ms: now - 2}, {value: 'o9-mini', count: 3, last_ms: now - 3}],
+      key: [{value: 'laptop', count: 5, last_ms: now}, {value: 'unused', count: 0, last_ms: null, configured: true}],
+      instance: [{value: 'box-a', count: 0, last_ms: null, configured: true}]};}});
+  vm.runInContext(section('// ---- Scope suggestions:', 'let MEM=null;'), c);
+  const model = $('fmodel'), list = $('lfmodel');
+  const tick = () => new Promise(setImmediate);
+  document.activeElement = model; model.fire('focus'); await tick();
+  assert.equal(model.getAttribute('aria-expanded'), 'true');
+  assert.deepEqual(list.children.map(li => li.dataset.value), ['gpt-6.1', 'gpt-6.1-sol', 'o9-mini'], 'most-used first');
+  assert.equal(list.children[0].attrs.role, 'option');
+  assert.match(list.children[0].text, /90 次/);
+  model.value = 'SOL'; model.fire('input');
+  assert.deepEqual(list.children.map(li => li.dataset.value), ['gpt-6.1-sol'], 'case-insensitive substring');
+  model.value = 'gpt-6.1'; model.fire('input');
+  assert.deepEqual(list.children.map(li => li.dataset.value), ['gpt-6.1-sol'], 'an exact match is not offered again');
+  model.value = 'my-own-model'; model.fire('input');
+  assert.equal(list.hidden, true, 'free text with no match just closes the list');
+  assert.equal(model.getAttribute('aria-expanded'), 'false');
+  model.value = '';
+  model.fire('keydown', {key: 'ArrowDown'}); model.fire('keydown', {key: 'ArrowDown'});
+  assert.equal(model.getAttribute('aria-activedescendant'), 'lfmodel-1');
+  assert.equal(list.children[1].attrs['aria-selected'], 'true');
+  model.fire('keydown', {key: 'ArrowUp'}); model.fire('keydown', {key: 'ArrowUp'});
+  assert.equal(model.getAttribute('aria-activedescendant'), 'lfmodel-2', 'arrow keys wrap');
+  const enter = model.fire('keydown', {key: 'Enter'});
+  assert.equal(enter.prevented, true);
+  assert.equal(model.value, 'o9-mini');
+  assert.equal(picked, 1, 'a pick applies the scope at once');
+  assert.equal(list.hidden, true);
+  // Pointer pick keeps focus (mousedown/pointerdown are cancelled) and works on touch.
+  model.value = ''; model.fire('input');
+  const down = list.children[0].fire('pointerdown');
+  assert.equal(down.prevented, true);
+  list.children[0].fire('click');
+  assert.equal(model.value, 'gpt-6.1');
+  assert.equal(picked, 2);
+  // Escape closes without changing the value; blur closes too.
+  model.value = ''; model.fire('input');
+  model.fire('keydown', {key: 'Escape'});
+  assert.equal(list.hidden, true);
+  assert.equal(model.value, '');
+  const key = $('fkey'); document.activeElement = key; key.fire('focus'); await tick();
+  assert.match($('lfkey').children[1].text, /已配置/, 'configured keys without traffic are suggested');
+  document.activeElement = null; key.fire('blur');
+  assert.equal($('lfkey').hidden, true);
+  assert.equal(fetches, 1, 'suggestions are fetched once and cached for 60 s');
+  // Logout clears the cache, so a different key never sees the old values.
+  assert.ok(section('onLogout=()=>{stopAuto', '};').includes('SV=null;svAt=0'));
 }
 const watchdog = setTimeout(() => {
   console.error('FAIL: UI scheduling checks did not settle within 5 seconds');
@@ -310,7 +404,7 @@ async function overviewSnapshots() {
   const c = vm.createContext({
     $: control, key: () => auth, Q: null, RC: null, AC: null, NOADMIN: false,
     usageGet: path => reply(path), renderQuota() {},
-    stopAuto() {}, closePop() {}, renderKpis() {}, renderRuntime() {}, renderRecords() {}, clear() {},
+    stopAuto() {}, closePop() {}, renderKpis() {}, renderRuntime() {}, renderMem() {}, renderRecords() {}, clear() {},
     why: e => e.message, fmtTime: value => 't' + value,
     Date: class extends Date {static now() {return now;}},
   });
@@ -481,7 +575,7 @@ function bucketSamplesAndUnknownOutcomes() {
     $: control, TREND: {summary: c.summary, hourly: true, tz: 0}, recordWindow: null,
     narrow: () => false, summaryCurrent: () => true, clear: e => {e.children = [];},
     sv: (tag, attrs, text) => ({tag, attrs, text, style: {}, addEventListener() {}}),
-    p2: String, fmtN: String, fmtTime: String, exact: String, fmtUsd: String,
+    p2: String, fmtN: String, fmtTime: String, exact: String, fmtUsd: String, pwText: () => '含预热', // these buckets were fetched with 「含预热」 on
   });
   vm.runInContext(section('function renderTrend()', 'let lastNarrow='), c);
   vm.runInContext('renderTrend()', c);
@@ -604,7 +698,7 @@ async function filterChipScopeAndFocus() {
   const c = vm.createContext({...dom, URLSearchParams, clearTimeout, kt: 123,
     scopeWindow: {from: 1000, to: 9000, fixed: true}, recordWindow: {from: 2000, to: 3000}, activeRecord: '0000000000000001',
     location: {pathname: '/ui', search: ''}, history: {replaceState(_state, _title, url) {replaced.push(url);c.location.search = new URL(url, 'http://local').search;}},
-    localStorage: {setItem() {}}, fmtTime: String, renderKpis() {}, renderTrend() {},
+    localStorage: {setItem() {}, getItem() {return null;}}, fmtTime: String, renderKpis() {}, renderTrend() {},
     fail(e) {throw e;}, loadSummary: async () => calls.push(['summary', vm.runInContext('scopeFilters()', c)]),
     loadRecords: async append => calls.push(['records', vm.runInContext('recordFilters()', c), append]),
   });
@@ -767,7 +861,7 @@ function recordRenderingAndInspectorFocus() {
   const c = vm.createContext({
     $: control, recRow: row, clear: node => {for(const child of [...node.children])child.remove();},
     keepScroll: (_id, fn) => fn(), steady: (_boxes, fn) => fn(),
-    emptyRow(body) {const empty=row({request_id:'empty'});empty.empty=true;body.appendChild(empty);}, anyF: () => false, renderDetailNav() {}, exact: String, PAGE: 50,
+    emptyRow(body) {const empty=row({request_id:'empty'});empty.empty=true;body.appendChild(empty);}, anyF: () => false, renderDetailNav() {}, exact: String, pwText: () => '不含预热', PAGE: 50,
     CSS: {escape: value => value},
     Date: class extends Date {constructor(...args){super(...(args.length?args:[now]));}},
     document: {contains: node => tb.contains(node) || [...controls.values()].includes(node)},
@@ -832,7 +926,7 @@ function recordRenderingAndInspectorFocus() {
   vm.runInContext('renderRecords()',c);
   assert.notEqual(tb.children[0],previousDay,'a new local day refreshes time-only labels');
 
-  Object.assign(c,{stopAuto(){},closePop(){},loadSeq:{},resetQuotaReads(){},renderKpis(){},renderRuntime(){}});
+  Object.assign(c,{stopAuto(){},closePop(){},loadSeq:{},resetQuotaReads(){},renderKpis(){},renderRuntime(){},renderMem(){}});
   control('svg').children=[];control('sum').tBodies=[{children:[]}];control('quota').tBodies=[{children:[]}];
   vm.runInContext(section('onLogout=()=>{stopAuto()', 'for(const id of ["auto","mauto"])')+'\nonLogout()',c);
   assert.equal(vm.runInContext('recordRows.size',c),0,'logout releases cached records and row nodes');
@@ -902,6 +996,60 @@ function cloudflareEgressBanner() {
   assert.equal(el.textContent, '');
 }
 
+// Memory panel: values, budget/WS cap warnings, missing RSS/jemalloc, sparkline, admin-only.
+async function memoryPanel() {
+  const els = new Map();
+  const el = id => {
+    if (!els.has(id)) els.set(id, {id, textContent: '', hidden: null, children: [],
+      classList: {toggle(_c, on) {els.get(id).hidden = on;}},
+      appendChild(x) {this.children.push(x);}});
+    return els.get(id);
+  };
+  const text = n => typeof n === 'string' ? n : (n.text || '') + (n.kids || []).map(text).join('');
+  let reply = null, calls = 0;
+  const c = vm.createContext({
+    $: el, key: () => 'k', NOADMIN: false, exact: n => String(n), hms: () => '12:00:00', Math, Number,
+    clear: n => {n.children = [];},
+    h: (tag, attrs, ...kids) => ({tag, cls: typeof attrs === 'string' ? attrs : attrs && attrs.class, title: attrs && attrs.title, kids: kids.filter(k => k !== null && k !== undefined)}),
+    sv: (tag, attrs) => ({tag, attrs, kids: [], appendChild(x) {this.kids.push(x);}}),
+    get: async p => {calls++; assert.equal(p, '/admin/v1/memory'); if (reply instanceof Error) throw reply; return reply;},
+  });
+  vm.runInContext(section('let MEM=null;', 'let allPending=0;'), c);
+  const MiB = 1 << 20;
+  const s = (t, rss, alloc) => ({at_ms: t, rss_bytes: rss, allocated_bytes: alloc, resident_bytes: alloc && alloc * 2, buffered_body_bytes: 0, ws_connections: 0, ws_bytes: 0});
+  reply = {now: {...s(600000, 150 * MiB, 40 * MiB), buffered_body_bytes: 220 * MiB, ws_connections: 24, ws_bytes: 3 * MiB},
+    rss_peak_bytes: 300 * MiB, jemalloc: true, buffered_body_limit_bytes: 256 * MiB, ws_max_connections: 24,
+    ws_max_message_bytes: 16 * MiB, sample_every_secs: 10, history: [s(0, 100 * MiB, 30 * MiB), s(300000, 120 * MiB, 35 * MiB)]};
+  await vm.runInContext('loadMem()', c);
+  assert.equal(el('mem').hidden, false);
+  const cells = el('memstrip').children;
+  assert.equal(cells.length, 5);
+  assert.deepEqual(cells.slice(0, 4).map(text), [
+    '进程 RSS150 MiB峰值 300 MiB', 'jemalloc 已分配40.0 MiB驻留 80.0 MiB',
+    '缓冲请求体220 MiB上限 256 MiB · 86%', 'WebSocket 连接24 / 24缓冲 3.0 MiB']);
+  assert.deepEqual(cells.map(x => x.cls), ['kpi', 'kpi', 'kpi hot', 'kpi hot', 'kpi spark'], 'budget ≥ 80% and WS at cap are highlighted');
+  for (const x of cells) assert.ok(x.title && !/[。.]$/.test(x.title), 'every cell has help without a trailing period');
+  assert.equal(text(cells[4].kids[0]), '内存趋势 · 近 10 分钟');
+  const svg = cells[4].kids[1];
+  assert.deepEqual(svg.kids.map(p => p.attrs.class), ['ln2', 'ln'], 'RSS line over the jemalloc line');
+  assert.match(svg.kids[1].attrs.d, /^M0\.0 .*L300\.0 /);
+  assert.equal(el('memwhen').textContent, '读取于 12:00:00');
+  // No /proc (not Linux) and no jemalloc: placeholders, no broken numbers, chart falls back.
+  reply = {...reply, now: s(10000, null, null), rss_peak_bytes: null, jemalloc: false, ws_max_connections: 0, history: []};
+  await vm.runInContext('loadMem()', c);
+  assert.deepEqual(el('memstrip').children.slice(0, 4).map(text), [
+    '进程 RSS–此系统不提供', 'jemalloc 已分配不可用未使用 jemalloc 分配器', '缓冲请求体0 B上限 256 MiB · 0%', 'WebSocket 连接0缓冲 0 B']);
+  assert.equal(text(el('memstrip').children[4].kids[0]), '内存趋势 · 采集中');
+  // Failure or a usage-only key hides the panel; NOADMIN skips the request.
+  reply = new Error('down');
+  await vm.runInContext('loadMem()', c);
+  assert.equal(el('mem').hidden, true);
+  c.NOADMIN = true; const before = calls;
+  await vm.runInContext('loadMem()', c);
+  assert.equal(calls, before);
+  assert.equal(el('mem').hidden, true);
+}
+
 (async () => {
   // A rejects while current; loadAll cannot present it until the slow quota job settles.
   const oldRound = vm.runInContext('loadAll()', context);
@@ -963,6 +1111,8 @@ function cloudflareEgressBanner() {
   await oldLogin;
   assert.deepEqual(Array.from(context.rendered), [], 'data from the previous login must be discarded');
   await queryAndPaging();
+  await memoryPanel();
+  await scopeSuggestions();
   await sharedAuthResponses();
   await accessGateResponses();
   await overviewSnapshots();
@@ -976,5 +1126,5 @@ function cloudflareEgressBanner() {
   recordRenderingAndInspectorFocus();
   autoRefreshInterval();
   cloudflareEgressBanner();
-  console.log('PASS: status chip colours/contrast, auto-refresh interval, Cloudflare egress banner, query/auth races, Cloudflare Access expiry, shared scope and buckets, ID paging, history/drill-down, usage samples and unknown outcomes, overview snapshots, egress identity/order/logout, scoped filter chips/URL/focus, inspector retry/expiry/stale authorization/keyboard, keyed record updates and inspector focus');
+  console.log('PASS: status chip colours/contrast, auto-refresh interval, Cloudflare egress banner, query/auth races, Cloudflare Access expiry, shared scope and buckets, ID paging, history/drill-down, usage samples and unknown outcomes, overview snapshots, egress identity/order/logout, scoped filter chips/URL/focus, inspector retry/expiry/stale authorization/keyboard, keyed record updates and inspector focus, memory panel, scope suggestions');
 })().catch(error => {console.error(error); process.exitCode = 1;}).finally(() => clearTimeout(watchdog));
