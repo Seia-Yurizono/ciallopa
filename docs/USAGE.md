@@ -610,10 +610,30 @@ Page behavior:
   trend mode are also remembered in `localStorage` as the defaults for a URL without them.
 - Results of actions (refresh, enable / disable, save, copy) appear as toasts; load and save
   errors stay in a banner at the top of the page.
-- Below 720 px the request and account tables switch to one card per row; the settings page
-  has a group index and a search box, and a floating bar with the pending-change count.
-- Settings → 基础 → 允许 IPv6 出口: a switch that writes `ipv6` at once, like the proxy switch below.
-- Settings → 基础 → 启用出口代理: the switch writes `proxy_enabled` at once (no review dialog); the
+- Below 720 px the request and account tables switch to one card per row.
+- Settings layout: a left nav groups the pages, each with its own hash link —
+  转发 (`#routing` 账号调度, `#network` 网络, `#forward` 限流与容错, `#images` 图片接口),
+  数据与账号 (`#usage` 用量与价格, `#prices` 模型价格, `#accounts` 账号与重置卡) and
+  系统 (`#general` 常规, `#keys` 客户端密钥, `#audit` 变更记录). Old single-page anchors
+  (`#g-base`, `#g-routing`, `#g-upstream_opts`, `#g-images`, `#g-log`, `#g-usage`, `#g-ui`,
+  `#keysec`) still open the page that now holds that group. Below 760 px the nav becomes a list
+  with a one-line summary per page that drills down (‹ 设置 goes back).
+- Each page ends with a collapsed 「高级」 section; it opens by itself when it holds an unsaved
+  change or a search hit. The search box searches every page (name, key, description, help);
+  「只看已修改」 lists the settings that differ from their defaults.
+- A setting whose value differs from the default has a blue left bar and 「默认 X · 恢复」.
+  Settings that only apply when another one is on are indented under it and greyed with the
+  reason while it is off; their values are kept. Numbers where 0 means off are a switch plus the
+  value (turning the switch off keeps the number for next time). The 出错时冷却 table lists each
+  upstream error with when it cools the account and for how long.
+- Unsaved edits: the row is tinted and marked 未保存, a changed switch shows diagonal stripes in
+  its new value's color (the saved value is in its tooltip), the nav marks the page 未保存, and
+  a floating bar shows the count per page with 放弃并载入最新 / 检查并保存. Leaving the page
+  with unsaved edits asks first. Irreversible confirmations carry a 不可逆 tag.
+- 变更记录 refreshes when its page is opened, every 15 s while it is visible, and after price
+  actions, so account changes and file reloads appear without reloading the page.
+- Settings → 网络 → 允许 IPv6 出口: a switch that writes `ipv6` at once, like the proxy switch below.
+- Settings → 网络 → 启用出口代理: the switch writes `proxy_enabled` at once (no review dialog); the
   address row shows the current egress and a 测试连接 button (`POST /admin/v1/proxy/test`) that
   probes the address as typed, saved or not, and shows exit IP, location, Cloudflare colo and
   latency, or the failure.

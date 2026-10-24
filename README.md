@@ -468,7 +468,7 @@ Notional cost: records and summaries carry `cost_usd` from the local price table
 `~/.ciallopa/prices.toml` (`[usage] prices`): what the tokens would cost on the API, not what a
 subscription bills. Unpriced models give `cost_usd: null` + `unknown_price`, never 0. A new
 install has no table; the overview and settings pages then say which models are unpriced. Prices
-are pulled on request only: 「检查更新」 in the settings page's 「价格」 section downloads the
+are pulled on request only: 「检查更新」 on the settings page 「模型价格」 (`/ui/settings#prices`) downloads the
 dataset in `[usage] prices_source` (default: LiteLLM's `model_prices_and_context_window.json`),
 lists the added and changed models, and 「应用」 writes them. The CLI does the same with
 `ciallopa prices sync` (dry run; `--write` to apply). Records also keep `service_tier`,
