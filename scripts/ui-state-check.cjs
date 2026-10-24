@@ -68,7 +68,7 @@ async function queryAndPaging() {
     section('const loadSeq={},loading={};', 'function emptyRow('),
     section('const PAGE=50;', '$("rmore").addEventListener'),
     section('function summaryQuery()', 'async function loadSummary('),
-    section('function trendQuery()', 'function renderFp('),
+    section('function trendQuery()', 'function renderRuntime('),
     section('function trendPoints(', 'function selectBucket('),
     section('function summaryCurrent()', 'function statLink('),
     section('function drillOutcome(', '// ---- reset-card popover:'),
@@ -596,13 +596,15 @@ function bucketSamplesAndUnknownOutcomes() {
   const controls = new Map();
   const control = id => {
     if (!controls.has(id)) controls.set(id, {value: 'tokens', children: [], textContent: '',
-      classList: {add() {}}, setAttribute() {}, appendChild(child) {this.children.push(child);}});
+      classList: {add() {}, toggle() {}}, setAttribute() {}, appendChild(child) {this.children.push(child);},
+      append(...kids) {this.children.push(...kids);}});
     return controls.get(id);
   };
   Object.assign(c, {
     $: control, TREND: {summary: c.summary, hourly: true, tz: 0}, recordWindow: null,
     narrow: () => false, summaryCurrent: () => true, clear: e => {e.children = [];},
     sv: (tag, attrs, text) => ({tag, attrs, text, style: {}, addEventListener() {}}),
+    h: (tag, attrs, ...kids) => ({tag, attrs, kids}),
     p2: String, fmtN: String, fmtTime: String, exact: String, fmtUsd: String, pwText: () => '含预热', // these buckets were fetched with 「含预热」 on
   });
   vm.runInContext(section('function renderTrend()', 'let lastNarrow='), c);
