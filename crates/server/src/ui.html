@@ -868,7 +868,7 @@ function renderSummary(){const s=SUM;if(!s)return;ttHide();const g=$("group").va
     if(s.groups.length)tb.appendChild(row("合计",s.total,true));else emptyRow(tb,7,"该时间段无请求","换个时间段试试")}));
   const unk=$("unk"),um=s.unknown_price_models||[];clear(unk);
   if(s.price_models===0)add(unk,["⚠ 还没有价格表，费用不显示 · ",h("a",{href:"/ui/settings#prices"},"去拉取价格")]);
-  else if(um.length)add(unk,["⚠ 有 "+um.length+" 个模型未定价："+um.join("、")+" · ",h("a",{href:"/ui/settings#prices"},"检查价格更新")])}
+  else if(um.length)add(unk,["⚠ 有 "+um.length+" 个模型未定价："+um.join("、")+" · ",h("a",{href:"/ui/settings#prices"},"去定价或忽略")])}
 
 // ---- One scale at a time. Build every bucket intersecting the exact query window.
 const SVGNS="http://www.w3.org/2000/svg";
@@ -974,7 +974,7 @@ function recRow(r){const outcome=requestOutcome(r),isErr=outcome==="failed",es=s
   tr.appendChild(h("td",{class:"n dur",title:exact(r.duration_ms)+" ms"},fmtMs(r.duration_ms)));
   tr.appendChild(h("td",{class:"n x",title:exact(r.input_tokens)+(r.cached_tokens?"（缓存命中 "+exact(r.cached_tokens)+"）":"")},fmtN(r.input_tokens)));
   tr.appendChild(h("td",{class:"n x",title:exact(r.output_tokens)},fmtN(r.output_tokens)));
-  tr.appendChild(r.price_status==="unknown_price"?h("td",{class:"n x",title:"模型/档位不在价格表中"},"未定价"):h("td",{class:"n x",title:exactUsd(r.cost_usd)},r.cost_usd===null||r.cost_usd===undefined?"–":r.cost_usd<0.01&&r.cost_usd>0?"<0.01":r.cost_usd.toFixed(2)));
+  tr.appendChild(r.price_status==="unknown_price"?h("td",{class:"n x",title:"模型/档位不在价格表中"},"未定价"):r.price_status==="ignored"?h("td",{class:"n x mut",title:"该模型已在价格设置里忽略，费用按 0 计"},"忽略"):h("td",{class:"n x",title:exactUsd(r.cost_usd)},r.cost_usd===null||r.cost_usd===undefined?"–":r.cost_usd<0.01&&r.cost_usd>0?"<0.01":r.cost_usd.toFixed(2)));
   return tr}
 const recordRows=new Map();let recordDay="";
 // RecordRow is a flat API snapshot. Preserve identical rows even when JSON supplies new objects.
@@ -1013,7 +1013,7 @@ let dtext="",detailSeq=0,lookupSeq=0,detailRecord=null;
 function pretty(s){if(s===null||s===undefined)return"";try{return JSON.stringify(JSON.parse(s),null,2)}catch(_){return String(s)}}
 function field(name,value){if(value!==null&&value!==undefined&&value!=="")$("dfields").append(h("dt",null,name),h("dd",null,String(value)))}
 function detailStats(r){clear($("dstats"));const cells=[["首输出",fmtMs(streamRecord(r)?r.ttft_ms:null)],["总耗时",fmtMs(r.duration_ms)],["输入 / 输出",fmtN(r.input_tokens)+" / "+fmtN(r.output_tokens)],
-  ["缓存输入",fmtN(r.cached_tokens)],["估算费用",r.price_status==="unknown_price"?"未定价":fmtUsd(r.cost_usd)],["重试 / 换号",(r.retries||0)+" / "+(r.switches||0)]];
+  ["缓存输入",fmtN(r.cached_tokens)],["估算费用",r.price_status==="unknown_price"?"未定价":r.price_status==="ignored"?"0（已忽略）":fmtUsd(r.cost_usd)],["重试 / 换号",(r.retries||0)+" / "+(r.switches||0)]];
   for(const [name,value] of cells)$("dstats").appendChild(h("div",null,h("div","mut xs",name),h("div","v",value)))}
 function renderDetailNav(){const index=recState.rows.findIndex(x=>x.request_id===activeRecord),prev=$("dprev"),next=$("dnext"),focused=document.activeElement;prev.disabled=index<=0;next.disabled=index<0||index>=recState.rows.length-1;$("dposition").textContent=index<0?"通过记录 ID 定位":(index+1)+" / "+recState.rows.length+" · 当前列表";
   if((focused===prev||focused===next)&&focused.disabled)(!prev.disabled?prev:!next.disabled?next:$("dclose")).focus({preventScroll:true})}

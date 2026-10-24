@@ -1173,6 +1173,32 @@ mod tests {
             .groups
             .iter()
             .any(|g| g.group["service_tier"].as_deref() == Some("priority")));
+        // ignored ⇒ exact 0 with status "ignored": totals stay exact (no ≥), hint gone
+        let mut t = r.prices().as_ref().clone();
+        t.edit("zz", &crate::prices::Edit::Ignore).unwrap();
+        r.set_prices(t);
+        let rows = r
+            .recent(RecentQuery {
+                limit: 10,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let z = rows
+            .iter()
+            .find(|x| x.model.as_deref() == Some("zz") && x.status != 502)
+            .unwrap();
+        assert_eq!((z.cost_usd, z.price_status), (Some(0.0), "ignored"));
+        let s = r
+            .summary(SummaryQuery {
+                group_by: vec![Dim::Key],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(s.total.unknown_price, 0);
+        assert!(s.unknown_price_models.is_empty());
+        assert!((s.total.cost_usd.unwrap() - base * 3.0).abs() < 1e-12);
         // nothing priced ⇒ null, never 0
         r.set_prices(PriceTable::default());
         let s = r.summary(SummaryQuery::default()).await.unwrap();
