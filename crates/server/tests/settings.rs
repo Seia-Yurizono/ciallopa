@@ -487,7 +487,7 @@ async fn write_api_switch_etag_comments_keys_and_audit() {
     assert_eq!(v["errors"][0]["key"], "listen");
     let v: Value = e
         .req(reqwest::Method::POST, "/admin/v1/config/validate")
-        .json(&json!({"changes": {"routing.strategy": "fill-first", "max_body_mb": 64}}))
+        .json(&json!({"changes": {"routing.strategy": "fill-first", "max_body_mb": 128}}))
         .send()
         .await
         .unwrap()
@@ -502,7 +502,7 @@ async fn write_api_switch_etag_comments_keys_and_audit() {
     let r = e
         .req(reqwest::Method::PUT, "/admin/v1/config")
         .header("if-match", &etag)
-        .json(&json!({"changes": {"routing.strategy": "fill-first", "max_body_mb": 64}}))
+        .json(&json!({"changes": {"routing.strategy": "fill-first", "max_body_mb": 128}}))
         .send()
         .await
         .unwrap();

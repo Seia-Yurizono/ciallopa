@@ -311,7 +311,7 @@ proxy_url = ""                          # global egress: http:// | socks5h:// (h
                                         # socks5:// is used as socks5h:// (the proxy resolves host names)
 proxy_enabled = true                    # false = keep proxy_url but connect directly
 ipv6 = false                            # IPv4 only (direct and to the proxy host); true = IPv6 too, Happy Eyeballs
-max_body_mb = 16                        # incoming HTTP body limit in MiB
+max_body_mb = 64                        # incoming HTTP body limit in MiB
 max_inflight_requests = 64              # HTTP response / whole WS connection; 0 disables rejection
                                         # at capacity: 503 + Retry-After: 1, no queue; hot-reloadable
 ws_compression = true                   # permessage-deflate on the client WebSocket when the client

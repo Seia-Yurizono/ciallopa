@@ -1164,10 +1164,10 @@ async fn pending_connect_keeps_its_egress_classification_across_reload() {
 async fn configured_body_limit_has_no_hidden_twenty_mib_floor() {
     use tower::ServiceExt;
     let e = env(300).await;
-    assert_eq!(e.config.load().max_body_mb, 16);
+    assert_eq!(e.config.load().max_body_mb, 64);
     let req = http::Request::post("/v1/responses")
         .header("authorization", format!("Bearer {KEY}"))
-        .body(Body::from(vec![b' '; 16 * 1024 * 1024 + 1]))
+        .body(Body::from(vec![b' '; 64 * 1024 * 1024 + 1]))
         .unwrap();
     let response = e.app.clone().oneshot(req).await.unwrap();
     assert_eq!(response.status(), 413);

@@ -63,10 +63,15 @@ shown as a banner until the process restarts): `listen`, `instance_id`, `upstrea
 `max_body_mb`, `usage.enabled`, `usage.path`, `usage.queue_size`, `usage.batch_size`,
 `usage.flush_ms`, `ui.enabled`.
 
-`max_body_mb` is now honored exactly (MiB, 1–4096). Previously the implementation silently
-used at least 20 MiB, including when the configured/default value was 16. The default now
-actually rejects HTTP request bodies larger than 16 MiB; set 20 explicitly to retain the old
-effective default. This limit applies to incoming bytes, not decompressed JSON or WS frames.
+`max_body_mb` is honored exactly (MiB, 1–4096; default 64). It applies to incoming HTTP bytes,
+not decompressed JSON or WS frames (WebSocket messages are limited to 64 MiB, frames to 16 MiB).
+The default was 16 until Codex 0.164 support. Real Codex requests can exceed 16 MiB: Codex keeps
+images inline as base64 data URLs, resends the whole history on every HTTP request
+(`store: false`), never compresses HTTP bodies for a custom provider, and keeps PNG/JPEG/WebP
+bytes that already fit its size budget. One 2900×5367 PNG photo is about 4.2 MiB at high detail
+and 18.5 MiB at original detail, so a session with a few pasted images would get stuck on 413
+for every later turn. Bodies are read only after the API key check, but each in-flight request
+buffers its body (plus the zstd copy), so lower this on memory-constrained hosts.
 The in-flight limit bounds operation count; it is not a memory or throughput guarantee.
 
 On SIGTERM/SIGINT the listener stops accepting connections and existing forwarding work
