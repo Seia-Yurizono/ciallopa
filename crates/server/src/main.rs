@@ -255,6 +255,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         router: Arc::new(ciallopa_routing::CpaRouter::new(cfg.routing.clone())),
         upstream: Arc::new(ciallopa_upstream::UpstreamClient::new(&cfg)?),
         config: Arc::new(cfg.into()),
+        egress: Default::default(),
     };
     if state.accounts.list().await.is_empty() {
         tracing::warn!(auth_dir = %state.config.load().auth_dir.display(), "no accounts yet: proxied requests fail until one is added with `ciallopa login` or on /ui/accounts");

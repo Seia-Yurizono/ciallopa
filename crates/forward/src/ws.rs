@@ -240,6 +240,7 @@ async fn connect(
                 .await
             {
                 Ok((ws, resp)) => {
+                    st.egress.ok();
                     crate::turn_state::learn(resp.headers(), &id);
                     let quota = parse_quota(resp.headers());
                     st.router.report(route, &id, &Outcome::Success { quota });
@@ -322,6 +323,11 @@ async fn connect(
                             break;
                         }
                         401..=404 | 429 => {
+                            if let Some(blk) = crate::egress::detect(status, &h, &body) {
+                                st.router.report(route, &id, &Outcome::EgressBlocked);
+                                st.egress.note(&blk, status, &h, &id);
+                                return Err(crate::egress::response(&blk, status, &h));
+                            }
                             let outcome = proxy::classify_error(
                                 status,
                                 &h,

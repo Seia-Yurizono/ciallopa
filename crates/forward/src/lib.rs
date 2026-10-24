@@ -8,6 +8,7 @@
 //! `/backend-api/*` is a sticky passthrough.
 mod admission;
 mod budget;
+mod egress;
 mod encrypted;
 mod errors;
 mod headers;
@@ -22,6 +23,7 @@ mod ws;
 mod ws_upgrade;
 
 pub use ciallopa_routing::parse_quota;
+pub use egress::{EgressStatus, Seen as EgressBlockSeen};
 pub use headers::{downstream_headers, upstream_headers};
 pub use turn_state::forget_account as forget_turn_state;
 
@@ -57,6 +59,8 @@ pub struct AppState {
     pub upstream: Arc<UpstreamClient>,
     /// Per-request usage log; `None` = disabled.
     pub usage: Option<Arc<ciallopa_usage::Recorder>>,
+    /// Last Cloudflare challenge / block page seen instead of the upstream (in memory).
+    pub egress: Arc<EgressStatus>,
 }
 
 /// Routes mounted *behind* the client-key middleware.

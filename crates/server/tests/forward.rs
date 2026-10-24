@@ -408,6 +408,35 @@ async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: Bytes) -> Re
             ))
         }
         "metaover" => return sse_resp(OK_B),
+        "repro_cf1010_text" | "repro_cf1010_json" | "repro_cf_challenge" => {
+            let (ct, body) = match mode.as_str() {
+                "repro_cf1010_text" => ("text/plain; charset=UTF-8", "error code: 1010".to_string()),
+                "repro_cf1010_json" => (
+                    "application/json",
+                    r#"{"cloudflare_error":true,"error_code":1010,"error_name":"browser_signature_banned","detail":"The site owner has blocked access based on your browser's signature.","ray_id":"9a1b2c3d4e5f6789","zone":"chatgpt.com"}"#.to_string(),
+                ),
+                _ => ("text/html; charset=UTF-8", "<!DOCTYPE html><html><head><title>Just a moment...</title></head><body>cloudflare</body></html>".to_string()),
+            };
+            let mut r = Response::builder()
+                .status(403)
+                .header("content-type", ct)
+                .header("cf-ray", "9a1b2c3d4e5f6789-SJC")
+                .header("server", "cloudflare");
+            if mode == "repro_cf_challenge" {
+                r = r.header("cf-mitigated", "challenge");
+            }
+            return r.body(Body::from(body)).unwrap();
+        }
+        "real403" if auth.contains("tok-a") => {
+            return Response::builder()
+                .status(403)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"error":{"message":"You do not have access to this workspace.","type":"invalid_request_error","code":"forbidden"}}"#,
+                ))
+                .unwrap();
+        }
+        "real403" => return sse_resp(OK_B),
         "metaenc" => {
             return sse_resp(concat!(
                 "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-e\"}}\n\n",
@@ -762,6 +791,14 @@ async fn up_ws(State(m): State<Mock>, h: HeaderMap, ws: WebSocketUpgrade) -> Res
     if mode == "ws_budget_turns" {
         tokio::time::sleep(Duration::from_millis(650)).await;
     }
+    if mode == "repro_cf1010_text" {
+        return Response::builder()
+            .status(403)
+            .header("content-type", "text/plain; charset=UTF-8")
+            .header("cf-ray", "9a1b2c3d4e5f6789-SJC")
+            .body(Body::from("error code: 1010"))
+            .unwrap();
+    }
     if h.get("x-test-mode").is_some_and(|v| v == "deact") && auth.contains("tok-a") {
         return Response::builder()
             .status(402)
@@ -979,6 +1016,7 @@ async fn env_cfg_accounts(
         },
         usage,
         config: Arc::new(cfg.into()),
+        egress: Default::default(),
     };
     let config = state.config.clone();
     let drain = state.upstream.drain.clone();
@@ -1063,6 +1101,7 @@ async fn pending_connect_keeps_its_egress_classification_across_reload() {
             upstream: upstream.clone(),
             usage: Some(usage.clone()),
             config: config.clone(),
+            egress: Default::default(),
         });
         let request = http::Request::post("/v1/responses")
             .header("authorization", format!("Bearer {KEY}"))
@@ -2438,6 +2477,7 @@ async fn no_account_record_has_no_selected_account() {
         upstream: Arc::new(ciallopa_upstream::UpstreamClient::new(&cfg).unwrap()),
         config: Arc::new(cfg.into()),
         usage: Some(usage.clone()),
+        egress: Default::default(),
     });
     let response = app
         .oneshot(
@@ -3683,6 +3723,7 @@ async fn http_refresh_error_must_not_authfail() {
         upstream: Arc::new(ciallopa_upstream::UpstreamClient::new(&cfg).unwrap()),
         usage: None,
         config: Arc::new(cfg.into()),
+        egress: Default::default(),
     };
     let proxy = serve(ciallopa::build_app(state)).await;
     let r = reqwest::Client::new()
@@ -5248,4 +5289,117 @@ async fn ws_metadata_before_encrypted_clear_message() {
         "{v}"
     );
     assert_no_account_outcome(&e);
+}
+
+// Regression (CF 1010): a Cloudflare block page is an egress block, not an auth failure. Before:
+// both accounts AuthFailed (30 min cooldown each), the raw page went to the client.
+#[tokio::test]
+async fn cloudflare_block_is_egress_not_auth() {
+    let dir = tempfile::tempdir().unwrap();
+    let rec = usage_recorder(dir.path());
+    let e = env_usage(300, Some(rec.clone())).await;
+    for (i, mode) in [
+        "repro_cf1010_text",
+        "repro_cf1010_json",
+        "repro_cf_challenge",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let r = mode_post(&e, mode).await;
+        assert_eq!(r.status(), 502, "{mode}");
+        let body = r.text().await.unwrap();
+        let low = body.to_ascii_lowercase();
+        assert!(
+            !low.contains("cloudflare") && !low.contains("1010") && !low.contains("ciallopa"),
+            "{mode}: {body}"
+        );
+        assert!(body.contains("Bad gateway"), "{mode}: {body}");
+        // One upstream hit: the egress is shared, so no switch to b.
+        assert_eq!(e.mock.hits.load(Ordering::SeqCst), i + 1, "{mode}");
+        let o = e.outcomes();
+        assert_eq!(o.len(), i + 1, "{mode}");
+        assert!(matches!(o[i].1, Outcome::EgressBlocked), "{mode}: {o:?}");
+    }
+    assert!(!e
+        .outcomes()
+        .iter()
+        .any(|(_, o)| matches!(o, Outcome::AuthFailed)));
+    let rows = wait_rows(&e, 3).await;
+    let codes: Vec<&str> = rows.iter().filter_map(|r| r["error"].as_str()).collect();
+    assert!(
+        codes.contains(&"cf_blocked") && codes.contains(&"challenge"),
+        "{rows:?}"
+    );
+    for r in &rows {
+        assert_eq!(r["err_source"], "network", "{r}");
+        assert_eq!(r["status"], 502, "{r}");
+    }
+    let q: serde_json::Value = e
+        .http
+        .get(format!("http://{}/usage/v1/quota", e.proxy))
+        .bearer_auth(KEY)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let b = &q["egress_block"];
+    assert_eq!(b["active"], true, "{q}");
+    assert_eq!(b["count"], 3, "{q}");
+    assert_eq!(b["code"], "challenge", "{q}");
+    assert_eq!(b["cf_ray"], "9a1b2c3d4e5f6789-SJC", "{q}");
+    // A normal answer ends the episode on the overview.
+    assert_eq!(mode_post(&e, "").await.status(), 200);
+    let q: serde_json::Value = e
+        .http
+        .get(format!("http://{}/usage/v1/quota", e.proxy))
+        .bearer_auth(KEY)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(q["egress_block"]["active"], false, "{q}");
+    rec.shutdown();
+}
+
+#[tokio::test]
+async fn real_403_still_auth_failed_and_switches() {
+    let e = env(300).await;
+    let r = mode_post(&e, "real403").await;
+    assert_eq!(r.status(), 200);
+    let o = e.outcomes();
+    assert_eq!(o[0].0, "a");
+    assert!(matches!(o[0].1, Outcome::AuthFailed), "{o:?}");
+    assert_eq!(o[1].0, "b");
+    assert!(matches!(o[1].1, Outcome::Success { .. }));
+}
+
+#[tokio::test]
+async fn websocket_handshake_cloudflare_block_is_egress() {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let e = env(300).await;
+    let mut req = format!("ws://{}/backend-api/codex/responses", e.proxy)
+        .into_client_request()
+        .unwrap();
+    req.headers_mut()
+        .insert("authorization", format!("Bearer {KEY}").parse().unwrap());
+    req.headers_mut()
+        .insert("x-test-mode", "repro_cf1010_text".parse().unwrap());
+    let err = tokio_tungstenite::connect_async(req).await.unwrap_err();
+    match err {
+        tokio_tungstenite::tungstenite::Error::Http(r) => {
+            assert_eq!(r.status(), 502);
+            let b = String::from_utf8_lossy(r.body().as_deref().unwrap_or_default())
+                .to_ascii_lowercase();
+            assert!(!b.contains("1010") && !b.contains("cloudflare"), "{b}");
+        }
+        other => panic!("{other:?}"),
+    }
+    let o = e.outcomes();
+    assert_eq!(o.len(), 1, "{o:?}");
+    assert!(matches!(o[0].1, Outcome::EgressBlocked));
 }

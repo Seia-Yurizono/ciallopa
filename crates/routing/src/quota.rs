@@ -468,3 +468,66 @@ pub fn is_cloudflare_challenge(body_or_msg: &str) -> bool {
         || l.contains("cloudflare challenge")
         || (l.contains("just a moment") && l.contains("cloudflare"))
 }
+
+/// What kind of Cloudflare page answered instead of the upstream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloudflareBlock {
+    /// Managed / JS challenge (`cf-mitigated: challenge`, "Just a moment…").
+    Challenge,
+    /// Cloudflare error page or body that blocks the client, with its `1xxx` code when given
+    /// (1010 = browser signature banned, 1020 = firewall rule, 1006–1009 = IP / country ban).
+    Error(Option<u16>),
+}
+
+/// `NNNN` of a Cloudflare `1xxx` error code.
+fn cf_code(s: &str) -> Option<u16> {
+    let d: String = s.trim().chars().take_while(char::is_ascii_digit).collect();
+    d.parse::<u16>().ok().filter(|n| (1000..2000).contains(n))
+}
+
+/// A Cloudflare challenge or block page in an upstream 403 (egress-level, not the account).
+/// Real upstream auth errors (OpenAI JSON without Cloudflare markers) never match: the plain
+/// text form must be the whole body, the JSON form needs `cloudflare_error: true` or the
+/// Cloudflare error name, and an HTML page needs Cloudflare's own block markers.
+pub fn cloudflare_block(cf_mitigated: bool, body: &[u8]) -> Option<CloudflareBlock> {
+    let text = String::from_utf8_lossy(&body[..body.len().min(64 * 1024)]);
+    if cf_mitigated || is_cloudflare_challenge(&text) {
+        return Some(CloudflareBlock::Challenge);
+    }
+    let l = text.trim().to_ascii_lowercase();
+    // Plain text: exactly `error code: 1010`.
+    if let Some(rest) = l.strip_prefix("error code:") {
+        if let Some(n) = cf_code(rest).filter(|_| rest.trim().len() == 4) {
+            return Some(CloudflareBlock::Error(Some(n)));
+        }
+    }
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+        let cf = v.get("cloudflare_error").and_then(|x| x.as_bool()) == Some(true);
+        let name = v.get("error_name").and_then(|x| x.as_str()).unwrap_or("");
+        if cf || name == "browser_signature_banned" {
+            let code = v.get("error_code").and_then(|x| {
+                x.as_u64()
+                    .and_then(|n| u16::try_from(n).ok())
+                    .or_else(|| x.as_str().and_then(cf_code))
+            });
+            let code = code.or((name == "browser_signature_banned").then_some(1010));
+            return Some(CloudflareBlock::Error(code));
+        }
+        return None;
+    }
+    // HTML block page ("Attention Required! | Cloudflare", "Sorry, you have been blocked").
+    if l.contains("cloudflare")
+        && (l.contains("cf-error-details")
+            || l.contains("sorry, you have been blocked")
+            || l.contains("attention required!")
+            || l.contains("cf-error-code"))
+    {
+        let code = l
+            .split_once("cf-error-code\">")
+            .and_then(|(_, r)| cf_code(r))
+            .or_else(|| l.split_once("error code ").and_then(|(_, r)| cf_code(r)))
+            .or_else(|| l.split_once("error code: ").and_then(|(_, r)| cf_code(r)));
+        return Some(CloudflareBlock::Error(code));
+    }
+    None
+}

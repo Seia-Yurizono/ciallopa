@@ -114,6 +114,7 @@ async fn concurrent_compaction_same_account_no_cooldown() {
         upstream: Arc::new(ciallopa_upstream::UpstreamClient::new(&cfg).unwrap()),
         usage: None,
         config: Arc::new(cfg.into()),
+        egress: Default::default(),
     };
     let p = serve(ciallopa::build_app(state)).await;
     let http = reqwest::Client::new();

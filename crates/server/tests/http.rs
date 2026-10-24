@@ -21,6 +21,7 @@ async fn app() -> axum::Router {
         upstream: Arc::new(ciallopa_upstream::UpstreamClient::new(&cfg).unwrap()),
         usage: None,
         config: Arc::new(cfg.into()),
+        egress: Default::default(),
     };
     ciallopa::build_app(state)
 }

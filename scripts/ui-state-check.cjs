@@ -809,6 +809,33 @@ function autoRefreshInterval() {
   assert.equal(vm.runInContext('autoSecs()', c), 60);
 }
 
+// Cloudflare egress block banner: shown only while the block is active, no Cloudflare body.
+function cloudflareEgressBanner() {
+  const el = {textContent: '', hidden: null, title: '', classList: {toggle(_c, on) {el.hidden = on;}},
+    appendChild(x) {el.textContent += x.textContent;}, removeAttribute(a) {if (a === 'title') el.title = '';}};
+  const c = vm.createContext({
+    $: () => el, clear: n => {n.textContent = '';}, h: (_t, _a, text) => ({textContent: text}),
+    document: {createTextNode: text => ({textContent: text})}, fmtTime: () => '10-24 12:00:00', ago: () => '刚刚',
+    exact: n => String(n), Q: null,
+  });
+  vm.runInContext(section('// Cloudflare challenge / block page', 'function renderQuota(){'), c);
+  c.renderEgressBlock();
+  assert.equal(el.hidden, true, 'no snapshot: banner hidden');
+  c.Q = {egress_block: {code: 'cf_blocked', cf_code: 1010, upstream_status: 403, cf_ray: 'ray-1', account: 'a', first_at_ms: 1, last_at_ms: 2, count: 3, active: true}};
+  c.renderEgressBlock();
+  assert.equal(el.hidden, false);
+  assert.match(el.textContent, /^上游 Cloudflare 拦截本机出口错误 1010 · .*共 3 次 · .*不冷却账号/);
+  assert.ok(!/[。.]$/.test(el.textContent), 'single-sentence banner has no trailing period');
+  assert.match(el.title, /cf-ray ray-1/);
+  c.Q.egress_block = Object.assign({}, c.Q.egress_block, {code: 'challenge', cf_code: undefined});
+  c.renderEgressBlock();
+  assert.match(el.textContent, /^上游 Cloudflare 质询本机出口最近/);
+  c.Q.egress_block.active = false;
+  c.renderEgressBlock();
+  assert.equal(el.hidden, true, 'inactive block: banner hidden');
+  assert.equal(el.textContent, '');
+}
+
 (async () => {
   // A rejects while current; loadAll cannot present it until the slow quota job settles.
   const oldRound = vm.runInContext('loadAll()', context);
@@ -880,5 +907,6 @@ function autoRefreshInterval() {
   await inspectorRetryAndNavigation();
   recordRenderingAndInspectorFocus();
   autoRefreshInterval();
-  console.log('PASS: auto-refresh interval, query/auth races, shared scope and buckets, ID paging, history/drill-down, usage samples and unknown outcomes, overview snapshots, egress identity/order/logout, scoped filter chips/URL/focus, inspector retry/expiry/stale authorization/keyboard, keyed record updates and inspector focus');
+  cloudflareEgressBanner();
+  console.log('PASS: auto-refresh interval, Cloudflare egress banner, query/auth races, shared scope and buckets, ID paging, history/drill-down, usage samples and unknown outcomes, overview snapshots, egress identity/order/logout, scoped filter chips/URL/focus, inspector retry/expiry/stale authorization/keyboard, keyed record updates and inspector focus');
 })().catch(error => {console.error(error); process.exitCode = 1;}).finally(() => clearTimeout(watchdog));

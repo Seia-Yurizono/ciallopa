@@ -6,6 +6,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use ciallopa_core::AccountStore;
+use ciallopa_forward::EgressStatus;
 use ciallopa_usage::{now_ms, Dim, Filters, Outcome, RecentQuery, Recorder, SummaryQuery};
 use serde::Deserialize;
 use std::sync::Arc;
@@ -15,16 +16,21 @@ type Rec = Option<Arc<Recorder>>;
 struct St {
     rec: Rec,
     accounts: Arc<dyn AccountStore>,
+    egress: Arc<EgressStatus>,
 }
 
-pub fn routes(rec: Rec, accounts: Arc<dyn AccountStore>) -> Router {
+pub fn routes(rec: Rec, accounts: Arc<dyn AccountStore>, egress: Arc<EgressStatus>) -> Router {
     Router::new()
         .route("/usage/v1/records", get(records))
         .route("/usage/v1/records/{id}", get(record))
         .route("/usage/v1/records/{id}/detail", get(detail))
         .route("/usage/v1/summary", get(summary))
         .route("/usage/v1/quota", get(quota))
-        .with_state(St { rec, accounts })
+        .with_state(St {
+            rec,
+            accounts,
+            egress,
+        })
 }
 
 #[derive(Deserialize, Default)]
@@ -313,7 +319,13 @@ async fn summary(State(St { rec, .. }): State<St>, Query(q): Query<SummaryQ>) ->
 }
 
 /// Per account: latest upstream used %, reset times, capacity estimate, relogin flags.
-async fn quota(State(St { rec, accounts }): State<St>) -> Response {
+async fn quota(
+    State(St {
+        rec,
+        accounts,
+        egress,
+    }): State<St>,
+) -> Response {
     let Some(rec) = rec else {
         return err(StatusCode::NOT_FOUND, "usage log disabled");
     };
@@ -343,6 +355,8 @@ async fn quota(State(St { rec, accounts }): State<St>) -> Response {
     }
     Json(serde_json::json!({
         "accounts": out,
+        // Last Cloudflare challenge / block page seen instead of the upstream (null if none).
+        "egress_block": egress.snapshot(),
         "note": "used_percent comes from upstream and includes usage by other clients and other instances of the same account; capacity/remaining are estimates from this instance's weighted token deltas between snapshots",
     }))
     .into_response()
@@ -400,7 +414,7 @@ mod tests {
             "demo",
         )
         .unwrap();
-        let app = routes(Some(rec.clone()), Arc::new(NoAccounts));
+        let app = routes(Some(rec.clone()), Arc::new(NoAccounts), Default::default());
         let base = now_ms();
         let make = |ms| {
             let mut row = Record::new(rec.ids.next_at(ms), Transport::Sse, "responses");

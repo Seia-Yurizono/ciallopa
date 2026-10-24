@@ -79,6 +79,7 @@ async fn check_apply_unchanged_stale_failure_and_source_reload() {
         upstream: Arc::new(ciallopa_upstream::UpstreamClient::new(&cfg).unwrap()),
         usage: Some(rec.clone()),
         config: Arc::new(cfg.into()),
+        egress: Default::default(),
     };
     let settings = Settings::new(state, Some(path.clone()), None);
     let proxy = serve(ciallopa::build_app_with(settings.clone())).await;

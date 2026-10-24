@@ -8,7 +8,7 @@ use axum::body::Body;
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use ciallopa_core::{AccountId, AuthError, Outcome, RouteError, RouteRequest};
-use ciallopa_routing::{is_cloudflare_challenge, is_usage_limit, parse_quota, retry_after_for_429};
+use ciallopa_routing::{is_usage_limit, parse_quota, retry_after_for_429};
 use ciallopa_upstream::retry::{is_retryable_status, switch_jitter};
 use futures::StreamExt;
 use http::{HeaderMap, HeaderValue, Method, StatusCode};
@@ -530,6 +530,7 @@ async fn send_inner(
             };
             match status {
                 s if s < 400 => {
+                    st.egress.ok();
                     a.action = "ok".into();
                     info.attempts.push(a);
                     crate::turn_state::learn(r.headers(), &id);
@@ -569,12 +570,20 @@ async fn send_inner(
                 401..=404 | 429 => {
                     let h = r.headers().clone();
                     let b = r.bytes().await.unwrap_or_default();
+                    // A Cloudflare page blocks the shared egress, not this account: switching
+                    // would only show the same page to every account. Stop with a neutral 502.
+                    if let Some(blk) = crate::egress::detect(status, &h, &b) {
+                        a.code = Some(blk.code.into());
+                        a.body = errors::body_snippet(&b);
+                        a.action = "stop".into();
+                        info.attempts.push(a);
+                        st.router.report(&route, &id, &Outcome::EgressBlocked);
+                        st.egress.note(&blk, status, &h, &id);
+                        return Err(crate::egress::response(&blk, status, &h));
+                    }
                     let outcome = classify_error(status, &h, &b, &st.config.load().upstream_opts);
                     log_account_error(&id, &outcome);
-                    a.code = Some(match &outcome {
-                        Outcome::Challenge => "challenge".into(),
-                        _ => errors::upstream_code(status, &h, &b),
-                    });
+                    a.code = Some(errors::upstream_code(status, &h, &b));
                     a.body = errors::body_snippet(&b);
                     a.action = "switch".into();
                     info.attempts.push(a);
@@ -1950,11 +1959,7 @@ pub(crate) fn classify_error(
             usage_limit: is_usage_limit(body),
             quota: parse_quota(h),
         },
-        403 if h.contains_key("cf-mitigated")
-            || is_cloudflare_challenge(&String::from_utf8_lossy(body)) =>
-        {
-            Outcome::Challenge
-        }
+        403 if crate::egress::detect(status, h, body).is_some() => Outcome::EgressBlocked,
         404 => Outcome::ModelUnsupported {
             retry_after: retry_after(),
         },

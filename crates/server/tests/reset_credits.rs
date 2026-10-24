@@ -155,6 +155,7 @@ async fn env(allow: bool) -> Env {
         upstream: Arc::new(ciallopa_upstream::UpstreamClient::new(&cfg).unwrap()),
         usage,
         config: Arc::new(cfg.into()),
+        egress: Default::default(),
     };
     let p = serve(ciallopa::build_app(state)).await;
     Env {

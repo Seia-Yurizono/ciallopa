@@ -406,6 +406,7 @@ select.ivl{height:24px;padding:0 var(--s1);font-size:var(--fs-xs)}
   </div>
   <div id="msg" class="banner err" role="alert"></div>
   <div id="noacc" class="banner err hide" role="status"></div>
+  <div id="egressblk" class="banner err hide" role="status"></div>
   <div class="scope panel"><details id="scopefilters"><summary id="scopetoggle"><strong>筛选范围</strong><span id="scopesummary"> · 所有模型与账号</span></summary>
     <div class="filters" aria-label="筛选概况、趋势和请求">
       <label>账号<select id="facct" aria-label="按账号筛选"><option value="">全部账号</option></select></label>
@@ -694,6 +695,11 @@ function quotaRow(a){const s=ST[a.status],dot=h("span","sdot "+s[1]);dot.title=s
   if(!w.length){q5.appendChild(h("span",{class:"nod",title:"该账号还没有请求经过本代理，或上游没有返回额度"},"尚无额度数据"));qw.appendChild(h("span","nod","–"))}
   else{for(const [cell,x,st] of [[q5,p,stale],[qw,wk,p?"":stale]]){if(!x){cell.appendChild(h("span","nod","–"));continue}cell.appendChild(qbar(x[0],x[1],!!stale));cell.appendChild(rt(x[1],a,st))}}
   return h("tr",{"data-acc":a.id},h("td","who-c",h("div","row nw",dot,h("div","who",link,sub))),q5,qw,h("td","rc-c n",RC&&a.configured?chip(a):""))}
+// Cloudflare challenge / block page instead of the upstream: the host's egress, not an account.
+function renderEgressBlock(){const b=Q&&Q.egress_block,e=$("egressblk"),on=!!(b&&b.active);clear(e);e.classList.toggle("hide",!on);if(!on){e.removeAttribute("title");return}
+  e.appendChild(h("b",null,b.code==="challenge"?"上游 Cloudflare 质询本机出口":"上游 Cloudflare 拦截本机出口"));
+  e.appendChild(document.createTextNode((b.cf_code?"错误 "+b.cf_code+" · ":"")+"最近 "+fmtTime(b.last_at_ms)+"（"+ago(b.last_at_ms)+"）· 共 "+exact(b.count)+" 次 · 请求直接失败，不换号、不冷却账号；检查出口 IP、代理或客户端指纹"));
+  e.title="首次 "+fmtTime(b.first_at_ms)+" · 账号 "+b.account+" · 上游 HTTP "+b.upstream_status+(b.cf_ray?" · cf-ray "+b.cf_ray:"")+"\n下一次正常的上游响应后提示消失"}
 function renderQuota(){steady([$("quota").tBodies[0]],renderQuotaNow)}
 function renderQuotaNow(){queueMicrotask(refocus);ACCTS=mergeAccts();const tb=$("quota").tBodies[0];clear(tb);
   const rows=ACCTS.slice().sort((x,y)=>minRem(x)-minRem(y)),hw=rows.map(a=>wslots(a.q));$("hq5").textContent=whead(hw.filter(o=>o.s).map(o=>o.s[0]),"5 小时");$("hqw").textContent=whead(hw.filter(o=>o.l).map(o=>o.l[0]),"周");for(const a of rows)tb.appendChild(quotaRow(a));
@@ -702,6 +708,7 @@ function renderQuotaNow(){queueMicrotask(refocus);ACCTS=mergeAccts();const tb=$(
   const usable=conf.filter(a=>a.status==="normal"||a.status==="cooling").length,nb=$("noacc");clear(nb);
   if(!usable&&(Q||AC)){nb.appendChild(h("b",null,"没有可用账号"));nb.appendChild(document.createTextNode(conf.length?"所有账号都已停用或需要重新登录，代理请求会失败。":"代理请求会失败。在「账号」页或用 ciallopa login 添加账号。"))}
   nb.classList.toggle("hide",!!usable||!(Q||AC));
+  renderEgressBlock();
   const sel=$("facct"),cur=sel.value;while(sel.options.length>1)sel.remove(1);for(const a of ACCTS)sel.appendChild(h("option",{value:a.id},a.id));
   if(Array.from(sel.options).some(o=>o.value===cur))sel.value=cur;else if(cur){sel.appendChild(h("option",{value:cur},cur));sel.value=cur}
   renderKpis();refreshPop()}
@@ -919,8 +926,8 @@ function effortCell(r){const box=h("span"),q=r.reasoning_effort,a=r.response_eff
   box.dataset.tip=tip;return box}
 const SRC={client:["客户端","off","客户端断开或请求本身的问题"],local:["ciallopa","off","ciallopa 本地产生（没有可用账号、全部冷却等）"],network:["网络","err","连不上上游、超时或流空闲超时"],proxy:["代理","proxy","出口代理连不上、拒绝隧道或超时（不计入账号冷却）"],upstream:["上游","err","上游 HTTP 返回的错误，原样转给客户端"],stream:["流内","err","上游流里的错误事件或流被截断"]};
 const PROXY_ERR={proxy_connect:"出口代理连接失败",proxy_timeout:"经出口代理连接超时"};
-const ERR_LBL=Object.assign({invalid_encrypted_content:"加密推理被拒",usage_limit:"额度用完",usage_limit_reached:"额度用完",rate_limit_exceeded:"限流",server_is_overloaded:"上游过载",client_closed:"客户端断开",no_account:"没有账号",no_usable_account:"没有可用账号",all_cooling:"全部账号冷却中",all_quota_exhausted:"全部账号额度用完",first_quota_reset:"最早恢复的账号额度用完",stream_truncated:"流被截断",observation_incomplete:"观察不完整",connect_timeout:"连接超时",header_timeout:"等待响应头超时",preparation_timeout:"准备等待超时",error_body_timeout:"读取错误响应超时",error_body_too_large:"错误响应过大",error_body_read:"错误响应中断",upstream_5xx:"上游 5xx"},PROXY_ERR);
-const ERR_TIP={invalid_encrypted_content:"上游拒绝了对话历史里的加密推理内容（多为在另一个账号/组织下生成，原因见详情）。属于请求内容问题：不换号、不冷却、不重试；客户端收到明确提示，需新开会话",observation_incomplete:"响应已透传，但事件超过网关的有界观察范围，无法确认最终业务结果。未报告的用量不是零，未知结果不计为失败或客户端取消。"};
+const ERR_LBL=Object.assign({invalid_encrypted_content:"加密推理被拒",usage_limit:"额度用完",usage_limit_reached:"额度用完",rate_limit_exceeded:"限流",server_is_overloaded:"上游过载",client_closed:"客户端断开",no_account:"没有账号",no_usable_account:"没有可用账号",all_cooling:"全部账号冷却中",all_quota_exhausted:"全部账号额度用完",first_quota_reset:"最早恢复的账号额度用完",stream_truncated:"流被截断",observation_incomplete:"观察不完整",connect_timeout:"连接超时",header_timeout:"等待响应头超时",preparation_timeout:"准备等待超时",error_body_timeout:"读取错误响应超时",error_body_too_large:"错误响应过大",error_body_read:"错误响应中断",upstream_5xx:"上游 5xx",cf_blocked:"Cloudflare 拦截出口",challenge:"Cloudflare 质询"},PROXY_ERR);
+const ERR_TIP={cf_blocked:"上游前面的 Cloudflare 返回了拦截页（如 1010 浏览器签名被封），拦的是本机出口（IP、TLS 或 HTTP 指纹），不是账号：不换号、不冷却账号，客户端收到中性的 502",challenge:"上游前面的 Cloudflare 返回了质询页，拦的是本机出口，不是账号：不换号、不冷却账号，客户端收到中性的 502",invalid_encrypted_content:"上游拒绝了对话历史里的加密推理内容（多为在另一个账号/组织下生成，原因见详情）。属于请求内容问题：不换号、不冷却、不重试；客户端收到明确提示，需新开会话",observation_incomplete:"响应已透传，但事件超过网关的有界观察范围，无法确认最终业务结果。未报告的用量不是零，未知结果不计为失败或客户端取消。"};
 function errorInfo(r){const known=r.error!=="observation_incomplete"||requestOutcome(r)==="unknown";return {label:known?ERR_LBL[r.error]:"",tip:known?ERR_TIP[r.error]:""}}
 function srcOf(r){return r.err_source==="network"&&PROXY_ERR[r.error]?"proxy":r.err_source}
 let recState={cursor:null,total:0,rows:[]};
