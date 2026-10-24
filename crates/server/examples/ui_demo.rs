@@ -306,6 +306,7 @@ async fn main() {
         router: Arc::new(ciallopa_routing::CpaRouter::new(cfg.routing.clone())),
         upstream: Arc::new(ciallopa_upstream::UpstreamClient::new(&cfg).unwrap()),
         config: Arc::new(cfg.into()),
+        egress: Default::default(),
     };
     // bob is cooling (usage limit, 25 min) so the accounts page shows the cooldown row
     {

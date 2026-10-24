@@ -190,8 +190,10 @@ pub enum Outcome {
         max: Duration,
         cool: bool,
     },
-    /// Cloudflare challenge page (403 + challenge markers): >=10s exponential cooldown.
-    Challenge,
+    /// Cloudflare challenge or block page in front of the upstream (403 with `cf-mitigated`, a
+    /// challenge page, or a Cloudflare `1xxx` error such as 1010). It blocks this host's egress,
+    /// not the account, so it never cools an account or a model and never moves a binding.
+    EgressBlocked,
     /// 4xx caused by the request itself; not the account's fault.
     ClientError {
         status: u16,

@@ -8,8 +8,9 @@ pub mod quota;
 pub mod session;
 
 pub use quota::{
-    is_cloudflare_challenge, is_usage_limit, parse_codex_retry_after, parse_quota, parse_quota_at,
-    parse_quota_event_headers, parse_retry_after_header, retry_after_for_429,
+    cloudflare_block, is_cloudflare_challenge, is_usage_limit, parse_codex_retry_after,
+    parse_quota, parse_quota_at, parse_quota_event_headers, parse_retry_after_header,
+    retry_after_for_429, CloudflareBlock,
 };
 pub use session::{bound_session_identity, extract_session, normalize_explicit_id};
 
@@ -39,7 +40,6 @@ pub const TRANSIENT_STREAK: u32 = 3;
 pub const AUTH_COOLDOWN: Duration = Duration::from_secs(30 * 60);
 /// 404 that explicitly says the model is not supported for the account.
 pub const NOT_FOUND_COOLDOWN: Duration = Duration::from_secs(12 * 3600);
-pub const CHALLENGE_MIN_COOLDOWN: Duration = Duration::from_secs(10);
 
 pub type Clock = Arc<dyn Fn() -> SystemTime + Send + Sync>;
 
@@ -53,7 +53,6 @@ enum ErrKind {
     NotFound,
     PaymentRequired,
     WorkspaceDeactivated,
-    Challenge,
     Transient,
     Overloaded,
 }
@@ -70,7 +69,6 @@ impl ErrKind {
             ErrKind::NotFound => "not_found",
             ErrKind::PaymentRequired => "payment_required",
             ErrKind::WorkspaceDeactivated => "workspace_deactivated",
-            ErrKind::Challenge => "challenge",
             ErrKind::Transient => "transient",
             ErrKind::Overloaded => "overloaded",
         }
@@ -767,18 +765,9 @@ impl Router for CpaRouter {
                 a.last_err = Some(ErrKind::Overloaded);
                 Some(ErrKind::Overloaded)
             }
-            Outcome::Challenge => {
-                let m = st.model.entry(mkey).or_default();
-                let (c, lvl) = next_quota_cooldown(m.backoff_level);
-                let next = now + c.max(CHALLENGE_MIN_COOLDOWN);
-                *m = CoolState {
-                    next_retry: Some(next),
-                    recover_at: Some(next),
-                    backoff_level: lvl,
-                    last_err: Some(ErrKind::Challenge),
-                };
-                Some(ErrKind::Challenge)
-            }
+            // Egress-level (Cloudflare): every account would see the same page. Nothing to
+            // cool, and the session binding stays where it is.
+            Outcome::EgressBlocked => return,
             // Transport errors (no status) and request-scoped 4xx never cool the credential
             // and never touch session bindings (CPA shouldSkipCredentialCooldown).
             Outcome::Transient { status: None } | Outcome::ClientError { .. } => return,

@@ -576,10 +576,10 @@ fn cooldown_table() {
             want: None,
         },
         CoolCase {
-            name: "cloudflare >= 10s",
-            outcomes: vec![Outcome::Challenge],
+            name: "cloudflare egress block: never cooled",
+            outcomes: vec![Outcome::EgressBlocked; 3],
             model_scoped: true,
-            want: Some(Duration::from_secs(10)),
+            want: None,
         },
         CoolCase {
             name: "single 5xx: no cooldown",
@@ -704,21 +704,6 @@ fn quota_backoff_doubles_per_window_and_caps_at_30min() {
     }
     assert_eq!(&seen[..5], &[1, 2, 4, 8, 16]);
     assert_eq!(*seen.last().unwrap(), 1800);
-    // challenge backoff uses the same ladder with a 10s floor
-    let (r, clk) = router(cfg(Strategy::RoundRobin));
-    let mut ch = vec![];
-    for _ in 0..6 {
-        r.report(&rq("m"), &"a".into(), &Outcome::Challenge);
-        let now = t0() + Duration::from_millis(clk.0.load(Ordering::SeqCst));
-        let d = r
-            .cooldown_until(&"a".into(), "m")
-            .unwrap()
-            .duration_since(now)
-            .unwrap();
-        ch.push(d.as_secs());
-        clk.advance(d);
-    }
-    assert_eq!(ch, [10, 10, 10, 10, 16, 32]);
 }
 
 #[test]
@@ -885,10 +870,10 @@ fn rebind_on_table() {
             want_bound_after: "b",
         },
         RebindCase {
-            name: "quota: challenge rebinds",
+            name: "quota: cloudflare egress block keeps binding",
             rebind: RebindOn::Quota,
-            outcome: Outcome::Challenge,
-            want_bound_after: "b",
+            outcome: Outcome::EgressBlocked,
+            want_bound_after: "a",
         },
         // CPA: under `any` the failover pick always rebinds, even for transport errors.
         RebindCase {

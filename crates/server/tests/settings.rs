@@ -88,6 +88,7 @@ async fn env(extra: &str) -> Env {
         upstream: upstream.clone(),
         usage: None,
         config: Arc::new(cfg.into()),
+        egress: Default::default(),
     };
     let settings = Settings::new(state, Some(path.clone()), None);
     settings.init_known_accounts().await;
@@ -899,6 +900,7 @@ async fn no_admin_key_means_no_management() {
         upstream: Arc::new(ciallopa_upstream::UpstreamClient::new(&cfg).unwrap()),
         usage: None,
         config: Arc::new(cfg.into()),
+        egress: Default::default(),
     };
     let app = ciallopa::build_app(state);
     let ln = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -153,7 +153,11 @@ pub fn build_app_with(s: Arc<settings::Settings>) -> Router {
     let cfg = state.config.load();
     let keys = Keys(state.config.clone());
     let limit = (cfg.max_body_mb as usize) * 1024 * 1024;
-    let usage = usage_api::routes(state.usage.clone(), state.accounts.clone());
+    let usage = usage_api::routes(
+        state.usage.clone(),
+        state.accounts.clone(),
+        state.egress.clone(),
+    );
     let ui_on = cfg.ui.enabled;
     let rc = s.rc.clone();
     if tokio::runtime::Handle::try_current().is_ok() {

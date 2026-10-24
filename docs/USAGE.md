@@ -121,8 +121,8 @@ Not recorded: `/models`, `/wham/*` and other passthrough, WS handshakes that suc
 |---|---|---|
 | `client` | the client went away **before** the terminal event | `client_closed` (not counted as an upstream failure). Closing after `response.completed` / `incomplete` / `failed` is a normal end (Codex hangs up as soon as it has the terminal event) and is not recorded as an error |
 | `local` | ciallopa itself could not serve the request | `no_account`, `no_usable_account` (all disabled / excluded / need relogin), `all_cooling` (every account cooling, the first recovers later than the wait), `all_quota_exhausted` (every account out of usage quota), `first_quota_reset` (every account cooling, the first to recover is out of usage quota), `internal`; the record message gives the time to the first recovery |
-| `network` | no usable upstream response | `connect`, `dns`, `tls`, `timeout`, `timeout_connect`, `header_timeout`, `preparation_timeout`, `error_body_timeout`, `error_body_read`, `models_body_timeout`, `models_body_read`, `transport`, `idle_timeout`, WS `upstream_closed` (transport); with an egress proxy: `proxy_connect` (proxy unreachable, auth or tunnel refused, proxy-side DNS failure), `proxy_timeout` (connect through the proxy timed out). Proxy errors fail the request at once (every account shares the proxy, so no account switching) and never cool an account; the panel labels them 代理 |
-| `upstream` | upstream HTTP error, passed through verbatim | upstream `error.code` / `error.type`, else `http_<status>`; `challenge` for a Cloudflare page; `invalid_encrypted_content` (also when the upstream reports it inside a 200 stream or WS turn, see below; panel label 加密推理被拒) |
+| `network` | no usable upstream response | `connect`, `dns`, `tls`, `timeout`, `timeout_connect`, `header_timeout`, `preparation_timeout`, `error_body_timeout`, `error_body_read`, `models_body_timeout`, `models_body_read`, `transport`, `idle_timeout`, WS `upstream_closed` (transport); with an egress proxy: `proxy_connect` (proxy unreachable, auth or tunnel refused, proxy-side DNS failure), `proxy_timeout` (connect through the proxy timed out). Proxy errors fail the request at once (every account shares the proxy, so no account switching) and never cool an account; the panel labels them 代理. `cf_blocked` (a Cloudflare error page such as `error code: 1010`, browser signature banned, plain text, JSON or HTML) and `challenge` (a Cloudflare challenge page or `cf-mitigated`) on a 403: Cloudflare in front of the upstream blocks this host's egress, so the request fails at once with a neutral 502, no account switching and no cooldown (see [Cloudflare blocks](#cloudflare-blocks)) |
+| `upstream` | upstream HTTP error, passed through verbatim | upstream `error.code` / `error.type`, else `http_<status>`; `invalid_encrypted_content` (also when the upstream reports it inside a 200 stream or WS turn, see below; panel label 加密推理被拒) |
 | `stream` | error inside a 200 stream | `usage_limit`, `response_failed`, `upstream_error_event`, `stream_truncated`, Images `image_output_missing`, WS `upstream_closed` |
 
 What the client receives:
@@ -250,7 +250,7 @@ is left, the most meaningful upstream response goes back verbatim (see above).
 | any other 402 (payment / billing) | `payment_required_cooldown_secs` (default 1800) | account |
 | 404 whose body says the model is unsupported (`model_not_found`, `model_not_supported`, `unsupported_model`, `invalid_model`, or a message naming the model as not supported / not found / not available / not existing) | 12 h, or upstream `Retry-After` | that model on that account |
 | any other 404 (e.g. `{"detail":"Not Found"}`) | `not_found_cooldown_secs` (default 600), or upstream `Retry-After` | that model on that account |
-| 401 after one token refresh, 403 | 30 min | account |
+| 401 after one token refresh, 403 (not a Cloudflare page, see below) | 30 min | account |
 | 429 | from the body (`resets_at` / `resets_in_seconds`) or `Retry-After` | account |
 
 The three `*_cooldown_secs` keys live in `[upstream_opts]`, are hot-reloaded (next request) and
@@ -258,6 +258,27 @@ The three `*_cooldown_secs` keys live in `[upstream_opts]`, are hot-reloaded (ne
 account already has for another reason (e.g. 402). The log line (`warn`) names the 402 kind and
 the cooldown; the request log keeps the upstream code (`deactivated_workspace`, else `http_402`)
 and the accounts page shows the reason (工作区已停用（402）, 上游 402 付费问题, 上游 404).
+
+### Cloudflare blocks
+A 403 whose body is a Cloudflare page rather than an upstream answer is not an account error:
+a whole-body `error code: 1xxx` (e.g. 1010, browser signature banned; 1020, firewall rule), the
+JSON form (`"cloudflare_error": true` or `"error_name": "browser_signature_banned"`), a Cloudflare
+"you have been blocked" HTML page, or a challenge page / `cf-mitigated` header. Cloudflare blocks
+the host's egress (IP, egress proxy, TLS or HTTP fingerprint), which every account shares, so:
+
+- the request fails at once: no account switching, no retry, no account or model cooldown, the
+  session binding stays;
+- the client gets the same neutral `502 Bad gateway` body as other gateway failures, never the
+  Cloudflare page; the request log keeps `err_source = network`, code `cf_blocked` / `challenge`,
+  upstream status 403, the `cf-ray` and the Cloudflare code;
+- a `warn` log line names the code and `cf-ray` (at most once a minute while it lasts, and again
+  when the kind changes);
+- `GET /usage/v1/quota` carries `egress_block` (`code`, `cf_code`, `upstream_status`, `cf_ray`,
+  `account`, `first_at_ms`, `last_at_ms`, `count`, `active`; `null` if none since start) and the
+  overview shows a red banner while `active`, i.e. until the next normal upstream response. The
+  state is in memory only.
+
+A real 403 from the upstream (JSON error body) keeps the 30 min account cooldown above.
 
 ### Successes that started before a cooldown
 Each upstream attempt (HTTP request, WS handshake) records when it was sent. A success only
@@ -610,7 +631,7 @@ API (client key):
   `/wham/usage` `rate_limit` is returned (quota cards update on the next proxied response).
   After a `reset` the account's usage-limit and rate-limit cooldowns (account and per-model)
   are dropped at once, so it serves the next request; other cooldowns (401/403, 402, 404, 5xx,
-  overload, challenge) stay. The response then carries `cooldown_cleared` (`true` if a live
+  overload) stay. The response then carries `cooldown_cleared` (`true` if a live
   cooldown was dropped). Only this manual consume does it; nothing consumes a card by itself.
 
 Idempotency: every attempt is a row in `reset_consume` (schema v6) with status `pending` →

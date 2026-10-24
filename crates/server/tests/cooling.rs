@@ -132,6 +132,7 @@ async fn env(cool_for: Duration, earliest_quota: bool, wait_secs: u64) -> Env {
         },
         usage: None,
         config: Arc::new(cfg.into()),
+        egress: Default::default(),
     };
     let proxy = serve(ciallopa::build_app(state)).await;
     Env {
