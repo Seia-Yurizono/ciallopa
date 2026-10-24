@@ -36,6 +36,10 @@ pub struct SkippedAuthFile {
     pub gid: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<u32>,
+    /// The file still exists but cannot be read or parsed right now, and an account already
+    /// loaded from it stays as it was (last good contents, cooldowns, bindings, connections).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub kept: bool,
 }
 
 /// Why an auth file is not loaded.
@@ -54,6 +58,18 @@ pub enum SkipReason {
     MissingTokens,
     /// The file name cannot be an account id.
     InvalidName,
+}
+
+impl SkipReason {
+    /// The file is still there but unreadable or unparsable (permissions, I/O error, a half
+    /// written file): a rescan keeps an account already loaded from it instead of removing it.
+    /// Only a file that is gone removes its account.
+    pub fn keeps_account(self) -> bool {
+        matches!(
+            self,
+            Self::PermissionDenied | Self::ReadError | Self::InvalidJson
+        )
+    }
 }
 
 /// Result of importing one auth document.
