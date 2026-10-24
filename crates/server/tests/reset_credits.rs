@@ -256,7 +256,7 @@ async fn disabled_switch_is_403() {
 }
 
 #[tokio::test]
-async fn guards_confirm_key_json_cookie() {
+async fn guards_confirm_key_json_origin() {
     let e = env(true).await;
     let url = format!("{}/admin/v1/accounts/a/reset-credits/consume", e.base);
     // wrong confirm
@@ -282,17 +282,23 @@ async fn guards_confirm_key_json_cookie() {
         .await
         .unwrap();
     assert!(matches!(s.status().as_u16(), 400 | 415), "{}", s.status());
-    // cookies rejected
-    let s = e
-        .http
-        .post(&url)
-        .bearer_auth(KEY)
-        .header("cookie", "x=1")
-        .json(&json!({"confirm": "a"}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(s.status(), 400);
+    // a cross-site browser call is rejected even with a valid key (cookies play no part)
+    for (h, v) in [
+        ("origin", "https://evil.example"),
+        ("sec-fetch-site", "cross-site"),
+    ] {
+        let s = e
+            .http
+            .post(&url)
+            .bearer_auth(KEY)
+            .header("cookie", "CF_Authorization=x")
+            .header(h, v)
+            .json(&json!({"confirm": "a"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(s.status(), 403, "{h}: {v}");
+    }
     // unknown account
     assert_eq!(e.consume("zz", json!({"confirm": "zz"})).await.0, 404);
     assert_eq!(e.n_consumes(), 0);
@@ -447,18 +453,60 @@ async fn refresh_admin_csrf_and_can_consume() {
     // no JSON content type
     let r = e.http.post(&url).bearer_auth(KEY).send().await.unwrap();
     assert_eq!(r.status(), 400);
-    // cookie
+    // a cookie alone never authenticates (Cloudflare Access adds CF_Authorization)
     let r = e
         .http
         .post(&url)
-        .bearer_auth(KEY)
-        .header("cookie", "x=1")
+        .header("cookie", "CF_Authorization=x")
         .json(&json!({}))
         .send()
         .await
         .unwrap();
-    assert_eq!(r.status(), 400);
+    assert_eq!(r.status(), 401);
+    // cross-site browser calls are rejected even with a valid key
+    for hs in [
+        &[("origin", "https://evil.example")][..],
+        &[("origin", "null")][..],
+        &[("sec-fetch-site", "cross-site")][..],
+        &[
+            ("sec-fetch-site", "same-site"),
+            ("origin", "https://a.example"),
+        ][..],
+    ] {
+        let mut rb = e.http.post(&url).bearer_auth(KEY).json(&json!({}));
+        for (h, v) in hs {
+            rb = rb.header(*h, *v);
+        }
+        assert_eq!(rb.send().await.unwrap().status(), 403, "{hs:?}");
+    }
     assert!(e.mock.lists.lock().unwrap().is_empty());
+    // the management page behind Cloudflare Access: same-origin fetch that carries the Access
+    // cookie, the key in Authorization, and a public Origin that differs from the proxied Host
+    let r = e
+        .http
+        .post(&url)
+        .bearer_auth(KEY)
+        .header("cookie", "CF_Authorization=eyJ.x.y")
+        .header("origin", "https://cpa.example.com")
+        .header("x-forwarded-host", "cpa.example.com")
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let r = e
+        .http
+        .post(&url)
+        .bearer_auth(KEY)
+        .header("cookie", "CF_Authorization=eyJ.x.y")
+        .header("origin", "https://cpa.example.com")
+        .header("sec-fetch-site", "same-origin")
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(r.status(), 400);
+    assert_ne!(r.status(), 403);
 }
 
 #[test]

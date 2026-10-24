@@ -350,14 +350,20 @@ function adminMsg(j){return j&&j.error&&j.error.type==="admin_required"?"当前�
 async function req(method,path,body,extra,o){
   const auth=key(),epoch=authEpoch,current=()=>key()===auth&&epoch===authEpoch&&(!o||!o.current||o.current()),hd={"Authorization":"Bearer "+auth};if(body!==undefined)hd["Content-Type"]="application/json";Object.assign(hd,extra||{});
   const ac=o&&o.timeout?new AbortController():null,tm=ac?setTimeout(()=>ac.abort(),o.timeout):null;let r;
-  try{r=await fetch(path,{method,headers:hd,body:body===undefined?undefined:JSON.stringify(body),cache:"no-store",credentials:"omit",referrerPolicy:"no-referrer",signal:ac?ac.signal:undefined})}
+  try{r=await fetch(path,{method,headers:hd,body:body===undefined?undefined:JSON.stringify(body),cache:"no-store",credentials:"same-origin",redirect:"manual",referrerPolicy:"no-referrer",signal:ac?ac.signal:undefined})}
   catch(e){const x=new Error(ac&&ac.signal.aborted?"请求超时（"+Math.round(o.timeout/1000)+" 秒内没有响应）":"网络错误，连不上 ciallopa（"+e.message+"）");x.kind=ac&&ac.signal.aborted?"timeout":"network";throw x}
   finally{clearTimeout(tm)}
+  gate(r);
   if(r.status===401){if(current()){sessionStorage.removeItem(KS);showApp(false,"密钥无效或已过期")}throw new Error("401")}
   let j=null;try{j=await r.json()}catch(_){}
   if(current()&&r.status===403&&j&&j.error&&j.error.type==="admin_required")NOADMIN=true;
   if(!r.ok){const e=new Error(adminMsg(j)||(j&&j.error&&j.error.message)||(path.split("?")[0]+" → HTTP "+r.status));e.status=r.status;e.body=j;throw e}
   return {j,r}}
+// Behind Cloudflare Access an expired or missing login answers an API call with a redirect to the
+// sign-in page (an opaque redirect under redirect:"manual") or an HTML page instead of JSON. That is
+// not a network error and not a bad key: keep the key and ask for a page reload.
+function gate(r){const hd=n=>r.headers&&r.headers.get?(r.headers.get(n)||"").toLowerCase():"",ks=r.headers&&r.headers.keys?[...r.headers.keys()]:[];
+  if(r.type==="opaqueredirect"||r.status===0||r.redirected||hd("content-type").includes("text/html")||(r.status===401||r.status===403)&&ks.some(k=>k.toLowerCase().startsWith("cf-access"))){const x=new Error("Cloudflare Access 登录已过期，请刷新页面重新登录");x.kind="access";throw x}}
 async function get(p,o){return (await req("GET",p,undefined,undefined,o)).j}
 async function post(p,b){return (await req("POST",p,b||{})).j}
 // Reason of a failed call for a toast: timeout / network as such, HTTP errors with their status.
@@ -635,8 +641,9 @@ function showReadState(){const notes=Object.values(READ).map(x=>x.note).filter(B
   $("upd").textContent=accountReadAt?"账号更新于 "+hms(new Date(accountReadAt)):""}
 // Unlike the shared action helper, a superseded read must not log out a newer login on 401.
 async function accountGet(path,auth,current){const ac=new AbortController(),tm=setTimeout(()=>ac.abort(),30000);let r,j;
-  try{r=await fetch(path,{method:"GET",headers:{Authorization:"Bearer "+auth},cache:"no-store",credentials:"omit",referrerPolicy:"no-referrer",signal:ac.signal});
+  try{r=await fetch(path,{method:"GET",headers:{Authorization:"Bearer "+auth},cache:"no-store",credentials:"same-origin",redirect:"manual",referrerPolicy:"no-referrer",signal:ac.signal});
     if(!current())return null;
+    gate(r);
     if(r.status===401){sessionStorage.removeItem(KS);showApp(false,"密钥无效或已过期");throw new Error("401")}
     try{j=await r.json()}catch(e){if(ac.signal.aborted)throw e;j=null}
     if(!current())return null;
@@ -670,7 +677,8 @@ function devEnd(t){deviceSeq++;if(deviceAbort){deviceAbort.abort();deviceAbort=n
   for(const id of ["devsteps","devx","devnote"])$(id).classList.add("hide");$("devst").textContent=t||"";$("dev").classList.toggle("hide",!t)}
 // Keep 401/403 side effects inside the same device flow, including a logout and login with the same key.
 async function deviceRequest(method,path,auth,current){const ac=new AbortController(),tm=setTimeout(()=>ac.abort(),45000);deviceAbort=ac;
-  try{const r=await fetch(path,{method,headers:{Authorization:"Bearer "+auth,...(method==="POST"?{"Content-Type":"application/json"}:{})},body:method==="POST"?"{}":undefined,cache:"no-store",credentials:"omit",referrerPolicy:"no-referrer",signal:ac.signal});if(!current())return null;
+  try{const r=await fetch(path,{method,headers:{Authorization:"Bearer "+auth,...(method==="POST"?{"Content-Type":"application/json"}:{})},body:method==="POST"?"{}":undefined,cache:"no-store",credentials:"same-origin",redirect:"manual",referrerPolicy:"no-referrer",signal:ac.signal});if(!current())return null;
+    gate(r);
     if(r.status===401){sessionStorage.removeItem(KS);showApp(false,"密钥无效或已过期");throw new Error("401")}
     let j=null;try{j=await r.json()}catch(e){if(ac.signal.aborted)throw e}if(!current())return null;
     if(r.status===403&&j&&j.error&&j.error.type==="admin_required")NOADMIN=true;

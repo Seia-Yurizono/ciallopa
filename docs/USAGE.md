@@ -443,7 +443,7 @@ See [METRICS.md](METRICS.md) for the current outcome, sampling, cursor and bucke
   observed); accounts seen in the log but no longer configured carry `configured: false`.
 - 404 when `[usage] enabled = false`.
 - `POST /admin/v1/accounts/{id}/quota-refresh` and `POST /admin/v1/accounts/quota-refresh` (all
-  accounts, four at a time; admin key, JSON body, no cookies) ask upstream `GET /wham/usage`
+  accounts, four at a time; admin key, JSON body, same-origin) ask upstream `GET /wham/usage`
   (5 s, Codex client headers, egress proxy) for the current windows. Read-only; one call per
   account per 30 s, a repeat inside that answers `rate_limited` without an upstream call.
   Result per account: `{account, ok:true, quota:{plan, primary, secondary}, observed_at_ms,
@@ -637,11 +637,12 @@ API (client key):
   after restart); `nearest_expires_at` = earliest expiry among `status == "available"`.
   `can_consume` = consume switch on **and** the calling key is admin (the page shows the button
   only then).
-- `POST /usage/v1/reset-credits/refresh` — admin-only, JSON + no cookies (optional `{"account": "<id>"}`) → same body.
+- `POST /usage/v1/reset-credits/refresh` — admin-only, JSON + same-origin (optional `{"account": "<id>"}`) → same body.
 - `POST /admin/v1/accounts/{id}/reset-credits/consume` — `{"confirm": "<id>", "credit_id"?,
   "redeem_request_id"?}`. Guards: switch off → 403; key only via header (middleware), JSON
   content type (browser cross-origin forms cannot send it without a CORS preflight, which is
-  never granted), any `Cookie` header → 400, `confirm` must equal the path id → 400, unknown
+  never granted), a cross-site `Origin` / `Sec-Fetch-Site` → 403 (cookies such as Cloudflare
+  Access's `CF_Authorization` are ignored, see [SETTINGS.md](SETTINGS.md)), `confirm` must equal the path id → 400, unknown
   account → 404, usage log disabled → 503. One consume per account at a time.
   Response: `{account, redeem_request_id, reused_redeem_request_id, attempt, status, code,
   windows_reset, reset_credits, rate_limit?}`; after `reset` the listing is re-fetched and

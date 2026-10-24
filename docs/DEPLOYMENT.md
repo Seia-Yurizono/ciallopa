@@ -111,6 +111,103 @@ guarantee: body sizes, stream buffers and idle connections still matter. Observe
 occupancy in the overview, then measure representative traffic before increasing it or
 choosing a container memory limit. See [PERFORMANCE.md](PERFORMANCE.md).
 
+## Behind Cloudflare Tunnel and Access
+
+ciallopa serves plain HTTP and authenticates every API call with a client key in a header
+(`Authorization: Bearer` or `X-Api-Key`). Cloudflare Access is an extra gate in front of it, not
+a replacement: the management page still asks for an admin key, and `/usage/v1/*` and
+`/admin/v1/*` still answer 401 without one. ciallopa does not read the Access JWT or cookie.
+
+Recommended layout:
+
+| Paths | Who calls them | Cloudflare Access |
+|---|---|---|
+| `/ui`, `/ui/*`, `/admin/v1/*`, `/usage/v1/*`, `/favicon.ico` | Browser (management page) | An Access application with an **Allow** policy for your identity |
+| `/v1/*`, `/backend-api/*`, `/api/codex/*`, `/healthz` | Codex and other clients | Not behind interactive login: a separate hostname, or a more specific path application with **Bypass**, or **Service Auth** with a service token |
+
+- Simplest: two hostnames on the same tunnel, e.g. `cpa-admin.example.com` behind Access and
+  `cpa.example.com` for clients. With one hostname, add path applications for the client paths;
+  [the more specific path wins](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/app-paths/).
+  [Bypass](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/) leaves only
+  the client key in front of them (Bypass is also not logged by Access).
+- To keep Access on the client paths, use a
+  [service token](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/)
+  with a **Service Auth** policy (an Allow policy would send Codex to the login page) and have
+  Codex send it next to the key:
+  ```toml
+  [model_providers.cpa.env_http_headers]
+  "CF-Access-Client-Id" = "CF_ACCESS_CLIENT_ID"          # names of environment variables
+  "CF-Access-Client-Secret" = "CF_ACCESS_CLIENT_SECRET"
+  ```
+  ([Codex `env_http_headers`](https://learn.chatgpt.com/docs/config-file/config-reference)). The
+  variables can go into `$CODEX_HOME/.env` like `CPA_KEY`. Check with
+  `curl -H "CF-Access-Client-Id: …" -H "CF-Access-Client-Secret: …" -H "Authorization: Bearer $CPA_KEY" https://cpa.example.com/v1/models`.
+  ciallopa strips `cf-*`, cookies and forwarding headers before anything goes upstream.
+
+Management page behaviour:
+
+- The page calls the API on its own origin with `credentials: "same-origin"`, so the browser
+  sends the `CF_Authorization` cookie to Access. Pages, scripts and styles are inline in one
+  document served from `/ui*`; there are no other assets, no EventSource and no WebSocket in
+  the page. No CORS is needed or offered.
+- When the Access session expires, Access answers an API call with a redirect to the sign-in page.
+  The page fetches with `redirect: "manual"` and shows 「Cloudflare Access 登录已过期，请刷新页面重新登录」
+  (also for an HTML answer or an Access 401/403) instead of a network error, and keeps the key.
+  Reloading the page goes through the Access login. A real connection failure still shows
+  「网络错误，连不上 ciallopa（…）」.
+- Writes need JSON and must come from the same origin: when the browser sends `Sec-Fetch-Site` it
+  must be `same-origin`, otherwise `Origin` must name the `Host` (or `X-Forwarded-Host`). Cookies
+  are ignored. cloudflared keeps the public `Host` by default; if you set `httpHostHeader` to
+  something else, writes from a browser that sends no `Sec-Fetch-Site` are rejected with 403.
+- The pages send a strict CSP and `Cache-Control: no-store, no-transform`. `no-transform`
+  [stops Rocket Loader, Email Obfuscation and Web Analytics injection](https://developers.cloudflare.com/cache/concepts/cache-control/)
+  on them, which the CSP would block anyway. If you see CSP errors for `cdn-cgi` scripts, also
+  turn these off for the admin host with a
+  [Configuration Rule](https://developers.cloudflare.com/rules/configuration-rules/settings/)
+  (Rocket Loader off, Email Obfuscation off, Disable RUM).
+- ciallopa sets no cookies. Turn on **Always Use HTTPS** and, if you want, HSTS at Cloudflare;
+  the origin behind the tunnel stays plain HTTP on loopback.
+
+Streaming through Tunnel:
+
+- cloudflared streams a response only when it is `Content-Type: text/event-stream`
+  ([Tunnel troubleshooting](https://developers.cloudflare.com/tunnel/troubleshooting/)); ciallopa
+  always labels SSE that way. WebSockets (`supports_websockets = true`) pass through Tunnel and
+  Access unchanged.
+- Cloudflare closes a request that sends no response bytes for
+  [125 s (error 524)](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-5xx-errors/error-524/).
+  This applies between reads, so it hits a stream only if it stays silent that long; a slow
+  non-streaming call such as a large `/v1/responses/compact` is the likely case. Codex's `remote_compaction = "v2"` streams, so prefer it.
+
+Not needed for ciallopa: client-IP headers and trusted-proxy settings (ciallopa makes no decision
+on the client address, so `CF-Connecting-IP` / `X-Forwarded-For` are neither trusted nor used),
+a public-URL setting (no absolute URLs; account login callbacks go to the issuer or to Codex's
+local callback, not to this host), and Access JWT validation (the key is the authentication).
+
+How other self-hosted apps handle the same points, for comparison:
+
+- Forwarded client addresses are trusted only after an explicit opt-in:
+  [Home Assistant](https://www.home-assistant.io/integrations/http/) (Trust X-Forwarded-For + trusted proxies),
+  [Nextcloud](https://docs.nextcloud.com/server/latest/admin_manual/configuration_server/reverse_proxy_configuration.html) (`trusted_proxies`),
+  [Vaultwarden](https://github.com/dani-garcia/vaultwarden/blob/main/.env.template) (`IP_HEADER` + `IP_HEADER_TRUSTED_PROXIES`),
+  [n8n](https://docs.n8n.io/hosting/configuration/environment-variables/deployment/) (`N8N_PROXY_HOPS`, default 0),
+  [Uptime Kuma](https://github.com/louislam/uptime-kuma/wiki/Reverse-Proxy) (Trust Proxy). ciallopa keeps the default of not trusting them.
+- Public URL / scheme comes from configuration when the app builds absolute links:
+  Nextcloud `overwriteprotocol`, [Gitea `ROOT_URL`](https://docs.gitea.com/administration/reverse-proxies),
+  Vaultwarden `DOMAIN`, n8n `N8N_EDITOR_BASE_URL`. ciallopa builds none.
+- Origin checks behind proxies: [Portainer](https://docs.portainer.io/advanced/cli) added
+  `--trusted-origins` after "Origin invalid" errors behind proxies
+  ([#12748](https://github.com/portainer/portainer/issues/12748)); ciallopa compares `Origin` with
+  `Host` / `X-Forwarded-Host` and prefers `Sec-Fetch-Site`, so no extra setting is needed for
+  cloudflared.
+- Identity from Access: [Grafana](https://grafana.com/docs/grafana/latest/setup-grafana/configure-access/configure-authentication/jwt/)
+  can log users in from `Cf-Access-Jwt-Assertion`, the header Cloudflare
+  [recommends validating](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/)
+  instead of the cookie. ciallopa does not, by design.
+- Cross-origin API calls to an Access-protected host need CORS settings at Access
+  ([Access CORS](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/cors/));
+  ciallopa's page only calls its own origin, so none are needed.
+
 ## Backup and restore
 
 `config/` and `data/` form one recovery set. They contain API keys and account credentials;

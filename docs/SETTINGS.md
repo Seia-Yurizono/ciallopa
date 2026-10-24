@@ -128,7 +128,10 @@ All routes sit behind the client-key middleware.
   `POST /admin/v1/prices/check` / `apply`) need an admin key only: they write the price table,
   not `config.toml`.
 - Same CSRF rules as the reset-credit action: client key in a header (`Authorization: Bearer` or
-  `x-api-key`), `Content-Type: application/json`, no `Cookie` header.
+  `x-api-key`; cookies are ignored, never used for auth), `Content-Type: application/json`
+  (else 400), and a browser request must be same-origin: `Sec-Fetch-Site` `same-origin` / `none`
+  when sent, otherwise an `Origin` matching `Host` or `X-Forwarded-Host` (else 403). Requests
+  without either header (curl, scripts) pass on the key alone.
 - Not editable from the page: `listen`, `auth_dir`, `usage.path`, `usage.prices`, `ui.enabled`,
   `ui.allow_*`, and key plaintext (keys can only be deleted or generated).
 - Secrets are never returned: keys appear as label + `sk-…abcd`, a proxy password as `***`.

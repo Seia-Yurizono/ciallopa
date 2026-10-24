@@ -5,7 +5,7 @@
 
 ## 使用与运行
 
-- [部署与恢复](DEPLOYMENT.md)：容器、反向代理、关停、备份和恢复。
+- [部署与恢复](DEPLOYMENT.md)：容器、反向代理（含 Cloudflare Tunnel / Access）、关停、备份和恢复。
 - [设置](SETTINGS.md)：配置保存、生效范围、热更新及管理 API。
 - [请求指标](METRICS.md)：结果分类、延迟、Token、费用及样本口径。
 - [请求记录](USAGE.md)：字段、错误来源、详情、查询 API 和持久化。
