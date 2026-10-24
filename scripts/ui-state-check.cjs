@@ -187,6 +187,34 @@ async function queryAndPaging() {
   c.scopeWindow.fixed = true;
   reply = async () => ({records: [{request_id: '0000000000000007'}], total: 7, next_before_id: '0000000000000007'});
   vm.runInContext('renderKpis()', c);
+  // The Token card carries the input cache rate (with its formula); the note below no longer repeats it.
+  {
+    const flat = n => n === null || n === undefined ? '' : typeof n !== 'object' ? String(n) : Array.isArray(n) ? n.map(flat).join('') : (n.children || []).map(flat).join('');
+    const tile = name => input('strip').children.find(k => flat(k.children[0]) === name);
+    const cache = () => tile('Token').children[1].children.flat().find(e => e && e.attrs && e.attrs.class === 'cr');
+    assert.equal(flat(cache()), '缓存 –', 'no cache samples shows a dash, not 0%');
+    assert.match(cache().attrs.title, /缓存命中的输入 Token \/ 输入 Token/);
+    assert.match(cache().attrs.title, /（0 条），不含预热/);
+    assert.equal(flat(input('metricnote').children).includes('缓存'), false, 'cache rate is not duplicated under the cards');
+    const saved = c.SUM.total;
+    c.SUM.total = {...saved, usage_samples: 4, input_tokens: 1000, output_tokens: 50, cache_ratio: 0.462, cache_samples: 3};
+    vm.runInContext('renderKpis()', c);
+    assert.equal(flat(cache()), '缓存 46.2%');
+    assert.match(cache().attrs.title, /（3 条），不含预热/);
+    assert.equal(flat(tile('Token').children[1]), '1050缓存 46.2%');
+    input('fprewarm').checked = true;
+    vm.runInContext('renderKpis()', c);
+    assert.match(cache().attrs.title, /，含预热，/, 'the formula names the 含预热 population');
+    input('fprewarm').checked = false;
+    c.SUM.total = {...saved, cache_ratio: null, cache_samples: 0};
+    vm.runInContext('renderKpis()', c);
+    assert.equal(flat(cache()), '缓存 –');
+    const sum = c.SUM;c.SUM = null;
+    vm.runInContext('renderKpis()', c);
+    assert.equal(flat(tile('Token').children[1]), '–', 'no summary yet: the card is a bare dash');
+    c.SUM = sum;c.SUM.total = saved;links.length = 0;
+    vm.runInContext('renderKpis()', c);
+  }
   links[0].events.click();
   await new Promise(setImmediate);
   assert.equal(outcome.value, 'business', 'request-count card selects visible business scope');
@@ -1126,5 +1154,5 @@ async function memoryPanel() {
   recordRenderingAndInspectorFocus();
   autoRefreshInterval();
   cloudflareEgressBanner();
-  console.log('PASS: status chip colours/contrast, auto-refresh interval, Cloudflare egress banner, query/auth races, Cloudflare Access expiry, shared scope and buckets, ID paging, history/drill-down, usage samples and unknown outcomes, overview snapshots, egress identity/order/logout, scoped filter chips/URL/focus, inspector retry/expiry/stale authorization/keyboard, keyed record updates and inspector focus, memory panel, scope suggestions');
+  console.log('PASS: status chip colours/contrast, auto-refresh interval, Cloudflare egress banner, query/auth races, Cloudflare Access expiry, shared scope and buckets, ID paging, history/drill-down, usage samples and unknown outcomes, overview snapshots, egress identity/order/logout, scoped filter chips/URL/focus, inspector retry/expiry/stale authorization/keyboard, keyed record updates and inspector focus, memory panel, scope suggestions, Token cache rate');
 })().catch(error => {console.error(error); process.exitCode = 1;}).finally(() => clearTimeout(watchdog));

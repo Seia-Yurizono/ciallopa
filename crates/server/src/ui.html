@@ -208,6 +208,7 @@ select.ivl{height:24px;padding:0 var(--s1);font-size:var(--fs-xs)}
 .kpi .k{font-size:var(--fs-xs);color:var(--mut);font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .kpi .v{font-size:20px;font-weight:650;font-variant-numeric:tabular-nums;line-height:28px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .kpi .v small{font-size:var(--fs-s);font-weight:500;color:var(--mut);margin-left:var(--s1)}
+.kpi .v small.cr{color:var(--fg-2);margin-left:var(--s2)}
 .kpi .s{font-size:var(--fs-xs);color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .scope{margin-bottom:var(--s4)}
 .scope summary{padding:var(--s2) var(--s3);cursor:pointer;font-size:var(--fs-s);color:var(--mut)}
@@ -362,6 +363,7 @@ select.ivl{height:24px;padding:0 var(--s1);font-size:var(--fs-xs)}
 .strip .kpi .s{min-height:0}
 .strip .kpi .v{font-size:20px}
 .strip .kpi .v small{font-size:10px;margin-left:2px}
+.strip .kpi .v small.cr{display:block;margin:0;font-size:11px;line-height:14px}
 .scope .filters label{width:100%;display:grid;grid-template-columns:3em minmax(0,1fr)}
 .scope .filters input,.scope .filters select{width:100%}
 .scope .filters label.chk{display:flex}
@@ -754,6 +756,8 @@ function renderQuotaNow(){queueMicrotask(refocus);ACCTS=mergeAccts();const tb=$(
 function pct(n){return n===null||n===undefined?"–":(n*100).toFixed(1)+"%"}
 function summaryCurrent(){return SUM_SCOPE===qs(scopeFilters())}
 function tokenValue(t){return t&&(t.usage_samples||!(t.count+t.prewarm_count))?fmtN((t.input_tokens||0)+(t.output_tokens||0)):"–"}
+function cacheRate(t){return t&&t.cache_ratio!==null&&t.cache_ratio!==undefined&&t.cache_samples?pct(t.cache_ratio):"–"}
+function cacheTip(t){return "缓存率 = 缓存命中的输入 Token / 输入 Token；只算上游报告了缓存字段的请求（"+exact(t&&t.cache_samples||0)+" 条），"+pwText()+"，随筛选范围变化"}
 function statLink(text,outcome){const b=h("button",{class:"statlink",type:"button",title:"在下方查看这些请求",disabled:SUM_SCOPE!==qs(scopeFilters())},text);b.addEventListener("click",()=>drillOutcome(outcome));return b}
 function renderKpis(){const t=SUM&&SUM.total,span=SUM?Math.max(1,SUM.to_ms-SUM.from_ms):0;
   const cost=t&&t.cost_usd,u=t&&t.unknown_price,costV=!t?"–":u&&!cost?"未定价":(u?"≥":"")+fmtUsd(cost);
@@ -763,12 +767,12 @@ function renderKpis(){const t=SUM&&SUM.total,span=SUM?Math.max(1,SUM.to_ms-SUM.f
     ["失败率",t?statLink(pct(t.failure_rate),"failed"):"–",t?[statLink(exact(t.failures)+" 失败","failed")," · ",statLink(exact(t.cancelled)+" 取消","cancelled")]:"", "失败 / 业务请求；客户端取消、协议正常终止的 incomplete 与观察不完整的未知结果分开计数。"],
     ["首输出 p50",t?fmtMs(t.stream_ttft_p50_ms):"–",t?"p90 "+fmtMs(t.stream_ttft_p90_ms)+" · "+exact(tt)+" 样本":"", "流请求从开始到首个文本、推理或工具参数输出。包括之后失败或取消但已产生首输出的样本；无输出的不填零。"],
     ["生成速度",t&&t.generation_tps!==null&&t.generation_tps!==undefined?[t.generation_tps.toFixed(1),h("small",null,"tok/s")]:"–",t?exact(ts)+" 完成样本 · 估算":"", "完成流的总输出 Token / 总生成时长；缺首输出时间、取消、失败、incomplete 及未知结果不参与。包含尾部传输时间，不能当作纯模型解码速度。"],
-    ["Token",tokenValue(t),t?(t.usage_samples||!(t.count+t.prewarm_count)?"入 "+fmtN(t.input_tokens)+" · 出 "+fmtN(t.output_tokens):"上游未报告用量"):"", "仅累计实际报告的用量，"+pwText()+"；输入含缓存命中，推理 Token 已包含在输出中。"],
+    ["Token",t?[tokenValue(t),h("small",{class:"cr",title:cacheTip(t)},"缓存 "+cacheRate(t))]:"–",t?(t.usage_samples||!(t.count+t.prewarm_count)?"入 "+fmtN(t.input_tokens)+" · 出 "+fmtN(t.output_tokens):"上游未报告用量"):"", "仅累计实际报告的用量，"+pwText()+"；输入含缓存命中，推理 Token 已包含在输出中。"],
     ["估算费用",costV,u?exact(u)+" 条未定价":t?"按 API 标价 · 非账单":"", "按模型、档位和报告用量估算，"+pwText()+"；订阅实际费用不同。未定价不会被算成免费。"]];
   const st=$("strip");clear(st);for(const [k,v,sub,tip] of cells)st.appendChild(h("div",{class:"kpi",title:tip},h("div","k",k),h("div","v",v),h("div","s",sub)));
   const note=$("metricnote");clear(note);if(!t)return;
   if(SUM_SCOPE!==qs(scopeFilters()))note.appendChild(h("span",null,"概况为上次范围，等待更新 ·"));
-  note.append(h("span",{title:"缓存命中 Token / 有缓存字段样本的输入 Token"},"输入缓存 "+pct(t.cache_ratio)),h("span",null,"·"),statLink(exact(t.incomplete)+" 未完成","incomplete"));
+  note.append(statLink(exact(t.incomplete)+" 未完成","incomplete"));
   if(t.unknown)note.append(h("span",null,"·"),statLink(exact(t.unknown)+" 结果未知","unknown"));
   if(t.prewarm_count)note.append(h("span",null,"·"),statLink(exact(t.prewarm_count)+" 预热","prewarm"));
   else if(!withPrewarm())note.append(h("span",{title:"Token、费用和趋势不含预热；在筛选范围中勾选「含预热」可计入"},"· 不含预热"));
