@@ -197,6 +197,7 @@ header button:after,header a.tag:after,.cchip:after,label.chk:after,.toc a:after
 main.noadm>:not(#noadm){display:none!important}
 #noadm{display:flex;flex-direction:column;gap:var(--s2);align-items:center;margin-top:var(--s6)}
 /* ==== shared:end ==== */
+select.ivl{height:24px;padding:0 var(--s1);font-size:var(--fs-xs)}
 /* overview */
 .fbar{position:sticky;top:var(--hdr);z-index:15;display:flex;align-items:center;gap:var(--s3);margin:calc(-1 * var(--s5)) 0 var(--s3);padding:var(--s3) 0 var(--s2);background:var(--bg);border-bottom:1px solid var(--line)}
 .fbar .fl{display:inline-flex;align-items:center;gap:var(--s2);font-size:var(--fs-s);color:var(--mut);white-space:nowrap}
@@ -353,7 +354,7 @@ main.noadm>:not(#noadm){display:none!important}
 .fbar .fl{flex:0 0 auto;min-width:0}.fbar select{width:132px;min-width:0}
 .fbar>.sp{display:none}#scopewhen{flex:1;white-space:nowrap}
 #scopewhen[data-fixed=true]{order:3;flex-basis:100%;white-space:normal}
-.fbar .chk{min-height:40px}
+.fbar .chk{min-height:40px}.fbar select.ivl{width:auto;height:44px;font-size:16px}
 .rowA{grid-template-columns:minmax(0,1fr);gap:var(--s5);margin-bottom:var(--s5)}
 /* quota: line 1 = dot + name + card chip; line 2 = both bars with reset text */
 #quota tr{grid-template-columns:repeat(4,minmax(0,1fr));grid-template-areas:"who who who rc" "q5 q5 qw qw";gap:var(--s1) var(--s3)}
@@ -395,13 +396,13 @@ main.noadm>:not(#noadm){display:none!important}
 <header><a class="skip" href="#main">跳到主要内容</a>
   <span class="brand">ciallopa</span>
   <nav class="tabs" aria-label="页面"><a href="/ui" data-p="overview" aria-current="page">概览</a><a href="/ui/accounts" data-p="accounts">账号<span class="cnt"></span></a><a href="/ui/settings" data-p="settings">设置</a></nav>
-  <div class="hstat"><a id="egress" class="hide" href="/ui/settings#g-upstream_opts"></a><span id="upd" class="d-only"></span><label class="chk d-only" title="每 15 秒自动刷新（标签页不可见或有对话框打开时暂停）"><input type="checkbox" id="auto" class="sw"><span>自动刷新</span></label>
+  <div class="hstat"><a id="egress" class="hide" href="/ui/settings#g-upstream_opts"></a><span id="upd" class="d-only"></span><label class="chk d-only" id="autol" title="每 15 秒自动刷新（标签页不可见或有对话框打开时暂停）"><input type="checkbox" id="auto" class="sw"><span>自动刷新</span></label><select id="ivl" class="ivl d-only" aria-label="自动刷新间隔" title="自动刷新间隔"><option value="5">5 秒</option><option value="15" selected>15 秒</option><option value="30">30 秒</option><option value="60">60 秒</option></select>
   <button id="refresh" class="xs" type="button" title="立即刷新">刷新</button><button id="theme" class="xs ghost" type="button"></button><button id="logout" class="xs ghost" type="button" title="清除本标签页保存的密钥（三个页面共用）">退出</button></div>
 </header>
 <main id="main" tabindex="-1">
   <div class="fbar" role="group" aria-label="时间范围">
     <label class="fl"><span class="d-only">范围</span><select id="range" aria-label="时间段"><option value="1h">最近 1 小时</option><option value="24h" selected>最近 24 小时</option><option value="7d">最近 7 天</option><option value="30d">最近 30 天</option></select></label>
-    <span class="xs mut" id="scopewhen"></span><span class="sp"></span><span class="m-only"><label class="chk" title="每 15 秒自动刷新"><input id="mauto" type="checkbox" class="sw" aria-label="每 15 秒自动刷新"><span>自动</span></label></span><button id="scopefreeze" class="ghost xs" type="button" title="固定当前时间范围，方便比较和分享">固定时间</button>
+    <span class="xs mut" id="scopewhen"></span><span class="sp"></span><span class="m-only"><label class="chk" id="mautol" title="每 15 秒自动刷新"><input id="mauto" type="checkbox" class="sw" aria-label="每 15 秒自动刷新"><span>自动</span></label><select id="mivl" class="ivl" aria-label="自动刷新间隔"><option value="5">5 秒</option><option value="15" selected>15 秒</option><option value="30">30 秒</option><option value="60">60 秒</option></select></span><button id="scopefreeze" class="ghost xs" type="button" title="固定当前时间范围，方便比较和分享">固定时间</button>
   </div>
   <div id="msg" class="banner err" role="alert"></div>
   <div id="noacc" class="banner err hide" role="status"></div>
@@ -1084,9 +1085,15 @@ async function loadAll(automatic=false){if(automatic&&allPending)return;allPendi
   let ok=true;for(const r of await Promise.allSettled(jobs))if(r.status==="rejected"){ok=false;fail(r.reason)}
   if(ok&&key()===auth)$("upd").textContent="更新于 "+hms(new Date())}finally{allPending--}}
 function stopAuto(){if(timer){clearInterval(timer);timer=null}}
-function startAuto(){stopAuto();timer=setInterval(()=>{if(!document.hidden&&!MODALS.length)loadAll(true)},15000)}
+function startAuto(){stopAuto();timer=setInterval(()=>{if(!document.hidden&&!MODALS.length)loadAll(true)},autoSecs()*1000)}
 onLogout=()=>{stopAuto();closePop(false);for(const id of Object.keys(loadSeq))loadSeq[id]++;resetQuotaReads();Q=RC=AC=EG=SUM=TREND=RECORDER=null;ACCTS=[];recState={cursor:null,total:0,rows:[]};renderKpis();renderRuntime();renderRecords();clear($("svg"));clear($("sum").tBodies[0]);clear($("quota").tBodies[0])};
 for(const id of ["auto","mauto"])$(id).addEventListener("change",e=>{const on=e.target.checked;$("auto").checked=$("mauto").checked=on;localStorage.setItem(AS,on?"1":"0");if(on)startAuto();else stopAuto()});
+// Auto-refresh interval (5/15/30/60 s, default 15), kept per browser; a change restarts a running timer.
+const AIV="ciallopa_auto_secs",AUTO_SECS=[5,15,30,60];
+function autoSecs(){const n=Number(localStorage.getItem(AIV));return AUTO_SECS.includes(n)?n:15}
+function showAutoSecs(){const n=autoSecs(),t="每 "+n+" 秒自动刷新";$("ivl").value=$("mivl").value=String(n);$("autol").title=t+"（标签页不可见或有对话框打开时暂停）";$("mautol").title=t;$("mauto").setAttribute("aria-label",t)}
+for(const id of ["ivl","mivl"])$(id).addEventListener("change",e=>{const n=Number(e.target.value);if(!AUTO_SECS.includes(n))return;localStorage.setItem(AIV,String(n));showAutoSecs();if(timer)startAuto()});
+showAutoSecs();
 $("refresh").addEventListener("click",()=>loadAll());
 function changeScope(){clearTimeout(kt);saveF();showScope();renderKpis();renderTrend();loadSummary().catch(fail);loadRecords(false).catch(fail)}
 function changeRecords(){saveF();loadRecords(false).catch(fail)}
