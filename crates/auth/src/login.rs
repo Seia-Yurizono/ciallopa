@@ -314,6 +314,15 @@ pub fn import_auth_value(v: &Value, auth_dir: &Path) -> Result<String, AuthError
     write_imported(v, fresh, auth_dir)
 }
 
+/// Where [`import_auth_value`] would write `v`, without writing: `(account id, exists)`.
+/// `exists` = an auth file of the same account is already there (its tokens would be
+/// replaced). The id is the existing file's name (a legacy name included).
+pub fn import_target(v: &Value, auth_dir: &Path) -> Result<(String, bool), AuthError> {
+    let fresh = imported_record(v)?;
+    let (id, prev, legacy) = existing_for(auth_dir, &fresh);
+    Ok((legacy.unwrap_or(id), prev.is_some()))
+}
+
 /// The codex record an import document becomes, before it is merged with an existing file.
 /// Rejects auth files of other providers and documents without ChatGPT tokens.
 pub fn imported_record(v: &Value) -> Result<Value, AuthError> {

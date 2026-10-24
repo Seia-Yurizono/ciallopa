@@ -494,8 +494,16 @@ function toggle(a,b){const off=!a.disabled,name=off?"停用":"启用";
     if(off)ok("已停用 "+nm(a),{undo:async()=>{await req("PATCH",path(a),{disabled:false});toast("已恢复启用 "+nm(a));await load()}});else ok("已启用 "+nm(a));await load()},name+"中…");
   if(off&&lastOne(a))return clickAgain(b,"再点一次：停用后没有可用账号",run);
   return run()}
+// Irreversible account actions share one alertdialog: focus starts on 取消, the danger button is armed.
+function confirmDlg(title,nodes,yes,run,from){const c=$("dlgc");clear(c);$("dlgt").textContent=title;c.append(...nodes);
+  $("dyes").textContent=yes;$("dalt").classList.add("hide");$("dlg")._alt=null;$("dlg")._yes=run;openModal($("dlg"),$("dno"),from)}
+function refreshAcct(a,from){confirmDlg("更新 "+nm(a)+" 的令牌？",[h("p","mono",a.email?a.email+"（"+a.id+"）":a.id),
+    h("p",null,"会立即用刷新令牌向上游换一组新令牌。"),
+    h("p","warnp",h("b",null,"此操作不可撤销。"),"旧的刷新令牌随即失效：同一个 auth.json 若也在 Codex CLI 或其他工具里使用，那边会被登出，需要重新登录。"),
+    h("p","mut","ciallopa 会在令牌过期前自动更新，通常不需要手动操作。")],
+  "更新令牌",async()=>{await apost(path(a)+"/refresh",{confirm:a.id});ok("已更新 "+nm(a)+" 的令牌");await load()},from)}
 function delAcct(a,from){const rc=RCM[a.id],n=rc&&rc.available_count,c=$("dlgc");clear(c);
-  $("dlgt").textContent="删除账号 "+nm(a)+"？";
+  $("dlgt").textContent="删除账号 "+nm(a)+"？";$("dyes").textContent="删除账号";
   c.append(h("p","mono",a.email?a.email+"（"+a.id+"）":a.id),
     h("p",null,"会删除账号目录中的账号文件，并清掉它的连接、cookie 和会话绑定。已绑定到它的会话下一轮会改用其他账号。删除后只能重新登录或导入才能恢复。"));
   if(n>0)c.appendChild(h("p","hintp","它还有 "+n+" 张未用的重置卡；卡属于上游账号，重新登录同一账号后仍可使用。"));
@@ -505,7 +513,7 @@ function delAcct(a,from){const rc=RCM[a.id],n=rc&&rc.available_count,c=$("dlgc")
   $("dlg")._yes=async()=>{await req("DELETE",path(a),{confirm:a.id},null,T);ok("已删除 "+nm(a));await load()};
   $("dlg")._alt=async()=>{await apatch(path(a),{disabled:true});ok("已停用 "+nm(a),{undo:async()=>{await req("PATCH",path(a),{disabled:false});toast("已恢复启用 "+nm(a));await load()}});await load()};
   openModal($("dlg"),$("dno"),from)}
-for(const [id,k,name] of [["dyes","_yes","删除"],["dalt","_alt","停用"]])$(id).addEventListener("click",async()=>{const f=$("dlg")[k];if(!f)return;await busyRun($(id),name,f,name+"中…");closeModal($("dlg"))});
+for(const [id,k] of [["dyes","_yes"],["dalt","_alt"]])$(id).addEventListener("click",async()=>{const f=$("dlg")[k];if(!f)return;await busyRun($(id),$(id).textContent,f,"处理中…");closeModal($("dlg"))});
 $("dno").addEventListener("click",()=>closeModal($("dlg")));
 function opLabel(b,o){clear(b);b.append("操作",h("span",{"aria-hidden":"true"},o?" ▴":" ▾"))}
 // Reset cards: the newer of the card listing and the last 刷新额度 answer. Display only
@@ -543,7 +551,7 @@ function row(a,usage_on){const s=ST[a.status]||[a.status,"off",""],full=a.email?
   const ag=h("div","acts");actc.appendChild(ag);
   if(W){const [wi,pi,sv]=wp("m");ag.appendChild(h("span","m-only mrow",h("span","xs mut","权重"),wi,h("span","xs mut","优先级"),pi,sv));
     if(a.status!=="token_invalid"){const tb=h("button",{type:"button",class:"xs","data-fk":a.id+"|tg"},a.disabled?"启用":"停用");tb.addEventListener("click",()=>toggle(a,tb));ag.appendChild(tb)}
-    ag.appendChild(act(h("button",{class:"xs",type:"button",title:"立即用刷新令牌换新的访问令牌（ciallopa 也会自动更新）。若同一 auth.json 也在 Codex CLI 里用，更新后那边需要重新登录","data-fk":a.id+"|rt"},"更新令牌"),async()=>{await apost(path(a)+"/refresh",{});ok("已更新 "+nm(a)+" 的令牌");await load()},"更新令牌","更新中…"));
+    {const b=h("button",{class:"xs",type:"button","aria-haspopup":"dialog",title:"立即用刷新令牌换新的访问令牌（ciallopa 也会自动更新）。若同一 auth.json 也在 Codex CLI 里用，更新后那边需要重新登录","data-fk":a.id+"|rt"},"更新令牌");b.addEventListener("click",()=>refreshAcct(a,b));ag.appendChild(b)}
   }
   // read-only upstream query: admin keys, also without allow_config_write
   ag.appendChild(act(h("button",{class:"xs",type:"button",title:"向上游查询这个账号当前的额度（只读，不消耗额度；同一账号 30 秒内只查一次）","data-fk":a.id+"|rq"},"刷新额度"),()=>quotaOne(a),"刷新额度","查询中…"));
@@ -668,7 +676,15 @@ act($("rescan"),async()=>{const j=await apost("/admin/v1/accounts/reload",{});aw
   const t="已重新扫描账号目录："+(j.added.length?"新增 "+j.added.length+" 个账号":"没有新账号")+(j.removed.length?"，移除了 "+j.removed.length+" 个":"")+"，共 "+j.accounts+" 个"+(bad?"\n"+bad+" 个文件没有加载，原因见页面上方":"");
   if(bad){$("msg").textContent="";toast(t,{kind:"err"});$("authf").scrollIntoView({block:"nearest"})}else ok(t)},"重新扫描","扫描中…");
 $("imf").addEventListener("submit",async e=>{e.preventDefault();let doc;try{doc=JSON.parse($("imt").value)}catch(_){fail(new Error("内容不是有效的 JSON"));return}
-  try{const j=await post("/admin/v1/accounts/import",{auth_json:doc});$("imt").value="";ok("已导入账号 "+j.account);await load()}catch(err){fail(err)}});
+  const run=async()=>{const j=await post("/admin/v1/accounts/import",{auth_json:doc});$("imt").value="";ok("已导入账号 "+j.account);await load()};
+  const from=$("imf").querySelector("button[type=submit]");
+  try{const t=await post("/admin/v1/accounts/import",{auth_json:doc,dry_run:true});if(!t.exists){await run();return}
+    // Same account already there: importing replaces its tokens (the current ones are not kept).
+    const em=typeof doc.email==="string"&&doc.email?doc.email:null;
+    confirmDlg("替换 "+(em||t.account)+" 的令牌？",[h("p","mono",em?em+"（"+t.account+"）":t.account),
+      h("p",null,"账号目录里已有这个账号，导入会用粘贴的令牌替换它现有的令牌。"),
+      h("p","warnp",h("b",null,"此操作不可撤销。"),"现有令牌不会保留，也不会备份。"),
+      h("p","mut","粘贴的令牌若已过期或已被更新过，这个账号可能需要重新登录。")],"替换令牌",run,from)}catch(err){fail(err)}});
 // Device-code login: stopping only ends this page's wait; the server may still finish authorization.
 let deviceSeq=0,deviceAbort=null,deviceBusy=false;
 function devEnd(t){deviceSeq++;if(deviceAbort){deviceAbort.abort();deviceAbort=null}clearInterval(poll);poll=null;deviceBusy=false;

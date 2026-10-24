@@ -197,6 +197,10 @@ async fn remove(
 #[derive(Deserialize)]
 struct ImportReq {
     auth_json: Value,
+    /// Only report where the document would go (`{account, exists}`); writes nothing. The
+    /// page asks before replacing the tokens of an account that is already there.
+    #[serde(default)]
+    dry_run: bool,
 }
 
 async fn import(
@@ -217,6 +221,21 @@ async fn import(
     if !req.auth_json.is_object() {
         return err(StatusCode::BAD_REQUEST, "auth_json must be an object");
     }
+    if req.dry_run {
+        let dir = s.st.config.load().auth_dir.clone();
+        let doc = req.auth_json;
+        let r =
+            tokio::task::spawn_blocking(move || ciallopa_auth::login::import_target(&doc, &dir))
+                .await;
+        return match r {
+            Ok(Ok((id, exists))) => {
+                Json(json!({"ok": true, "dry_run": true, "account": id, "exists": exists}))
+                    .into_response()
+            }
+            Ok(Err(e)) => auth_err(e),
+            Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "import check failed"),
+        };
+    }
     match s.st.accounts.import_account(&req.auth_json).await {
         Ok(id) => {
             let _ = s.sync_accounts().await;
@@ -227,17 +246,23 @@ async fn import(
     }
 }
 
+/// 「更新令牌」: spends the refresh token at once (the old one stops working, so a Codex CLI
+/// sharing the same auth.json is logged out). Like delete, the body must name the account.
 async fn refresh(
     State(s): State<S>,
     key: Option<axum::Extension<ClientKey>>,
     Path(id): Path<String>,
     headers: HeaderMap,
+    body: Option<Json<ConfirmReq>>,
 ) -> Response {
     if let Some(r) = bad_id(&id) {
         return r;
     }
     if let Some(r) = s.write_guard(&headers) {
         return r;
+    }
+    if body.map(|b| b.0.confirm) != Some(id.clone()) {
+        return err(StatusCode::BAD_REQUEST, "confirm must equal the account id");
     }
     match s.st.accounts.manual_refresh(&id).await {
         Ok(_) => {

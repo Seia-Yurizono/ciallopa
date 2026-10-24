@@ -731,6 +731,59 @@ async fn account_management_and_removal_cleanup() {
         .await
         .unwrap();
     assert_eq!(l["accounts"].as_array().unwrap().len(), 2);
+    // dry run: says where a document would go, writes nothing
+    let files = || {
+        let mut v: Vec<(String, Vec<u8>)> = std::fs::read_dir(&e.auth)
+            .unwrap()
+            .map(|f| f.unwrap().path())
+            .map(|p| (p.display().to_string(), std::fs::read(&p).unwrap()))
+            .collect();
+        v.sort();
+        v
+    };
+    let before = files();
+    let dry = |doc: Value| {
+        e.req(reqwest::Method::POST, "/admin/v1/accounts/import")
+            .json(&json!({"auth_json": doc, "dry_run": true}))
+            .send()
+    };
+    let r: Value = dry(json!({"tokens": {"access_token": "tok-c2", "account_id": "acc-c"}}))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(r["exists"], true, "{r}");
+    assert!(e
+        .auth
+        .join(format!("{}.json", r["account"].as_str().unwrap()))
+        .exists());
+    let r: Value = dry(json!({"tokens": {"access_token": "tok-n", "account_id": "acc-new"}}))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(r["exists"], false, "{r}");
+    assert_eq!(files(), before, "a dry run writes nothing");
+    let r = dry(json!({"type": "claude", "access_token": "x"}))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400, "same validation as a real import");
+    // refreshing spends the refresh token: the body must name the account
+    for body in [None, Some(json!({})), Some(json!({"confirm": "a"}))] {
+        let mut q = e.req(reqwest::Method::POST, "/admin/v1/accounts/b/refresh");
+        if let Some(b) = body {
+            q = q.json(&b);
+        }
+        let r = q.send().await.unwrap();
+        assert!(matches!(r.status().as_u16(), 400 | 415), "{}", r.status());
+    }
+    assert_eq!(
+        files(),
+        before,
+        "refresh refused before touching the account"
+    );
     // upload of several files: new / already present / other provider / broken
     let r: Value = e
         .req(reqwest::Method::POST, "/admin/v1/accounts/import-files")
