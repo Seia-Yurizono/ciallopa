@@ -2189,6 +2189,105 @@ async fn websocket_relay_and_limit_close() {
         )));
 }
 
+#[tokio::test]
+async fn websocket_messages_share_the_buffered_body_budget() {
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as M};
+    let e = env(300).await;
+    let mut cfg = (*e.config.load()).clone();
+    cfg.max_buffered_body_mb = 1;
+    e.config.store(cfg);
+    let mib = 1024 * 1024u64;
+    let mut req = format!("ws://{}/backend-api/codex/responses", e.proxy)
+        .into_client_request()
+        .unwrap();
+    req.headers_mut()
+        .insert("authorization", format!("Bearer {KEY}").parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    let msg = |tag: &str, len: usize| {
+        let head = format!(r#"{{"type":"response.create","tag":"{tag}","pad":""#);
+        M::text(format!("{head}{}\"}}", "x".repeat(len - head.len() - 2)))
+    };
+    async fn text(
+        ws: &mut (impl futures::Stream<
+            Item = Result<
+                tokio_tungstenite::tungstenite::Message,
+                tokio_tungstenite::tungstenite::Error,
+            >,
+        > + Unpin),
+    ) -> String {
+        loop {
+            match ws.next().await.unwrap().unwrap() {
+                M::Text(t) => return t.as_str().to_string(),
+                M::Ping(_) | M::Pong(_) => {}
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+    }
+
+    // Another request holds 900 KiB of the 1 MiB budget: a 200 KiB message waits about 1 s,
+    // then gets the HTTP busy wording as a wrapped 503 error event; it is not forwarded.
+    let mut other = e.drain.body_permit();
+    e.drain
+        .reserve_body(&mut other, 900 * 1024, mib, Duration::ZERO)
+        .await
+        .unwrap();
+    let t = std::time::Instant::now();
+    ws.send(msg("refused", 200 * 1024)).await.unwrap();
+    let busy: serde_json::Value = serde_json::from_str(&text(&mut ws).await).unwrap();
+    assert!(
+        t.elapsed() >= Duration::from_millis(900),
+        "{:?}",
+        t.elapsed()
+    );
+    assert_eq!(
+        busy,
+        serde_json::json!({
+            "type": "error",
+            "status": 503,
+            "error": {"type": "gateway_busy", "message": "Gateway is busy; retry shortly."},
+            "headers": {"retry-after": "1"},
+        })
+    );
+    assert_eq!(e.drain.body_bytes(), 900 * 1024);
+
+    // Room again: the connection is still usable and the next reply is for this message.
+    drop(other);
+    ws.send(msg("next", 200 * 1024)).await.unwrap();
+    let echo = text(&mut ws).await;
+    assert!(echo.contains("\"tag\":\"next\"") && !echo.contains("refused"));
+    // Released once the turn completes.
+    for _ in 0..50 {
+        if e.drain.body_bytes() == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(e.drain.body_bytes(), 0);
+
+    // Held for the running turn (its replay copy stays in memory).
+    ws.send(M::text(r#"{"type":"response.create","tag":"held"}"#))
+        .await
+        .unwrap();
+    assert!(text(&mut ws).await.contains("held"));
+    assert_eq!(
+        e.drain.body_bytes(),
+        r#"{"type":"response.create","tag":"held"}"#.len() as u64
+    );
+
+    // A message larger than the whole budget is not refused forever: it waits for all of it.
+    ws.send(msg("whole", (3 * mib / 2) as usize)).await.unwrap();
+    let echo = text(&mut ws).await;
+    assert!(echo.contains("\"tag\":\"whole\""), "{}", &echo[..80]);
+    ws.close(None).await.unwrap();
+    for _ in 0..100 {
+        if e.drain.body_bytes() == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(e.drain.body_bytes(), 0);
+}
+
 async fn sse_text(e: &Env, mode: &str) -> String {
     let r = e
         .post("/backend-api/codex/responses")

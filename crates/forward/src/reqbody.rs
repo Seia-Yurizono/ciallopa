@@ -76,6 +76,23 @@ async fn discard(mut stream: axum::body::BodyDataStream, r: Response) -> Respons
     r
 }
 
+/// Reserve a WebSocket client message that is already buffered (tungstenite reads whole
+/// messages) in the same budget, with the same bounded wait. A message larger than the whole
+/// budget waits for all of it instead of never fitting, so WS message limits stay unchanged.
+/// `None` = still no room after [`BUDGET_WAIT`] (counted as rejected).
+pub(crate) async fn reserve_message(st: &AppState, n: usize) -> Option<BodyPermit> {
+    let budget = st.config.load().max_buffered_body_mb.saturating_mul(MIB);
+    let drain = &st.upstream.drain;
+    let mut permit = drain.body_permit();
+    let n = n as u64;
+    let want = if budget == 0 { n } else { n.min(budget) };
+    drain
+        .reserve_body(&mut permit, want, budget, BUDGET_WAIT)
+        .await
+        .ok()
+        .map(|()| permit)
+}
+
 impl FromRequest<AppState> for ReqBody {
     type Rejection = Response;
 
