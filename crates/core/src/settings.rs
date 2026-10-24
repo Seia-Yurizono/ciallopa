@@ -119,7 +119,7 @@ pub const SCHEMA: &[Field] = &[
     f("proxy_enabled", "bool", Hot, true, "启用出口代理", "关闭时保留代理地址，改为直连"),
     f("ipv6", "bool", Hot, true, "允许 IPv6 出口", "开启时 IPv6 与 IPv4 竞速连接，关闭时只用 IPv4；直连和连接代理主机都适用"),
     f("max_body_mb", "int", Hot, true, "请求体上限（MiB）", "取值 1–4096 MiB，超过直接拒绝，下一个请求生效"),
-    f("max_buffered_body_mb", "int", Hot, true, "请求体缓存总量（MiB）", "所有转发中的 HTTP 请求体合计最多占用这么多内存，进程实际占用约为它的 2 倍。没有空间时新请求最多等 1 秒，仍不够就返回 503。0 = 不限，否则不能小于请求体上限。"),
+    f("max_buffered_body_mb", "int", Hot, true, "请求体缓存总量（MiB）", "所有转发中的 HTTP 请求体和 WebSocket 消息合计最多占用这么多内存，HTTP 下进程实际占用约为它的 2 倍。没有空间时新请求最多等 1 秒，仍不够就返回 503，WebSocket 收到同样的错误帧，连接保持。0 = 不限，否则不能小于请求体上限。"),
     f("max_inflight_requests", "int", Hot, true, "转发在途上限", "同时转发的 HTTP 请求和 WebSocket 连接数上限：HTTP 占用到响应结束，WebSocket 占用到连接关闭（含空闲）。达到上限时新请求直接返回 503，不排队；调低不会中断已有请求，0 = 不限。"),
     f("ws_compression", "bool", Hot, true, "客户端 WebSocket 压缩", "客户端请求 permessage-deflate 时启用（Codex 总会请求），对新连接生效"),
     Field { options: &["round-robin", "weighted-round-robin", "fill-first"], choices: &[c("round-robin", "轮询", "按账号名顺序轮流分配，每个模型各自轮转；不看权重，适合让各账号用量均匀"), c("weighted-round-robin", "加权轮询", "按账号权重的比例分配，权重 0 的账号不参与；适合额度不同的账号按比例分担"), c("fill-first", "用满再换", "总是用按账号名排第一的可用账号，它冷却或停用后才轮到下一个；不看权重，适合集中消耗一个账号、其余留作备用")], ..f("routing.strategy", "enum", Hot, true, "选号策略", "新会话和没有会话标识的请求怎么挑账号。先去掉停用、冷却中的账号，再只在优先级最高的一档里按策略选；已绑定的会话只要原账号可用就继续用它。") },

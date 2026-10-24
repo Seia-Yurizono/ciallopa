@@ -446,11 +446,15 @@ See [METRICS.md](METRICS.md) for the current outcome, sampling, cursor and bucke
   accounts, four at a time; admin key, JSON body, no cookies) ask upstream `GET /wham/usage`
   (5 s, Codex client headers, egress proxy) for the current windows. Read-only; one call per
   account per 30 s, a repeat inside that answers `rate_limited` without an upstream call.
-  Result per account: `{account, ok:true, quota:{plan, primary, secondary}, observed_at_ms}` or
+  Result per account: `{account, ok:true, quota:{plan, primary, secondary}, observed_at_ms,
+  usage_available_count, limit_reached}` or
   `{account, ok:false, error:{kind: rate_limited|http|network|timeout|credentials|token_invalid|decode,
   status?, message, retry_after_s?}}`; the batch call returns `{ok, skipped, failed, results}`
   (`skipped`: `rate_limited` accounts, `failed`: the rest). A successful answer is stored as a quota snapshot with `observed_by: "manual"` through the usage writer's
   batches (written even when unchanged, so its time shows the freshness).
+  `usage_available_count` (`rate_limit_reset_credits.available_count`) and `limit_reached`
+  (`rate_limit.limit_reached`) are `null` when upstream omits them. They are kept in memory on the
+  account's reset-credit entry for display only (see below); nothing acts on them.
 
 ## Quota estimate
 **The used % comes from upstream and includes usage by other clients (Codex app, other
@@ -626,7 +630,10 @@ Config (`[ui]`):
 API (client key):
 - `GET /usage/v1/reset-credits` → `{consume_enabled, can_consume, is_admin, refresh_mins, accounts: [{account, email,
   disabled, reset_credits: {fetched_ms, available_count, credits, nearest_expires_at, error,
-  error_ms} | null}], attempts: [last 20 consume attempts]}`. Cache is in memory (re-fetched
+  error_ms, usage_available_count, limit_reached, usage_observed_ms} | null}], attempts: [last 20
+  consume attempts]}`. The `usage_*` fields and `limit_reached` come from the last 刷新额度
+  (`/wham/usage`) answer; the listing fields stay authoritative for consuming. The 账号 page shows
+  the newer of the two counts and 「已达额度上限」 until a newer quota observation replaces it. Cache is in memory (re-fetched
   after restart); `nearest_expires_at` = earliest expiry among `status == "available"`.
   `can_consume` = consume switch on **and** the calling key is admin (the page shows the button
   only then).
