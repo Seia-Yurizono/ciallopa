@@ -17,7 +17,11 @@ case "$TARGET" in
         # jemalloc bakes the page size in at build time and aborts on kernels with larger
         # pages. 64 KiB (jemalloc's own aarch64 cross-compile default) also runs on 4 KiB and
         # 16 KiB kernels, so a native build on a 4 KiB runner matches a cross build.
-        export JEMALLOC_SYS_WITH_LG_PAGE=${JEMALLOC_SYS_WITH_LG_PAGE:-16} ;;
+        export JEMALLOC_SYS_WITH_LG_PAGE=${JEMALLOC_SYS_WITH_LG_PAGE:-16}
+        # Ubuntu's GCC emits outline atomics by default; their libgcc helper needs glibc's
+        # __getauxval, so linking against musl fails (jemalloc's configure then finds no
+        # atomics). Inline atomics work on every ARMv8 CPU.
+        export CFLAGS_aarch64_unknown_linux_musl="${CFLAGS_aarch64_unknown_linux_musl:+$CFLAGS_aarch64_unknown_linux_musl }-mno-outline-atomics" ;;
     *) echo "error: unsupported TARGET $TARGET" >&2; exit 1 ;;
 esac
 DIST=${DIST:-dist}
