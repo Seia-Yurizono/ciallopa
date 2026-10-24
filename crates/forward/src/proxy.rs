@@ -1967,7 +1967,13 @@ pub(crate) fn memfind(hay: &[u8], needle: &[u8]) -> bool {
 }
 
 /// Decode the request body for *inspection only* (zstd bodies are still forwarded as-is).
-pub(crate) fn inspect_json(headers: &HeaderMap, body: &[u8]) -> Option<serde_json::Value> {
+/// zstd bodies are inspected only up to `limit` decoded bytes (`max_body_mb`); a larger one
+/// is forwarded uninspected rather than decoded in full.
+pub(crate) fn inspect_json(
+    headers: &HeaderMap,
+    body: &[u8],
+    limit: u64,
+) -> Option<serde_json::Value> {
     let enc = headers
         .get(http::header::CONTENT_ENCODING)
         .and_then(|v| v.to_str().ok())
@@ -1981,9 +1987,12 @@ pub(crate) fn inspect_json(headers: &HeaderMap, body: &[u8]) -> Option<serde_jso
             let mut dec = zstd::stream::read::Decoder::new(body).ok()?;
             use std::io::Read;
             (&mut dec)
-                .take(256 * 1024 * 1024)
+                .take(limit.saturating_add(1))
                 .read_to_end(&mut out)
                 .ok()?;
+            if out.len() as u64 > limit {
+                return None;
+            }
             serde_json::from_slice(&out).ok()
         }
         _ => None,

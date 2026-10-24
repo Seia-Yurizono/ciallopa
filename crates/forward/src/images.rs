@@ -44,17 +44,17 @@ pub(crate) async fn generations(
     st: State<AppState>,
     key: crate::Key,
     h: HeaderMap,
-    b: Bytes,
+    b: crate::reqbody::ReqBody,
 ) -> Response {
-    tracked(st.0, key, h, b, Kind::Generate).await
+    tracked(st.0, key, h, b.bytes, Kind::Generate).await
 }
 pub(crate) async fn edits(
     st: State<AppState>,
     key: crate::Key,
     h: HeaderMap,
-    b: Bytes,
+    b: crate::reqbody::ReqBody,
 ) -> Response {
-    tracked(st.0, key, h, b, Kind::Edit).await
+    tracked(st.0, key, h, b.bytes, Kind::Edit).await
 }
 
 /// One tracker: streaming branches take it into their producer; buffered responses retain

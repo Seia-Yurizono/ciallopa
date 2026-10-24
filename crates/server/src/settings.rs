@@ -1082,6 +1082,7 @@ async fn get_config(State(s): State<S>) -> Response {
             "inflight": s.st.upstream.drain.inflight(),
             "limit": running.max_inflight_requests,
             "rejected": s.st.upstream.drain.rejected(),
+            "buffered_body_bytes": s.st.upstream.drain.body_bytes(),
             "ws_connections": s.st.upstream.drain.active(),
             "draining": s.st.upstream.drain.phase() != ciallopa_upstream::drain::Phase::Running,
         },

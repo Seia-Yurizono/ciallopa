@@ -1176,6 +1176,136 @@ async fn configured_body_limit_has_no_hidden_twenty_mib_floor() {
     assert_eq!(e.mock.hits.load(Ordering::SeqCst), 0);
 }
 
+fn sized_post(len: usize, chunked: bool) -> http::Request<Body> {
+    let pad = "x".repeat(len.saturating_sub(40));
+    let raw = format!(r#"{{"stream":true,"input":[],"pad":"{pad}"}}"#);
+    let n = raw.len();
+    let b = http::Request::post("/v1/responses").header("authorization", format!("Bearer {KEY}"));
+    if chunked {
+        let bytes = Bytes::from(raw);
+        let parts: Vec<Result<Bytes, std::io::Error>> =
+            vec![Ok(bytes.slice(..n / 2)), Ok(bytes.slice(n / 2..))];
+        b.body(Body::from_stream(futures::stream::iter(parts)))
+            .unwrap()
+    } else {
+        b.header("content-length", n).body(Body::from(raw)).unwrap()
+    }
+}
+
+async fn busy_json(r: Response) -> serde_json::Value {
+    assert_eq!(r.status(), 503);
+    assert_eq!(r.headers()["retry-after"], "1");
+    serde_json::from_slice(&axum::body::to_bytes(r.into_body(), 4096).await.unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn buffered_body_budget_waits_briefly_then_refuses_without_upstream() {
+    use tower::ServiceExt;
+    let e = env(300).await;
+    let mut cfg = (*e.config.load()).clone();
+    cfg.max_buffered_body_mb = 1;
+    e.config.store(cfg);
+    let mib = 1024 * 1024u64;
+    // Another request's body occupies 900 KiB of the 1 MiB budget.
+    let mut other = e.drain.body_permit();
+    e.drain
+        .reserve_body(&mut other, 900 * 1024, mib, Duration::ZERO)
+        .await
+        .unwrap();
+
+    let t = std::time::Instant::now();
+    let r = e
+        .app
+        .clone()
+        .oneshot(sized_post(200 * 1024, false))
+        .await
+        .unwrap();
+    let waited = t.elapsed();
+    let json = busy_json(r).await;
+    assert_eq!(json["error"]["type"], "gateway_busy");
+    assert_eq!(json["error"]["message"], "Gateway is busy; retry shortly.");
+    assert!(
+        waited >= Duration::from_millis(900),
+        "bounded wait first: {waited:?}"
+    );
+    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 0);
+    assert_eq!(e.drain.inflight(), 0);
+
+    // A chunked body is charged as it arrives: 1.2 MiB can never fit in 1 MiB.
+    drop(other);
+    let r = e
+        .app
+        .clone()
+        .oneshot(sized_post(1200 * 1024, true))
+        .await
+        .unwrap();
+    assert_eq!(busy_json(r).await["error"]["type"], "gateway_busy");
+    assert_eq!(
+        e.drain.body_bytes(),
+        0,
+        "a refused body keeps nothing reserved"
+    );
+
+    // Room freed during the wait admits the request; its bytes are returned afterwards.
+    let mut other = e.drain.body_permit();
+    e.drain
+        .reserve_body(&mut other, 900 * 1024, mib, Duration::ZERO)
+        .await
+        .unwrap();
+    let app = e.app.clone();
+    let pending = tokio::spawn(async move { app.oneshot(sized_post(200 * 1024, false)).await });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    drop(other);
+    let r = pending.await.unwrap().unwrap();
+    assert_eq!(r.status(), 200);
+    let _ = axum::body::to_bytes(r.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(e.drain.body_bytes(), 0);
+    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 1);
+
+    // Chunked bodies within budget pass, and 0 = unlimited.
+    let r = e
+        .app
+        .clone()
+        .oneshot(sized_post(300 * 1024, true))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let mut cfg = (*e.config.load()).clone();
+    cfg.max_buffered_body_mb = 0;
+    e.config.store(cfg);
+    let r = e
+        .app
+        .clone()
+        .oneshot(sized_post(1200 * 1024, false))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+}
+
+#[tokio::test]
+async fn declared_oversized_body_gets_neutral_json_413() {
+    use tower::ServiceExt;
+    let e = env(300).await;
+    let mut cfg = (*e.config.load()).clone();
+    cfg.max_body_mb = 1;
+    e.config.store(cfg);
+    let r = e
+        .app
+        .clone()
+        .oneshot(sized_post(1024 * 1024 + 100, false))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 413);
+    let json: serde_json::Value =
+        serde_json::from_slice(&axum::body::to_bytes(r.into_body(), 4096).await.unwrap()).unwrap();
+    assert_eq!(json["error"]["type"], "invalid_request_error");
+    assert_eq!(json["error"]["message"], "Request body is too large.");
+    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 0);
+    assert_eq!(e.drain.body_bytes(), 0);
+}
+
 #[tokio::test]
 async fn admission_holds_http_body_and_hot_limit_keeps_existing_occupancy() {
     use tower::ServiceExt;

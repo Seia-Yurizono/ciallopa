@@ -15,7 +15,7 @@ use std::{
     task::{Context, Poll},
 };
 
-fn refused(reason: Refused) -> Response {
+pub(crate) fn refused(reason: Refused) -> Response {
     let (code, message) = match reason {
         Refused::Busy => ("gateway_busy", "Gateway is busy; retry shortly."),
         Refused::Draining => ("shutdown", "Gateway is shutting down; retry shortly."),
