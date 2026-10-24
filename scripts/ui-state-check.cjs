@@ -472,6 +472,37 @@ function bucketSamplesAndUnknownOutcomes() {
   }
 }
 
+// Status chips: 2xx success green, 429 amber, other 4xx error, 5xx red; cancelled, unknown and
+// prewarm rows stay neutral. Every coloured chip pair meets WCAG AA (4.5:1) in both themes.
+function statusChipColours() {
+  const c = vm.createContext({});
+  vm.runInContext(section('function requestOutcome(', 'function streamRecord('), c);
+  const kind = (outcome, status) => (c.o = outcome, c.s = status, vm.runInContext('(statusKind(o,s)||[null])[0]', c));
+  assert.equal(kind('completed', 200), 's2');
+  assert.equal(kind('incomplete', 200), 's2');
+  assert.equal(kind('failed', 429), 's429');
+  assert.equal(kind('failed', 401), 's4');
+  assert.equal(kind('failed', 502), 's5');
+  assert.equal(kind('failed', 200), null, 'a stream that failed after 200 is not green');
+  for (const outcome of ['cancelled', 'unknown', 'prewarm']) for (const s of [200, 499, 502])
+    assert.equal(kind(outcome, s), null, `${outcome} ${s} stays neutral`);
+  assert.equal(kind('completed', 0), null);
+  const vars = block => Object.fromEntries([...block.matchAll(/--([\w-]+):(#[0-9a-f]{6})/g)].map(m => [m[1], m[2]]));
+  const lum = hex => {
+    const [r, g, b] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255)
+      .map(x => x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4);
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+  const light = vars(section(':root{color-scheme:light;', '}')), dark = vars(section(':root[data-theme=dark]{color-scheme:dark;', '}'));
+  Object.assign(light, vars(section(':root{--st5:', '}')));
+  Object.assign(dark, vars(section(':root[data-theme=dark]{--st5:', '}')));
+  assert.equal(section('@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--st5:', '}'), '@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--st5:' + section(':root[data-theme=dark]{--st5:', '}').slice(':root[data-theme=dark]{--st5:'.length), 'dark --st5 tokens agree');
+  for (const [theme, v] of [['light', light], ['dark', dark]])
+    for (const [fg, bg] of [['ok', 'ok-bg'], ['cool', 'cool-bg'], ['err', 'err-bg'], ['st5', 'st5-bg'], ['fg-2', 'off-bg']])
+      assert.ok(ratio(v[fg], v[bg]) >= 4.5, `${theme} ${fg} on ${bg}: ${ratio(v[fg], v[bg]).toFixed(2)}`);
+}
+
 async function observationErrorDetails() {
   const controls = new Map();
   const control = id => {
@@ -902,11 +933,12 @@ function cloudflareEgressBanner() {
   await currentReadsProtectAuthorization();
   await egressResponses();
   bucketSamplesAndUnknownOutcomes();
+  statusChipColours();
   await observationErrorDetails();
   await filterChipScopeAndFocus();
   await inspectorRetryAndNavigation();
   recordRenderingAndInspectorFocus();
   autoRefreshInterval();
   cloudflareEgressBanner();
-  console.log('PASS: auto-refresh interval, Cloudflare egress banner, query/auth races, shared scope and buckets, ID paging, history/drill-down, usage samples and unknown outcomes, overview snapshots, egress identity/order/logout, scoped filter chips/URL/focus, inspector retry/expiry/stale authorization/keyboard, keyed record updates and inspector focus');
+  console.log('PASS: status chip colours/contrast, auto-refresh interval, Cloudflare egress banner, query/auth races, shared scope and buckets, ID paging, history/drill-down, usage samples and unknown outcomes, overview snapshots, egress identity/order/logout, scoped filter chips/URL/focus, inspector retry/expiry/stale authorization/keyboard, keyed record updates and inspector focus');
 })().catch(error => {console.error(error); process.exitCode = 1;}).finally(() => clearTimeout(watchdog));

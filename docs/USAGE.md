@@ -348,7 +348,10 @@ retried or switched accounts (attempt chain only), in `error_detail`:
 - Purged with the same `retention_days` cutoff as `requests`.
 - `/ui`: the error column shows a colored source badge (`客户端` / `ciallopa` / `网络` /
   `上游 <status>` / `流内`) and the code; the status column shows `502←上游 503` when the client
-  status differs from the last upstream one. Filters: account, source, code, errors only,
+  status differs from the last upstream one. The status chip is green for a 2xx success, amber
+  for 429, orange-red for other 4xx failures and red with an outline for 5xx; cancelled,
+  unknown-outcome and prewarm rows stay neutral (the code and its tooltip carry the meaning,
+  colour only reinforces it). Filters: account, source, code, errors only,
   retried/switched only. Clicking a row opens the detail panel with the attempt timeline,
   upstream request id, headers and body (copy button).
 - `GET /usage/v1/records` filters: `source=upstream,network` (comma list), `error=<code>`,
