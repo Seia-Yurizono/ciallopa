@@ -672,7 +672,8 @@ const PAGES=[
     {t:"重置卡",rows:["ui.reset_credits_refresh_mins","ui.reset_credits_auto_lead_mins","ui.allow_reset_consume"]}]},
   {g:"系统",id:"general",name:"常规",sub:"实例、日志和配置文件",secs:[
     {rows:["instance_id","log.level"]},
-    {t:"运行信息",note:"只能在配置文件中修改",rows:[{fn:fileInfo},"listen","ui.enabled","ui.allow_config_write","usage.path"]}],adv:[]},
+    {t:"运行信息",note:"只能在配置文件中修改",rows:[{fn:fileInfo},"listen","ui.enabled","ui.allow_config_write","usage.path"]},
+    {t:"时区与内部请求",rows:[{fn:tzInfo},{fn:fpInfo}]}],adv:[]},
   {g:"系统",id:"keys",name:"客户端密钥",sub:"只显示标签和末 4 位；新密钥只显示一次",secs:[{box:"keybox"}]},
   {g:"系统",id:"audit",name:"变更记录",sub:"最近 20 条，包括账号页和配置文件的改动；打开本页时自动刷新",secs:[{box:"auditbox"}]}];
 // Old single-page anchors (#g-…) still land on the page that now holds that group.
@@ -685,7 +686,7 @@ const COOL=[{n:"5xx 服务器错误",t:"同一账号连续 3 次",ks:["upstream_
   {n:"404 模型",t:"1 次",ks:["upstream_opts.not_found_cooldown_secs"]}];
 const BOXES={pricebox:$("pricebox"),keybox:$("keybox"),auditbox:$("auditbox")};
 const REG=new Map(),PAGE_OF=new Map(),DEPS=[],ADVS=[],PG=[],NAV={};
-let CURP=null,CUR=null,PK=new Set(),ACCN=null,PST=null,PLINK=null,AUD_LAST=null,AUD_T=0;
+let CURP=null,CUR=null,PK=new Set(),ACCN=null,FP=null,PST=null,PLINK=null,AUD_LAST=null,AUD_T=0;
 function fld(k){return CFG&&CFG.schema.find(f=>f.key===k)}
 function cur(k){if(k in EDITS)return EDITS[k];const s=CFG&&(CFG.values||CFG.running);return s?s[k]:undefined}
 function on(k){const v=cur(k);return typeof v==="number"?v>0:k==="proxy_enabled"?v!==false:!!v}
@@ -737,6 +738,12 @@ function priceLink(){PLINK=h("div","sm");priceSum();return infoRow("模型价格
 function priceSum(){if(!PLINK)return;const p=PST;PLINK.textContent=!p?"":!p.usage_enabled?"用量记录已关闭，不计算费用":(p.models?p.models+" 个模型":"还没有价格表")+((p.unpriced||[]).length?" · "+p.unpriced.length+" 个未定价":"")}
 function acctLink(){return infoRow("单个账号的设置","账号 accounts 权重 优先级 代理 重置卡","启用、权重、优先级、单独代理、刷新额度和使用重置卡都在账号页，各账号分别设置",h("div",null,h("div",{class:"sm",id:"accn"},ACCN===null?"":ACCN+" 个账号"),h("a",{href:"/ui/accounts"},"前往账号页 ›")))}
 function fileInfo(){const c=CFG;return infoRow("配置文件","配置文件 版本 config path",c.write_enabled?"可在这里修改，保存时写回这个文件":"只读：在配置文件中设置 [ui] allow_config_write = true 才能在这里修改",h("div",null,h("div","mono sm",c.path||"（未使用配置文件）"),h("div","xs mut","版本 "+c.version)))}
+function tzInfo(){let n="";try{n=Intl.DateTimeFormat().resolvedOptions().timeZone||""}catch(_){}
+  return infoRow("时区","时区 timezone utc","页面时间按本浏览器的时区显示；图表按范围结束时的 UTC 偏移分桶",h("span","mono",(n?n+" ":"")+"("+tzOff(new Date())+")"))}
+function fpInfo(){const v=h("div",{id:"fpv"});fpShow(v);return infoRow("内部请求 UA","内部请求 ua user-agent originator 指纹 fingerprint","ciallopa 自己发往上游的请求（刷新 token、额度、重置卡）使用的指纹，从客户端请求中学习",v)}
+function fpShow(v=$("fpv")){if(!v)return;clear(v);const f=FP;if(!f){v.textContent="–";return}
+  const learned=f.source==="learned";
+  v.append(h("div","mono sm",f.user_agent||"–"),h("div","xs mut","originator "+(f.originator||"–")+" · "+(learned&&f.learned_at_ms?"学习于 "+fmtTime(f.learned_at_ms)+"（"+ago(f.learned_at_ms)+"）"+(f.key?" · 密钥 "+f.key:""):"内置默认值")))}
 function buildPage(P,extra){const el=h("div",{class:"spage",id:"pg-"+P.id,"data-pg":P.id}),o={id:P.id,name:P.name,up:P.up,el,keys:[]};CURP=o;
   const up=P.up&&PAGES.find(x=>x.id===P.up),rs=[];
   el.appendChild(h("div","phd",up?h("div","crumb",h("a",{href:"#"+up.id},up.name)," ›"):null,
@@ -911,7 +918,7 @@ async function load(discard=false){const seq=++LOAD_SEQ,auth=key(),rev=EDIT_REV;
   const keep=nEdits()>0&&(!discard||rev!==EDIT_REV);
   if(keep){if(CFG&&j.version!==CFG.version)BASE_STALE=true;renderKeys(j);$("draft").textContent="最新配置已读取，未保存的编辑已保留。检查并保存时会显示最新值与草稿的差异；放弃后载入最新配置。";$("draft").classList.remove("hide")}
   else{CFG=j;render()}
-  egressTag(j);loadPrices().catch(()=>{});get("/usage/v1/quota").then(q=>{ACCN=q.accounts.filter(a=>a.configured!==false).length;setTabCount(ACCN);sync()}).catch(()=>{});loadAudit().catch(()=>{});return !keep}
+  egressTag(j);loadPrices().catch(()=>{});get("/usage/v1/client-fingerprint").then(f=>{FP=f;fpShow()}).catch(()=>{});get("/usage/v1/quota").then(q=>{ACCN=q.accounts.filter(a=>a.configured!==false).length;setTabCount(ACCN);sync()}).catch(()=>{});loadAudit().catch(()=>{});return !keep}
 onLogout=()=>{LOAD_SEQ++;$("nkv").textContent="";$("newkey").classList.add("hide")};
 async function loadAudit(){const j=await get("/admin/v1/config/audit?limit=20"),tb=$("arows");clear(tb);AUD_LAST=j.entries.length?j.entries[0].ts_ms:null;sync();
   for(const e of j.entries)tb.appendChild(h("tr",null,h("td","mono mut",fmtTime(e.ts_ms)),h("td","sm",e.actor||"（文件/信号）"),h("td","sm",e.action+" · "+e.source),h("td","mono c",(e.changes||[]).map(c=>c.key+": "+fmt(c.old)+" → "+fmt(c.new)).join("；"))));
