@@ -77,7 +77,13 @@ fn serve(i: usize) -> Response {
         HeaderValue::from_static("no-referrer"),
     );
     h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
-    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    // `no-transform`: a CDN in front (Cloudflare Rocket Loader, Email Obfuscation, Web Analytics
+    // beacon, ...) must not rewrite or inject scripts; the CSP would block them anyway, and a
+    // rewritten inline script no longer matches its hash, leaving the page dead.
+    h.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store, no-transform"),
+    );
     r
 }
 

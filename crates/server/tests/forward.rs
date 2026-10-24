@@ -3310,7 +3310,7 @@ async fn ui_page_csp_and_toggle() {
     );
     assert!(!csp.contains("unsafe-inline"));
     assert_eq!(r.headers()["x-content-type-options"], "nosniff");
-    assert_eq!(r.headers()["cache-control"], "no-store");
+    assert_eq!(r.headers()["cache-control"], "no-store, no-transform");
     let body = r.text().await.unwrap();
     assert!(body.contains("管理面板") && !body.contains(KEY));
     let r = reqwest::Client::builder()

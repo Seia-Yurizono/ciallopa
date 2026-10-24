@@ -430,17 +430,10 @@ async fn consume(
             "reset-credit consume is disabled; set [ui] allow_reset_consume = true",
         );
     }
-    // CSRF: the key must come in a header (`Authorization: Bearer` / `x-api-key`; the middleware
-    // already checked it) and the body must be JSON (forces a CORS preflight from browsers).
-    let json_ct = headers
-        .get(http::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.to_ascii_lowercase().starts_with("application/json"));
-    if !json_ct || headers.contains_key(http::header::COOKIE) {
-        return err(
-            StatusCode::BAD_REQUEST,
-            "send JSON with Authorization: Bearer (no cookies)",
-        );
+    // CSRF: key in a header (checked by the middleware), JSON body, same-origin when a browser
+    // says where the call comes from. Same rules as every other write action.
+    if let Some(r) = crate::settings::csrf(&headers) {
+        return r;
     }
     let Some(Json(req)) = body else {
         return err(

@@ -11,6 +11,7 @@ function section(start, end) {
   return html.slice(a, b);
 }
 const source = [
+  section('// Behind Cloudflare Access an expired', 'async function get('),
   section('function fail(e)', 'function ok('),
   section('// ---- add panel:', '// ---- account reads:'),
   section('// ---- account reads:', '$("refresh").addEventListener'),
@@ -282,6 +283,34 @@ async function deviceLoginIsolation() {
   assert.equal(permission.c.NOADMIN, true);
 }
 
+// Behind Cloudflare Access: an expired login (redirect to the sign-in page, an HTML page, or an
+// Access 401/403) is reported as such; the key stays, nobody is logged out.
+async function accessGate() {
+  const h = harness(), inits = [];
+  const headers = map => ({get: n => map[n.toLowerCase()] ?? null, keys: () => Object.keys(map)[Symbol.iterator]()});
+  const replies = [
+    {type: 'opaqueredirect', status: 0, ok: false, headers: headers({}), json: async () => {throw new Error('opaque');}},
+    {type: 'basic', status: 200, ok: true, headers: headers({'content-type': 'text/html; charset=utf-8'}), json: async () => {throw new Error('html');}},
+    {type: 'basic', status: 403, ok: false, headers: headers({'content-type': 'application/json', 'cf-access-domain': 'x'}), json: async () => ({})},
+  ];
+  for (const reply of replies) {
+    h.replies(async (url, init) => {inits.push(init); return reply;});
+    await assert.rejects(h.run('load()'), e => e.kind === 'access' && e.message === 'Cloudflare Access 登录已过期，请刷新页面重新登录');
+    assert.equal(h.currentAuth(), 'demo-admin');
+    assert.equal(h.c.logoutCount, 0);
+  }
+  for (const init of inits) {
+    assert.equal(init.credentials, 'same-origin');
+    assert.equal(init.redirect, 'manual');
+    assert.equal(init.referrerPolicy, 'no-referrer');
+  }
+  // ciallopa's own 401 still means a bad key
+  h.replies(async () => ({type: 'basic', status: 401, ok: false, headers: headers({'content-type': 'text/plain; charset=utf-8'}), json: async () => ({error: 'invalid api key'})}));
+  await h.run('load()').catch(() => {});
+  assert.equal(h.c.logoutCount, 1);
+  assert.equal(h.currentAuth(), '');
+}
+
 const watchdog = setTimeout(() => {
   console.error('FAIL: accounts checks did not settle within 5 seconds');
   process.exitCode = 1;
@@ -306,5 +335,6 @@ function resetCardDisplay() {
   await supersededReads();
   await loginChanges();
   await deviceLoginIsolation();
-  console.log('PASS: reset-card display, account snapshots, read/login races, device start/poll cancellation and identity isolation');
+  await accessGate();
+  console.log('PASS: reset-card display, account snapshots, read/login races, device start/poll cancellation and identity isolation, Cloudflare Access expiry');
 })().catch(error => {console.error(error); process.exitCode = 1;}).finally(() => clearTimeout(watchdog));

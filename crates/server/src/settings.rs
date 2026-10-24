@@ -805,21 +805,70 @@ pub(crate) fn err(status: StatusCode, msg: &str) -> Response {
     (status, Json(json!({"error": {"message": msg}}))).into_response()
 }
 
-/// Same CSRF rules as the reset-credit consume action: key in a header (checked by the
-/// middleware), JSON body (forces a CORS preflight), no cookies.
+/// CSRF rules for every state-changing management / usage call. Authentication is by header only
+/// (`Authorization: Bearer` / `x-api-key`, checked by the middleware); cookies never authenticate,
+/// so a cookie added by a front proxy (Cloudflare Access `CF_Authorization`) is simply ignored.
+/// On top of that:
+/// - the body must be JSON: a cross-origin page cannot send that (or the key header) without a
+///   CORS preflight, which this server never answers;
+/// - when the browser says where the call comes from, it must be this origin:
+///   `Sec-Fetch-Site` must be `same-origin` / `none`; without it, an `Origin` header must name
+///   the request's own host (`Host`, or `X-Forwarded-Host` set by a front proxy). Clients that send
+///   neither (curl, scripts) are not affected.
+///
 /// `Some(rejection)` when the request does not follow them.
 pub(crate) fn csrf(headers: &HeaderMap) -> Option<Response> {
-    let json_ct = headers
-        .get(http::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.to_ascii_lowercase().starts_with("application/json"));
-    if !json_ct || headers.contains_key(http::header::COOKIE) {
+    let hv = |n: &str| headers.get(n).and_then(|v| v.to_str().ok()).map(str::trim);
+    let json_ct =
+        hv("content-type").is_some_and(|v| v.to_ascii_lowercase().starts_with("application/json"));
+    if !json_ct {
         return Some(err(
             StatusCode::BAD_REQUEST,
-            "send JSON with Authorization: Bearer (no cookies)",
+            "send JSON (Content-Type: application/json) with the key in Authorization: Bearer",
+        ));
+    }
+    if !same_origin(headers) {
+        return Some(err(
+            StatusCode::FORBIDDEN,
+            "cross-origin request rejected; use the management page on this host",
         ));
     }
     None
+}
+
+/// Browser provenance check of [`csrf`]; true when the headers do not say otherwise.
+fn same_origin(headers: &HeaderMap) -> bool {
+    let hv = |n: &str| headers.get(n).and_then(|v| v.to_str().ok()).map(str::trim);
+    if let Some(site) = hv("sec-fetch-site") {
+        return site.eq_ignore_ascii_case("same-origin") || site.eq_ignore_ascii_case("none");
+    }
+    let Some(origin) = hv("origin") else {
+        return true;
+    };
+    // "null" (sandboxed / opaque origins) or anything unparsable is not this page.
+    let Some(o) = origin
+        .split_once("://")
+        .map(|(_, rest)| rest.trim_end_matches('/').to_ascii_lowercase())
+        .filter(|h| !h.is_empty() && !h.contains('/'))
+    else {
+        return false;
+    };
+    let ohost = strip_default_port(&o, origin.starts_with("https://"));
+    let hosts = headers
+        .get_all("x-forwarded-host")
+        .iter()
+        .chain(headers.get_all(http::header::HOST).iter())
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .map(|h| h.trim().to_ascii_lowercase());
+    hosts.into_iter().any(|h| {
+        h == o || strip_default_port(&h, true) == ohost || strip_default_port(&h, false) == ohost
+    })
+}
+
+fn strip_default_port(host: &str, https: bool) -> &str {
+    host.strip_suffix(if https { ":443" } else { ":80" })
+        .unwrap_or(host)
 }
 
 impl Settings {
@@ -1448,6 +1497,66 @@ async fn audit(State(s): State<S>, Query(q): Query<AuditQ>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn hm(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.append(
+                http::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                v.parse().unwrap(),
+            );
+        }
+        h
+    }
+
+    #[test]
+    fn csrf_ignores_cookies_and_checks_origin() {
+        let j = ("content-type", "application/json");
+        let ok = |p: &[(&str, &str)]| csrf(&hm(p)).is_none();
+        // Cloudflare Access cookie: irrelevant
+        assert!(ok(&[j, ("cookie", "CF_Authorization=x")]));
+        // no browser provenance (curl): fine; JSON still required
+        assert!(ok(&[j]));
+        assert!(!ok(&[("cookie", "CF_Authorization=x")]));
+        assert!(!ok(&[("content-type", "text/plain")]));
+        // Sec-Fetch-Site decides when present
+        assert!(ok(&[
+            j,
+            ("sec-fetch-site", "same-origin"),
+            ("origin", "https://x.example")
+        ]));
+        assert!(ok(&[j, ("sec-fetch-site", "none")]));
+        assert!(!ok(&[j, ("sec-fetch-site", "cross-site")]));
+        assert!(!ok(&[j, ("sec-fetch-site", "same-site")]));
+        // otherwise Origin must name Host / X-Forwarded-Host (default ports folded)
+        assert!(ok(&[
+            j,
+            ("origin", "http://127.0.0.1:8317"),
+            ("host", "127.0.0.1:8317")
+        ]));
+        assert!(ok(&[
+            j,
+            ("origin", "https://cpa.example.com"),
+            ("host", "cpa.example.com:443")
+        ]));
+        assert!(ok(&[
+            j,
+            ("origin", "https://cpa.example.com"),
+            ("host", "127.0.0.1:8317"),
+            ("x-forwarded-host", "cpa.example.com")
+        ]));
+        assert!(!ok(&[
+            j,
+            ("origin", "https://evil.example"),
+            ("host", "127.0.0.1:8317")
+        ]));
+        assert!(!ok(&[j, ("origin", "null"), ("host", "127.0.0.1:8317")]));
+        assert!(!ok(&[
+            j,
+            ("origin", "https://cpa.example.com.evil"),
+            ("host", "cpa.example.com")
+        ]));
+    }
 
     #[test]
     fn write_error_hints_at_directory_mount() {

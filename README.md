@@ -575,6 +575,12 @@ chain when adding custom transport or buffering settings.
 WebSocket upgrades are proxied by Caddy automatically. Caddy forwards `Sec-WebSocket-Extensions`
 both ways, so `permessage-deflate` is negotiated end to end between Codex and ciallopa.
 
+## Cloudflare Tunnel / Access
+Put `/ui*`, `/admin/v1/*` and `/usage/v1/*` behind Access; keep `/v1/*`, `/backend-api/*`,
+`/api/codex/*` and `/healthz` off the interactive login (separate hostname or Bypass path, or a
+service token sent by Codex through `env_http_headers`). The client key is still required
+everywhere. Details: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#behind-cloudflare-tunnel-and-access).
+
 ## systemd
 The `.deb` installs `packaging/ciallopa.service` (see Install): `User=ciallopa`,
 `HOME=/var/lib/ciallopa` (`StateDirectory`), `ProtectSystem=strict` with `/etc/ciallopa` and

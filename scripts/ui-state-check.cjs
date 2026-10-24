@@ -264,6 +264,41 @@ async function sharedAuthResponses() {
   assert.equal(c.logouts, 1, 'a current unauthorized response still clears the invalid login');
 }
 
+// Behind Cloudflare Access: an expired login is not a network error and not a bad key.
+async function accessGateResponses() {
+  let auth = 'key-1', reply;
+  const inits = [];
+  const c = vm.createContext({
+    key: () => auth, KS: 'key', NOADMIN: false, authEpoch: 0,
+    fetch: async (_path, init) => {inits.push(init); return reply();}, clearTimeout,
+    sessionStorage: {removeItem() {auth = '';}},
+    showApp() {c.logouts++;}, logouts: 0, adminMsg: () => null,
+  });
+  vm.runInContext(section('async function req(', 'async function get('), c);
+  const headers = map => ({get: n => map[n.toLowerCase()] ?? null, keys: () => Object.keys(map)[Symbol.iterator]()});
+  const expired = 'Cloudflare Access 登录已过期，请刷新页面重新登录';
+  for (const r of [
+    {type: 'opaqueredirect', status: 0, ok: false, headers: headers({})},
+    {type: 'basic', status: 200, ok: true, redirected: true, headers: headers({'content-type': 'application/json'})},
+    {type: 'basic', status: 200, ok: true, headers: headers({'content-type': 'text/html'})},
+    {type: 'basic', status: 401, ok: false, headers: headers({'content-type': 'text/plain', 'cf-access-aud': 'x'})},
+  ]) {
+    reply = async () => ({...r, json: async () => {throw new Error('not json');}});
+    await assert.rejects(vm.runInContext('req("GET","/usage/v1/summary")', c), e => e.kind === 'access' && e.message === expired);
+    assert.equal(auth, 'key-1', 'an expired Access login keeps the key');
+    assert.equal(c.logouts, 0);
+  }
+  assert.ok(inits.every(i => i.credentials === 'same-origin' && i.redirect === 'manual' && i.cache === 'no-store' && i.referrerPolicy === 'no-referrer'));
+  // a real network failure stays a network error
+  reply = async () => {throw new TypeError('Failed to fetch');};
+  await assert.rejects(vm.runInContext('req("GET","/usage/v1/summary")', c), e => e.kind === 'network' && e.message === '网络错误，连不上 ciallopa（Failed to fetch）');
+  // ciallopa's own 401 still clears an invalid key
+  reply = async () => ({type: 'basic', status: 401, ok: false, headers: headers({'content-type': 'text/plain; charset=utf-8'}), json: async () => ({error: 'invalid api key'})});
+  await assert.rejects(vm.runInContext('req("GET","/usage/v1/summary")', c), /401/);
+  assert.equal(auth, '');
+  assert.equal(c.logouts, 1);
+}
+
 async function overviewSnapshots() {
   let auth = 'demo-admin', now = 1000;
   const controls = new Map();
@@ -929,6 +964,7 @@ function cloudflareEgressBanner() {
   assert.deepEqual(Array.from(context.rendered), [], 'data from the previous login must be discarded');
   await queryAndPaging();
   await sharedAuthResponses();
+  await accessGateResponses();
   await overviewSnapshots();
   await currentReadsProtectAuthorization();
   await egressResponses();
@@ -940,5 +976,5 @@ function cloudflareEgressBanner() {
   recordRenderingAndInspectorFocus();
   autoRefreshInterval();
   cloudflareEgressBanner();
-  console.log('PASS: status chip colours/contrast, auto-refresh interval, Cloudflare egress banner, query/auth races, shared scope and buckets, ID paging, history/drill-down, usage samples and unknown outcomes, overview snapshots, egress identity/order/logout, scoped filter chips/URL/focus, inspector retry/expiry/stale authorization/keyboard, keyed record updates and inspector focus');
+  console.log('PASS: status chip colours/contrast, auto-refresh interval, Cloudflare egress banner, query/auth races, Cloudflare Access expiry, shared scope and buckets, ID paging, history/drill-down, usage samples and unknown outcomes, overview snapshots, egress identity/order/logout, scoped filter chips/URL/focus, inspector retry/expiry/stale authorization/keyboard, keyed record updates and inspector focus');
 })().catch(error => {console.error(error); process.exitCode = 1;}).finally(() => clearTimeout(watchdog));
