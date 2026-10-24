@@ -26,10 +26,14 @@ codex-rs; TLS, HTTP/2 and WebSocket compatibility is checked by `scripts/fp-chec
 These documents follow `main`, which can contain unreleased changes. For an installed release,
 use the documentation at its tag; pushing `main` does not update existing container images.
 
-## Quick start (Linux x86_64)
+## Quick start (Linux x86_64 / arm64)
 Each path ends with the server on `127.0.0.1:8317`, one account and a client key.
 `ciallopa init` writes `config.toml` with a new random admin key and prints that key, the Codex
 client config and the next commands; then [set up the client](#codex-cli-client).
+The commands below use the x86_64 (`amd64`) files; on arm64 Linux use
+`ciallopa_0.1.2-1_arm64.deb` or `ciallopa-0.1.2-aarch64-unknown-linux-musl.tar.gz`. The Docker
+image is multi-arch, so Compose works unchanged on both, including Docker Desktop on Apple
+Silicon Macs.
 
 **.deb (Ubuntu / Debian)**
 ```
@@ -69,8 +73,8 @@ For clients on other machines put a TLS reverse proxy in front ([Caddy](#caddy))
 native `listen` address, or Docker's published host port, on loopback; the container itself
 still listens on `0.0.0.0:8317`.
 
-## Install (Linux x86_64)
-Releases ship a static binary (musl, no runtime dependencies besides the system CA certificates)
+## Install (Linux x86_64 / arm64)
+Releases ship a static binary for x86_64 and arm64 (aarch64) (musl, no runtime dependencies besides the system CA certificates)
 as a tarball and as a Debian/Ubuntu package, with `SHA256SUMS`, at
 `https://github.com/Seia-Yurizono/ciallopa/releases`. To check a download, fetch `SHA256SUMS`
 from the same release and run `sha256sum -c --ignore-missing SHA256SUMS`.
@@ -141,8 +145,8 @@ in `/etc/ciallopa/config.toml`, a `ciallopa` system user and `/var/lib/ciallopa`
 [systemd](#systemd)). Accounts and the usage log go to `~/.ciallopa` of the user running it.
 
 ### Docker
-The `linux/amd64` image `ghcr.io/seia-yurizono/ciallopa` holds
-the same static binary on `gcr.io/distroless/static-debian13:nonroot`. It reads
+The multi-arch image `ghcr.io/seia-yurizono/ciallopa` (`linux/amd64` and `linux/arm64`, so it
+also runs natively under Docker Desktop on Apple Silicon) holds the same static binary on `gcr.io/distroless/static-debian13:nonroot`. It reads
 `/etc/ciallopa/config.toml` (`CIALLOPA_CONFIG`), keeps data in `/var/lib/ciallopa/.ciallopa`
 (`HOME=/var/lib/ciallopa`, so the example's `~/.ciallopa/…` paths need no change), writes
 `listen = "0.0.0.0:8317"` on `init` and checks itself with `ciallopa healthcheck`. Using

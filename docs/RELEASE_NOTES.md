@@ -1,3 +1,17 @@
+## Unreleased
+
+**Platforms**
+
+- Linux arm64: the container image is now multi-arch (`linux/amd64` and `linux/arm64`), so
+  the same tags and Compose file work on arm64 Linux hosts and under Docker Desktop on Apple
+  Silicon. Releases also ship `ciallopa-<version>-aarch64-unknown-linux-musl.tar.gz` and
+  `ciallopa_<version>-1_arm64.deb`; `SHA256SUMS` covers every asset.
+- Each architecture is built and smoke-tested on a native GitHub runner. The arm64 binary
+  uses jemalloc's 64 KiB page setting, so it also runs on 16 KiB / 64 KiB page kernels. The
+  TLS fingerprint (JA4, HTTP/2 settings, key shares) is unchanged on arm64.
+- Registry cleanup keeps untagged uploads younger than six hours, so it cannot remove a
+  per-architecture image before the release tags the merged index.
+
 ciallopa v0.1.2
 
 This release follows v0.1.1-rc.2. It makes accounts and memory behave better on small hosts,
@@ -77,7 +91,7 @@ was used.
 
 Licensed under the [MIT License][license].
 
-[install]: https://github.com/Seia-Yurizono/ciallopa/blob/v0.1.2/README.md#quick-start-linux-x86_64
+[install]: https://github.com/Seia-Yurizono/ciallopa/blob/v0.1.2/README.md#quick-start-linux-x86_64--arm64
 [recovery]: https://github.com/Seia-Yurizono/ciallopa/blob/v0.1.2/docs/RECOVERY.md
 [deploy]: https://github.com/Seia-Yurizono/ciallopa/blob/v0.1.2/docs/DEPLOYMENT.md
 [docs]: https://github.com/Seia-Yurizono/ciallopa/blob/v0.1.2/docs/README.md
