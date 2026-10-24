@@ -111,7 +111,10 @@ async fn up_consume(State(m): State<Mock>, h: HeaderMap, Json(b): Json<Value>) -
 }
 
 async fn up_usage() -> Json<Value> {
-    Json(json!({"rate_limit": {"primary_window": {"used_percent": 0}}}))
+    Json(
+        json!({"rate_limit": {"limit_reached": true, "primary_window": {"used_percent": 0}},
+        "rate_limit_reset_credits": {"available_count": 2}}),
+    )
 }
 
 struct Env {
@@ -469,7 +472,13 @@ fn no_automatic_consume_path() {
     );
     let handler = src.split("async fn consume(").nth(1).unwrap();
     assert!(handler.contains("consume_upstream(&s.st"));
-    for f in ["refresh_all", "spawn_poller", "refresh_account"] {
+    for f in [
+        "refresh_all",
+        "spawn_poller",
+        "refresh_account",
+        "quota_refresh_account",
+        "note_usage",
+    ] {
         let body = src.split(&format!("fn {f}(")).nth(1).unwrap();
         let body = &body[..body.find("\n}\n").unwrap()];
         assert!(
@@ -506,6 +515,22 @@ async fn quota_refresh_stores_snapshot_and_rate_limits() {
         .unwrap();
     assert_eq!(r["ok"], true, "{r}");
     assert_eq!(r["quota"]["primary"]["used_pct"], 0.0);
+    // display-only fields of the same answer, also kept for the management page
+    assert_eq!(r["usage_available_count"], 2, "{r}");
+    assert_eq!(r["limit_reached"], true, "{r}");
+    let l = e.get("/usage/v1/reset-credits").await;
+    let a = l["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["account"] == "a")
+        .unwrap();
+    assert_eq!(a["reset_credits"]["usage_available_count"], 2, "{l}");
+    assert_eq!(a["reset_credits"]["limit_reached"], true, "{l}");
+    assert!(
+        a["reset_credits"]["available_count"].is_null(),
+        "listing untouched: {l}"
+    );
     // the same account again within 30 s: not asked upstream
     let r: Value = post("/admin/v1/accounts/a/quota-refresh")
         .await

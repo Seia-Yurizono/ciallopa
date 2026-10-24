@@ -60,6 +60,27 @@ pub struct Entry {
     /// Last fetch error (previous data is kept).
     pub error: Option<String>,
     pub error_ms: Option<i64>,
+    /// From the last `GET /wham/usage` (刷新额度): `rate_limit_reset_credits.available_count`.
+    /// Display only; the listing above stays authoritative for the cards themselves.
+    pub usage_available_count: Option<i64>,
+    /// From the same answer: `rate_limit.limit_reached`.
+    pub limit_reached: Option<bool>,
+    pub usage_observed_ms: Option<i64>,
+}
+
+/// The `/wham/usage` fields the quota snapshot does not keep: the reset-card count and
+/// `limit_reached`.
+pub fn usage_extras(v: &Value) -> (Option<i64>, Option<bool>) {
+    let rc = v.get("rate_limit_reset_credits");
+    let count = rc
+        .and_then(|r| r.get("available_count"))
+        .or(rc.filter(|r| r.is_number()))
+        .and_then(Value::as_i64)
+        .filter(|n| *n >= 0);
+    let reached = v
+        .pointer("/rate_limit/limit_reached")
+        .and_then(Value::as_bool);
+    (count, reached)
 }
 
 /// Shared cache + per-account consume locks.
@@ -80,6 +101,15 @@ impl ResetCredits {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(account);
+    }
+    /// Keep the display-only `/wham/usage` fields of one account.
+    pub fn note_usage(&self, account: &str, v: &Value) {
+        let (count, reached) = usage_extras(v);
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        let e = cache.entry(account.to_string()).or_default();
+        e.usage_available_count = count;
+        e.limit_reached = reached;
+        e.usage_observed_ms = Some(now_ms());
     }
     fn snapshot(&self) -> HashMap<String, Entry> {
         self.cache.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -592,6 +622,7 @@ async fn consume(
             .await
             {
                 if let Ok(v) = serde_json::from_str::<Value>(&b) {
+                    s.rc.note_usage(&account, &v);
                     extra["rate_limit"] = v.get("rate_limit").cloned().unwrap_or(Value::Null);
                 }
             }
@@ -694,7 +725,7 @@ fn upstream_msg(body: &str) -> String {
 
 /// Ask upstream for one account's usage windows. Read-only and spends no tokens. Stores the
 /// snapshot (batched with the usage writer). Returns the per-account result object.
-async fn quota_refresh_account(st: &AppState, account: &str) -> Value {
+async fn quota_refresh_account(st: &AppState, rc: &ResetCredits, account: &str) -> Value {
     {
         let mut last = QUOTA_LAST.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(t) = last.get(account) {
@@ -726,12 +757,15 @@ async fn quota_refresh_account(st: &AppState, account: &str) -> Value {
             let Some(q) = usage_to_quota(&v, now_ms() / 1000) else {
                 return fail("decode", None, "no rate_limit windows in the answer".into());
             };
+            rc.note_usage(account, &v);
+            let (cards, reached) = usage_extras(&v);
             if let Some(rec) = &st.usage {
                 if !rec.observe_quota(account, QUOTA_MANUAL, q.clone()) {
                     tracing::warn!(%account, "quota snapshot dropped (usage queue full)");
                 }
             }
-            json!({"account": account, "ok": true, "quota": quota_json(&q), "observed_at_ms": now_ms()})
+            json!({"account": account, "ok": true, "quota": quota_json(&q), "observed_at_ms": now_ms(),
+                "usage_available_count": cards, "limit_reached": reached})
         }
         Ok((code, body)) => fail("http", Some(code), upstream_msg(&body)),
         Err(e) if e.starts_with("credentials:") => fail("credentials", None, e),
@@ -750,7 +784,7 @@ async fn quota_one(State(s): State<S>, Path(id): Path<String>, headers: HeaderMa
     if s.st.accounts.relogin_required().await.contains(&id) {
         return Json(json!({"account": id, "ok": false, "error": {"kind": "token_invalid", "message": "refresh token rejected; log in again"}})).into_response();
     }
-    Json(quota_refresh_account(&s.st, &id).await).into_response()
+    Json(quota_refresh_account(&s.st, &s.rc, &id).await).into_response()
 }
 
 /// Every account with a usable token, a few at a time. Accounts asked within the last 30 s
@@ -770,13 +804,18 @@ async fn quota_all(State(s): State<S>, headers: HeaderMap) -> Response {
     let sem = Arc::new(tokio::sync::Semaphore::new(QUOTA_REFRESH_PARALLEL));
     let mut set = tokio::task::JoinSet::new();
     for id in ids {
-        let (st, sem, skip) = (s.st.clone(), sem.clone(), relogin.contains(&id));
+        let (st, rc, sem, skip) = (
+            s.st.clone(),
+            s.rc.clone(),
+            sem.clone(),
+            relogin.contains(&id),
+        );
         set.spawn(async move {
             if skip {
                 return json!({"account": id, "ok": false, "error": {"kind": "token_invalid", "message": "refresh token rejected; log in again"}});
             }
             let _p = sem.acquire_owned().await;
-            quota_refresh_account(&st, &id).await
+            quota_refresh_account(&st, &rc, &id).await
         });
     }
     let mut results: Vec<Value> = set.join_all().await;
@@ -810,6 +849,17 @@ mod tests {
             (Some(40.5), Some(1_700_003_600), Some(10080))
         );
         assert!(usage_to_quota(&json!({"plan_type": "free", "rate_limit": null}), 0).is_none());
+        assert_eq!(usage_extras(&v), (None, Some(false)));
+        let w = json!({"rate_limit": {"limit_reached": true}, "rate_limit_reset_credits": {"available_count": 2}});
+        assert_eq!(usage_extras(&w), (Some(2), Some(true)));
+        assert_eq!(
+            usage_extras(&json!({"rate_limit_reset_credits": 3})),
+            (Some(3), None)
+        );
+        assert_eq!(
+            usage_extras(&json!({"rate_limit_reset_credits": {"available_count": -1}})),
+            (None, None)
+        );
         assert_eq!(upstream_msg(r#"{"detail":"Unauthorized"}"#), "Unauthorized");
     }
 

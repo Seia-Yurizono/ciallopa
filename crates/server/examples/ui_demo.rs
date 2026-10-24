@@ -541,9 +541,16 @@ async fn fake_upstream() -> std::net::SocketAddr {
                 let now = now_ms() / 1000;
                 let w = |pct: f64, secs: i64, left: i64| json!({"used_percent": pct,
                     "limit_window_seconds": secs, "reset_after_seconds": left, "reset_at": now + left});
-                Json(if who(&h).ends_with("frank") {
+                let who = who(&h);
+                Json(if who.ends_with("frank") {
                     json!({"plan_type": "free", "rate_limit": {"allowed": true, "limit_reached": false,
-                        "primary_window": w(3.0, 2_592_000, 27 * 86_400), "secondary_window": null}})
+                        "primary_window": w(3.0, 2_592_000, 27 * 86_400), "secondary_window": null},
+                        "rate_limit_reset_credits": {"available_count": 0}})
+                } else if who.ends_with("bob") {
+                    json!({"plan_type": "pro", "rate_limit": {"allowed": false, "limit_reached": true,
+                        "primary_window": w(100.0, 18_000, 3600),
+                        "secondary_window": w(71.0, 604_800, 4 * 86_400)},
+                        "rate_limit_reset_credits": {"available_count": 3}})
                 } else {
                     json!({"plan_type": "plus", "rate_limit": {"allowed": true, "limit_reached": false,
                         "primary_window": w(12.0, 18_000, 2 * 3600),
