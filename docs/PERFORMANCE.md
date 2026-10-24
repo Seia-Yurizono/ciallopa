@@ -55,6 +55,19 @@ cargo build --release --locked -p ciallopa-usage --example usage_bench
 - 有限大请求与慢消费者实验支持背压和取消释放；并发数、通道槽数与 WS 消息上限不是进程字节上界。
   下行 WS 写阻塞可能暂时妨碍同一循环读取，但 Force 提供退出；上行写使用有限预取观察 Close/FIN。
   Close 排在大量未消费数据之后仍受 TCP 顺序约束，不承诺无限前瞻取消。
+- 内存分配器（0.1.2，musl release，8 CPU，`max_buffered_body_mb = 256`，20MiB 请求体经本地 mock 转发）：
+  musl 自带分配器 10×20MiB 峰值 314–325MiB、12×63MiB 峰值 451–510MiB，负载后回落到 16–17MiB，
+  但每请求 CPU 约 0.86–0.94ms；mimalloc 每请求 0.535ms，但峰值 575/738MiB 且负载后仍留 330–568MiB；
+  jemalloc 默认配置峰值 363–393MiB、留存 56–87MiB；开 `background_thread` 反而抬高峰值。
+  采用 jemalloc `narenas:1`：峰值 333–361MiB / 507MiB，10 秒后留存 41–49MiB、30 秒后 23–24MiB，
+  每请求 0.527ms，小请求 oha c=32 约 8400 rps（musl 约 5700–6100）。空闲 RSS 约 15–16MiB（musl 约 13MiB）。
+  MSVC 目标仍用系统分配器。
+- 客户端连接开启 `TCP_NODELAY`：之前 Nagle 与客户端延迟 ACK 叠加，c=32 小请求 p50 约 44ms、约 700 rps；
+  开启后 p50 约 4–5ms。
+- 客户端 WS 消息计入 `max_buffered_body_mb` 后（40 连接 × 12MiB、上游延迟 3 秒、预算 256），
+  峰值 RSS 为 1188–1244MiB，基线 1081MiB：计数生效（17–21 个 busy 错误帧，客户端重发后都完成），
+  但不降低峰值，因为每个连接的接收、解压和帧缓冲在消息可计数之前就已分配；重发还会延长总时长。
+  预算 64、20×12MiB 时峰值 384MiB。WS 的内存上界仍是连接数 × 64MiB 消息上限。
 
 ## 下一次测量怎么选
 

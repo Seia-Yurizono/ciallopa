@@ -263,6 +263,11 @@ whether the binding moves: `quota` (default) moves it for quota, token, 402 or d
 while short failures such as repeated 5xx only borrow another account until the original one
 recovers; `any` moves it whenever the bound account is unusable.
 
+Bindings survive a restart: they are saved to `session_affinity.json` next to the usage
+database (mode 0600; at most every 30 s and only after a change, plus once at shutdown) and
+loaded at startup. Expired bindings and bindings to accounts that are no longer configured are
+dropped, and no binding outlives the current `routing.session_affinity_ttl`.
+
 A `*.json` file in `auth_dir` that is not loaded is listed on the 账号 page with the reason,
 until it is fixed or removed: the server user may not read it (with its owner, mode and a
 `chown` command for the server's uid:gid), it is not valid JSON, it has no `access_token` (a Codex
@@ -312,6 +317,7 @@ proxy_url = ""                          # global egress: http:// | socks5h:// (h
 proxy_enabled = true                    # false = keep proxy_url but connect directly
 ipv6 = false                            # IPv4 only (direct and to the proxy host); true = IPv6 too, Happy Eyeballs
 max_body_mb = 64                        # incoming HTTP body limit in MiB
+max_buffered_body_mb = 256              # buffered HTTP bodies + WS messages; full: wait 1 s, then 503
 max_inflight_requests = 64              # HTTP response / whole WS connection; 0 disables rejection
                                         # at capacity: 503 + Retry-After: 1, no queue; hot-reloadable
 ws_compression = true                   # permessage-deflate on the client WebSocket when the client
@@ -471,7 +477,8 @@ tab's `sessionStorage`, sent as `Authorization: Bearer` and never put in the URL
 has a time-range / grouping bar (24h/7d/30d; by account/key/instance/model) that drives the KPI
 strip, the summary table, the trend chart (requests, errors, tokens) and the recent requests.
 Its quota table shows the 5-hour and weekly remaining % per account, the reset time, a warning
-when the quota data is more than an hour old, and the reset-card count. Quota data comes from
+when the quota data is more than an hour old, and the reset-card count. The 账号 page shows each account's card count and 「已达额度上限」 when
+the last 刷新额度 reported it. Quota data comes from
 upstream response headers whenever an account serves a request; 刷新额度 (per account, in the
 reset-card panel of the overview and in the account's actions) and 刷新全部额度 ask upstream
 directly instead (`GET /wham/usage`, which the Codex backend client reads rate limits from: read-only, spends no
@@ -523,7 +530,7 @@ upstream 401) or `forced` (the admin "refresh" action).
 the price table and `auth_dir`) are picked up automatically, and `SIGHUP` /
 `POST /admin/v1/config/reload` do the same on demand. A file that fails validation is rejected
 and the running config stays as it was. Keys that only work at startup (`listen`, paths,
-`instance_id`, `upstream`, `max_body_mb`, usage writer sizing, `ui.enabled`) are reported as
+`instance_id`, `upstream`, usage writer sizing, `ui.enabled`) are reported as
 pending until the next restart.
 
 `/ui/settings` shows every setting with its running value and a 热更新 / 需重启 badge, the
