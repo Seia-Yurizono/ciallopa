@@ -107,9 +107,9 @@ All routes sit behind the client-key middleware.
 | `GET /admin/v1/accounts` | id, email, plan, status (`normal` / `cooling` / `disabled` / `token_invalid`), cooldown end and reason (`usage_limit`, `rate_limited`, `auth`, `workspace_deactivated`, `payment_required`, `transient`, `model_unsupported`, `not_found`), weight, priority, last-24h requests and tokens. No tokens. |
 | `PATCH /admin/v1/accounts/{id}` | `{"disabled"?, "weight"?, "priority"?}`; takes effect on the next selection. |
 | `DELETE /admin/v1/accounts/{id}` | `{"confirm": "<id>"}`; deletes the auth file and the runtime state above. |
-| `POST /admin/v1/accounts/import` | `{"auth_json": {…}}` — a Codex CLI `auth.json` or CPA codex file. |
+| `POST /admin/v1/accounts/import` | `{"auth_json": {…}}` — a Codex CLI `auth.json` or CPA codex file. When the account already has a file, its tokens are **replaced**. `"dry_run": true` writes nothing and returns `{account, exists}`; the page uses it to ask before replacing. |
 | `POST /admin/v1/accounts/login/device`, `GET /admin/v1/accounts/login/{id}` | Device-code login (URL + one-time code; the server polls and saves the account). |
-| `POST /admin/v1/accounts/{id}/refresh` | Refresh the access token now. |
+| `POST /admin/v1/accounts/{id}/refresh` | `{"confirm": "<id>"}`; refresh the tokens now. Irreversible: the old refresh token stops working, so a Codex CLI sharing the same `auth.json` is logged out. ciallopa refreshes on its own before expiry. |
 | `POST /admin/v1/accounts/reload` | Re-scan `auth_dir` → `{added, removed, accounts, auth_files}`. Only a file that is gone removes its account. A file that exists but cannot be read (`permission_denied`, `read_error`) or parsed (`invalid_json`, e.g. half-written) is listed in `auth_files.skipped` with its reason; if it belonged to a loaded account, the entry has `kept: true` and the account keeps its last good content and runtime state (cooldowns, session bindings, connection pool). The file watcher follows the same rule. |
 | `POST /admin/v1/accounts/{id}/clear-cooldown` | `{}`; drops every cooldown and the consecutive-5xx count of the account (runtime only, audited; needs the admin key and the JSON/CSRF rule, not `allow_config_write`). |
 
