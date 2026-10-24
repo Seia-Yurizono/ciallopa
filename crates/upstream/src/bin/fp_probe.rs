@@ -10,7 +10,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| "https://chatgpt.com/backend-api".into());
     let c = build_reqwest(&ClientOptions::default())?;
     for path in [
-        "/codex/models?client_version=0.163.0",
+        "/codex/models?client_version=0.164.0",
         "/wham/accounts/check",
     ] {
         let r = c
@@ -18,7 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .header("originator", "codex_exec")
             .header(
                 "user-agent",
-                "codex_exec/0.163.0 (Debian 13.0.0; x86_64) dumb",
+                "codex_exec/0.164.0 (Debian 13.0.0; x86_64) dumb",
             )
             .header("authorization", "Bearer fake")
             .send()
@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     h.insert("authorization", "Bearer fake".parse()?);
     h.insert(
         "user-agent",
-        "codex_exec/0.163.0 (Debian 13.0.0; x86_64) dumb".parse()?,
+        "codex_exec/0.164.0 (Debian 13.0.0; x86_64) dumb".parse()?,
     );
     h.insert("originator", "codex_exec".parse()?);
     match up.ws_connect("/codex/responses", h).await {

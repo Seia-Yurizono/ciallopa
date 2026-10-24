@@ -660,7 +660,7 @@ Forwarded requests themselves are never changed.
   `codex_exec`, IDE/desktop originators and unauthenticated requests are ignored.
 - Latest valid one wins (one global value). Persisted in the usage DB (`kv`, schema v8) or, with
   `[usage] enabled = false`, `client_fingerprint.json` next to the usage path; re-validated on
-  restore. Fallback: `codex_cli_rs/0.163.0` + `codex_cli_rs`.
+  restore. Fallback: `codex_cli_rs/0.164.0` + `codex_cli_rs`.
 - `GET /usage/v1/client-fingerprint` → `{user_agent, originator, source: learned|default,
   learned_at_ms, key}` (key = client key label). Shown in the `/ui` header.
 

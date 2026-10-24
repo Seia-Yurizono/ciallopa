@@ -109,7 +109,7 @@ pub(crate) async fn handler(
 }
 
 /// Upstream `/codex/models` requires `client_version`; plain OpenAI clients don't send it.
-const DEFAULT_CLIENT_VERSION: &str = "0.163.0";
+const DEFAULT_CLIENT_VERSION: &str = ciallopa_core::config::PINNED_CODEX_VERSION;
 
 fn with_client_version(path: String) -> String {
     let q = path.split_once('?').map(|(_, q)| q).unwrap_or("");
@@ -171,11 +171,11 @@ mod tests {
     fn client_version_default() {
         assert_eq!(
             w("/codex/models".into()),
-            "/codex/models?client_version=0.163.0"
+            "/codex/models?client_version=0.164.0"
         );
         assert_eq!(
             w("/codex/models?a=1".into()),
-            "/codex/models?a=1&client_version=0.163.0"
+            "/codex/models?a=1&client_version=0.164.0"
         );
         assert_eq!(
             w("/codex/models?client_version=9".into()),

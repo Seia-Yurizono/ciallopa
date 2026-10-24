@@ -133,10 +133,10 @@ async fn proactive_refresh_single_flight_and_persist() {
     assert!(toks.iter().all(|t| t == &toks[0] && t != "old"));
     // codex-rs refresh wire format: JSON body
     assert_eq!(*m.last_ct.lock().unwrap(), "application/json");
-    let b: Value = serde_json::from_str(&m.last_body.lock().unwrap()).unwrap();
+    // codex-rs 0.164: keys sorted (BTreeMap), `refresh_reason` for an expiring token
     assert_eq!(
-        b,
-        json!({"client_id":"app_EMoamEEZ73f0CkXaXp7hrann","grant_type":"refresh_token","refresh_token":"rt-0"})
+        *m.last_body.lock().unwrap(),
+        r#"{"client_id":"app_EMoamEEZ73f0CkXaXp7hrann","grant_type":"refresh_token","refresh_reason":"proactive_expiry","refresh_token":"rt-0"}"#
     );
     // persisted, 0600, extra fields kept
     let p = d.path().join("acct.json");
@@ -584,4 +584,42 @@ async fn rejected_but_rotated_elsewhere_adopts_disk() {
     assert_eq!(c.access_token, "rotated");
     assert!(s.relogin_required().await.is_empty());
     assert!(!s.list().await[0].disabled);
+}
+
+fn reason(m: &Mock) -> String {
+    let b: Value = serde_json::from_str(&m.last_body.lock().unwrap()).unwrap();
+    b["refresh_reason"].as_str().unwrap_or_default().to_string()
+}
+
+/// codex-rs 0.164 `refresh_reason`: scheduled (old `last_refresh`), unauthorized_recovery
+/// (after a 401), forced (manual refresh).
+#[tokio::test]
+async fn refresh_reason_per_path() {
+    let (m, oauth) = spawn().await;
+    let d = tempfile::tempdir().unwrap();
+    let exp = chrono::Utc::now().timestamp() + 3 * 86400;
+    let old = (chrono::Utc::now() - chrono::Duration::days(9)).to_rfc3339();
+    ciallopa_auth::file::write_auth_file(
+        d.path(),
+        "acct",
+        &json!({"type":"codex","access_token":jwt(json!({"exp":exp})),"refresh_token":"rt-0",
+                "last_refresh":old}),
+    )
+    .unwrap();
+    let s = FileAccountStore::open_with(d.path().into(), oauth)
+        .await
+        .unwrap()
+        .with_force_dedup(Duration::from_millis(1));
+    let id = "acct".to_string();
+    s.credentials(&id).await.unwrap();
+    assert_eq!(m.refreshes.load(Ordering::SeqCst), 1);
+    assert_eq!(reason(&m), "scheduled");
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    s.force_refresh(&id).await.unwrap();
+    assert_eq!(m.refreshes.load(Ordering::SeqCst), 2);
+    assert_eq!(reason(&m), "unauthorized_recovery");
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    s.manual_refresh(&id).await.unwrap();
+    assert_eq!(m.refreshes.load(Ordering::SeqCst), 3);
+    assert_eq!(reason(&m), "forced");
 }

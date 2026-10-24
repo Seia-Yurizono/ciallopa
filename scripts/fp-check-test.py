@@ -31,16 +31,21 @@ class FingerprintTests(unittest.TestCase):
     def test_both_protocols_are_required_and_checked(self):
         ws = {'label': 'ciallopa', 'method': 'GET', 'path': '/backend-api/codex/responses',
               'ja4': 't13d101000_61a7ad8aa9b6_0d308c48d2a3',
+              'hello': {'Groups': [4588, 29, 23, 24], 'KeyShares': [4588, 29]},
               'headers': [[name, 'fixture'] for name in [
                   'Host', 'Connection', 'Upgrade', 'Sec-WebSocket-Version',
                   'Sec-WebSocket-Key', 'Sec-WebSocket-Extensions']]}
         http = {'label': 'ciallopa', 'method': 'GET', 'path': '/backend-api/codex/models',
                 'ja4': 't13d1011h2_61a7ad8aa9b6_0d308c48d2a3',
                 'h2': {'akamai': '2:0;4:2097152;5:16384;6:16384|5177345|0|m,s,a,p'},
-                'hello': {'HasGREASE': False}}
+                'hello': {'HasGREASE': False, 'Groups': [4588, 29, 23, 24], 'KeyShares': [4588, 29]}}
+        # rustls without `prefer-post-quantum`: same JA4, but X25519 first and a single key share.
+        classic = {'HasGREASE': False, 'Groups': [29, 23, 24, 4588], 'KeyShares': [29]}
         cases = [('ws-only', [ws], 1), ('http-only', [http], 1),
                  ('both', [http, ws], 0), ('empty', [], 1),
-                 ('wrong-http', [dict(http, ja4='wrong'), ws], 1)]
+                 ('wrong-http', [dict(http, ja4='wrong'), ws], 1),
+                 ('classic-kx-http', [dict(http, hello=classic), ws], 1),
+                 ('classic-kx-ws', [http, dict(ws, hello=classic)], 1)]
         with tempfile.TemporaryDirectory() as work:
             path = Path(work) / 'captures.jsonl'
             for name, rows, expected in cases:

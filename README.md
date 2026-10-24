@@ -376,7 +376,7 @@ cloudflare_cookies = false # true = per-account in-memory jar of ChatGPT infrast
 enabled = true
 main_model = "gpt-5.5"             # wrapper model for non-gpt-image-* Images requests
 default_originator = "codex_exec"       # only for clients that don't send one
-default_user_agent = "codex_exec/0.163.0"   # used when client UA doesn't start with "codex"
+default_user_agent = "codex_exec/0.164.0"   # used when client UA doesn't start with "codex"
 ```
 
 ## Codex CLI client
@@ -504,7 +504,7 @@ usage-limit cooldown at once, so it takes traffic again on the next request.
 
 Internal upstream calls (token refresh, `/wham/*`, reset credits) reuse the `User-Agent` +
 `originator` of the latest validated Codex client request (`GET /usage/v1/client-fingerprint`;
-default `codex_cli_rs/0.163.0`). See docs/USAGE.md.
+default `codex_cli_rs/0.164.0`). See docs/USAGE.md.
 
 Details: docs/USAGE.md.
 
@@ -512,7 +512,10 @@ Token refresh is cross-process safe: under the file lock the auth file is re-rea
 token on disk is used instead of refreshing, and the write-back is skipped if another writer
 changed the credentials meanwhile (CPA `refresh_patch` semantics). `refresh_token_reused` /
 `invalid_grant` mark the account `needs_relogin` (excluded from routing, shown in
-`/usage/v1/quota`, logged once, no retry loop) until you log in again.
+`/usage/v1/quota`, logged once, no retry loop) until you log in again. Like Codex 0.164, the
+refresh request carries `refresh_reason`: `proactive_expiry` (access token expires within
+5 minutes), `scheduled` (`last_refresh` older than 8 days), `unauthorized_recovery` (after an
+upstream 401) or `forced` (the admin "refresh" action).
 
 ## Live settings
 
