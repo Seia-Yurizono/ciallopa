@@ -1,5 +1,6 @@
 //! Reset credits (重置卡): listing, manual consume (each result code), idempotent retry,
-//! disabled switch, CSRF guards, and "never automatic" against a mock upstream.
+//! disabled switch, CSRF guards, and "automatic only through the per-account switch"
+//! against a mock upstream (the automatic use itself is tested in `tests/auto_reset.rs`).
 #![allow(clippy::unwrap_used)]
 use async_trait::async_trait;
 use axum::{
@@ -511,15 +512,38 @@ async fn refresh_admin_csrf_and_can_consume() {
 
 #[test]
 fn no_automatic_consume_path() {
-    // The upstream consume helper has exactly one caller: the manual admin handler.
+    // The upstream consume helper has one caller, `consume_locked`, which is reached only
+    // from the manual admin handler and the opt-in automatic use (`auto_reset::attempt`).
     let src = include_str!("../src/reset_credits.rs");
     assert_eq!(
         src.matches("consume_upstream(").count(),
         2,
         "definition + one call"
     );
+    let locked = src.split("async fn consume_locked(").nth(1).unwrap();
+    assert!(locked.contains("consume_upstream(st"));
+    assert_eq!(
+        src.matches("consume_locked(").count(),
+        2,
+        "definition + manual"
+    );
     let handler = src.split("async fn consume(").nth(1).unwrap();
-    assert!(handler.contains("consume_upstream(&s.st"));
+    assert!(handler[..handler.find("\n}\n").unwrap()].contains("consume_locked("));
+    let auto = include_str!("../src/auto_reset.rs");
+    assert_eq!(
+        auto.matches("consume_locked(").count(),
+        1,
+        "one automatic call"
+    );
+    assert!(!auto.contains("consume_upstream"));
+    let attempt = auto.split("async fn attempt(").nth(1).unwrap();
+    let attempt = &attempt[..attempt.find("\n}\n").unwrap()];
+    assert!(
+        attempt.contains("consume_locked("),
+        "only attempt() uses a card"
+    );
+    // ...and attempt() only runs for accounts whose switch is on
+    assert!(attempt.contains("is_on("));
     for f in [
         "refresh_all",
         "spawn_poller",
@@ -530,7 +554,9 @@ fn no_automatic_consume_path() {
         let body = src.split(&format!("fn {f}(")).nth(1).unwrap();
         let body = &body[..body.find("\n}\n").unwrap()];
         assert!(
-            !body.contains("CONSUME_PATH") && !body.contains("consume_upstream"),
+            !body.contains("CONSUME_PATH")
+                && !body.contains("consume_upstream")
+                && !body.contains("consume_locked"),
             "{f}"
         );
     }
@@ -541,7 +567,7 @@ fn no_automatic_consume_path() {
         include_str!("../../routing/src/lib.rs"),
         include_str!("../src/main.rs"),
     ] {
-        assert!(!other.contains("reset-credits/consume"));
+        assert!(!other.contains("reset-credits/consume") && !other.contains("consume_locked"));
     }
 }
 

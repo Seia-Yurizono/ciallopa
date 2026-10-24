@@ -672,7 +672,7 @@ const PAGES=[
     {box:"pricebox"},{t:"价格来源",rows:["usage.prices","usage.prices_source"]}]},
   {g:"数据与账号",id:"accounts",name:"账号与重置卡",sub:"对所有账号生效的策略",secs:[
     {t:"账号",rows:[{fn:acctLink},"auth_dir"]},
-    {t:"重置卡",rows:["ui.reset_credits_refresh_mins","ui.allow_reset_consume"]}]},
+    {t:"重置卡",rows:["ui.reset_credits_refresh_mins","ui.reset_credits_auto_lead_mins","ui.allow_reset_consume"]}]},
   {g:"系统",id:"general",name:"常规",sub:"实例、日志和配置文件",secs:[
     {rows:["instance_id","log.level"]},
     {t:"运行信息",note:"只能在配置文件中修改",rows:[{fn:fileInfo},"listen","ui.enabled","ui.allow_config_write","usage.path"]}],adv:[]},
@@ -779,7 +779,7 @@ function summ(id){const yn=k=>on(k)?"开":"关";
     case"forward":{const m=Number(cur("max_inflight_requests"))||0;return "在途上限 "+(m?m:"不限")+" · 换号重试 "+cur("upstream_opts.max_attempts")+" 次"}
     case"images":return on("images.enabled")?"已开启 · "+(cur("images.main_model")||""):"已关闭";
     case"usage":{const r=Number(cur("usage.retention_days"))||0,u=PST&&(PST.unpriced||[]).length;return on("usage.enabled")?"保留 "+(r?r+" 天":"永久")+(u?" · "+u+" 个未定价":""):"已关闭"}
-    case"accounts":{const m=Number(cur("ui.reset_credits_refresh_mins"))||0;return (ACCN===null?"":ACCN+" 个账号 · ")+"重置卡"+(m?"每 "+m+" 分钟刷新":"只手动刷新")}
+    case"accounts":{const m=Number(cur("ui.reset_credits_refresh_mins"))||0;return (ACCN===null?"":ACCN+" 个账号 · ")+"重置卡"+(m?"每 "+m+" 分钟刷新":"只手动刷新")+" · 自动使用提前 "+(Number(cur("ui.reset_credits_auto_lead_mins"))||10)+" 分钟"}
     case"general":return (cur("instance_id")||"未命名实例")+" · 日志 "+(cur("log.level")||"");
     case"keys":return ((CFG.running.api_keys||[]).length)+" 个密钥";
     case"audit":return AUD_LAST?"最近 "+fmtTime(AUD_LAST):"暂无记录";

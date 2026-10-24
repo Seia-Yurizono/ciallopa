@@ -379,6 +379,12 @@ impl Settings {
         v
     }
 
+    /// Reset-credit state shared with the routes (tests drive the automatic sweep with it).
+    #[doc(hidden)]
+    pub fn reset_credits(&self) -> ResetCredits {
+        self.rc.clone()
+    }
+
     // ---------------- accounts ----------------
 
     /// Forget runtime state of an account that no longer exists.

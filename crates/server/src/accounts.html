@@ -201,6 +201,9 @@ main.noadm>:not(#noadm){display:none!important}
 .counts{display:flex;gap:var(--s1);flex-wrap:wrap}
 #acc td.qc{width:150px}
 #acc .who{max-width:280px}
+#acc .aut{gap:var(--s2);margin-top:2px}
+#acc .aut{row-gap:0}
+#acc .aut label{gap:var(--s1);cursor:pointer;white-space:nowrap}
 #acc .stack{display:flex;flex-wrap:wrap;gap:var(--s1) var(--s2);align-items:center;max-width:360px}
 #acc .acts{display:flex;gap:var(--s1);justify-content:flex-end;flex-wrap:nowrap}
 #acc td.act-c{width:1%}
@@ -470,7 +473,7 @@ function needAdmin(e){if(!e||!e.body||!e.body.error||e.body.error.type!=="admin_
 // ---- accounts
 const CR={usage_limit:"额度用完",rate_limited:"上游限流",auth:"认证失败",transient:"上游连续 5xx",overloaded:"上游过载（overloaded）",challenge:"Cloudflare 拦截",model_unsupported:"模型不可用",not_found:"上游 404",payment_required:"上游 402 付费问题",workspace_deactivated:"工作区已停用（402）"};
 const ST={normal:["正常","ok","可以接收请求"],cooling:["冷却中","cool","上游限流或出错后暂停使用，到时自动恢复"],disabled:["已停用","off","手动停用，不参与选号"],token_invalid:["令牌失效","err","刷新令牌已失效，需要重新登录（设备码登录或导入）"]};
-let W=false,DATA=null,QM={},RCM={},poll=null;const OPEN=new Set();
+let W=false,DATA=null,QM={},RCM={},AUTO={},AUTOTOP=null,poll=null;const OPEN=new Set();
 function fail(e){if(!e||e.message==="401"||(e.isCurrent&&!e.isCurrent()))return;const m=$("msg"),title=e.isCurrent?"账号读取失败":"操作失败",t=(adminMsg(e.body)||e.message||String(e))+(e.isCurrent&&DATA?" · 保留上次账号结果":"");clear(m);m.appendChild(h("b",null,title));m.appendChild(document.createTextNode(t));if(!inView(m))toast(title+"："+t,{kind:"err"})}
 function ok(t,o){$("msg").textContent="";return toast(t,o)}
 const nm=a=>a.email||a.id;
@@ -516,15 +519,27 @@ function delAcct(a,from){const rc=RCM[a.id],n=rc&&rc.available_count,c=$("dlgc")
 for(const [id,k] of [["dyes","_yes"],["dalt","_alt"]])$(id).addEventListener("click",async()=>{const f=$("dlg")[k];if(!f)return;await busyRun($(id),$(id).textContent,f,"处理中…");closeModal($("dlg"))});
 $("dno").addEventListener("click",()=>closeModal($("dlg")));
 function opLabel(b,o){clear(b);b.append("操作",h("span",{"aria-hidden":"true"},o?" ▴":" ▾"))}
-// Reset cards: the newer of the card listing and the last 刷新额度 answer. Display only
+// Reset cards: the newer of the card listing and the last 刷新额度 answer
 function cardCount(r){if(!r)return null;const L=r.available_count,U=r.usage_available_count,l=L!=null,u=U!=null;
   if(l&&u)return (r.usage_observed_ms||0)>(r.fetched_ms||0)?U:L;return l?L:u?U:null}
 // limit_reached of the last 刷新额度, unless a newer quota observation replaced it
 function limitHit(r,qq){return !!(r&&r.limit_reached&&r.usage_observed_ms&&!(qq&&qq.observed_at_ms>r.usage_observed_ms+5e3))}
+// 快到期时自动使用: per-account switch and the next planned time, from the card listing
+function readAuto(r){if(r.status!=="fulfilled")return;const j=r.value.j,m={};for(const x of j.accounts)m[x.account]={on:!!x.auto,next:x.auto_next_ms||null};AUTO=m;AUTOTOP={lead:j.auto_lead_mins,ok:!!j.auto_available}}
+function hhmm(ms){const d=new Date(ms),n=new Date();return d.toDateString()===n.toDateString()?p2(d.getHours())+":"+p2(d.getMinutes()):fmtTime(ms,true)}
+function autoLine(a,cards){const au=AUTO[a.id],t=AUTOTOP;if(!t||!t.ok||!au||(!au.on&&(!W||cards===null)))return null;
+  const tip="开启后，这个账号的重置卡在到期前 "+t.lead+" 分钟内自动用掉一张（最早到期的那张）；提前量在 设置 › 账号与重置卡 修改。账号停用或需要重新登录时跳过";
+  const next=au.on&&au.next?h("span",{class:"xs mut num",title:"按当前已知的重置卡和提前量计算，到时会先向上游重新查询"},"下次自动使用 "+hhmm(au.next)):null;
+  if(!W)return h("span",{class:"xs mut",title:tip},"快到期时自动使用 已开启",next?" · ":null,next);
+  const sw=h("input",{type:"checkbox",class:"sw","aria-label":"快到期时自动使用："+nm(a),"data-fk":a.id+"|auto"});sw.checked=au.on;
+  sw.addEventListener("change",async()=>{const on=sw.checked;sw.disabled=true;
+    try{await apost(path(a)+"/reset-credits/auto",{enabled:on});AUTO[a.id]={on:on,next:null};ok((on?"已为 ":"已关闭 ")+nm(a)+(on?" 开启快到期时自动使用":" 的快到期时自动使用"));await load()}
+    catch(e){sw.checked=!on;fail(e)}finally{sw.disabled=false}});
+  return h("span","row aut",h("label",{class:"row nw xs",title:tip},sw,h("span",null,"快到期时自动使用")),next)}
 function row(a,usage_on){const s=ST[a.status]||[a.status,"off",""],full=a.email?a.email+"（"+a.id+"）":a.id,q=QM[a.id],qq=q&&q.quota,rc=RCM[a.id],cards=cardCount(rc),lim=limitHit(rc,qq);
   const stale=!!(qq&&qq.observed_at_ms&&Date.now()-qq.observed_at_ms>36e5),ws=wslots(qq);
   const dot=h("span","sdot "+s[1]);dot.title=s[0];
-  const who=h("td","who-c",h("div","row nw",h("span","m-only",dot),h("div",{class:"who",title:full},h("b","trunc",nm(a)),h("span","mut xs trunc",a.id+(a.plan?" · "+a.plan:"")),cards===null?null:h("span",{class:"mut xs num",title:"这个账号可用的重置卡数量（只显示，不会自动使用）"},"重置卡 "+cards+" 张"))));
+  const who=h("td","who-c",h("div","row nw",h("span","m-only",dot),h("div",{class:"who",title:full},h("b","trunc",nm(a)),h("span","mut xs trunc",a.id+(a.plan?" · "+a.plan:"")),cards===null?null:h("span",{class:"mut xs num",title:"这个账号可用的重置卡数量"+(AUTO[a.id]&&AUTO[a.id].on?"（已开启快到期时自动使用）":"（不会自动使用，可开启快到期时自动使用）")},"重置卡 "+cards+" 张"),autoLine(a,cards))));
   const stc=h("div","stack",h("span",{class:"tag dot "+s[1]+" d-only",title:s[2]},s[0]),h("span","m-only sm "+(s[1]==="cool"?"c-cool":s[1]==="err"?"c-err":"mut"),s[0]));
   if(a.status==="cooling"&&a.cooling_until_ms){stc.append(h("span","sm c-cool",CR[a.cooling_reason]||a.cooling_reason||""),h("span",{class:"sm mut num","data-until":a.cooling_until_ms,"data-pre":"还剩 ",title:"至 "+fmtTime(a.cooling_until_ms,true)},"还剩 "+dur((a.cooling_until_ms-Date.now())/1000)));
     stc.appendChild(act(h("button",{class:"xs",type:"button",title:"清除这个账号的全部冷却以及连续 5xx、overloaded 计数，立即参与选号","data-fk":a.id+"|cc"},"解除冷却"),async()=>{const j=await apost(path(a)+"/clear-cooldown",{});ok(j&&j.cleared?"已解除 "+nm(a)+" 的冷却，立即参与选号":nm(a)+" 已不在冷却中");await load()},"解除冷却","解除中…"))}
@@ -640,7 +655,7 @@ $("addbtn").addEventListener("click",()=>setAdd(true,true));$("addclose").addEve
 // ---- account reads: independent snapshots, bound to this load and login identity
 let accountLoadSeq=0,snapshotAuth="",accountReadAt=0;
 const READ={quota:{at:0,note:""},credits:{at:0,note:""}};
-function resetAccountData(){DATA=null;QM={};RCM={};W=false;accountReadAt=0;OPEN.clear();setAdd(false);
+function resetAccountData(){DATA=null;QM={};RCM={};AUTO={};AUTOTOP=null;W=false;accountReadAt=0;OPEN.clear();setAdd(false);
   for(const m of Object.values(READ)){m.at=0;m.note=""}for(const id of Object.keys(QERR))delete QERR[id];
   for(const id of ["meta","counts","upd","readnote","hint","ignored","msg","authf"])clear($(id));
   for(const id of ["readnote","noacc","coolb","authf","addbtn","impbtn","qall"])$(id).classList.add("hide");
@@ -667,7 +682,7 @@ async function load(){const seq=++accountLoadSeq,auth=key(),current=()=>seq===ac
   if(snapshotAuth!==auth){resetAccountData();snapshotAuth=auth}$("tbl").setAttribute("aria-busy","true");
   try{const main=accountGet("/admin/v1/accounts",auth,current),parts=Promise.allSettled([accountGet("/usage/v1/quota",auth,current),accountGet("/usage/v1/reset-credits",auth,current)]);
     const mainResult=await main;if(!current())return false;const [q,rc]=await parts;if(!current())return false;
-    DATA=mainResult.j;accountReadAt=mainResult.at;QM=readPart(q,QM,READ.quota,"额度");RCM=readPart(rc,RCM,READ.credits,"重置卡","reset_credits");render();return true;
+    DATA=mainResult.j;accountReadAt=mainResult.at;QM=readPart(q,QM,READ.quota,"额度");RCM=readPart(rc,RCM,READ.credits,"重置卡","reset_credits");readAuto(rc);render();return true;
   }catch(e){if(!current())return false;if(e.body&&e.body.error&&e.body.error.type==="admin_required"){resetAccountData();needAdmin(e);return false}e.isCurrent=current;throw e}
   finally{if(current())$("tbl").setAttribute("aria-busy","false")}}
 $("refresh").addEventListener("click",()=>{$("msg").textContent="";load().catch(fail);egressTag()});

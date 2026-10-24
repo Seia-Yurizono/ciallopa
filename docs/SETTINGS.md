@@ -59,6 +59,7 @@ streaming, including Images; a reload cannot shorten an already-running stream's
 | `usage.prices_source` | Used by the next price check (「检查更新」 / `ciallopa prices sync`). |
 | `ui.allow_reset_consume`, `ui.allow_config_write` | Next request. **File only.** |
 | `ui.reset_credits_refresh_mins` | The poller re-reads it every 30 s (`0` = on demand only). |
+| `ui.reset_credits_auto_lead_mins` | Next automatic-use sweep (≤ 60 s); also re-checked right before a card is used. |
 
 **Restart** (written to the file, reported as `pending_restart` with running and file value, and
 shown as a banner until the process restarts): `listen`, `instance_id`, `upstream`, `auth_dir`,

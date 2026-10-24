@@ -15,6 +15,7 @@ use subtle::ConstantTimeEq;
 
 pub mod accounts_api;
 pub mod affinity_store;
+pub mod auto_reset;
 pub mod client_fp;
 pub mod host;
 pub mod init;
@@ -188,6 +189,7 @@ pub fn build_app_with(s: Arc<settings::Settings>) -> Router {
         tokio::spawn(async move { s2.init_known_accounts().await });
     }
     reset_credits::spawn_poller(state.clone(), rc.clone());
+    auto_reset::spawn(state.clone(), rc.clone());
     let resets = reset_credits::routes(state.clone(), rc);
     let live_cfg = state.config.clone();
     let admin = usage

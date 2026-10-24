@@ -1,6 +1,8 @@
-//! Reset credits (重置卡): read-only listing (on demand + periodic) and the **manual-only**
-//! consume action. Nothing in ciallopa ever consumes a credit on its own: the only call site
-//! of [`consume_upstream`] is the admin handler below, reached by an explicit client request.
+//! Reset credits (重置卡): read-only listing (on demand + periodic) and the consume action.
+//! [`consume_upstream`] has one caller, [`consume_locked`], which runs under the account's
+//! consume lock. It is reached from two places only: the manual admin handler below (an
+//! explicit client request) and the opt-in automatic use in [`crate::auto_reset`] (accounts
+//! whose 「快到期时自动使用」 switch is on, shortly before a card expires).
 //!
 //! Upstream calls mirror codex-rs `backend-client` (`client/rate_limit_resets.rs`): same paths,
 //! `User-Agent` + `originator` of the latest learned Codex client (`ciallopa_core::fingerprint`), `Authorization: Bearer`,
@@ -12,7 +14,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use ciallopa_forward::{AppState, ClientKey};
 use ciallopa_usage::reset::ConsumeOutcome;
-use ciallopa_usage::{now_ms, QuotaObs};
+use ciallopa_usage::{now_ms, QuotaObs, Recorder};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -86,21 +88,35 @@ pub fn usage_extras(v: &Value) -> (Option<i64>, Option<bool>) {
 /// Shared cache + per-account consume locks.
 #[derive(Clone, Default)]
 pub struct ResetCredits {
-    cache: Arc<Mutex<HashMap<String, Entry>>>,
+    pub(crate) cache: Arc<Mutex<HashMap<String, Entry>>>,
     locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    /// Per-account automatic-use switches (see [`crate::auto_reset`]).
+    pub(crate) auto: crate::auto_reset::AutoState,
 }
 
 impl ResetCredits {
-    /// Drop the cached listing of a removed account.
+    /// Drop the cached listing and the automatic-use switch of a removed account.
+    ///
+    /// The consume lock is only dropped when nobody holds or waits for it: a consume still in
+    /// flight keeps it, so a re-added account with the same id still waits for that consume.
     pub fn forget(&self, account: &str) {
         self.cache
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(account);
-        self.locks
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(account);
+        let mut locks = self.locks.lock().unwrap_or_else(|e| e.into_inner());
+        if locks
+            .get(account)
+            .is_some_and(|l| Arc::strong_count(l) == 1)
+        {
+            locks.remove(account);
+        }
+        drop(locks);
+        self.auto.set(account, false);
+    }
+    /// Per-account automatic-use switches.
+    pub fn auto(&self) -> &crate::auto_reset::AutoState {
+        &self.auto
     }
     /// Keep the display-only `/wham/usage` fields of one account.
     pub fn note_usage(&self, account: &str, v: &Value) {
@@ -111,10 +127,11 @@ impl ResetCredits {
         e.limit_reached = reached;
         e.usage_observed_ms = Some(now_ms());
     }
-    fn snapshot(&self) -> HashMap<String, Entry> {
+    pub(crate) fn snapshot(&self) -> HashMap<String, Entry> {
         self.cache.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
-    fn lock_for(&self, account: &str) -> Arc<tokio::sync::Mutex<()>> {
+    /// The per-account consume lock (manual button and automatic use alike).
+    pub(crate) fn lock_for(&self, account: &str) -> Arc<tokio::sync::Mutex<()>> {
         self.locks
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -278,6 +295,7 @@ pub fn routes(st: AppState, rc: ResetCredits) -> Router {
             "/admin/v1/accounts/{id}/reset-credits/consume",
             post(consume),
         )
+        .route("/admin/v1/accounts/{id}/reset-credits/auto", post(set_auto))
         .route("/admin/v1/accounts/{id}/quota-refresh", post(quota_one))
         .route("/admin/v1/accounts/quota-refresh", post(quota_all))
         .with_state(S { st, rc })
@@ -290,19 +308,32 @@ fn err(status: StatusCode, msg: &str) -> Response {
 async fn list_body(s: &S, admin: bool) -> Value {
     let cfg = s.st.config.load();
     let snap = s.rc.snapshot();
+    let mut attempts = match &s.st.usage {
+        Some(r) => r
+            .reset_attempts(crate::auto_reset::HISTORY_ROWS)
+            .await
+            .unwrap_or_default(),
+        None => vec![],
+    };
+    let lead_ms = crate::auto_reset::lead_ms(&cfg);
+    let now = now_ms();
     let mut out = vec![];
     for a in s.st.accounts.list().await {
+        let auto = s.rc.auto.is_on(&a.id);
+        let next = snap.get(&a.id).filter(|_| auto).and_then(|e| {
+            let hist = s.rc.auto.history(&attempts, &a.id);
+            crate::auto_reset::next_due(&e.credits, &hist, lead_ms, now)
+        });
         out.push(json!({
             "account": a.id,
             "email": a.email,
             "disabled": a.disabled,
             "reset_credits": snap.get(&a.id),
+            "auto": auto,
+            "auto_next_ms": next,
         }));
     }
-    let attempts = match &s.st.usage {
-        Some(r) => r.reset_attempts(20).await.unwrap_or_default(),
-        None => vec![],
-    };
+    attempts.truncate(20);
     let consume_enabled = cfg.ui.allow_reset_consume && s.st.usage.is_some();
     json!({
         "consume_enabled": consume_enabled,
@@ -310,6 +341,9 @@ async fn list_body(s: &S, admin: bool) -> Value {
         "can_consume": consume_enabled && admin,
         "is_admin": admin,
         "refresh_mins": cfg.ui.reset_credits_refresh_mins,
+        "auto_lead_mins": cfg.ui.reset_credits_auto_lead_mins,
+        // Automatic use keeps its idempotency rows in the usage DB, like the manual action.
+        "auto_available": s.st.usage.is_some(),
         "accounts": out,
         "attempts": attempts,
     })
@@ -363,6 +397,51 @@ async fn refresh(
 }
 
 #[derive(Deserialize)]
+struct AutoReq {
+    enabled: bool,
+}
+
+/// Per-account 「快到期时自动使用」 switch. A setting-like change: needs
+/// `[ui] allow_config_write = true` and the CSRF rules (not `allow_reset_consume`, which only
+/// gates the manual button). Kept in the usage DB, written debounced.
+async fn set_auto(
+    State(s): State<S>,
+    Path(account): Path<String>,
+    headers: HeaderMap,
+    body: Option<Json<AutoReq>>,
+) -> Response {
+    if !s.st.config.load().ui.allow_config_write {
+        return err(
+            StatusCode::FORBIDDEN,
+            "changes from the management page are disabled; set [ui] allow_config_write = true in the config file",
+        );
+    }
+    if let Some(r) = crate::settings::csrf(&headers) {
+        return r;
+    }
+    let Some(Json(req)) = body else {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "body must be JSON {\"enabled\": true|false}",
+        );
+    };
+    if s.st.usage.is_none() {
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "automatic use needs [usage] enabled (attempts are recorded there)",
+        );
+    }
+    if !s.st.accounts.list().await.iter().any(|a| a.id == account) {
+        return err(StatusCode::NOT_FOUND, "unknown account");
+    }
+    let changed = s.rc.auto.set(&account, req.enabled);
+    if changed {
+        tracing::info!(%account, enabled = req.enabled, "auto reset-card switch changed");
+    }
+    Json(json!({"account": account, "auto": req.enabled, "changed": changed})).into_response()
+}
+
+#[derive(Deserialize)]
 struct ConsumeReq {
     /// Must equal the account id in the path (explicit confirmation).
     #[serde(default)]
@@ -374,7 +453,7 @@ struct ConsumeReq {
     redeem_request_id: Option<String>,
 }
 
-fn uuid_v4() -> String {
+pub(crate) fn uuid_v4() -> String {
     let mut b: [u8; 16] = rand::random();
     b[6] = (b[6] & 0x0f) | 0x40;
     b[8] = (b[8] & 0x3f) | 0x80;
@@ -393,7 +472,7 @@ fn valid_rid(s: &str) -> bool {
     !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
-/// Upstream consume. Only called from [`consume`] (manual admin action).
+/// Upstream consume. Only called from [`consume_locked`].
 async fn consume_upstream(
     st: &AppState,
     account: &str,
@@ -460,24 +539,50 @@ async fn consume(
     }
     let credit = req.credit_id.as_deref().filter(|c| !c.is_empty());
     let lock = s.rc.lock_for(&account);
-    let _g = lock.lock().await;
+    let g = lock.lock().await;
+    let label = key.as_ref().map(|k| k.0.label.to_string());
+    let (status, out) = consume_locked(
+        &s.st,
+        &s.rc,
+        &rec,
+        &account,
+        credit,
+        req.redeem_request_id.as_deref(),
+        label.as_deref(),
+        &g,
+    )
+    .await;
+    (status, Json(out)).into_response()
+}
 
-    let pending = match rec.reset_pending(&account).await {
+/// One consume (or a retry of the pending one) of `account`, shared by the manual button and
+/// the automatic use. The caller holds the account's [`ResetCredits::lock_for`] lock (`_held`)
+/// for the whole call. Returns the HTTP status and body the manual handler answers with.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn consume_locked(
+    st: &AppState,
+    rc: &ResetCredits,
+    rec: &Recorder,
+    account: &str,
+    credit: Option<&str>,
+    req_rid: Option<&str>,
+    label: Option<&str>,
+    _held: &tokio::sync::MutexGuard<'_, ()>,
+) -> (StatusCode, Value) {
+    let fail = |status: StatusCode, msg: String| (status, json!({"error": {"message": msg}}));
+    let pending = match rec.reset_pending(account).await {
         Ok(p) => p,
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+        Err(e) => return fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
     // An earlier attempt on this account has an unknown outcome: the only allowed action is
     // retrying that exact attempt (same redeem id + credit), never a second spend.
     if let Some(p) = &pending {
         let same_credit = p.credit_id.as_deref() == credit;
-        let same_rid = req
-            .redeem_request_id
-            .as_deref()
-            .is_none_or(|r| r == p.redeem_request_id);
+        let same_rid = req_rid.is_none_or(|r| r == p.redeem_request_id);
         if !same_credit || !same_rid {
             return (
                 StatusCode::CONFLICT,
-                Json(json!({
+                json!({
                     "error": {"type": "pending_consume", "message": "an earlier consume on this account has an unknown outcome; retry it with the same redeem_request_id and credit_id"},
                     "status": "pending",
                     "pending": {
@@ -486,29 +591,21 @@ async fn consume(
                         "attempt": p.id,
                         "started_ms": p.started_ms,
                     }
-                })),
-            )
-                .into_response();
+                }),
+            );
         }
     }
-    let (rid, reused) = match (&req.redeem_request_id, &pending) {
+    let (rid, reused) = match (req_rid, &pending) {
         (_, Some(p)) => (p.redeem_request_id.clone(), true),
-        (Some(r), None) => (r.clone(), true),
+        (Some(r), None) => (r.to_string(), true),
         (None, None) => (uuid_v4(), false),
     };
-    let label = key.as_ref().map(|k| k.0.label.to_string());
     let row = match rec
-        .reset_begin(
-            &account,
-            credit,
-            &rid,
-            label.as_deref(),
-            &s.st.config.load().instance_id,
-        )
+        .reset_begin(account, credit, &rid, label, &st.config.load().instance_id)
         .await
     {
         Ok(r) => r,
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+        Err(e) => return fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
     // Supersede older pending rows for this id: the newest row now carries the outcome.
     if let Some(p) = &pending {
@@ -525,8 +622,9 @@ async fn consume(
                 .await;
         }
     }
-    tracing::warn!(%account, redeem_request_id = %rid, reused, "manual reset-credit consume");
-    let res = consume_upstream(&s.st, &account, &rid, credit).await;
+    let auto = label == Some(crate::auto_reset::AUTO_LABEL);
+    tracing::warn!(%account, redeem_request_id = %rid, reused, auto, "reset-credit consume");
+    let res = consume_upstream(st, account, &rid, credit).await;
     let (outcome, status, payload) = match res {
         Ok((code @ 200..=299, body)) => {
             let v: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
@@ -596,17 +694,17 @@ async fn consume(
     if st_name == "done" && was_reset {
         // The usage windows were just reset upstream: a usage-limit cooldown taken earlier no
         // longer holds. Other cooldowns (auth, 402, 404, 5xx, overload) are kept.
-        let cleared = s.st.router.clear_quota_cooldown(&account);
+        let cleared = st.router.clear_quota_cooldown(&account.to_string());
         tracing::info!(%account, cleared, "reset credit used: usage-limit cooldown cleared");
         extra["cooldown_cleared"] = json!(cleared);
     }
     if st_name == "done" {
-        let entry = refresh_account(&s.st, &s.rc, &account).await;
+        let entry = refresh_account(st, rc, account).await;
         extra["reset_credits"] = json!(entry);
         if was_reset {
             if let Ok((200..=299, b)) = upstream_req(
-                &s.st,
-                &account,
+                st,
+                account,
                 reqwest::Method::GET,
                 USAGE_PATH,
                 None,
@@ -615,7 +713,7 @@ async fn consume(
             .await
             {
                 if let Ok(v) = serde_json::from_str::<Value>(&b) {
-                    s.rc.note_usage(&account, &v);
+                    rc.note_usage(account, &v);
                     extra["rate_limit"] = v.get("rate_limit").cloned().unwrap_or(Value::Null);
                 }
             }
@@ -633,7 +731,7 @@ async fn consume(
             o.extend(m);
         }
     }
-    (status, Json(out)).into_response()
+    (status, out)
 }
 
 // ---------------- active quota query (刷新额度) ----------------
