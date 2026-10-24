@@ -211,6 +211,17 @@ main.noadm>:not(#noadm){display:none!important}
 #cfg td.k{width:44%}
 #cfg td.k b{display:block;font-weight:550}
 #cfg td.k code{font-size:var(--fs-xs);color:var(--mut);overflow-wrap:anywhere}
+#cfg td.k .hp{margin-top:2px;font-size:var(--fs-s);color:var(--mut)}
+#cfg td.k .kd{margin-top:2px;font-size:var(--fs-xs);color:var(--mut)}
+#cfg tr.sgrp th a{margin-left:var(--s2);font-weight:500;font-size:var(--fs-xs);color:var(--fg-2)}
+.chs{display:flex;flex-direction:column;gap:var(--s1);max-width:560px}
+.ch{display:grid;grid-template-columns:auto minmax(0,1fr);gap:2px var(--s2);align-items:baseline;padding:var(--s1) var(--s2);border:1px solid var(--line);border-radius:var(--r1);background:var(--surface);cursor:pointer}
+.ch:hover{background:var(--surface-2)}
+.ch:has(input:checked){border-color:var(--fg-2);background:var(--surface-2)}
+.ch b{font-weight:600;font-size:var(--fs-s)}.ch code{margin-left:var(--s2);font-size:var(--fs-xs);color:var(--mut)}
+.ch .chh{grid-column:2;font-size:var(--fs-s);color:var(--mut)}
+#cfg td.v .ch input[type=radio]{width:14px;height:14px;margin:0;padding:0;border:0;accent-color:var(--fg);align-self:center}
+#cfg .chs.chg{border-left:2px solid var(--fg);padding-left:var(--s2)}
 #cfg td.e{width:72px;text-align:right}
 #cfg td.v .mono{overflow-wrap:anywhere}
 #cfg td.v .xs{margin-top:var(--s1)}
@@ -490,6 +501,7 @@ function input(f,v,tr){
     e.addEventListener("change",()=>{t.textContent=e.checked?"已开启":"已关闭";const changed=BASE_STALE||e.checked!==orig;if(!changed)delete EDITS[f.key];else EDITS[f.key]=e.checked;mark(e,tr,changed);upd()});
     return h("label","chk",e,t)}
   let e;
+  if(f.kind==="enum"&&f.choices&&f.choices.length)return choices(f,v,tr);
   if(f.kind==="enum"){e=h("select",{"aria-label":f.desc,"data-fk":f.key});for(const o of f.options)e.appendChild(h("option",{value:o},o));e.value=v}
   else{e=h("input",{"aria-label":f.desc,"data-fk":f.key});e.value=v===null||v===undefined?"":String(v);if(f.kind==="int"||f.kind==="float"){e.type="number";e.step=f.kind==="int"?"1":"any";e.min="0"}else e.type="text"}
   const orig=e.value,num=f.kind==="int"||f.kind==="float",fe=num?h("div",{class:"xs c-err hide",id:"fe-"+f.key.replace(/\W/g,"_")}):null;
@@ -500,6 +512,18 @@ function input(f,v,tr){
     const changed=BASE_STALE||e.value!==orig;if(!changed)delete EDITS[f.key];else EDITS[f.key]=val;mark(e,tr,changed);upd()});
   e.addEventListener("change",()=>e.dispatchEvent(new Event("input")));
   return fe?h("div",null,e,fe):e}
+// Options with a description (选号策略 …): a radio list, every option with what it does and
+// when to pick it, visible before choosing (also on touch).
+function choices(f,v,tr){const g=h("div",{class:"chs",role:"radiogroup","aria-label":f.desc});
+  for(const c of f.choices){const id="ch-"+(f.key+"-"+c.value).replace(/\W/g,"_"),rb=h("input",{type:"radio",name:"r-"+f.key,value:c.value,id,"data-fk":f.key+"="+c.value,"aria-describedby":id+"-h"});rb.checked=c.value===v;
+    rb.addEventListener("change",()=>{if(!rb.checked)return;const changed=BASE_STALE||c.value!==v;if(!changed)delete EDITS[f.key];else EDITS[f.key]=c.value;mark(g,tr,changed);upd()});
+    g.appendChild(h("label",{class:"ch",for:id},rb,h("span",null,h("b",null,c.label),h("code",null,c.value)),h("span",{class:"chh",id:id+"-h"},c.help)))}
+  return g}
+function choiceOf(f,v){return(f.choices||[]).find(c=>c.value===v)}
+// Default of a key as shown under its name.
+function dflt(f){const d=CFG.defaults?CFG.defaults[f.key]:undefined;if(d===undefined||f.kind==="keys")return null;
+  if(f.kind==="bool")return d?"开启":"关闭";const ch=choiceOf(f,d);if(ch)return ch.label+"（"+d+"）";return d===""?"空":d===null?null:String(d)}
+const DOCS="https://github.com/Seia-Yurizono/ciallopa#how-an-account-is-chosen";
 // ---- egress proxy / IPv6: the switch writes the file at once; the toast's 撤销 writes the old value back
 const IMM={proxy_enabled:["启用出口代理","已启用出口代理：新请求立即走代理，进行中的 WebSocket 会话在本轮结束后重连","已关闭出口代理：新请求立即直连，进行中的 WebSocket 会话在本轮结束后重连"],
   ipv6:["允许 IPv6 出口","已允许 IPv6：新连接 IPv6/IPv4 竞速，进行中的 WebSocket 会话在本轮结束后重连","已改为只用 IPv4：新连接只走 IPv4，进行中的 WebSocket 会话在本轮结束后重连"]};
@@ -535,19 +559,21 @@ function renderNow(){const c=CFG,tb=$("rows");clear(tb);EDITS={};BAD.clear();BAS
   if(pend.length)pe.append(h("b",null,pend.length+" 项需重启后生效"),pend.map(p=>p.key+"（运行中 "+fmt(p.old)+" → 文件 "+fmt(p.new)+"）").join("；"));
   const pk=new Set(pend.map(p=>p.key));
   for(const [p,name] of GROUPS){const fs=c.schema.filter(f=>group(f.key)===p&&f.key!=="api_keys");if(!fs.length)continue;
-    const gid="g-"+(p.replace(/[^a-z_]/g,"")||"base");tb.appendChild(h("tr","sgrp",h("th",{colspan:"3",id:gid,scope:"colgroup"},name)));
+    const gid="g-"+(p.replace(/[^a-z_]/g,"")||"base");tb.appendChild(h("tr","sgrp",h("th",{colspan:"3",id:gid,scope:"colgroup"},name,p==="routing."?h("a",{href:DOCS,target:"_blank",rel:"noopener noreferrer"},"了解选号规则 ↗"):null)));
     toc.appendChild(h("a",{href:"#"+gid},name,h("span",null,String(fs.length))));
     for(const f of fs){const r=h("tr",{"data-q":(f.key+" "+f.desc).toLowerCase(),"data-ak":"cfg|"+f.key}),b=h("td","v");
       const run=c.running[f.key],file=c.values?c.values[f.key]:run;
       if(IMM[f.key]&&c.write_enabled)b.appendChild(immToggle(f.key,f.key==="proxy_enabled"?file!==false:file===true));
-      else if(c.write_enabled&&f.editable)b.appendChild(input(f,file,r));else b.appendChild(h("span","mono",fmt(run)));
+      else if(c.write_enabled&&f.editable)b.appendChild(input(f,file,r));
+      else{b.appendChild(h("span","mono",fmt(run)));const ch=choiceOf(f,run);if(ch)b.appendChild(h("div","xs mut",ch.label+"："+ch.help))}
       if(f.key==="proxy_enabled"&&file!==false&&!(c.values||c.running).proxy_url)b.appendChild(h("div","xs mut","已启用，但还没有填写代理地址：当前直连"));
       if(f.key==="proxy_url")b.appendChild(proxyExtra(c));
       if(f.key==="ipv6")b.appendChild(h("div","xs mut","使用代理时只影响连接代理主机本身；目标域名由代理解析"));
       if(pk.has(f.key))b.appendChild(h("div","xs diffv","运行中："+fmt(run)));
       if(!f.editable&&c.write_enabled)b.appendChild(h("div","xs mut","只能在配置文件中修改"));
       if(f.key==="log.level"&&c.overrides&&c.overrides["log.level"])b.appendChild(h("div","xs mut","已被环境变量 RUST_LOG 覆盖"));
-      r.append(h("td","k",h("b",null,f.desc),h("code",null,f.key)),b,h("td","e",eff(f)));tb.appendChild(r)}}
+      const dv=dflt(f);
+      r.append(h("td","k",h("b",null,f.desc),f.help?h("div","hp",f.help):null,h("div","kd",h("code",null,f.key),dv!==null?" · 默认 "+dv:"")),b,h("td","e",eff(f)));tb.appendChild(r)}}
   filt();
   renderKeys(c);
   const lr=c.last_reload;$("lastr").textContent=lr?("上次应用 "+fmtTime(lr.at_ms)+(lr.ok?"":"（失败）")):"";$("upd").textContent="更新于 "+hms(new Date());refocus()}
