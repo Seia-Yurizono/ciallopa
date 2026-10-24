@@ -198,6 +198,8 @@ main.noadm>:not(#noadm){display:none!important}
 #noadm{display:flex;flex-direction:column;gap:var(--s2);align-items:center;margin-top:var(--s6)}
 /* ==== shared:end ==== */
 select.ivl{height:24px;padding:0 var(--s1);font-size:var(--fs-xs)}
+/* Touch: 44px hit area, same 24px look (transparent top/bottom border, outline drawn inside) */
+@media (pointer:coarse){header select.ivl{height:44px;margin:-10px 0;border-width:10px 0;border-color:transparent;border-radius:var(--r1)/calc(var(--r1) + 10px);background-clip:padding-box;box-shadow:inset 0 0 0 1px var(--ctl)}}
 /* overview */
 .fbar{position:sticky;top:var(--hdr);z-index:15;display:flex;align-items:center;gap:var(--s3);margin:calc(-1 * var(--s5)) 0 var(--s3);padding:var(--s3) 0 var(--s2);background:var(--bg);border-bottom:1px solid var(--line)}
 .fbar .fl{display:inline-flex;align-items:center;gap:var(--s2);font-size:var(--fs-s);color:var(--mut);white-space:nowrap}
@@ -308,7 +310,8 @@ select.ivl{height:24px;padding:0 var(--s1);font-size:var(--fs-xs)}
 #rec tr.dt{cursor:pointer}
 #rec tr.dt:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
 .st{display:inline-block;min-width:32px;text-align:center;font-size:var(--fs-xs);font-weight:600;font-variant-numeric:tabular-nums;border-radius:var(--r1);line-height:20px;background:var(--off-bg);color:var(--fg-2)}
-.st.s4,.st.s5{background:var(--err-bg);color:var(--err)}.st.s429{background:var(--cool-bg);color:var(--cool)}
+.st.s2{background:var(--ok-bg);color:var(--ok)}.st.s4{background:var(--err-bg);color:var(--err)}.st.s429{background:var(--cool-bg);color:var(--cool)}.st.s5{background:var(--st5-bg);color:var(--st5);box-shadow:inset 0 0 0 1px currentColor}
+:root{--st5:#b91c1c;--st5-bg:#fdecec}@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--st5:#fca5a5;--st5-bg:#2c1414}}:root[data-theme=dark]{--st5:#fca5a5;--st5-bg:#2c1414}
 .chip{font-size:var(--fs-xs);color:var(--mut);margin-left:var(--s1);white-space:nowrap}
 .chip.fast{color:var(--cool)}.chip.dg{color:var(--cool);text-decoration:line-through}
 .more{font-size:var(--fs-xs);color:var(--mut);margin-left:var(--s1);white-space:nowrap}
@@ -354,7 +357,7 @@ select.ivl{height:24px;padding:0 var(--s1);font-size:var(--fs-xs)}
 .fbar .fl{flex:0 0 auto;min-width:0}.fbar select{width:132px;min-width:0}
 .fbar>.sp{display:none}#scopewhen{flex:1;white-space:nowrap}
 #scopewhen[data-fixed=true]{order:3;flex-basis:100%;white-space:normal}
-.fbar .chk{min-height:40px}.fbar select.ivl{width:auto;height:44px;font-size:16px}
+.fbar .chk{min-height:40px}.fbar select.ivl{width:auto;height:44px;font-size:16px}.fbar>.m-only{display:inline-flex;align-items:center;gap:var(--s2)}
 .rowA{grid-template-columns:minmax(0,1fr);gap:var(--s5);margin-bottom:var(--s5)}
 /* quota: line 1 = dot + name + card chip; line 2 = both bars with reset text */
 #quota tr{grid-template-columns:repeat(4,minmax(0,1fr));grid-template-areas:"who who who rc" "q5 q5 qw qw";gap:var(--s1) var(--s3)}
@@ -703,7 +706,7 @@ function renderEgressBlock(){const b=Q&&Q.egress_block,e=$("egressblk"),on=!!(b&
 function renderQuota(){steady([$("quota").tBodies[0]],renderQuotaNow)}
 function renderQuotaNow(){queueMicrotask(refocus);ACCTS=mergeAccts();const tb=$("quota").tBodies[0];clear(tb);
   const rows=ACCTS.slice().sort((x,y)=>minRem(x)-minRem(y)),hw=rows.map(a=>wslots(a.q));$("hq5").textContent=whead(hw.filter(o=>o.s).map(o=>o.s[0]),"5 小时");$("hqw").textContent=whead(hw.filter(o=>o.l).map(o=>o.l[0]),"周");for(const a of rows)tb.appendChild(quotaRow(a));
-  if(!rows.length)emptyRow(tb,4,Q||AC?"没有账号":"暂无账号额度数据",Q||AC?"在「账号」页或用 ciallopa login 添加账号。":"查看下方读取状态，或刷新重试。");
+  if(!rows.length)emptyRow(tb,4,Q||AC?"没有账号":"暂无账号额度数据",Q||AC?"在「账号」页或用 ciallopa login 添加账号":"查看下方读取状态，或刷新重试");
   const conf=ACCTS.filter(a=>a.configured);setTabCount(conf.length);
   const usable=conf.filter(a=>a.status==="normal"||a.status==="cooling").length,nb=$("noacc");clear(nb);
   if(!usable&&(Q||AC)){nb.appendChild(h("b",null,"没有可用账号"));nb.appendChild(document.createTextNode(conf.length?"所有账号都已停用或需要重新登录，代理请求会失败。":"代理请求会失败。在「账号」页或用 ciallopa login 添加账号。"))}
@@ -933,6 +936,12 @@ function srcOf(r){return r.err_source==="network"&&PROXY_ERR[r.error]?"proxy":r.
 let recState={cursor:null,total:0,rows:[]};
 const OUTCOME={completed:"完成",failed:"失败",cancelled:"客户端取消",incomplete:"未完成",unknown:"结果未知",prewarm:"预热"};
 function requestOutcome(r){return r.endpoint==="prewarm"?"prewarm":r.error==="client_closed"||r.err_source==="client"?"cancelled":r.error==="observation_incomplete"&&r.err_source==="local"&&!(r.status>=400)?"unknown":r.error||r.status>=400?"failed":r.incomplete?"incomplete":"completed"}
+// Status chip colour by outcome; the code itself and the title carry the meaning, colour only
+// reinforces it. Cancelled, unknown and prewarm rows stay neutral.
+function statusKind(outcome,s){if(!s)return null;
+  if(outcome==="completed"||outcome==="incomplete")return s>=200&&s<300?["s2","成功"]:null;
+  if(outcome!=="failed")return null;
+  return s===429?["s429","限流"]:s>=500?["s5","服务端错误"]:s>=400?["s4","请求或账号错误"]:null}
 function streamRecord(r){return r.transport==="sse"||r.transport==="ws"}
 function recRow(r){const outcome=requestOutcome(r),isErr=outcome==="failed",es=srcOf(r),s=r.status,pw=outcome==="prewarm",error=errorInfo(r);
   const tr=h("tr",{class:(isErr?"e":"")+(es==="proxy"?" px":"")+(s===429?" rl":"")+(pw?" dim":"")+" dt","data-ak":r.request_id?"rec|"+r.request_id:null});
@@ -941,7 +950,8 @@ function recRow(r){const outcome=requestOutcome(r),isErr=outcome==="failed",es=s
   const today=new Date(r.ts_ms).toDateString()===new Date().toDateString();
   const detail=h("button",{class:"statlink",type:"button","aria-label":"查看请求："+fmtTime(r.ts_ms)+" "+(r.account||"")+" "+OUTCOME[outcome]},today?hms(new Date(r.ts_ms)):fmtTime(r.ts_ms,true));
   tr.appendChild(h("td",{class:"t num sm",title:isoLocal(r.ts_ms)+hint},detail));
-  const sc=h("td",{class:"s",title:(s?"客户端收到 HTTP "+s:"未记录 HTTP 状态")+(r.upstream_status&&r.upstream_status!==s&&r.error?"；最后一次上游响应 HTTP "+r.upstream_status:"")+(r.incomplete?"；response.incomplete："+r.incomplete+"（token 已计入，不算错误）":"")},h("span","st"+(isErr?(s===429?" s429":s>=500?" s5":s>=400?" s4":""):""),s||"–"));
+  const sk=statusKind(outcome,s);
+  const sc=h("td",{class:"s",title:(s?"客户端收到 HTTP "+s+(sk?" · "+sk[1]:""):"未记录 HTTP 状态")+(r.upstream_status&&r.upstream_status!==s&&r.error?"；最后一次上游响应 HTTP "+r.upstream_status:"")+(r.incomplete?"；response.incomplete："+r.incomplete+"（token 已计入，不算错误）":"")},h("span","st"+(sk?" "+sk[0]:""),s||"–"));
   if(r.incomplete)sc.appendChild(h("span","tag cool","未完成"));tr.appendChild(sc);
   const ec=h("td",{class:"err",title:(error.tip?error.tip+"："+r.error:es&&SRC[es]?SRC[es][2]+"："+(r.error||""):(r.error||""))+hint});
   if(pw){ec.appendChild(h("span","tag line","预热"));ec.title="Codex WS 预热（generate:false）：token 计入用量与费用，不计入请求数、错误率和延迟统计"}
@@ -1029,7 +1039,7 @@ async function openDetail(r,from,retry=false){if(!/^[0-9a-f]{16}$/.test(r.reques
   finally{if(current()){$("dcopy").disabled=false;$("dbody").setAttribute("aria-busy","false");$("dretry").setAttribute("aria-disabled","false");$("dretry").textContent="重试详情"}}}
 async function lookupRecord(id,from){id=id.trim().toLowerCase();if(!/^[0-9a-f]{16}$/.test(id)){toast("记录 ID 是 16 位十六进制字符",{kind:"err"});return}
   $("lookupresult").textContent="正在查找 "+id+"…";const seq=++lookupSeq,auth=key(),epoch=authEpoch,current=()=>seq===lookupSeq&&auth===key()&&epoch===authEpoch;try{const d=await usageGet("/usage/v1/records/"+id,current);if(current()){$("lookupresult").textContent="";openDetail(d.record,from)}}
-  catch(e){if(!current()||e.message==="401")return;$("lookupresult").textContent=e.status===404?"没有找到记录 "+id+"，可能已过保留期。":"查找失败："+e.message;$("lookup").classList.remove("hide");$("lookupshow").setAttribute("aria-expanded","true");$("recordid").value=id}}
+  catch(e){if(!current()||e.message==="401")return;$("lookupresult").textContent=e.status===404?"没有找到记录 "+id+"，可能已过保留期":"查找失败："+e.message;$("lookup").classList.remove("hide");$("lookupshow").setAttribute("aria-expanded","true");$("recordid").value=id}}
 $("lookupshow").addEventListener("click",()=>{const open=$("lookup").classList.toggle("hide")===false;$("lookupshow").setAttribute("aria-expanded",String(open));if(open)$("recordid").focus()});
 $("lookup").addEventListener("submit",e=>{e.preventDefault();lookupRecord($("recordid").value,$("recordid"))});
 function moveDetail(step){const i=recState.rows.findIndex(r=>r.request_id===activeRecord),r=i<0?null:recState.rows[i+step];if(r)openDetail(r)}

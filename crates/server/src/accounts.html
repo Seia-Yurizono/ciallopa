@@ -285,9 +285,9 @@ main.noadm>:not(#noadm){display:none!important}
     <div class="sh"><h2>添加账号</h2><span class="sp"></span><button id="addclose" class="ghost xs" type="button">收起</button></div>
     <div class="add">
       <div class="panel device-panel"><h3>设备码登录</h3>
-        <div class="mut sm">在浏览器里打开链接并输入一次性代码，完成后账号自动加入。</div>
+        <div class="mut sm">在浏览器里打开链接并输入一次性代码，完成后账号自动加入</div>
         <div><button id="devbtn" class="pri" type="button">开始设备码登录</button></div>
-        <div id="dev" class="devbox hide" role="status"><div id="devsteps" class="hide"><div class="sm">1. 打开 <a id="devurl" class="mono" target="_blank" rel="noopener noreferrer"></a> 并登录</div><div class="row sm">2. 输入代码 <span class="devcode" id="devcode"></span><span class="mut xs num" id="devexp"></span></div></div><div class="row"><span class="mut xs sp" id="devst"></span><button id="devx" class="xs" type="button">停止等待</button></div><div id="devnote" class="mut xs">停止等待后，仍可在浏览器完成授权；账号可能随后加入。</div></div>
+        <div id="dev" class="devbox hide" role="status"><div id="devsteps" class="hide"><div class="sm">1. 打开 <a id="devurl" class="mono" target="_blank" rel="noopener noreferrer"></a> 并登录</div><div class="row sm">2. 输入代码 <span class="devcode" id="devcode"></span><span class="mut xs num" id="devexp"></span></div></div><div class="row"><span class="mut xs sp" id="devst"></span><button id="devx" class="xs" type="button">停止等待</button></div><div id="devnote" class="mut xs">停止等待后，仍可在浏览器完成授权；账号可能随后加入</div></div>
       </div>
       <details id="paste" class="panel"><summary>粘贴 auth.json</summary>
         <div class="mut sm">粘贴 Codex CLI 的 <code>~/.codex/auth.json</code> 或 CPA 的 codex 账号文件内容。内容只发送给本服务，用于写入账号目录。有文件可用「导入文件」一次选择多个。</div>
@@ -540,7 +540,7 @@ function row(a,usage_on){const s=ST[a.status]||[a.status,"off",""],full=a.email?
 function render(){steady([$("rows"),$("authf")],renderNow)}
 function renderNow(){const j=DATA;W=j.write_enabled;setTabCount(j.accounts.length);
   $("meta").textContent=j.accounts.length+" 个 · 选号策略 "+j.strategy+" · "+(W?"可编辑":"只读");
-  $("hint").textContent=W?"权重和优先级保存后立即生效，不影响冷却状态和已绑定的会话。":"当前为只读：在配置文件中设置 [ui] allow_config_write = true 后可启用、停用、调整、删除和添加账号。";
+  $("hint").textContent=W?"权重和优先级保存后立即生效，不影响冷却状态和已绑定的会话":"当前为只读：在配置文件中设置 [ui] allow_config_write = true 后可启用、停用、调整、删除和添加账号";
   $("hint").classList.toggle("hide",W&&!j.accounts.length);
   setAdd(addOpen);$("addbtn").classList.toggle("hide",!W);$("impbtn").classList.toggle("hide",!W);$("qall").classList.toggle("hide",!j.accounts.length);
   const cn={},cb=$("counts");clear(cb);for(const a of j.accounts)cn[a.status]=(cn[a.status]||0)+1;
@@ -554,7 +554,7 @@ function renderNow(){const j=DATA;W=j.write_enabled;setTabCount(j.accounts.lengt
   authFiles(j.auth_files);
   const hw=j.accounts.map(a=>wslots(QM[a.id]&&QM[a.id].quota));$("hq5").textContent=whead(hw.filter(o=>o.s).map(o=>o.s[0]),"5 小时");$("hqw").textContent=whead(hw.filter(o=>o.l).map(o=>o.l[0]),"周");
   const tb=$("rows");clear(tb);
-  if(!j.accounts.length)tb.appendChild(h("tr",null,h("td",{colspan:"8"},h("div","empty",h("b",null,"还没有账号"),W?h("button",{id:"emptyadd",class:"pri",type:"button",onclick:()=>setAdd(true,true)},"添加账号"):"用 ciallopa login 添加，或开启写入后在这里添加。"))));
+  if(!j.accounts.length)tb.appendChild(h("tr",null,h("td",{colspan:"8"},h("div","empty",h("b",null,"还没有账号"),W?h("button",{id:"emptyadd",class:"pri",type:"button",onclick:()=>setAdd(true,true)},"添加账号"):"用 ciallopa login 添加，或开启写入后在这里添加"))));
   for(const a of j.accounts)tb.appendChild(row(a,j.usage_enabled));
   showReadState();anchor(false);refocus()}
 // /ui/accounts#acc=<id>: highlight that row (and open its 操作 on phone)
