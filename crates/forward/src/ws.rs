@@ -392,6 +392,22 @@ fn to_down(m: WsMessage) -> Option<Message> {
     to_up(m)
 }
 
+/// Answer to a client message refused by the buffered-body budget: the same 503
+/// `gateway_busy` wording and `Retry-After: 1` as HTTP, as an upstream-style wrapped error
+/// event (Codex maps it to a retryable HTTP 503). The message is not forwarded and no turn
+/// starts; the connection stays open.
+fn busy_frame() -> Message {
+    Message::text(
+        serde_json::json!({
+            "type": "error",
+            "status": 503,
+            "error": {"type": "gateway_busy", "message": "Gateway is busy; retry shortly."},
+            "headers": {"retry-after": "1"},
+        })
+        .to_string(),
+    )
+}
+
 fn close(code: u16, reason: &str) -> Message {
     Message::Close(Some(UpCloseFrame {
         code: CloseCode::from(code),
@@ -450,10 +466,50 @@ fn classify_observed(
 }
 
 /// A client `response.create` that may be replayed on another account.
+/// Top-level fields of a client message that replay and usage read. `input`, `tools` and
+/// other large fields are skipped while parsing, so a large message is not materialised
+/// again as a JSON tree.
+#[derive(serde::Deserialize)]
+struct Head {
+    #[serde(rename = "type")]
+    ty: Option<serde_json::Value>,
+    previous_response_id: Option<serde_json::Value>,
+    generate: Option<serde_json::Value>,
+    service_tier: Option<serde_json::Value>,
+    client_metadata: Option<serde_json::Value>,
+    model: Option<serde_json::Value>,
+    reasoning: Option<serde_json::Value>,
+}
+
+impl Head {
+    fn parse(text: &str) -> Option<Head> {
+        serde_json::from_str(text).ok()
+    }
+
+    fn to_value(&self) -> serde_json::Value {
+        let mut m = serde_json::Map::new();
+        for (k, v) in [
+            ("type", &self.ty),
+            ("previous_response_id", &self.previous_response_id),
+            ("generate", &self.generate),
+            ("service_tier", &self.service_tier),
+            ("client_metadata", &self.client_metadata),
+            ("model", &self.model),
+            ("reasoning", &self.reasoning),
+        ] {
+            if let Some(v) = v {
+                m.insert(k.to_string(), v.clone());
+            }
+        }
+        serde_json::Value::Object(m)
+    }
+}
+
 fn replayable(text: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(text).is_ok_and(|v| {
-        v.get("type").and_then(|t| t.as_str()) == Some("response.create")
-            && v.get("previous_response_id")
+    Head::parse(text).is_some_and(|h| {
+        h.ty.as_ref().and_then(|t| t.as_str()) == Some("response.create")
+            && h.previous_response_id
+                .as_ref()
                 .and_then(|p| p.as_str())
                 .is_none_or(|p| p.trim().is_empty())
     })
@@ -496,7 +552,11 @@ async fn relay(
     let mut awaiting = false;
     // Current turn: the client request (if replayable), upstream preamble frames held back
     // until the first meaningful event, and whether anything meaningful was sent.
-    let mut pending: Option<String> = None;
+    // Shares the message's buffer (no copy).
+    let mut pending: Option<tokio_tungstenite::tungstenite::Utf8Bytes> = None;
+    // Budget reservation for the latest client message, held while it (or `pending`, its
+    // replay copy) is in memory.
+    let mut msg_permit: Option<ciallopa_upstream::drain::BodyPermit> = None;
     let mut held: Vec<Message> = Vec::new();
     let mut started = false;
     // The single same-account overload wait-and-retry of the current turn is spent.
@@ -512,6 +572,23 @@ async fn relay(
         tokio::select! {
             m = next_downstream(&mut drx, &mut queued_down) => match m {
                 Some(Ok(m)) => {
+                    let size = match &m {
+                        Message::Text(t) => Some(t.len()),
+                        Message::Binary(b) => Some(b.len()),
+                        _ => None,
+                    };
+                    if let Some(n) = size {
+                        // This message replaces the previous one and its replay copy.
+                        drop(msg_permit.take());
+                        match crate::reqbody::reserve_message(&st, n).await {
+                            Some(p) => msg_permit = Some(p),
+                            None => {
+                                tracing::warn!(account = %account, bytes = n, "buffered body budget full; refusing websocket message");
+                                if dtx.send(busy_frame()).await.is_err() { break; }
+                                continue 'outer;
+                            }
+                        }
+                    }
                     let is_close = matches!(m, Message::Close(_));
                     if matches!(m, Message::Text(_) | Message::Binary(_)) {
                         if !awaiting {
@@ -523,7 +600,7 @@ async fn relay(
                             preparation = PreparationBudget::new(ctx.preparation_limit);
                         }
                         pending = match &m {
-                            Message::Text(t) if !awaiting && replayable(t.as_str()) => Some(t.as_str().to_string()),
+                            Message::Text(t) if !awaiting && replayable(t.as_str()) => Some(t.clone()),
                             _ => None,
                         };
                         if !awaiting {
@@ -531,7 +608,7 @@ async fn relay(
                                 if t.as_str().contains("response.create") {
                                     st.router.note_attempt(&account);
                                     turn = Tracker::start(&st, Transport::Ws, ep, ctx.key.as_deref()).map(|mut tr| {
-                                        let v = serde_json::from_str::<serde_json::Value>(t.as_str()).ok();
+                                        let v = Head::parse(t.as_str()).map(|h| h.to_value());
                                         tr.headers(&ctx.headers);
                                         tr.meta(v.as_ref());
                                         if v.as_ref().and_then(|v| v.get("generate")).and_then(|g| g.as_bool()) == Some(false) {
@@ -570,6 +647,10 @@ async fn relay(
                                 break;
                             }
                         }
+                    }
+                    if pending.is_none() {
+                        // Forwarded and not kept for replay.
+                        drop(msg_permit.take());
                     }
                     if is_close {
                         if let Some(t) = turn.as_mut() { t.client_gone(); }
@@ -661,7 +742,7 @@ async fn relay(
                                         tokio::spawn(drain_close(old_tx, old_rx));
                                         held.clear();
                                         st.router.note_attempt(&account);
-                                        match write_replay(utx.send(WsMessage::text(req.as_str())), &mut drx, &mut queued_down, &st.upstream.drain, &mut progress, &account, upstream_request_id.as_deref(), turn.as_mut()).await {
+                                        match write_replay(utx.send(WsMessage::Text(req)), &mut drx, &mut queued_down, &st.upstream.drain, &mut progress, &account, upstream_request_id.as_deref(), turn.as_mut()).await {
                                             WriteResult::Sent(Ok(())) => {
                                                 sleep.as_mut().reset(tokio::time::Instant::now() + idle);
                                                 continue 'outer;
@@ -714,7 +795,7 @@ async fn relay(
                                             let old_rx = std::mem::replace(&mut urx, r);
                                             tokio::spawn(drain_close(old_tx, old_rx));
                                             held.clear();
-                                            match write_replay(utx.send(WsMessage::text(req.as_str())), &mut drx, &mut queued_down, &st.upstream.drain, &mut progress, &account, upstream_request_id.as_deref(), turn.as_mut()).await {
+                                            match write_replay(utx.send(WsMessage::Text(req)), &mut drx, &mut queued_down, &st.upstream.drain, &mut progress, &account, upstream_request_id.as_deref(), turn.as_mut()).await {
                                                 WriteResult::Sent(Ok(())) => {
                                                     sleep.as_mut().reset(tokio::time::Instant::now() + idle);
                                                     continue 'outer;
@@ -791,6 +872,7 @@ async fn relay(
                         if done {
                             awaiting = false;
                             pending = None;
+                            drop(msg_permit.take());
                             if let (Some(mut t), WsMessage::Text(txt)) = (turn.take(), &m) {
                                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(txt.as_str()) {
                                     t.terminal_event(&v);
