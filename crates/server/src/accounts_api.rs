@@ -239,7 +239,7 @@ async fn refresh(
     if let Some(r) = s.write_guard(&headers) {
         return r;
     }
-    match s.st.accounts.force_refresh(&id).await {
+    match s.st.accounts.manual_refresh(&id).await {
         Ok(_) => {
             s.audit_account(actor(&key).as_deref(), "account-refresh", &id, Value::Null);
             Json(json!({"ok": true})).into_response()

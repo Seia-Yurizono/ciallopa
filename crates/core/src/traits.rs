@@ -13,6 +13,10 @@ pub trait AccountStore: Send + Sync + 'static {
     async fn credentials(&self, id: &AccountId) -> Result<Credentials, AuthError>;
     /// Called by forwarding after an upstream 401: refresh now, ignoring expiry.
     async fn force_refresh(&self, id: &AccountId) -> Result<Credentials, AuthError>;
+    /// Admin-requested refresh (same as `force_refresh`, reported upstream as manual).
+    async fn manual_refresh(&self, id: &AccountId) -> Result<Credentials, AuthError> {
+        self.force_refresh(id).await
+    }
     /// Re-scan auth_dir (new logins / imports).
     async fn reload(&self) -> Result<(), AuthError>;
     /// Accounts whose refresh token was rejected (`refresh_token_reused`, `invalid_grant`, ...):

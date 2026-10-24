@@ -28,6 +28,8 @@ pub enum UpstreamError {
 }
 
 /// Same as codex-rs `ensure_rustls_crypto_provider` (aws-lc-rs ⇒ X25519MLKEM768 key share).
+/// The hybrid group is offered first only with rustls `prefer-post-quantum` (Cargo.toml), as
+/// in Codex's dependency graph; JA4 does not show the difference, the ClientHello size does.
 pub fn ensure_rustls_crypto_provider() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
@@ -384,6 +386,23 @@ impl UpstreamClient {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn key_exchange_prefers_x25519mlkem768_like_codex() {
+        let groups: Vec<_> = rustls::crypto::aws_lc_rs::default_provider()
+            .kx_groups
+            .iter()
+            .map(|g| g.name())
+            .collect();
+        assert_eq!(
+            groups,
+            [
+                rustls::NamedGroup::X25519MLKEM768,
+                rustls::NamedGroup::X25519,
+                rustls::NamedGroup::secp256r1,
+                rustls::NamedGroup::secp384r1,
+            ]
+        );
+    }
     use super::*;
 
     #[test]

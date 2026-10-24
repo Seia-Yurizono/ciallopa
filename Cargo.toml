@@ -11,7 +11,7 @@ license = "MIT"
 # fingerprint matches Codex CLI. Bump only together with codex-rs + rerun scripts/fp-check.sh.
 [workspace.dependencies]
 reqwest = { version = "=0.12.28", default-features = false, features = ["json", "rustls-tls", "rustls-tls-native-roots", "stream", "http2", "socks", "cookies"] }
-rustls = { version = "=0.23.45", default-features = false, features = ["aws_lc_rs", "std"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["aws_lc_rs", "prefer-post-quantum", "std"] }
 hyper = "=1.11.1"
 hyper-util = { version = "=0.1.20", features = ["tokio"] }
 h2 = "=0.4.19"

@@ -2,7 +2,7 @@
 use base64::Engine;
 use ciallopa_core::AuthError;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 use sha2::Digest;
 use std::time::Duration;
 
@@ -131,14 +131,17 @@ impl OAuthClient {
     }
 
     /// refresh_token grant, JSON (codex-rs `request_chatgpt_token_refresh`, `TokenEncoding::Json`).
+    /// Sent as a manual refresh (`refresh_reason: "forced"`).
     pub async fn refresh(&self, refresh_token: &str) -> Result<TokenResponse, RefreshFailure> {
-        self.refresh_as(None, refresh_token).await
+        self.refresh_as(None, refresh_token, RefreshReason::Forced)
+            .await
     }
     /// Refresh over `account`'s own connection pool (if any).
     pub async fn refresh_as(
         &self,
         account: Option<&str>,
         refresh_token: &str,
+        reason: RefreshReason,
     ) -> Result<TokenResponse, RefreshFailure> {
         let http = match account {
             Some(a) => self.http_for(a),
@@ -148,11 +151,9 @@ impl OAuthClient {
             .post(self.token_url())
             .headers(client_headers())
             .header("Content-Type", "application/json")
-            .json(&json!({
-                "client_id": self.client_id,
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token,
-            }))
+            // codex-rs 0.164 `OAuthClient::exchange`: the pairs go through a BTreeMap, so the
+            // keys are sorted (client_id, grant_type, refresh_reason, refresh_token).
+            .json(&refresh_body(&self.client_id, refresh_token, reason))
             .timeout(Duration::from_secs(30))
             .send()
             .await
@@ -182,6 +183,43 @@ impl OAuthClient {
             RefreshFailure::Transient(msg)
         })
     }
+}
+
+/// Why a token is refreshed; sent as `refresh_reason` (codex-rs 0.164 `RefreshReason`,
+/// openai/codex#53991). Diagnostics for the token endpoint only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefreshReason {
+    /// The access token expires within the refresh window.
+    ProactiveExpiry,
+    /// `last_refresh` is older than the refresh interval.
+    Scheduled,
+    /// The upstream answered 401 with the current token.
+    UnauthorizedRecovery,
+    /// Manual refresh.
+    Forced,
+}
+
+impl RefreshReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ProactiveExpiry => "proactive_expiry",
+            Self::Scheduled => "scheduled",
+            Self::UnauthorizedRecovery => "unauthorized_recovery",
+            Self::Forced => "forced",
+        }
+    }
+}
+
+fn refresh_body(client_id: &str, refresh_token: &str, reason: RefreshReason) -> Value {
+    let m: std::collections::BTreeMap<&str, &str> = [
+        ("grant_type", "refresh_token"),
+        ("client_id", client_id),
+        ("refresh_token", refresh_token),
+        ("refresh_reason", reason.as_str()),
+    ]
+    .into_iter()
+    .collect();
+    serde_json::to_value(m).unwrap_or(Value::Null)
 }
 
 /// `{"error":"x"}` or `{"error":{"code":"x"}}`, lower-cased.
@@ -281,6 +319,7 @@ pub(crate) fn fake_jwt(payload: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     #[test]
     fn jwt_and_pkce() {
         let t = fake_jwt(

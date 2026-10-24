@@ -4,4 +4,4 @@ pub mod login;
 pub mod oauth;
 
 pub use file::{valid_account_id, AuthFile, FileAccountStore};
-pub use oauth::OAuthClient;
+pub use oauth::{OAuthClient, RefreshReason};

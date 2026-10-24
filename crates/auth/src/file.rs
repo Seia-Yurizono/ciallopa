@@ -1,4 +1,4 @@
-use crate::oauth::{parse_jwt, OAuthClient, RefreshFailure, TokenResponse};
+use crate::oauth::{parse_jwt, OAuthClient, RefreshFailure, RefreshReason, TokenResponse};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use ciallopa_core::{
@@ -135,11 +135,17 @@ impl AuthFile {
             .and_then(|e| DateTime::from_timestamp(e, 0))
     }
     fn needs_refresh(&self, now: DateTime<Utc>) -> bool {
-        self.expires_at().is_some_and(|e| e < now + REFRESH_SKEW)
-            || self
-                .s("last_refresh")
-                .and_then(|t| DateTime::parse_from_rfc3339(&t).ok())
-                .is_some_and(|t| t < now - chrono::Duration::days(TOKEN_REFRESH_INTERVAL_DAYS))
+        self.refresh_reason(now).is_some()
+    }
+    /// Why a proactive refresh is due, if it is: the expiry window wins over the interval.
+    pub fn refresh_reason(&self, now: DateTime<Utc>) -> Option<RefreshReason> {
+        if self.expires_at().is_some_and(|e| e < now + REFRESH_SKEW) {
+            return Some(RefreshReason::ProactiveExpiry);
+        }
+        self.s("last_refresh")
+            .and_then(|t| DateTime::parse_from_rfc3339(&t).ok())
+            .is_some_and(|t| t < now - chrono::Duration::days(TOKEN_REFRESH_INTERVAL_DAYS))
+            .then_some(RefreshReason::Scheduled)
     }
     fn needs_relogin(&self) -> bool {
         self.raw.get("needs_relogin").and_then(Value::as_bool) == Some(true)
@@ -526,7 +532,14 @@ impl FileAccountStore {
     }
 
     /// Single-flight refresh per account.
-    async fn refresh(&self, id: &AccountId, force: bool) -> Result<Credentials, AuthError> {
+    /// `forced`: refresh even when the token is still fresh, sent with that reason;
+    /// `None` refreshes only when one is due (`proactive_expiry` / `scheduled`).
+    async fn refresh(
+        &self,
+        id: &AccountId,
+        forced: Option<RefreshReason>,
+    ) -> Result<Credentials, AuthError> {
+        let force = forced.is_some();
         let lock = self.lock_for(id);
         let mut last = lock.lock().await;
         // Cross-process: another ciallopa / CPA may refresh the same file. Re-read under flock.
@@ -566,7 +579,10 @@ impl FileAccountStore {
             .s("refresh_token")
             .filter(|r| !r.is_empty())
             .ok_or(AuthError::ReloginRequired)?;
-        let res = oauth.refresh_as(Some(id.as_ref()), &rt).await;
+        let reason = forced
+            .or_else(|| f.refresh_reason(now))
+            .unwrap_or(RefreshReason::ProactiveExpiry);
+        let res = oauth.refresh_as(Some(id.as_ref()), &rt, reason).await;
         // Re-read: writers that ignore our flock may have refreshed during the round-trip.
         let disk = read_one(&self.dir, id);
         match res {
@@ -709,12 +725,16 @@ impl AccountStore for FileAccountStore {
             return Err(AuthError::ReloginRequired);
         }
         if f.needs_refresh(Utc::now()) && self.oauth.is_some() {
-            return self.refresh(id, false).await;
+            return self.refresh(id, None).await;
         }
         f.credentials()
     }
     async fn force_refresh(&self, id: &AccountId) -> Result<Credentials, AuthError> {
-        self.refresh(id, true).await
+        self.refresh(id, Some(RefreshReason::UnauthorizedRecovery))
+            .await
+    }
+    async fn manual_refresh(&self, id: &AccountId) -> Result<Credentials, AuthError> {
+        self.refresh(id, Some(RefreshReason::Forced)).await
     }
     async fn relogin_required(&self) -> Vec<AccountId> {
         self.files

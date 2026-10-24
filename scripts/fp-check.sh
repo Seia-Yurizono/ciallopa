@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Fingerprint check against Codex CLI 0.163.0 recorded in fp-survey.
+# Fingerprint check against the official Codex CLI capture (0.162.1 in fp-survey; 0.164.0 re-captured
+# 2026-10-24 with the same JA4, Akamai h2 string, key-share groups and ClientHello size).
 # Env: FP_SURVEY = checkout containing server/fpserver and ca.pem.
 # Temporarily adds its own chatgpt.com hosts entry; leaves other entries and processes alone.
 set -euo pipefail
@@ -65,6 +66,13 @@ want_ak = "2:0;4:2097152;5:16384;6:16384|5177345|0|m,s,a,p"
 # Responses WS capture: fp-survey/raw/codex-ws.jsonl, 2026-10-13.
 want_ws = "t13d101000_61a7ad8aa9b6_0d308c48d2a3"
 want_ws_hdr = "Host,Connection,Upgrade,Sec-WebSocket-Version,Sec-WebSocket-Key"
+# JA4 does not cover groups: Codex offers X25519MLKEM768 first and sends its key share
+# (rustls `prefer-post-quantum`), which makes the ClientHello ~1.4 KB instead of ~250 B.
+want_groups = [4588, 29, 23, 24]
+want_shares = [4588, 29]
+def kx_ok(r):
+    h = r.get("hello") or {}
+    return h.get("Groups") == want_groups and h.get("KeyShares") == want_shares
 rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
 rows = [r for r in rows if r.get("label") == "ciallopa"]
 ok = True
@@ -77,16 +85,18 @@ if not rows:
 for r in ws:
     names = [h[0] for h in r.get("headers") or []]
     prefix = ",".join(names[:5])
-    good = r["ja4"] == want_ws and prefix == want_ws_hdr and names[-1].lower() == "sec-websocket-extensions"
+    good = r["ja4"] == want_ws and prefix == want_ws_hdr and names[-1].lower() == "sec-websocket-extensions" and kx_ok(r)
     ok &= good
-    print(f"{'PASS' if good else 'FAIL'} ws path={r.get('path')} ja4={r['ja4']} headers={names}")
+    h = r.get("hello") or {}
+    print(f"{'PASS' if good else 'FAIL'} ws path={r.get('path')} ja4={r['ja4']} groups={h.get('Groups')} shares={h.get('KeyShares')} headers={names}")
 for r in rows:
     ak = r["h2"].get("akamai", "")
     j = r["ja4"]
-    good = j == (want_res if r.get("resumed") else want_ja4) and ak == want_ak
+    good = j == (want_res if r.get("resumed") else want_ja4) and ak == want_ak and kx_ok(r)
     ok &= good
-    print(f"{'PASS' if good else 'FAIL'} path={r.get('path')} ja4={j} akamai={ak} resumed={r.get('resumed')} alpn={r.get('negotiated_alpn')} grease={r['hello']['HasGREASE']}")
-print(f"expected ja4={want_ja4} (resumed {want_res}) akamai={want_ak}")
+    h = r["hello"]
+    print(f"{'PASS' if good else 'FAIL'} path={r.get('path')} ja4={j} akamai={ak} groups={h.get('Groups')} shares={h.get('KeyShares')} resumed={r.get('resumed')} alpn={r.get('negotiated_alpn')} grease={h['HasGREASE']}")
+print(f"expected ja4={want_ja4} (resumed {want_res}) akamai={want_ak} groups={want_groups} shares={want_shares}")
 sys.exit(0 if ok else 1)
 PY
 }
