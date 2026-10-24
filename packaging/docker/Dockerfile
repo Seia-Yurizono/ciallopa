@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1
-# Runtime image for the static x86_64 musl release binary. Build context: a directory holding
+# Runtime image for the static musl release binary (amd64 or arm64, matching the build platform;
+# both base images below are multi-arch indexes). Build context: a directory holding
 # `ciallopa` and `config.example.toml` (an unpacked release tar.gz).
 #   docker build -f packaging/docker/Dockerfile -t ciallopa <context>
 

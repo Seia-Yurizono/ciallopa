@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Keep the two newest GHCR tags and their manifest closure; delete other versions."""
+"""Keep the two newest GHCR tags and their manifest closure; delete other versions
+(except untagged uploads younger than GRACE)."""
 import argparse
 import base64
+import datetime
 import json
 import os
 import re
@@ -68,7 +70,16 @@ def tags(version):
     return version['metadata']['container']['tags']
 
 
-def plan(versions, manifest):
+# The release pushes each architecture's image by digest before one job tags the merged
+# multi-arch index; never delete such a recent untagged upload while a release may be running.
+GRACE = datetime.timedelta(hours=6)
+
+
+def created(version):
+    return datetime.datetime.fromisoformat(version['created_at'].replace('Z', '+00:00'))
+
+
+def plan(versions, manifest, now=None):
     # GHCR has no per-tag timestamp. Use the version creation date; moving an alias
     # does not make an old image a new build. Deterministic ordering handles ties.
     ordered = sorted(versions, key=lambda v: (v['created_at'], v['id']), reverse=True)
@@ -101,7 +112,8 @@ def plan(versions, manifest):
         visit(digest)
     # Delete parent indexes before their unreferenced child manifests where possible.
     # Package versions are manifests, not individual filesystem layers.
-    delete = [v for v in ordered if v['name'] not in protected]
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    delete = [v for v in ordered if v['name'] not in protected and now - created(v) >= GRACE]
     return selected, protected, delete
 
 
@@ -120,7 +132,8 @@ def main():
     lines = ['# GHCR cleanup', '', f"Mode: {'DELETE' if args.apply else 'preview'}", '',
              'Selected tags: ' + ', '.join(f'`{tag}`' for tag, _ in selected),
              f'Protected manifests: {len(protected)}; versions to delete: {len(delete)}.', '',
-             'All aliases on a protected digest are retained (GitHub deletes versions, not individual tags).', '']
+             'All aliases on a protected digest are retained (GitHub deletes versions, not individual tags).',
+             f'Untagged versions newer than {GRACE} are kept for a running release.', '']
     for v in delete:
         lines.append(f"- Delete version {v['id']}: `{v['name']}`; tags: {', '.join(tags(v)) or '(untagged)'}")
     report = '\n'.join(lines) + '\n'

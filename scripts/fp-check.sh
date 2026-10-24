@@ -2,6 +2,8 @@
 # Fingerprint check against the official Codex CLI capture (0.162.1 in fp-survey; 0.164.0 re-captured
 # 2026-10-24 with the same JA4, Akamai h2 string, key-share groups and ClientHello size).
 # Env: FP_SURVEY = checkout containing server/fpserver and ca.pem.
+#      FP_PROBE = optional prebuilt fp-probe (for example an aarch64 musl build run through
+#                 binfmt/qemu-user) instead of building the host debug binary.
 # Temporarily adds its own chatgpt.com hosts entry; leaves other entries and processes alone.
 set -euo pipefail
 
@@ -125,7 +127,11 @@ main() {
   trap 'exit 130' INT
   trap 'exit 143' TERM
 
-  (cd "$root" && cargo build --locked -q --bin fp-probe)
+  local probe=${FP_PROBE:-}
+  if [[ -z "$probe" ]]; then
+    (cd "$root" && cargo build --locked -q --bin fp-probe)
+    probe="$root/target/debug/fp-probe"
+  fi
   sudo -v
   # Set before writing so interruption immediately after the write still removes our entry.
   HOSTS_ADDED=true
@@ -135,7 +141,7 @@ main() {
   sudo kill -0 "$SERVER_JOB"
   exec 3<>/dev/tcp/127.0.0.1/9998
   printf "ciallopa" >&3; cat <&3 >/dev/null; exec 3>&-
-  SSL_CERT_FILE="$fp/ca.pem" "$root/target/debug/fp-probe" https://chatgpt.com/backend-api
+  SSL_CERT_FILE="$fp/ca.pem" "$probe" https://chatgpt.com/backend-api
   sleep 0.5
   stop_server
   # The directory is private; only the calling user needs to read the captures.
