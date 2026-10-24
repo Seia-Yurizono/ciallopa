@@ -773,6 +773,42 @@ function recordRenderingAndInspectorFocus() {
   assert.equal(tb.children.length,1);assert.equal(tb.children[0].empty,true);
 }
 
+// Auto-refresh interval: stored choice, fallback to 15 s, and a running timer restarts at once.
+function autoRefreshInterval() {
+  const store = new Map();
+  const els = new Map();
+  const el = id => {
+    if (!els.has(id)) els.set(id, {id, value: '', title: '', checked: false, listeners: {}, attrs: {},
+      addEventListener(type, fn) {this.listeners[type] = fn;}, setAttribute(k, v) {this.attrs[k] = v;}});
+    return els.get(id);
+  };
+  const intervals = [];
+  const c = vm.createContext({
+    $: el, Number, String, document: {hidden: false}, MODALS: [], loadAll() {}, timer: null,
+    localStorage: {getItem: k => store.has(k) ? store.get(k) : null, setItem: (k, v) => store.set(k, String(v))},
+    setInterval: (fn, ms) => {intervals.push(ms); return intervals.length;}, clearInterval() {},
+  });
+  vm.runInContext('var timer=null;' + section('function stopAuto(', 'onLogout=()=>{stopAuto()') + '\n' +
+    section('// Auto-refresh interval', '\nshowAutoSecs();') + '\nshowAutoSecs();', c);
+  assert.equal(el('ivl').value, '15', 'default interval is 15 s');
+  store.set('ciallopa_auto_secs', '7');
+  assert.equal(vm.runInContext('autoSecs()', c), 15, 'an unknown stored value falls back to 15 s');
+  vm.runInContext('startAuto()', c);
+  assert.equal(intervals.at(-1), 15000);
+  el('mivl').value = '5';
+  el('mivl').listeners.change({target: el('mivl')});
+  assert.equal(store.get('ciallopa_auto_secs'), '5');
+  assert.equal(intervals.at(-1), 5000, 'a running timer restarts with the new interval');
+  assert.equal(el('ivl').value, '5', 'both pickers stay in sync');
+  assert.equal(el('mauto').attrs['aria-label'], '每 5 秒自动刷新');
+  vm.runInContext('stopAuto()', c);
+  const before = intervals.length;
+  el('ivl').value = '60';
+  el('ivl').listeners.change({target: el('ivl')});
+  assert.equal(intervals.length, before, 'a stopped timer stays stopped');
+  assert.equal(vm.runInContext('autoSecs()', c), 60);
+}
+
 (async () => {
   // A rejects while current; loadAll cannot present it until the slow quota job settles.
   const oldRound = vm.runInContext('loadAll()', context);
@@ -843,5 +879,6 @@ function recordRenderingAndInspectorFocus() {
   await filterChipScopeAndFocus();
   await inspectorRetryAndNavigation();
   recordRenderingAndInspectorFocus();
-  console.log('PASS: query/auth races, shared scope and buckets, ID paging, history/drill-down, usage samples and unknown outcomes, overview snapshots, egress identity/order/logout, scoped filter chips/URL/focus, inspector retry/expiry/stale authorization/keyboard, keyed record updates and inspector focus');
+  autoRefreshInterval();
+  console.log('PASS: auto-refresh interval, query/auth races, shared scope and buckets, ID paging, history/drill-down, usage samples and unknown outcomes, overview snapshots, egress identity/order/logout, scoped filter chips/URL/focus, inspector retry/expiry/stale authorization/keyboard, keyed record updates and inspector focus');
 })().catch(error => {console.error(error); process.exitCode = 1;}).finally(() => clearTimeout(watchdog));
