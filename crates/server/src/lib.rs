@@ -59,6 +59,29 @@ pub fn is_admin_path(p: &str) -> bool {
     p == "/admin" || p.starts_with("/admin/")
 }
 
+/// Body limit for the management and usage APIs, read from live config so a hot
+/// `max_body_mb` change applies to the next request. Forwarding routes enforce the same
+/// limit (and the buffered-body budget) in their own extractor.
+async fn live_body_limit(
+    State(cfg): State<Arc<ciallopa_core::settings::SharedConfig>>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    let limit = cfg.load().max_body_mb.saturating_mul(1024 * 1024) as usize;
+    let (parts, body) = req.into_parts();
+    match axum::body::to_bytes(body, limit).await {
+        Ok(b) => next.run(Request::from_parts(parts, Body::from(b))).await,
+        Err(_) => (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            axum::Json(serde_json::json!({"error": {
+                "type": "invalid_request_error",
+                "message": "Request body is too large.",
+            }})),
+        )
+            .into_response(),
+    }
+}
+
 async fn require_key(State(keys): State<Keys>, mut req: Request<Body>, next: Next) -> Response {
     // Current snapshot on every request: added / removed keys apply immediately.
     let keys = keys.0.keys();
@@ -152,7 +175,6 @@ pub fn build_app_with(s: Arc<settings::Settings>) -> Router {
     let state = s.st.clone();
     let cfg = state.config.load();
     let keys = Keys(state.config.clone());
-    let limit = (cfg.max_body_mb as usize) * 1024 * 1024;
     let usage = usage_api::routes(
         state.usage.clone(),
         state.accounts.clone(),
@@ -166,12 +188,16 @@ pub fn build_app_with(s: Arc<settings::Settings>) -> Router {
     }
     reset_credits::spawn_poller(state.clone(), rc.clone());
     let resets = reset_credits::routes(state.clone(), rc);
-    let protected = ciallopa_forward::routes(state)
-        .merge(usage)
+    let live_cfg = state.config.clone();
+    let admin = usage
         .merge(resets)
         .merge(client_fp::routes())
         .merge(settings::routes(s.clone()))
         .merge(accounts_api::routes(s))
+        .layer(middleware::from_fn_with_state(live_cfg, live_body_limit))
+        .layer(DefaultBodyLimit::disable());
+    let protected = ciallopa_forward::routes(state)
+        .merge(admin)
         .layer(middleware::from_fn_with_state(keys, require_key));
     let mut app = Router::new().route("/healthz", get(healthz));
     if ui_on {
@@ -180,5 +206,4 @@ pub fn build_app_with(s: Arc<settings::Settings>) -> Router {
     }
     app.merge(protected)
         .fallback(|| async { StatusCode::NOT_FOUND })
-        .layer(DefaultBodyLimit::max(limit))
 }

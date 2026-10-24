@@ -487,7 +487,7 @@ async fn write_api_switch_etag_comments_keys_and_audit() {
     assert_eq!(v["errors"][0]["key"], "listen");
     let v: Value = e
         .req(reqwest::Method::POST, "/admin/v1/config/validate")
-        .json(&json!({"changes": {"routing.strategy": "fill-first", "max_body_mb": 128}}))
+        .json(&json!({"changes": {"routing.strategy": "fill-first", "usage.flush_ms": 80}}))
         .send()
         .await
         .unwrap()
@@ -502,14 +502,14 @@ async fn write_api_switch_etag_comments_keys_and_audit() {
     let r = e
         .req(reqwest::Method::PUT, "/admin/v1/config")
         .header("if-match", &etag)
-        .json(&json!({"changes": {"routing.strategy": "fill-first", "max_body_mb": 128}}))
+        .json(&json!({"changes": {"routing.strategy": "fill-first", "usage.flush_ms": 80}}))
         .send()
         .await
         .unwrap();
     assert_eq!(r.status(), 200);
     let j: Value = r.json().await.unwrap();
     assert_eq!(j["applied"][0]["key"], "routing.strategy");
-    assert_eq!(j["pending_restart"][0]["key"], "max_body_mb");
+    assert_eq!(j["pending_restart"][0]["key"], "usage.flush_ms");
     let text = std::fs::read_to_string(&e.path).unwrap();
     assert!(text.contains("# ciallopa test config") && text.contains("# how accounts are picked"));
     assert!(text.contains("# client keys"));
@@ -997,4 +997,49 @@ async fn rescan_and_watcher_keep_accounts_whose_file_exists_but_cannot_load() {
     assert_eq!(r["auth_files"]["skipped"], json!([]), "{r}");
     assert!(e.router.cooling_until_any(&a).is_none());
     assert!(e.upstream.pools.is_empty(), "pool of a dropped");
+}
+
+#[tokio::test]
+async fn max_body_mb_is_hot_for_forwarding_and_management_routes() {
+    let e = env("\n[ui]\nallow_config_write = true\n").await;
+    let big = json!({"changes": {"routing.strategy": "x".repeat(1536 * 1024)}});
+    // 64 MiB default: a 1.5 MiB management body is read (and rejected on its merits).
+    let r = e
+        .req(reqwest::Method::POST, "/admin/v1/config/validate")
+        .json(&big)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let (_, etag) = e.config().await;
+    let r = e
+        .req(reqwest::Method::PUT, "/admin/v1/config")
+        .header("if-match", &etag)
+        .json(&json!({"changes": {"max_body_mb": 1}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let j: Value = r.json().await.unwrap();
+    assert_eq!(j["applied"][0]["key"], "max_body_mb");
+    assert!(j["pending_restart"].as_array().unwrap().is_empty(), "{j}");
+    assert_eq!(e.settings.running().max_body_mb, 1);
+    // The next requests use the new limit: management API and forwarding alike.
+    let r = e
+        .req(reqwest::Method::POST, "/admin/v1/config/validate")
+        .json(&big)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 413);
+    let r = e
+        .req(reqwest::Method::POST, "/v1/responses")
+        .header("content-type", "application/json")
+        .body(format!(r#"{{"input":"{}"}}"#, "x".repeat(1536 * 1024)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 413);
+    let v: Value = r.json().await.unwrap();
+    assert_eq!(v["error"]["message"], "Request body is too large.");
 }
