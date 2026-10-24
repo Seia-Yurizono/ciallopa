@@ -142,7 +142,7 @@ Recommended layout:
   ([Codex `env_http_headers`](https://learn.chatgpt.com/docs/config-file/config-reference)). The
   variables can go into `$CODEX_HOME/.env` like `CPA_KEY`. Check with
   `curl -H "CF-Access-Client-Id: …" -H "CF-Access-Client-Secret: …" -H "Authorization: Bearer $CPA_KEY" https://cpa.example.com/v1/models`.
-  ciallopa strips `cf-*`, cookies and forwarding headers before anything goes upstream.
+  ciallopa strips `cf-*`, `True-Client-IP`, cookies and forwarding headers before anything goes upstream.
 
 Management page behaviour:
 

@@ -1525,6 +1525,9 @@ async fn sse_passthrough_headers_and_zstd() {
         .header("originator", "codex_cli_rs")
         .header("chatgpt-account-id", "client-acct")
         .header("x-forwarded-for", "9.9.9.9")
+        .header("True-Client-IP", "203.0.113.7")
+        .header("CF-Connecting-IP", "203.0.113.7")
+        .header("X-Real-IP", "203.0.113.7")
         .header("content-encoding", "zstd")
         .header("session_id", "s1")
         .body(z.clone())
@@ -1546,7 +1549,14 @@ async fn sse_passthrough_headers_and_zstd() {
     assert_eq!(get("authorization"), Some("Bearer tok-a-1"));
     assert_eq!(get("chatgpt-account-id"), Some("acct-a"));
     assert_eq!(get("content-encoding"), Some("zstd"));
-    assert!(get("x-forwarded-for").is_none());
+    for k in [
+        "x-forwarded-for",
+        "true-client-ip",
+        "cf-connecting-ip",
+        "x-real-ip",
+    ] {
+        assert!(get(k).is_none(), "{k} forwarded upstream");
+    }
     let pos = |k: &str| names.iter().position(|n| *n == k).unwrap();
     assert!(
         pos("originator") < pos("chatgpt-account-id")
@@ -1723,6 +1733,14 @@ async fn cloudflare_cookies_ws_handshake_shared_with_http() {
                 .insert("authorization", format!("Bearer {KEY}").parse().unwrap());
             req.headers_mut()
                 .insert("cookie", "client=1".parse().unwrap());
+            for k in [
+                "True-Client-IP",
+                "CF-Connecting-IP",
+                "X-Forwarded-For",
+                "X-Real-IP",
+            ] {
+                req.headers_mut().insert(k, "203.0.113.7".parse().unwrap());
+            }
             let (ws, resp) = tokio_tungstenite::connect_async(req).await.unwrap();
             assert!(resp.headers().get("set-cookie").is_none());
             drop(ws);
@@ -1741,6 +1759,18 @@ async fn cloudflare_cookies_ws_handshake_shared_with_http() {
         let want = enabled.then(|| "__cf_bm=secret".to_string());
         assert_eq!(seen[1].1, want, "ws handshake (enabled={enabled})");
         assert_eq!(seen[2].1, want, "http after ws (enabled={enabled})");
+        let all = e.mock.seen.lock().unwrap();
+        for (h, _) in all.iter() {
+            for (k, _) in h.iter() {
+                assert!(
+                    !matches!(
+                        k.as_str(),
+                        "true-client-ip" | "cf-connecting-ip" | "x-forwarded-for" | "x-real-ip"
+                    ),
+                    "{k} forwarded upstream on the ws handshake"
+                );
+            }
+        }
     }
 }
 
