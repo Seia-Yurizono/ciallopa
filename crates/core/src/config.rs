@@ -174,11 +174,15 @@ impl Default for ImagesConfig {
 pub struct UiConfig {
     pub enabled: bool,
     /// Allow `POST /admin/v1/accounts/{id}/reset-credits/consume` (spends a 重置卡; irreversible).
-    /// Default `false`: the API answers 403 and the page shows no button. Never automatic.
+    /// Default `false`: the API answers 403 and the page shows no button. Only gates the
+    /// manual action; automatic use is the per-account switch on the accounts page.
     pub allow_reset_consume: bool,
     /// Background refresh of each account's reset-credit list (read-only GET), minutes.
     /// `0` = only on demand.
     pub reset_credits_refresh_mins: u64,
+    /// Automatic use (accounts with the per-account switch on): use a card this many minutes
+    /// before it expires. `5..=1440`.
+    pub reset_credits_auto_lead_mins: u64,
     /// Allow configuration and account changes from the management page / admin API
     /// (`PUT /admin/v1/config`, key and account management). Default `false`: read-only.
     /// Like `allow_reset_consume`, it can only be turned on in the config file.
@@ -190,6 +194,7 @@ impl Default for UiConfig {
             enabled: true,
             allow_reset_consume: false,
             reset_credits_refresh_mins: 60,
+            reset_credits_auto_lead_mins: 10,
             allow_config_write: false,
         }
     }
@@ -430,6 +435,11 @@ impl Config {
             ));
         }
         self.routing.ttl()?;
+        if !(5..=1440).contains(&self.ui.reset_credits_auto_lead_mins) {
+            return Err(ConfigError::Invalid(
+                "ui.reset_credits_auto_lead_mins must be in 5..=1440".into(),
+            ));
+        }
         if !(0.0..=1.0).contains(&self.routing.quota_avoid_threshold) {
             return Err(ConfigError::Invalid(
                 "routing.quota_avoid_threshold must be in 0..=1".into(),

@@ -642,8 +642,22 @@ Page behavior:
   the account's max used percent is over 50%, and red when over 80%.
 
 ## Reset credits (重置卡)
-Manual only: nothing in ciallopa consumes a credit by itself (no failover / quota path calls it;
-a test asserts the consume helper has a single caller, the admin handler).
+Manual, plus an opt-in per-account automatic use. Nothing else consumes a credit (no failover /
+quota path calls it; a test asserts the consume helper has a single caller, `consume_locked`,
+reached only from the admin handler and the automatic use).
+
+**快到期时自动使用** (账号 page, per account, default off; needs `allow_config_write`): when on,
+the account's earliest-expiring available card is used once it is within
+`[ui] reset_credits_auto_lead_mins` (default 10, 5–1440) of its expiry, so a card is not wasted.
+`allow_reset_consume` does not gate it. One background sweep (sleeps ≤ 60 s, first run 20 s after
+start) does this: under the same per-account lock as the button it re-lists the account's cards
+upstream, re-checks the switch, the account (gone / disabled / needs re-login are skipped) and the
+lead time, then calls the same consume path with key label `(auto)`. `nothing_to_reset` gives up on
+that card silently; other failures are retried at most 5 times per card, ≥ 60 s apart, never after
+the card expires; an unresolved attempt is retried with the same `redeem_request_id` (also after a
+restart, from the consume log). Switches are stored in the usage DB (debounced 2 s, flushed on
+shutdown); the row shows 「下次自动使用 HH:MM」. Several instances sharing one account are not
+coordinated. Race list: module doc of `crates/server/src/auto_reset.rs`.
 
 Upstream (mirrors codex-rs `backend-client/src/client/rate_limit_resets.rs`), per account with
 `Authorization: Bearer <access token>`, `ChatGPT-Account-Id`, `User-Agent: codex_cli_rs/<pinned>`,
@@ -657,8 +671,9 @@ Config (`[ui]`):
 
 | key | default | |
 |---|---|---|
-| `allow_reset_consume` | `false` | enable the consume API + page button |
+| `allow_reset_consume` | `false` | enable the manual consume API + page button (not the automatic use) |
 | `reset_credits_refresh_mins` | `60` | background listing refresh (read-only); `0` = on demand only |
+| `reset_credits_auto_lead_mins` | `10` | 快到期时自动使用: minutes before expiry (5–1440) |
 
 API (client key):
 - `GET /usage/v1/reset-credits` → `{consume_enabled, can_consume, is_admin, refresh_mins, accounts: [{account, email,
@@ -684,6 +699,10 @@ API (client key):
   are dropped at once, so it serves the next request; other cooldowns (401/403, 402, 404, 5xx,
   overload) stay. The response then carries `cooldown_cleared` (`true` if a live
   cooldown was dropped). Only this manual consume does it; nothing consumes a card by itself.
+  Also per account `auto` (switch) and `auto_next_ms` (next planned automatic use or `null`), and
+  top level `auto_lead_mins`, `auto_available` (usage DB present).
+- `POST /admin/v1/accounts/{id}/reset-credits/auto` (admin key, `allow_config_write`, same-origin
+  JSON) `{"enabled": bool}` → `{account, auto, changed}`.
 
 Idempotency: every attempt is a row in `reset_consume` (schema v6) with status `pending` →
 `done` (any of the 4 codes) / `failed` (definitive 4xx) / `superseded`. Unknown outcome (timeout,

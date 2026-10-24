@@ -819,7 +819,8 @@ document.addEventListener("click",async e=>{const t=e.target.closest("[data-pop]
 document.addEventListener("keydown",e=>{if(e.key==="Escape"&&!e.defaultPrevented&&popFor){closePop();e.preventDefault()}});
 addEventListener("resize",()=>{if(popTrig)place(popTrig)});
 
-// ---- reset-card confirm dialog (manual only; the server also requires {confirm: <account>})
+// ---- reset-card confirm dialog (the manual button; the server also requires {confirm: <account>}).
+// Automatic use is the per-account 快到期时自动使用 switch on the accounts page
 let cpFor=null,cpCredit=null,cpRid=null;
 function openConsume(a,c,from){const r=a.rc,now=Date.now();cpFor=a.id;cpCredit=c?c.id:null;cpRid=null;
   $("cpt").textContent="为 "+(a.email||a.id)+" 使用 1 张重置卡？";

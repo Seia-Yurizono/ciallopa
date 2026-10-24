@@ -30,6 +30,7 @@ rand = { workspace = true }
 notify = { workspace = true }
 toml_edit = { workspace = true }
 libc = "=0.2.186"
+chrono = { version = "=0.4.43", default-features = false, features = ["clock", "std"] }
 
 # Release builds are musl: its allocator costs about 1.7x the CPU per request.
 [target.'cfg(not(target_env = "msvc"))'.dependencies]

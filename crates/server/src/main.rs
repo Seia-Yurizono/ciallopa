@@ -366,6 +366,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let flush = tokio::task::spawn_blocking(move || {
         affinity.flush();
         ciallopa::client_fp::flush();
+        ciallopa::auto_reset::flush();
         if let Some(u) = usage {
             u.shutdown();
         }

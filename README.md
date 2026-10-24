@@ -492,7 +492,7 @@ Local demo with fake data: `cargo run --example ui_demo` → http://127.0.0.1:83
 (key `sk-demo-0123456789abcdef`; the demo writes its own `config.toml` with
 `allow_config_write = true`, so the settings and accounts pages are editable).
 
-Reset credits (重置卡) — **manual only, never automatic**. Each account's cards are listed
+Reset credits (重置卡) — **manual, or automatic only where you turn it on per account**. Each account's cards are listed
 from upstream `GET /wham/rate-limit-reset-credits` (same headers as Codex CLI) every
 `[ui] reset_credits_refresh_mins` (default 60, `0` = only on demand), including disabled accounts
 (they only leave routing), and shown in the quota table (count; amber when one expires within
@@ -512,6 +512,12 @@ the account, the card, and the current 5-hour / weekly remaining with their natu
 `pending` and any further click on that account must retry the same attempt (HTTP 409 otherwise),
 so a retry cannot spend twice. Needs `[usage] enabled`. A `reset` answer drops the account's
 usage-limit cooldown at once, so it takes traffic again on the next request.
+
+Per account, the 账号 page switch 「快到期时自动使用」 (default off, needs `allow_config_write`, not
+`allow_reset_consume`) uses the earliest-expiring card `[ui] reset_credits_auto_lead_mins`
+(default 10, 5–1440) minutes before it expires, through the same lock and consume path as the
+button after re-listing the cards upstream; disabled / re-login accounts are skipped,
+`nothing_to_reset` gives up on that card, other failures retry at most 5 times until expiry.
 
 Internal upstream calls (token refresh, `/wham/*`, reset credits) reuse the `User-Agent` +
 `originator` of the latest validated Codex client request (`GET /usage/v1/client-fingerprint`;

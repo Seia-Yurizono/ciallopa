@@ -327,6 +327,11 @@ function resetCardDisplay() {
   assert.equal(run('limitHit({limit_reached: true, usage_observed_ms: 1e6}, null)'), true);
   assert.equal(run('limitHit({limit_reached: true, usage_observed_ms: 1e6}, {observed_at_ms: 1e6 + 6e3})'), false, 'a newer quota observation wins');
   assert.equal(run('limitHit({limit_reached: false, usage_observed_ms: 1e6}, null)'), false);
+  // 快到期时自动使用: switch + next time per account; a failed listing keeps the last answer
+  run('AUTO = {}; AUTOTOP = null; readAuto({status: "fulfilled", value: {j: {auto_lead_mins: 15, auto_available: true, accounts: [{account: "a", auto: true, auto_next_ms: 5}, {account: "b"}]}}})');
+  assert.equal(run('JSON.stringify([AUTO, AUTOTOP])'), JSON.stringify([{a: {on: true, next: 5}, b: {on: false, next: null}}, {lead: 15, ok: true}]));
+  run('readAuto({status: "rejected", reason: new Error("x")})');
+  assert.equal(run('AUTO.a.on && AUTOTOP.lead'), 15);
 }
 
 (async () => {
@@ -336,5 +341,5 @@ function resetCardDisplay() {
   await loginChanges();
   await deviceLoginIsolation();
   await accessGate();
-  console.log('PASS: reset-card display, account snapshots, read/login races, device start/poll cancellation and identity isolation, Cloudflare Access expiry');
+  console.log('PASS: reset-card display and auto-use switch state, account snapshots, read/login races, device start/poll cancellation and identity isolation, Cloudflare Access expiry');
 })().catch(error => {console.error(error); process.exitCode = 1;}).finally(() => clearTimeout(watchdog));
