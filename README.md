@@ -33,8 +33,8 @@ client config and the next commands; then [set up the client](#codex-cli-client)
 
 **.deb (Ubuntu / Debian)**
 ```
-curl -fLO https://github.com/Seia-Yurizono/ciallopa/releases/download/v0.1.1-rc.2/ciallopa_0.1.1-rc.2-1_amd64.deb
-sudo apt install ./ciallopa_0.1.1-rc.2-1_amd64.deb
+curl -fLO https://github.com/Seia-Yurizono/ciallopa/releases/download/v0.1.2/ciallopa_0.1.2-1_amd64.deb
+sudo apt install ./ciallopa_0.1.2-1_amd64.deb
 sudo ciallopa -c /etc/ciallopa/config.toml init
 sudo -u ciallopa HOME=/var/lib/ciallopa ciallopa -c /etc/ciallopa/config.toml login
 sudo systemctl start ciallopa
@@ -43,7 +43,7 @@ sudo systemctl start ciallopa
 **Docker Compose**
 ```
 mkdir ciallopa && cd ciallopa && mkdir -m 700 config data
-curl -fsSLO https://raw.githubusercontent.com/Seia-Yurizono/ciallopa/v0.1.1-rc.2/packaging/docker/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/Seia-Yurizono/ciallopa/v0.1.2/packaging/docker/compose.yaml
 sed -i "s/^    user: .*/    user: \"$(id -u):$(id -g)\"/" compose.yaml
 docker compose run --rm ciallopa init
 docker compose up -d && docker compose exec ciallopa ciallopa login
@@ -51,8 +51,8 @@ docker compose up -d && docker compose exec ciallopa ciallopa login
 
 **Tarball**
 ```
-curl -fL https://github.com/Seia-Yurizono/ciallopa/releases/download/v0.1.1-rc.2/ciallopa-0.1.1-rc.2-x86_64-unknown-linux-musl.tar.gz | tar xz
-cd ciallopa-0.1.1-rc.2-x86_64-unknown-linux-musl
+curl -fL https://github.com/Seia-Yurizono/ciallopa/releases/download/v0.1.2/ciallopa-0.1.2-x86_64-unknown-linux-musl.tar.gz | tar xz
+cd ciallopa-0.1.2-x86_64-unknown-linux-musl
 ./ciallopa init
 ./ciallopa -c config.toml login
 ./ciallopa -c config.toml
@@ -104,7 +104,7 @@ from the same release and run `sha256sum -c --ignore-missing SHA256SUMS`.
 
 ### .deb
 ```
-sudo apt install ./ciallopa_0.1.1-rc.2-1_amd64.deb
+sudo apt install ./ciallopa_0.1.2-1_amd64.deb
 sudo ciallopa -c /etc/ciallopa/config.toml init
 sudo -u ciallopa HOME=/var/lib/ciallopa ciallopa -c /etc/ciallopa/config.toml login
 sudo systemctl start ciallopa             # enabled at install; starts once config.toml exists
@@ -148,13 +148,13 @@ the same static binary on `gcr.io/distroless/static-debian13:nonroot`. It reads
 `listen = "0.0.0.0:8317"` on `init` and checks itself with `ciallopa healthcheck`. Using
 [`packaging/docker/compose.yaml`](packaging/docker/compose.yaml) in an empty directory:
 
-The current `v0.1.1-rc.2` pre-release uses image tag `0.1.1-rc.2`. The `latest` tag follows
+The current `v0.1.2` release uses image tag `0.1.2` (also `0.1`). The `latest` tag follows
 successful tagged builds, including pre-releases. Only stable releases update
 `<major>.<minor>`. Use an exact version or digest for controlled upgrades.
 
 ```
 mkdir -m 700 config data
-curl -fsSLO https://raw.githubusercontent.com/Seia-Yurizono/ciallopa/v0.1.1-rc.2/packaging/docker/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/Seia-Yurizono/ciallopa/v0.1.2/packaging/docker/compose.yaml
 sed -i "s/^    user: .*/    user: \"$(id -u):$(id -g)\"/" compose.yaml   # your uid:gid
 docker compose run --rm ciallopa init           # writes config/config.toml, prints the key
 docker compose up -d
