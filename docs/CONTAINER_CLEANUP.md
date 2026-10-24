@@ -10,14 +10,16 @@ Keep the newest **two tag names**, ranked by the creation time of their package 
 GHCR does not expose a separate timestamp for each tag. For tags on the same version,
 `latest` sorts first, followed by alphabetical order. Thus `latest` and `0.1.0` count as
 two tags even when they point to the same image; the older `0.1` version is deleted.
-There is no minimum age for deletion, including for untagged versions.
+Untagged versions younger than six hours are kept: a release uploads each architecture's
+image by digest before its publish job tags the merged multi-arch index. They are deleted by a
+later run. A newly untagged old image (after its tags moved) also waits for that later run.
 
-Retain every manifest referenced by those images, recursively, including runnable platform
-images, SBOM and provenance manifests. These may still appear as untagged in GitHub.
+Retain every manifest referenced by those images, recursively, including the runnable image
+of each platform of a multi-arch index, SBOM and provenance manifests. These may still appear as untagged in GitHub.
 GitHub deletes package versions rather than individual tag aliases, so all aliases attached
 to a retained digest survive. No cleanup is attempted if no tagged image exists or a retained
-manifest cannot be read. The current release Docker job and cleanup share a concurrency group,
-so those workflow versions cannot modify the package concurrently. The published `v0.1.0`
+manifest cannot be read. The current release publish job (which tags the multi-arch index) and cleanup share a
+concurrency group, so those workflow versions cannot modify the package concurrently. The published `v0.1.0`
 commit (`56ece6c`) predates that lock: rerunning its old release workflow does not inherit
 the current protection. Before such a rebuild, pause cleanup triggers and wait for any running
 cleanup to finish; avoid manual cleanup until publication is done, then restore the triggers.

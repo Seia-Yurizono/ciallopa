@@ -1,9 +1,17 @@
 # Deployment and operations
 
-The supported release image is **linux/amd64** and contains the same static musl binary as
-the release tarball. The base image supports other architectures; the packaged binary does
-not. Do not publish an ARM manifest until an ARM binary has been built and smoke-tested on
-that platform. The current deployment unit is one process with local state.
+The release image is multi-arch, **linux/amd64** and **linux/arm64**, and contains the same
+static musl binary as the release tarball of that architecture. Docker picks the matching
+image, so the Compose example runs unchanged on x86_64 and arm64 Linux hosts and under Docker
+Desktop on Apple Silicon. Other architectures are not built. The current deployment unit is
+one process with local state.
+
+The arm64 binary is built with jemalloc's 64 KiB page-size setting (`--with-lg-page=16`, set by
+`scripts/package.sh`), which is also jemalloc's own default for aarch64 cross builds. A binary
+built for 4 KiB pages aborts on kernels with 16 KiB or 64 KiB pages; this one runs on 4 KiB
+kernels (Docker Desktop, most clouds) as well as on 16 KiB / 64 KiB ones. In a local
+comparison the idle and peak memory matched a 4 KiB build within noise; memory retained after
+a load burst was about 5 MiB higher.
 
 ## Container contract
 
@@ -168,11 +176,16 @@ without logging in to GHCR, uploading registry images or changing release tags.
 The [Dockerfile](../packaging/docker/Dockerfile) pins both BusyBox (directory preparation only)
 and the Distroless `static-debian13:nonroot` runtime by manifest digest. Debian 13 follows the
 current Distroless support baseline; retain digest updates and smoke tests when refreshing it.
-The release workflow builds from the packaged
+Each architecture is compiled, packaged and smoke-tested (.deb under systemd, image,
+Compose) on a native GitHub runner (`ubuntu-24.04` and `ubuntu-24.04-arm`); no emulation is
+involved. The release workflow builds the image from the packaged
 binary, smoke-tests locally, then rebuilds those same inputs for a push by digest. Both builds
-use the source commit timestamp as `SOURCE_DATE_EPOCH`. Before attaching release tags, the
-workflow resolves the single `linux/amd64` manifest from the uploaded registry index and compares
-its config digest with the smoke build metadata and the loaded smoke image. Missing or ambiguous
+use the source commit timestamp as `SOURCE_DATE_EPOCH`. Before attaching release tags, each
+architecture's job resolves its single `linux/<arch>` manifest from the uploaded registry index
+and compares its config digest with the smoke build metadata and the loaded smoke image. One
+publish job then merges both uploaded indexes (runnable images and their attestations) into the
+tagged multi-arch index with `docker buildx imagetools create` and checks that every tag holds
+exactly the verified image for each platform. Missing or ambiguous
 runtime manifests and mismatched digests fail the release. Attested exports need not include a
 config digest in Buildx's output metadata. The config digest covers runtime settings and
 uncompressed filesystem layer identities. Attestations change the registry index digest, so
@@ -189,8 +202,8 @@ dependency analysis for that part of the supply chain.
 Digest pins need maintenance to receive base security fixes. Review upstream changes, inspect
 the new index digests with `docker buildx imagetools inspect`, update both relevant `FROM` lines,
 and run the manual release workflow before a release. Retain readable tags beside the pins.
-Native ARM packaging, source-to-binary attestations and vulnerability checks can be added as
-release needs justify them; adding a multi-platform label alone provides none of those guarantees.
+Source-to-binary attestations and vulnerability checks can be added as release needs justify
+them.
 
 ## Scaling boundaries
 
