@@ -3,7 +3,8 @@ ciallopa v0.1.2
 This release follows v0.1.1-rc.2. It makes accounts and memory behave better on small hosts,
 keeps Codex sessions on their account across restarts, tracks Codex 0.164.0, and adds Linux
 arm64 builds and a multi-arch image (including Docker Desktop on Apple Silicon). The
-implemented upstream adapter is still the Codex backend.
+management pages now also work behind Cloudflare Tunnel and Access. The implemented
+upstream adapter is still the Codex backend.
 
 **Platforms**
 
@@ -62,6 +63,21 @@ implemented upstream adapter is still the Codex backend.
 - The accounts page shows each account's reset-card count and 「已达额度上限」 when the last
   刷新额度 reported it. Display only: cards are still spent only by the manual button.
 
+**Cloudflare Tunnel and Access**
+
+- The management pages work behind Cloudflare Access. They used to send requests without
+  cookies, so Access redirected them to its login and the pages showed 「网络错误，连不上
+  ciallopa（Failed to fetch）」. They now send same-origin cookies, and when the Access
+  session expires they say 「Cloudflare Access 登录已过期，请刷新页面重新登录」 instead.
+- Management writes still need the management key header and a JSON body, and must come
+  from the same origin (`Sec-Fetch-Site`, or `Origin` against `Host` / `X-Forwarded-Host`).
+  Cookies are never used for authentication.
+- Management pages are sent with `Cache-Control: no-store, no-transform`, so Cloudflare does
+  not cache or rewrite them.
+- `True-Client-IP` is no longer forwarded upstream, on HTTP requests or WebSocket handshakes,
+  like the `cf-*`, `X-Forwarded-*`, `X-Real-IP` and `CDN-Loop` headers already removed.
+- [Deployment][deploy] has a "Behind Cloudflare Tunnel and Access" section.
+
 **Build**
 
 - GitHub Actions moved to their Node 24 major versions.
@@ -70,7 +86,8 @@ implemented upstream adapter is still the Codex backend.
 
 **Validation**
 
-Checked with the workspace tests (365 passed), the UI state checks, a restart test for
+Checked with the workspace tests (367 passed), the UI state checks, a browser test behind a
+simulated Cloudflare Access proxy, a restart test for
 session bindings, and local load tests on a 1 GiB budget. The arm64 binary was also checked
 under emulation (health, SSE and WebSocket turns, management pages, TLS fingerprint). No real model provider or account
 was used.
