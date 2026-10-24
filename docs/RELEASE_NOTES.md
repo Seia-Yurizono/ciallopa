@@ -1,22 +1,19 @@
-## Unreleased
-
-**Platforms**
-
-- Linux arm64: the container image is now multi-arch (`linux/amd64` and `linux/arm64`), so
-  the same tags and Compose file work on arm64 Linux hosts and under Docker Desktop on Apple
-  Silicon. Releases also ship `ciallopa-<version>-aarch64-unknown-linux-musl.tar.gz` and
-  `ciallopa_<version>-1_arm64.deb`; `SHA256SUMS` covers every asset.
-- Each architecture is built and smoke-tested on a native GitHub runner. The arm64 binary
-  uses jemalloc's 64 KiB page setting, so it also runs on 16 KiB / 64 KiB page kernels. The
-  TLS fingerprint (JA4, HTTP/2 settings, key shares) is unchanged on arm64.
-- Registry cleanup keeps untagged uploads younger than six hours, so it cannot remove a
-  per-architecture image before the release tags the merged index.
-
 ciallopa v0.1.2
 
 This release follows v0.1.1-rc.2. It makes accounts and memory behave better on small hosts,
-keeps Codex sessions on their account across restarts, and tracks Codex 0.164.0. The
+keeps Codex sessions on their account across restarts, tracks Codex 0.164.0, and adds Linux
+arm64 builds and a multi-arch image (including Docker Desktop on Apple Silicon). The
 implemented upstream adapter is still the Codex backend.
+
+**Platforms**
+
+- Linux arm64: the container image is multi-arch (`linux/amd64` and `linux/arm64`), so the
+  same tags and Compose file work on arm64 Linux hosts and under Docker Desktop on Apple
+  Silicon. The release also ships `ciallopa-0.1.2-aarch64-unknown-linux-musl.tar.gz` and
+  `ciallopa_0.1.2-1_arm64.deb`; `SHA256SUMS` covers every asset.
+- Each architecture is built and smoke-tested on a native GitHub runner. The arm64 binary
+  uses jemalloc's 64 KiB page setting, so it also runs on 16 KiB / 64 KiB page kernels. The
+  TLS fingerprint (JA4, HTTP/2 settings, key shares) is the same on arm64.
 
 **Upstream reliability**
 
@@ -68,16 +65,20 @@ implemented upstream adapter is still the Codex backend.
 **Build**
 
 - GitHub Actions moved to their Node 24 major versions.
+- Registry cleanup keeps untagged uploads younger than six hours, so it cannot remove a
+  per-architecture image before the release tags the merged index.
 
 **Validation**
 
 Checked with the workspace tests (365 passed), the UI state checks, a restart test for
-session bindings, and local load tests on a 1 GiB budget. No real model provider or account
+session bindings, and local load tests on a 1 GiB budget. The arm64 binary was also checked
+under emulation (health, SSE and WebSocket turns, management pages, TLS fingerprint). No real model provider or account
 was used.
 
 **Upgrade**
 
-- Image tags: `ghcr.io/seia-yurizono/ciallopa:0.1.2`, `0.1` and `latest`, for `linux/amd64`.
+- Image tags: `ghcr.io/seia-yurizono/ciallopa:0.1.2`, `0.1` and `latest`, for `linux/amd64` and
+  `linux/arm64`.
   Change a pinned old Compose tag before pulling and recreating; pulling `latest` alone does
   not replace a running container.
 - The config/data layout and SQLite schema are unchanged. The new `session_affinity.json`
