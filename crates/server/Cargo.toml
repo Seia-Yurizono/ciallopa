@@ -31,6 +31,10 @@ notify = { workspace = true }
 toml_edit = { workspace = true }
 libc = "=0.2.186"
 
+# Release builds are musl: its allocator costs about 1.7x the CPU per request.
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = "=0.7.0"
+
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 tokio-tungstenite = { workspace = true }
