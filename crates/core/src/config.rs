@@ -354,6 +354,10 @@ pub struct Config {
     pub ipv6: bool,
     /// Incoming HTTP request body limit in MiB (default 64, the WebSocket message limit).
     pub max_body_mb: u64,
+    /// Total MiB of HTTP request bodies buffered at once across all forwarding requests
+    /// (default 256; 0 = unlimited). A body reserves its declared length before it is read,
+    /// waits up to 1 s for room, then gets 503 `gateway_busy`. Must be 0 or ≥ `max_body_mb`.
+    pub max_buffered_body_mb: u64,
     /// Simultaneous forwarded HTTP requests and WebSocket connections. Zero disables
     /// rejection, but existing requests are still counted for reload and shutdown.
     pub max_inflight_requests: usize,
@@ -380,6 +384,7 @@ impl Default for Config {
             proxy_enabled: true,
             ipv6: false,
             max_body_mb: 64,
+            max_buffered_body_mb: 256,
             max_inflight_requests: 64,
             ws_compression: true,
             routing: RoutingConfig::default(),
@@ -416,6 +421,12 @@ impl Config {
         if !(1..=4096).contains(&self.max_body_mb) {
             return Err(ConfigError::Invalid(
                 "max_body_mb must be in 1..=4096".into(),
+            ));
+        }
+        let budget = self.max_buffered_body_mb;
+        if budget != 0 && !(self.max_body_mb..=65536).contains(&budget) {
+            return Err(ConfigError::Invalid(
+                "max_buffered_body_mb must be 0 or in max_body_mb..=65536".into(),
             ));
         }
         self.routing.ttl()?;
@@ -621,6 +632,22 @@ mod tests {
         .unwrap_err();
         assert!(e.to_string().contains("ciallopa init"), "{e}");
         assert!(Config::parse("api_keys = [\"sk-cpa-0123456789abcdef\"]").is_ok());
+    }
+
+    #[test]
+    fn buffered_body_budget_must_fit_one_body() {
+        assert_eq!(Config::default().max_buffered_body_mb, 256);
+        assert!(Config::parse("max_buffered_body_mb = 0").is_ok());
+        assert!(Config::parse("max_buffered_body_mb = 64").is_ok());
+        assert!(Config::parse("max_body_mb = 8\nmax_buffered_body_mb = 8").is_ok());
+        for bad in [
+            "max_buffered_body_mb = 63",
+            "max_body_mb = 512\nmax_buffered_body_mb = 256",
+            "max_buffered_body_mb = 65537",
+        ] {
+            let e = Config::parse(bad).unwrap_err();
+            assert!(e.to_string().contains("max_buffered_body_mb"), "{bad}: {e}");
+        }
     }
 
     #[test]

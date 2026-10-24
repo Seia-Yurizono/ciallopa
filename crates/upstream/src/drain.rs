@@ -29,6 +29,28 @@ pub struct Drain {
     workers: AtomicUsize,
     rejected: AtomicU64,
     idle: Notify,
+    /// Bytes of buffered HTTP request bodies currently reserved (see [`BodyPermit`]).
+    body_bytes: AtomicU64,
+    body_freed: Notify,
+}
+
+/// A share of the global buffered-request-body budget. Dropping it returns the bytes.
+pub struct BodyPermit {
+    drain: Arc<Drain>,
+    held: u64,
+}
+impl BodyPermit {
+    pub fn held(&self) -> u64 {
+        self.held
+    }
+}
+impl Drop for BodyPermit {
+    fn drop(&mut self) {
+        if self.held > 0 {
+            self.drain.body_bytes.fetch_sub(self.held, Ordering::AcqRel);
+            self.drain.body_freed.notify_waiters();
+        }
+    }
 }
 
 /// Held by a session for its lifetime.
@@ -95,6 +117,56 @@ impl Drain {
             return Err(Refused::Draining);
         }
         Ok(lease)
+    }
+    /// An empty budget share; grow it with [`Self::reserve_body`].
+    pub fn body_permit(self: &Arc<Self>) -> BodyPermit {
+        BodyPermit {
+            drain: self.clone(),
+            held: 0,
+        }
+    }
+
+    /// Grow `permit` by `n` bytes within `limit` total buffered body bytes (0 = unlimited),
+    /// waiting at most `wait` for other bodies to be released. A share that can never fit
+    /// (`held + n > limit`) is refused at once. Refusals count as [`Self::rejected`].
+    pub async fn reserve_body(
+        &self,
+        permit: &mut BodyPermit,
+        n: u64,
+        limit: u64,
+        wait: Duration,
+    ) -> Result<(), Refused> {
+        if n == 0 {
+            return Ok(());
+        }
+        let fits = |c: u64| c.checked_add(n).filter(|&t| limit == 0 || t <= limit);
+        if limit != 0 && permit.held.saturating_add(n) > limit {
+            self.rejected.fetch_add(1, Ordering::Relaxed);
+            return Err(Refused::Busy);
+        }
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            let freed = self.body_freed.notified();
+            tokio::pin!(freed);
+            freed.as_mut().enable();
+            if self
+                .body_bytes
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, fits)
+                .is_ok()
+            {
+                permit.held += n;
+                return Ok(());
+            }
+            if tokio::time::timeout_at(deadline, freed).await.is_err() {
+                self.rejected.fetch_add(1, Ordering::Relaxed);
+                return Err(Refused::Busy);
+            }
+        }
+    }
+
+    /// Buffered request body bytes currently reserved.
+    pub fn body_bytes(&self) -> u64 {
+        self.body_bytes.load(Ordering::Acquire)
     }
     pub fn inflight(&self) -> usize {
         self.inflight.load(Ordering::Acquire)
@@ -176,6 +248,47 @@ impl Drain {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn body_budget_reserves_waits_and_releases() {
+        let d = Arc::new(Drain::default());
+        let wait = Duration::from_millis(50);
+        let mut a = d.body_permit();
+        d.reserve_body(&mut a, 600, 1000, wait).await.unwrap();
+        d.reserve_body(&mut a, 100, 1000, wait).await.unwrap();
+        assert_eq!((a.held(), d.body_bytes()), (700, 700));
+        let mut b = d.body_permit();
+        assert_eq!(
+            d.reserve_body(&mut b, 400, 1000, wait).await,
+            Err(Refused::Busy)
+        );
+        assert_eq!(d.rejected(), 1);
+        let mut never = d.body_permit();
+        let t = tokio::time::Instant::now();
+        assert_eq!(
+            d.reserve_body(&mut never, 1001, 1000, Duration::from_secs(5))
+                .await,
+            Err(Refused::Busy)
+        );
+        assert!(
+            t.elapsed() < Duration::from_secs(1),
+            "a share that cannot fit fails at once"
+        );
+        let d2 = d.clone();
+        let waiter = tokio::spawn(async move {
+            let mut p = d2.body_permit();
+            d2.reserve_body(&mut p, 400, 1000, Duration::from_secs(5))
+                .await
+                .map(|()| p.held())
+        });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        drop(a);
+        assert_eq!(waiter.await.unwrap(), Ok(400));
+        assert_eq!(d.body_bytes(), 0, "every permit returned its bytes");
+        let mut u = d.body_permit();
+        d.reserve_body(&mut u, u64::MAX / 2, 0, wait).await.unwrap();
+        assert_eq!(d.body_bytes(), u64::MAX / 2, "0 = unlimited still counts");
+    }
 
     #[tokio::test]
     async fn waits_for_sessions_and_forces_after_bound() {

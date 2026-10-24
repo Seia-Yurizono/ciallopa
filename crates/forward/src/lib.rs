@@ -17,6 +17,7 @@ mod images;
 mod limits;
 mod models;
 mod proxy;
+mod reqbody;
 mod turn_state;
 mod usage;
 mod ws;
@@ -133,7 +134,7 @@ async fn responses(
     key: Key,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
-    body: Bytes,
+    body: reqbody::ReqBody,
 ) -> Response {
     forward(st, key, Method::POST, &uri, headers, body, true).await
 }
@@ -144,7 +145,7 @@ async fn passthrough(
     method: Method,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
-    body: Bytes,
+    body: reqbody::ReqBody,
 ) -> Response {
     forward(st, key, method, &uri, headers, body, false).await
 }
@@ -155,14 +156,15 @@ async fn forward(
     method: Method,
     uri: &http::Uri,
     headers: HeaderMap,
-    body: Bytes,
+    req: reqbody::ReqBody,
     inspect: bool,
 ) -> Response {
     let Some(path) = map_path(pq(uri)) else {
         return proxy::json_error(http::StatusCode::NOT_FOUND, "not_found", "unknown path");
     };
     let parsed = if inspect {
-        proxy::inspect_json(&headers, &body)
+        let limit = st.config.load().max_body_mb.saturating_mul(1024 * 1024);
+        proxy::inspect_json(&headers, &req.bytes, limit)
     } else {
         None
     };
@@ -179,17 +181,21 @@ async fn forward(
         None
     };
     let expect_sse = inspect && client_wants_sse(&path, &headers, parsed.as_ref());
+    // The parsed request is as large as the body; free it before making another copy.
+    drop(parsed);
     let (headers, body) = if inspect {
         prepare_responses_body(
             &path,
             &method,
             headers,
-            body,
+            req.bytes.clone(),
             st.config.load().upstream_opts.compress_requests,
+            |z| req.wrap(z),
         )
     } else {
-        (headers, body)
+        (headers, req.bytes.clone())
     };
+    drop(req);
     let ob = proxy::Outbound {
         method,
         path,
@@ -236,6 +242,7 @@ pub(crate) fn prepare_responses_body(
     mut headers: HeaderMap,
     body: Bytes,
     compress: bool,
+    wrap: impl FnOnce(Vec<u8>) -> Bytes,
 ) -> (HeaderMap, Bytes) {
     headers.remove(http::header::ACCEPT_ENCODING);
     let route = path.split('?').next().unwrap_or(path);
@@ -258,7 +265,7 @@ pub(crate) fn prepare_responses_body(
                 http::header::CONTENT_ENCODING,
                 http::HeaderValue::from_static("zstd"),
             );
-            (headers, Bytes::from(z))
+            (headers, wrap(z))
         }
         Err(e) => {
             tracing::warn!(error = %e, "zstd request compression failed; forwarding plaintext");
@@ -269,7 +276,10 @@ pub(crate) fn prepare_responses_body(
 
 #[cfg(test)]
 mod tests {
-    use super::prepare_responses_body as prep;
+    use bytes::Bytes as B;
+    fn prep(p: &str, m: &http::Method, h: http::HeaderMap, b: B, c: bool) -> (http::HeaderMap, B) {
+        super::prepare_responses_body(p, m, h, b, c, B::from)
+    }
     use bytes::Bytes;
     use http::{HeaderMap, HeaderValue, Method};
 
