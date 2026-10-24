@@ -292,9 +292,13 @@ account stays out of rotation. WS `codex.rate_limits` snapshots count as the han
 "…overloaded…" / "…at capacity…" with no other code. It usually arrives as HTTP 200 followed by
 an in-stream `error` event and `response.failed`; it can also be an HTTP 503 / 502 / 400 / 429
 body. It is account-level throttling, not quota and not a credential problem.
-- **Before any output** (SSE: only `response.created`, `response.in_progress` and
-  `codex.rate_limits` have arrived, and these are held until the first other event; WS: the same
-  frames of the current turn): the request is replayed on another usable account, each account at
+- **Before any output** (SSE: only envelope events have arrived — `response.created`,
+  `response.in_progress`, `response.queued`, `response.metadata`, `codex.rate_limits`,
+  keepalives — or empty announcements: a `response.output_item.added` message with no content
+  or reasoning item with no summary, and a `response.content_part.added` /
+  `reasoning_summary_part.added` with empty text, a `function_call` with empty arguments or a
+  `custom_tool_call` with empty input. These are held until the first other event and dropped
+  on a switch, so the client never sees them twice. WS: the same frames of the current turn): the request is replayed on another usable account, each account at
   most once per request, after a 20–120 ms jitter. This does not use `max_attempts`. Session
   affinity is unchanged: a session only moves when its account errors or cools down.
 - **No other account usable** (one account, or every account already overloaded) and still
@@ -305,6 +309,9 @@ body. It is account-level throttling, not quota and not a credential problem.
 - **After output** (text, reasoning, tool call), or when that retry is spent: the upstream error
   is passed through verbatim (the rest of the stream included), and the client decides. No 429
   is ever synthesized for overload.
+  The request is logged as failed (`server_is_overloaded`, source `stream`), and the overload
+  counts toward the account's streak instead of the HTTP 200 counting as a success; it never
+  cools the account mid-stream on HTTP.
 - `x-retry-metadata: NO_MORE_RETRY` forbids another try on the same account (it skips the
   wait-and-retry and ends the WS handshake retries on the last account); switching to another account is still allowed.
 - Cooldown: after `overload_streak` (default 2) consecutive overloaded answers on one account it

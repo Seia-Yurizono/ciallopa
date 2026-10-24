@@ -710,6 +710,7 @@ pub(crate) fn stream_image_body(st: &AppState, c: Chosen, mut trk: Option<Tracke
             Observation::Http
         },
         c.idle,
+        false,
     )
 }
 
@@ -751,6 +752,7 @@ pub(crate) fn stream_back_tracked(
             Observation::Http
         },
         c.idle,
+        false,
     )
 }
 
@@ -775,6 +777,8 @@ fn stream_body(
     mut trk: Option<Tracker>,
     observation: Observation,
     idle: Duration,
+    // The account outcome of an in-stream error was already reported (bootstrap passthrough).
+    mut reported: bool,
 ) -> Response {
     let sse = matches!(observation, Observation::Responses(_));
     let mut progress = match observation {
@@ -801,7 +805,7 @@ fn stream_body(
         return r;
     }
     let router = Arc::clone(&st.router);
-    let mut reported = false;
+    let late_overload = overload_outcome(st, false);
     let upstream_request_id = errors::request_id(&headers);
     let image_headers =
         (matches!(observation, Observation::Images) && trk.is_some()).then(|| headers.clone());
@@ -822,6 +826,9 @@ fn stream_body(
         let report_quota = |o: &Outcome| {
             router.report(&route, &account, o);
         };
+        // An overload after output reached the client cannot be replayed; it still counts
+        // against the account (streak only, no mid-stream cooldown) instead of the 200's success.
+        let late_overload = late_overload.clone();
         let fail = |trk: &mut Option<Tracker>, k: &str| {
             if let Some(t) = trk.as_mut() {
                 t.fail(k);
@@ -852,11 +859,23 @@ fn stream_body(
                 // Only these types can produce Quota; do not allocate a full Value for
                 // every output delta just to discard its Content classification. Keep
                 // the old classifier fallback when the typed envelope was inconclusive.
-                if !*reported && matches!(ty.as_deref(), None | Some("error" | "response.failed")) {
-                    if let EventKind::Quota(o) = event_kind(e) {
-                        *reported = true;
-                        report_quota(&o);
-                        fail(trk, "usage_limit");
+                if !*reported
+                    && matches!(
+                        ty.as_deref(),
+                        None | Some("error" | "response.failed" | "service_unavailable_error")
+                    )
+                {
+                    match event_kind(e) {
+                        EventKind::Quota(o) => {
+                            *reported = true;
+                            report_quota(&o);
+                            fail(trk, "usage_limit");
+                        }
+                        EventKind::Overloaded(_) if sse => {
+                            *reported = true;
+                            report_quota(&late_overload);
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -1368,6 +1387,9 @@ fn event_kind_observed(
     ) {
         return EventKind::Preamble;
     }
+    if empty_announcement(ty, &v) {
+        return EventKind::Preamble;
+    }
     if let Some(m) = crate::encrypted::rejection(&v) {
         return EventKind::Encrypted(m);
     }
@@ -1393,6 +1415,49 @@ fn event_kind_observed(
         usage_limit: code || is_usage_limit(text.as_bytes()),
         quota: quota_h,
     })
+}
+
+/// An item or part announced before it carries anything: a `message` with no content, a
+/// `reasoning` item with no summary / content, or an empty text part. chatgpt sends these
+/// right before a possible `server_is_overloaded`; they are not output, so holding them keeps
+/// the pre-output account switch possible; a switch drops them, so the client never sees them.
+/// Same set as CPA 9e79552f: also a `function_call` with empty arguments and a
+/// `custom_tool_call` with empty input. Non-empty items / parts and unknown types stay Content.
+fn empty_announcement(ty: &str, v: &serde_json::Value) -> bool {
+    let empty = |x: Option<&serde_json::Value>| match x {
+        None | Some(serde_json::Value::Null) => true,
+        Some(serde_json::Value::Array(a)) => a.is_empty(),
+        Some(serde_json::Value::String(s)) => s.is_empty(),
+        _ => false,
+    };
+    match ty {
+        "response.output_item.added" => {
+            let Some(item) = v.get("item") else {
+                return false;
+            };
+            match item.get("type").and_then(|t| t.as_str()) {
+                Some("message") => empty(item.get("content")),
+                Some("reasoning") => {
+                    empty(item.get("summary"))
+                        && empty(item.get("content"))
+                        && empty(item.get("encrypted_content"))
+                }
+                // Announced with its name; the client acts on the arguments, which come later.
+                Some("function_call") => empty(item.get("arguments")),
+                Some("custom_tool_call") => empty(item.get("input")),
+                _ => false,
+            }
+        }
+        "response.content_part.added" | "response.reasoning_summary_part.added" => {
+            v.get("part").is_some_and(|p| {
+                matches!(
+                    p.get("type").and_then(|t| t.as_str()),
+                    Some("output_text" | "summary_text" | "reasoning_text")
+                ) && empty(p.get("text"))
+            })
+        }
+        _ => false,
+    }
 }
 
 /// Split complete SSE events off the front of `buf`; yields each event's joined `data:`.
@@ -1773,6 +1838,7 @@ pub(crate) async fn send_streaming(
                 trk,
                 Observation::Responses(progress),
                 idle,
+                true,
             );
         }
         if let Some(o) = switch {
@@ -1817,6 +1883,7 @@ pub(crate) async fn send_streaming(
             trk,
             Observation::Responses(progress),
             idle,
+            false,
         );
     }
 }
@@ -2248,6 +2315,40 @@ mod quota_tests {
         // Real content / unknown events stay Content.
         assert!(!p(r#"{"type":"response.output_text.delta","delta":"hi"}"#));
         assert!(!p(r#"{"type":"unknown_event","x":1}"#));
+        // Empty item / part announcements hold; anything with content commits.
+        assert!(p(
+            r#"{"type":"response.output_item.added","item":{"type":"message","role":"assistant","content":[]}}"#
+        ));
+        assert!(p(
+            r#"{"type":"response.output_item.added","item":{"type":"reasoning","summary":[],"encrypted_content":null}}"#
+        ));
+        assert!(p(
+            r#"{"type":"response.content_part.added","part":{"type":"output_text","annotations":[],"text":""}}"#
+        ));
+        assert!(p(
+            r#"{"type":"response.reasoning_summary_part.added","part":{"type":"summary_text","text":""}}"#
+        ));
+        assert!(p(
+            r#"{"type":"response.output_item.added","item":{"type":"function_call","name":"shell","arguments":""}}"#
+        ));
+        assert!(p(
+            r#"{"type":"response.output_item.added","item":{"type":"custom_tool_call","name":"apply_patch","input":""}}"#
+        ));
+        assert!(!p(
+            r#"{"type":"response.output_item.added","item":{"type":"function_call","name":"shell","arguments":"{}"}}"#
+        ));
+        assert!(!p(
+            r#"{"type":"response.output_item.added","item":{"type":"message","content":[{"type":"output_text","text":"hi"}]}}"#
+        ));
+        assert!(!p(
+            r#"{"type":"response.output_item.added","item":{"type":"reasoning","summary":[],"encrypted_content":"gAAA"}}"#
+        ));
+        assert!(!p(
+            r#"{"type":"response.content_part.added","part":{"type":"output_text","text":"hi"}}"#
+        ));
+        assert!(!p(
+            r#"{"type":"response.output_item.added","item":{"type":"web_search_call"}}"#
+        ));
     }
 
     #[test]
