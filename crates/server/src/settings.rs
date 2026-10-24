@@ -1073,6 +1073,7 @@ async fn get_config(State(s): State<S>) -> Response {
         "running": cs::masked_values(&running),
         "file_error": file_error,
         "schema": cs::SCHEMA,
+        "defaults": cs::masked_values(&Config::default()),
         "pending_restart": s.pending(),
         "last_reload": last,
         "overrides": {"log.level": std::env::var_os("RUST_LOG").is_some().then_some("RUST_LOG")},

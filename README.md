@@ -242,6 +242,27 @@ management page (`/ui/accounts`) can do the same edits, delete accounts, import 
 (several at once; an account already present is left unchanged) or run the device-code login
 when writes are enabled (see below).
 
+### How an account is chosen
+A request that continues a bound session (same session and model, `routing.session_affinity`
+on) stays on its account while that account is usable. Every other request picks an account
+in three steps:
+
+1. Drop disabled accounts and accounts cooling down for this model. With
+   `weighted-round-robin`, accounts with weight ≤ 0 are dropped too.
+2. With `routing.quota_avoid_threshold` above 0, skip accounts whose last observed usage in
+   any unexpired quota window is at or over the threshold (unless that would skip all of them).
+3. Keep only the highest `priority` tier and apply `routing.strategy`:
+   - `round-robin` (default): take turns in account-id order, with a separate cursor per model;
+     weights are ignored.
+   - `weighted-round-robin`: share requests in proportion to each account's `weight`.
+   - `fill-first`: always the first usable account in account-id order; the next one is used
+     only while it is cooling down or disabled.
+
+When the bound account cannot serve a request, `routing.session_affinity_rebind_on` decides
+whether the binding moves: `quota` (default) moves it for quota, token, 402 or deactivation problems,
+while short failures such as repeated 5xx only borrow another account until the original one
+recovers; `any` moves it whenever the bound account is unusable.
+
 A `*.json` file in `auth_dir` that is not loaded is listed on the 账号 page with the reason,
 until it is fixed or removed: the server user may not read it (with its owner, mode and a
 `chown` command for the server's uid:gid), it is not valid JSON, it has no `access_token` (a Codex
