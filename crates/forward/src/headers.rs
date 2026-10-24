@@ -22,6 +22,8 @@ fn drop_request(name: &str) -> bool {
             | "forwarded"
             | "via"
             | "x-real-ip"
+            // Cloudflare Enterprise / Akamai client-IP header (`cf-*` is caught below)
+            | "true-client-ip"
             | "cdn-loop"
             // client cookies never go upstream (optional per-account jar is added separately)
             | "cookie"
@@ -181,6 +183,29 @@ mod tests {
         let o = downstream_headers(&h);
         assert!(o.get("set-cookie").is_none());
         assert!(o.get("x-codex-primary-used-percent").is_some());
+    }
+
+    #[test]
+    fn client_ip_and_proxy_headers_dropped() {
+        let mut h = HeaderMap::new();
+        for (k, v) in [
+            ("True-Client-IP", "203.0.113.7"),
+            ("TRUE-CLIENT-IP", "203.0.113.8"),
+            ("CF-Connecting-IP", "203.0.113.7"),
+            ("Cf-Access-Jwt-Assertion", "jwt"),
+            ("X-Forwarded-For", "203.0.113.7"),
+            ("X-Real-IP", "203.0.113.7"),
+            ("CDN-Loop", "cloudflare"),
+            ("accept", "*/*"),
+        ] {
+            h.append(
+                HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                HeaderValue::from_static(v),
+            );
+        }
+        let o = upstream_headers(&h, &creds());
+        let names: Vec<_> = o.keys().map(|k| k.as_str()).collect();
+        assert_eq!(names, vec!["accept", "authorization", "chatgpt-account-id"]);
     }
 
     #[test]
