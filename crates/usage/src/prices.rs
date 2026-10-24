@@ -17,6 +17,13 @@
 //! tier is unpriced. Dated entries
 //! (`effective_from` / `effective_until`, inclusive, UTC) win over undated ones on the
 //! request's date. No match ⇒ `None` (never 0).
+//!
+//! Two local overrides the dataset never changes ([`diff`] skips them):
+//! - `ignore = ["auto", …]`: models that are never priced (free routers, local aliases).
+//!   They cost exactly 0 on every tier and date and do not count as unpriced. An exact 0
+//!   (not "excluded") keeps totals exact: excluding them would still mark every total that
+//!   contains them as a lower bound (≥).
+//! - `custom = true` on an entry: a price set by hand on the management page.
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -95,6 +102,12 @@ pub struct Entry {
     pub effective_until: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// Set by hand (management page): price syncs never change or report it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub custom: bool,
+}
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 fn is_std(t: &Tier) -> bool {
     *t == Tier::Standard
@@ -135,6 +148,9 @@ impl Default for Defaults {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PriceTable {
+    /// Models never priced: cost 0, never reported as unpriced (lowercase).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ignore: Vec<String>,
     pub defaults: Defaults,
     #[serde(rename = "model")]
     pub models: Vec<Entry>,
@@ -165,6 +181,9 @@ impl PriceTable {
     }
     pub fn parse(s: &str) -> Result<Self, PriceError> {
         let t: PriceTable = toml::from_str(s)?;
+        for m in &t.ignore {
+            check_model(m).map_err(PriceError::Invalid)?;
+        }
         for e in &t.models {
             for d in [&e.effective_from, &e.effective_until]
                 .into_iter()
@@ -210,6 +229,12 @@ impl PriceTable {
         toml::to_string(self).unwrap_or_default()
     }
 
+    /// On the `ignore` list (case-insensitive).
+    pub fn is_ignored(&self, model: &str) -> bool {
+        let m = model.trim();
+        self.ignore.iter().any(|x| x.eq_ignore_ascii_case(m))
+    }
+
     fn find(&self, model: &str, tier: Tier, day: i64) -> Option<&Entry> {
         let m = model.trim();
         let mut undated = None;
@@ -225,8 +250,12 @@ impl PriceTable {
     }
 
     /// USD for one request; `None` = unknown model/tier/date (caller flags `unknown_price`).
+    /// Ignored models: `Some(0.0)`.
     pub fn cost(&self, model: Option<&str>, tier: Tier, ts_ms: i64, u: Usage) -> Option<f64> {
         let model = model?;
+        if self.is_ignored(model) {
+            return Some(0.0);
+        }
         let day = ts_ms.div_euclid(86_400_000);
         let (e, mult) = match self.find(model, tier, day) {
             Some(e) => (e, 1.0),
@@ -292,6 +321,10 @@ pub enum Change {
     },
     /// Local model has a dated (promo) entry: never touched automatically.
     SkipDated(String),
+    /// Local model has a hand-set (`custom`) price: never touched automatically.
+    SkipCustom(String),
+    /// Model on the local `ignore` list: not added.
+    SkipIgnored(String),
     /// Local undated entry not found in the source (kept).
     Missing(String),
 }
@@ -361,6 +394,92 @@ fn empty_entry(model: &str, tier: Tier, input: f64, out: f64) -> Entry {
         effective_from: None,
         effective_until: None,
         note: None,
+        custom: false,
+    }
+}
+
+/// Upper bound for a hand-set price (USD per 1M tokens): catches a per-token value typed
+/// into a per-million field the other way round, and typos.
+pub const MAX_PRICE: f64 = 10_000.0;
+
+/// A model id for `ignore` / a hand-set price: 1–128 chars, no control characters.
+pub fn check_model(m: &str) -> Result<(), String> {
+    let t = m.trim();
+    if t.is_empty() {
+        return Err("model is empty".into());
+    }
+    if t.chars().count() > 128 {
+        return Err("model is longer than 128 characters".into());
+    }
+    if t.chars().any(char::is_control) {
+        return Err("model contains control characters".into());
+    }
+    Ok(())
+}
+
+/// One edit from the management page.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Edit {
+    /// Stop pricing (cost 0, no unpriced warning).
+    Ignore,
+    Unignore,
+    /// Hand-set standard price (USD / 1M): replaces the model's undated standard entry and
+    /// takes it off the ignore list. Dated (promo) and tier entries stay.
+    Set {
+        input: f64,
+        cache: Option<f64>,
+        out: f64,
+    },
+    /// Remove a hand-set price (only `custom` entries).
+    Unset,
+}
+
+impl PriceTable {
+    /// Apply one edit; `Ok(false)` = nothing changed. The model is stored lowercase.
+    pub fn edit(&mut self, model: &str, e: &Edit) -> Result<bool, String> {
+        check_model(model)?;
+        let m = model.trim().to_ascii_lowercase();
+        let std_undated =
+            |x: &Entry| x.model.eq_ignore_ascii_case(&m) && x.tier == Tier::Standard && !x.dated();
+        match e {
+            Edit::Ignore => {
+                if self.is_ignored(&m) {
+                    return Ok(false);
+                }
+                self.ignore.push(m);
+                self.ignore.sort();
+            }
+            Edit::Unignore => {
+                let n = self.ignore.len();
+                self.ignore.retain(|x| !x.eq_ignore_ascii_case(&m));
+                return Ok(self.ignore.len() != n);
+            }
+            Edit::Set { input, cache, out } => {
+                let ok = |p: f64| p.is_finite() && (0.0..=MAX_PRICE).contains(&p);
+                if !ok(*input) || !ok(*out) || cache.is_some_and(|c| !ok(c)) {
+                    return Err(format!("prices must be numbers from 0 to {MAX_PRICE}"));
+                }
+                let mut n = empty_entry(&m, Tier::Standard, *input, *out);
+                n.cache = *cache;
+                n.custom = true;
+                self.ignore.retain(|x| !x.eq_ignore_ascii_case(&m));
+                match self.models.iter_mut().find(|x| std_undated(x)) {
+                    Some(x) => {
+                        n.note = x.note.take();
+                        *x = n;
+                    }
+                    None => self.models.push(n),
+                }
+            }
+            Edit::Unset => {
+                let n = self.models.len();
+                self.models.retain(|x| !(std_undated(x) && x.custom));
+                if self.models.len() == n {
+                    return Err(format!("{m} has no custom price"));
+                }
+            }
+        }
+        Ok(true)
     }
 }
 
@@ -547,6 +666,12 @@ pub fn parse_source(json: &serde_json::Value) -> Result<Vec<Entry>, String> {
 /// with a dated (promo) entry are never touched.
 pub fn diff(local: &PriceTable, remote: &[Entry]) -> Vec<Change> {
     let mut ch = vec![];
+    let custom: BTreeSet<String> = local
+        .models
+        .iter()
+        .filter(|e| e.custom)
+        .map(|e| e.model.to_ascii_lowercase())
+        .collect();
     let dated: BTreeSet<String> = local
         .models
         .iter()
@@ -556,6 +681,18 @@ pub fn diff(local: &PriceTable, remote: &[Entry]) -> Vec<Change> {
     let mut skipped = BTreeSet::new();
     for r in remote {
         let key = r.model.to_ascii_lowercase();
+        if local.is_ignored(&key) {
+            if skipped.insert(key) {
+                ch.push(Change::SkipIgnored(r.model.clone()));
+            }
+            continue;
+        }
+        if custom.contains(&key) {
+            if skipped.insert(key) {
+                ch.push(Change::SkipCustom(r.model.clone()));
+            }
+            continue;
+        }
         if dated.contains(&key) {
             if skipped.insert(key) {
                 ch.push(Change::SkipDated(r.model.clone()));
@@ -584,7 +721,7 @@ pub fn diff(local: &PriceTable, remote: &[Entry]) -> Vec<Change> {
             }
         }
     }
-    for e in local.models.iter().filter(|e| !e.dated()) {
+    for e in local.models.iter().filter(|e| !e.dated() && !e.custom) {
         if !remote
             .iter()
             .any(|r| r.model.eq_ignore_ascii_case(&e.model) && r.tier == e.tier)
@@ -605,7 +742,10 @@ pub fn apply(local: &PriceTable, changes: &[Change]) -> PriceTable {
                     *x = (**new).clone();
                 }
             }
-            Change::SkipDated(_) | Change::Missing(_) => {}
+            Change::SkipDated(_)
+            | Change::SkipCustom(_)
+            | Change::SkipIgnored(_)
+            | Change::Missing(_) => {}
         }
     }
     t
@@ -652,6 +792,8 @@ pub fn render_diff(changes: &[Change]) -> String {
                 )
             }
             Change::SkipDated(m) => format!("! {m:<28} has dated/promo entry locally; not touched"),
+            Change::SkipCustom(m) => format!("! {m:<28} has a custom price locally; not touched"),
+            Change::SkipIgnored(m) => format!("! {m:<28} is ignored locally; not added"),
             Change::Missing(m) => format!("? {m:<28} not in source; kept"),
         };
         s.push_str(&line);
@@ -954,5 +1096,84 @@ effective_from = "2026-11-22"
         assert_eq!(back, t2);
         assert!(diff(&back, &r).iter().all(|c| !c.actionable()));
         assert!(render_diff(&d).contains("+ gpt-new"));
+    }
+
+    #[test]
+    fn ignore_and_custom_edits() {
+        let mut t = PriceTable::parse(T).unwrap();
+        let u = Usage {
+            input: 1000,
+            cached: 0,
+            cache_write: 0,
+            output: 1000,
+        };
+        assert!(t.cost(Some("auto"), Tier::Standard, 0, u).is_none());
+        assert_eq!(t.edit(" Auto ", &Edit::Ignore), Ok(true));
+        assert_eq!(t.edit("AUTO", &Edit::Ignore), Ok(false), "idempotent");
+        assert_eq!(t.ignore, ["auto"]);
+        for tier in [
+            Tier::Standard,
+            Tier::Flex,
+            Tier::PriorityFast,
+            Tier::Ultrafast,
+        ] {
+            assert_eq!(
+                t.cost(Some("auto"), tier, 0, u),
+                Some(0.0),
+                "exact 0 on {tier:?}"
+            );
+        }
+        // round trip: `ignore` written before the tables, read back
+        let back = PriceTable::parse(&t.to_toml()).unwrap();
+        assert_eq!(back, t);
+        assert!(t.to_toml().starts_with("ignore = [\"auto\"]"));
+        assert_eq!(t.edit("auto", &Edit::Unignore), Ok(true));
+        assert_eq!(t.edit("auto", &Edit::Unignore), Ok(false));
+        assert!(t.cost(Some("auto"), Tier::Standard, 0, u).is_none());
+
+        // custom price: new model, then replacing an undated standard entry (promo stays)
+        let set = |i: f64, o: f64| Edit::Set {
+            input: i,
+            cache: None,
+            out: o,
+        };
+        t.edit("auto", &Edit::Ignore).unwrap();
+        assert_eq!(t.edit("auto", &set(1.0, 2.0)), Ok(true));
+        assert!(
+            t.ignore.is_empty(),
+            "a price takes the model off the ignore list"
+        );
+        close(t.cost(Some("auto"), Tier::Standard, 0, u), 0.003);
+        let n = t.models.len();
+        t.edit("m", &set(3.0, 4.0)).unwrap();
+        assert_eq!(t.models.len(), n, "replaced, not added");
+        let m = t.models.iter().find(|e| e.model == "m").unwrap();
+        assert!(m.custom && m.long.is_none() && m.cache.is_none());
+        let back = PriceTable::parse(&t.to_toml()).unwrap();
+        assert_eq!(back, t);
+        // a sync never touches custom or ignored models and does not report them missing
+        t.edit("zz-free", &Edit::Ignore).unwrap();
+        let remote = vec![
+            empty_entry("m", Tier::Standard, 9.0, 9.0),
+            empty_entry("zz-free", Tier::Standard, 9.0, 9.0),
+        ];
+        let ch = diff(&t, &remote);
+        assert!(ch.contains(&Change::SkipCustom("m".into())));
+        assert!(ch.contains(&Change::SkipIgnored("zz-free".into())));
+        assert!(!ch.iter().any(|c| c.actionable()));
+        assert!(!ch.contains(&Change::Missing("auto".into())));
+        assert_eq!(apply(&t, &ch), t);
+        // unset: only custom entries
+        assert_eq!(t.edit("auto", &Edit::Unset), Ok(true));
+        assert!(t.edit("fx", &Edit::Unset).is_err(), "not custom");
+        assert!(t.cost(Some("auto"), Tier::Standard, 0, u).is_none());
+        // validation
+        for bad in ["", "  ", "a\nb", &"x".repeat(129)] {
+            assert!(t.edit(bad, &Edit::Ignore).is_err(), "{bad:?}");
+        }
+        for (i, o) in [(-1.0, 1.0), (1.0, f64::NAN), (1.0, MAX_PRICE + 1.0)] {
+            assert!(t.edit("q", &set(i, o)).is_err());
+        }
+        assert!(PriceTable::parse("ignore = [\"\"]").is_err());
     }
 }

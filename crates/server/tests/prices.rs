@@ -270,3 +270,186 @@ async fn check_apply_unchanged_stale_failure_and_source_reload() {
     );
     rec.shutdown();
 }
+
+/// Management page per-model edits: ignore (no unpriced hint, zero cost), set a custom price,
+/// unset, un-ignore; validation; a one-time backup of a hand-written file; a later sync keeps
+/// both ignored and custom models.
+#[tokio::test]
+async fn model_ignore_custom_price_and_sync_keeps_them() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("auths")).unwrap();
+    let ds = Dataset::default();
+    let data = serve(
+        Router::new()
+            .route("/litellm.json", get(dataset))
+            .with_state(ds.clone()),
+    )
+    .await;
+    *ds.0.lock().unwrap() = Some(json!({"gpt-x": model(2.0, 10.0), "gpt-local": model(9.0, 90.0)}));
+    let ptoml = dir.path().join("prices.toml");
+    std::fs::write(&ptoml, "# hand-written table\n").unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(
+        &path,
+        cfg_text(dir.path(), &format!("http://{data}/litellm.json")),
+    )
+    .unwrap();
+    let cfg = Config::load(&path).unwrap();
+    let rec = ciallopa_usage::Recorder::open(&cfg.usage).unwrap();
+    let state = AppState {
+        accounts: Arc::new(
+            ciallopa_auth::FileAccountStore::open(dir.path().join("auths"))
+                .await
+                .unwrap(),
+        ),
+        router: Arc::new(ciallopa_routing::CpaRouter::new(cfg.routing.clone())),
+        upstream: Arc::new(ciallopa_upstream::UpstreamClient::new(&cfg).unwrap()),
+        usage: Some(rec.clone()),
+        config: Arc::new(cfg.into()),
+        egress: Default::default(),
+    };
+    let settings = Settings::new(state, Some(path.clone()), None);
+    let proxy = serve(ciallopa::build_app_with(settings.clone())).await;
+    let http = reqwest::Client::new();
+    let get = |p: &str| {
+        http.get(format!("http://{proxy}{p}"))
+            .bearer_auth(KEY)
+            .send()
+    };
+    let post = |p: &str, b: Value| {
+        http.post(format!("http://{proxy}{p}"))
+            .bearer_auth(KEY)
+            .json(&b)
+            .send()
+    };
+    for m in ["auto", "gpt-local"] {
+        let mut r = ciallopa_usage::Record::new(
+            rec.ids.next_at(ciallopa_usage::now_ms() - 1000),
+            ciallopa_usage::Transport::Sse,
+            "responses",
+        );
+        r.model = Some(m.into());
+        r.status = 200;
+        r.input_tokens = Some(1_000_000);
+        r.output_tokens = Some(0);
+        assert!(rec.record(r));
+    }
+    rec.flush_blocking().unwrap();
+    let st: Value = get("/admin/v1/prices").await.unwrap().json().await.unwrap();
+    assert_eq!(st["unpriced"], json!(["auto", "gpt-local"]));
+
+    // validation
+    for b in [
+        json!({"model":"auto","action":"nuke"}),
+        json!({"model":"","action":"ignore"}),
+        json!({"model":"a\u{7}b","action":"ignore"}),
+        json!({"model":"x","action":"set","in":-1.0,"out":1.0}),
+        json!({"model":"x","action":"set","in":1.0}),
+        json!({"model":"x","action":"ignore","extra":1}),
+    ] {
+        let r = post("/admin/v1/prices/models", b.clone()).await.unwrap();
+        assert_eq!(r.status(), 400, "{b}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(&ptoml).unwrap(),
+        "# hand-written table\n",
+        "rejected edits write nothing"
+    );
+
+    // ignore auto, price gpt-local
+    let r: Value = post(
+        "/admin/v1/prices/models",
+        json!({"model":"auto","action":"ignore"}),
+    )
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(
+        (r["changed"].as_bool(), r["backup"].is_string()),
+        (Some(true), true),
+        "{r}"
+    );
+    assert!(dir.path().join("prices.toml.bak").exists());
+    let r: Value = post(
+        "/admin/v1/prices/models",
+        json!({"model":"auto","action":"ignore"}),
+    )
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(r["changed"], false, "idempotent");
+    std::fs::remove_file(dir.path().join("prices.toml.bak")).unwrap();
+    let r = post(
+        "/admin/v1/prices/models",
+        json!({"model":"gpt-local","action":"set","in":1.0,"out":2.0}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.status(), 200);
+    assert!(
+        !dir.path().join("prices.toml.bak").exists(),
+        "only the first edit of a hand-written file is backed up"
+    );
+    let st: Value = get("/admin/v1/prices").await.unwrap().json().await.unwrap();
+    assert_eq!(st["unpriced"], json!([]));
+    assert_eq!(st["ignored"], json!(["auto"]));
+    assert_eq!(st["custom"][0]["model"], "gpt-local");
+    let s: Value = get("/usage/v1/summary")
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(s["summary"]["total"]["unknown_price"], 0, "{s}");
+    assert!((s["summary"]["total"]["cost_usd"].as_f64().unwrap() - 1.0).abs() < 1e-9);
+
+    // a sync adds gpt-x but leaves the custom gpt-local price and the ignored auto alone
+    let c: Value = post("/admin/v1/prices/check", json!({}))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let kinds: Vec<String> = c["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| {
+            format!(
+                "{}:{}",
+                x["kind"].as_str().unwrap(),
+                x["model"].as_str().unwrap()
+            )
+        })
+        .collect();
+    assert!(
+        kinds.contains(&"skip_custom:gpt-local".to_string()),
+        "{kinds:?}"
+    );
+    let a = post("/admin/v1/prices/apply", json!({"token": c["token"]}))
+        .await
+        .unwrap();
+    assert_eq!(a.status(), 200);
+    let st: Value = get("/admin/v1/prices").await.unwrap().json().await.unwrap();
+    assert_eq!(st["ignored"], json!(["auto"]));
+    assert_eq!(st["custom"][0]["in"], 1.0);
+
+    // unset + unignore bring the hint back
+    for b in [
+        json!({"model":"gpt-local","action":"unset"}),
+        json!({"model":"AUTO","action":"unignore"}),
+    ] {
+        assert_eq!(
+            post("/admin/v1/prices/models", b).await.unwrap().status(),
+            200
+        );
+    }
+    let st: Value = get("/admin/v1/prices").await.unwrap().json().await.unwrap();
+    // gpt-local was skipped by the sync while custom, so it is unpriced again until the next check
+    assert_eq!(st["unpriced"], json!(["auto", "gpt-local"]), "{st}");
+    assert_eq!(st["ignored"], json!([]));
+}

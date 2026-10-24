@@ -740,7 +740,8 @@ pub struct RecordRow {
     pub upstream_status: Option<u16>,
     /// An `error_detail` row exists (`GET /usage/v1/records/{id}/detail`).
     pub has_detail: bool,
-    /// `ok`, `unknown_price` (model/tier/date not in the price table) or `no_tokens`.
+    /// `ok`, `ignored` (model on the price table's `ignore` list: cost 0), `unknown_price`
+    /// (model/tier/date not in the price table) or `no_tokens`.
     pub price_status: &'static str,
 }
 
@@ -768,6 +769,9 @@ fn row_cost(
 ) -> (Option<f64>, &'static str) {
     if tok[0].is_none() && tok[1].is_none() {
         return (None, "no_tokens");
+    }
+    if model.is_some_and(|m| prices.is_ignored(m)) {
+        return (Some(0.0), "ignored");
     }
     let u = crate::prices::Usage {
         input: tok[0].unwrap_or(0),

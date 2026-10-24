@@ -524,6 +524,19 @@ included.
   minutes or when the file changes meanwhile). `GET /admin/v1/prices` also lists the models of
   the last 30 days without a price; the overview and settings pages show them as a hint.
   Summaries carry `price_models` (entries in the table; 0 = no table yet).
+- Unpriced, ignored and hand-priced models: the same 「价格」 panel lists each unpriced model with
+  「设置价格」 (input / cache / output, USD per 1M tokens; written as an undated standard entry
+  with `custom = true`) and 「忽略」 (added to the table's top-level `ignore = [...]`). Ignored
+  models cost exactly 0 (`price_status = "ignored"`): they are not counted in `unknown_price`,
+  not listed as unpriced and do not turn totals into a lower bound; zero rather than excluded so
+  request counts and token totals stay complete. 「取消忽略」 / 「删除」 undo either. Updates
+  (`check` / `apply` / `prices sync`) never add, change or remove ignored or custom models
+  (`skip_ignored` / `skip_custom`, shown with the promo skips). API: `POST
+  /admin/v1/prices/models {model, action: ignore|unignore|set|unset, in, cache, out}` (model
+  1–128 chars, no control characters, case-insensitive; prices 0–10000; unchanged ⇒ no write).
+  Edits are written atomically at most once a second; the first edit of a hand-written file
+  copies it to `prices.toml.bak` (an edit rewrites the file without its comments). Applied at
+  once, history included; audited as `price <action>`.
 - CLI: `ciallopa prices sync [--from litellm|models.dev|<url>|<file.json>] [--write]`, dry run
   without `--write`. On a `.deb` install run it as the service user
   (`sudo -u ciallopa HOME=/var/lib/ciallopa ciallopa -c /etc/ciallopa/config.toml prices sync

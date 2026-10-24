@@ -212,6 +212,8 @@ main.noadm>:not(#noadm){display:none!important}
 #cfg td.k b{display:block;font-weight:550}
 #cfg td.k code{font-size:var(--fs-xs);color:var(--mut);overflow-wrap:anywhere}
 #cfg td.k .hp{margin-top:2px;font-size:var(--fs-s);color:var(--mut)}
+#pmt td.a{text-align:right;white-space:nowrap}#pmt td.a button+button{margin-left:var(--s1)}
+.pgrid{display:grid;grid-template-columns:auto minmax(8em,12em);gap:var(--s2) var(--s3);align-items:center;margin:var(--s2) 0}.pgrid input{width:100%}
 #cfg td.k .kd{margin-top:2px;font-size:var(--fs-xs);color:var(--mut)}
 #cfg tr.sgrp th a{margin-left:var(--s2);font-weight:500;font-size:var(--fs-xs);color:var(--fg-2)}
 .chs{display:flex;flex-direction:column;gap:var(--s1);max-width:560px}
@@ -316,6 +318,10 @@ main.noadm>:not(#noadm){display:none!important}
     <div class="panel">
       <div class="sbar"><span class="sm" id="pinfo"><span class="skel"></span></span><span class="sp"></span><button id="pcheck" class="pri" type="button">检查更新</button></div>
       <div class="mut sm pad" id="pnote"></div>
+      <div id="pmods" class="hide">
+        <div class="tw"><table class="stk" id="pmt"><thead><tr><th scope="col">模型</th><th scope="col">价格</th><th scope="col"><span class="hide">操作</span></th></tr></thead><tbody id="pmrows"></tbody></table></div>
+        <div class="mut sm pad">「忽略」不再提示未定价，费用按 0 计，适合 auto 这类免费或本地别名模型；「设置价格」按你填的价格估算，检查更新不会改动它。改动立即生效，历史记录也按新设置计算</div>
+      </div>
     </div>
   </section>
   <section>
@@ -597,17 +603,46 @@ async function loadPrices(){const p=await get("/admin/v1/prices");PPATH=p.path||
   add(info,[p.models?h("b",null,p.models+" 个模型"):h("b",null,"还没有价格表"),p.updated_ms?" · 更新于 "+fmtTime(p.updated_ms,true):"",p.enabled?" · 来源 ":"",p.enabled?h("span",{class:"mono",title:p.source},host(p.source)):" · 未设置来源（usage.prices_source）"]);
   $("pcheck").disabled=!p.enabled;$("pcheck").title=p.enabled?"下载最新价格并列出变化，确认后才写入":"usage.prices_source 为空：先在上面设置价格数据来源";
   const un=p.unpriced||[];let msg=null;
-  if(!p.models)msg="还没有价格表，费用都显示为「未定价」。";
+  if(!p.models&&!un.length&&!(p.ignored||[]).length)msg="还没有价格表，费用都显示为「未定价」。";
   else if(un.length)msg="有 "+un.length+" 个模型未定价："+un.join("、")+"（最近 30 天用过）。";
-  if(msg){add(note,[msg,p.enabled?"点「检查更新」拉取价格。":""]);add(hint,[h("b",null,"价格"),msg,h("a",{href:"#prices"},"去检查更新")])}
-  else note.textContent="价格文件："+p.path+"。更新只改动有变化的模型，带日期的促销价不会被改。";
-  hint.classList.toggle("hide",!msg)}
+  if(msg){add(note,[msg,p.enabled?"点「检查更新」拉取价格":"",un.length?(p.enabled?"，或在下方":"可以在下方")+"设置价格或忽略":""]);add(hint,[h("b",null,"价格"),msg,h("a",{href:"#prices"},un.length?"去定价或忽略":"去检查更新")])}
+  else note.textContent="价格文件："+p.path+"。更新只改动有变化的模型，带日期的促销价、自定价格和已忽略的模型不会被改。";
+  hint.classList.toggle("hide",!msg);renderPriceModels(p)}
+// ---- unpriced / ignored / hand-priced models
+const pmodel=body=>call("POST","/admin/v1/prices/models",body);
+const fmtP=x=>x===null||x===undefined?"同输入":String(x);
+function renderPriceModels(p){const tb=$("pmrows"),un=p.unpriced||[],ig=p.ignored||[],cu=p.custom||[];clear(tb);
+  const btn=(m,act,t,cls)=>h("button",{type:"button",class:"xs"+(cls?" "+cls:""),"data-act":act,"data-fk":"pm|"+m+"|"+act},t);
+  for(const m of un)tb.appendChild(h("tr",{"data-pm":m},h("td","mono",m),h("td","sm",h("span",{class:"tag cool"},"未定价")," 最近 30 天用过"),h("td","a",btn(m,"set","设置价格"),btn(m,"ignore","忽略"))));
+  for(const c of cu)tb.appendChild(h("tr",{"data-pc":c.model},h("td","mono",c.model),h("td","sm",h("span",{class:"tag"},"自定")," 输入 "+c.in+" · 缓存 "+fmtP(c.cache)+" · 输出 "+c.out),h("td","a",btn(c.model,"edit","修改"),btn(c.model,"unset","删除"))));
+  for(const m of ig)tb.appendChild(h("tr",{"data-pi":m},h("td","mono",m),h("td","sm mut",h("span",{class:"tag"},"已忽略")," 费用按 0 计，不提示"),h("td","a",btn(m,"unignore","取消忽略"))));
+  $("pmods").classList.toggle("hide",!(un.length||ig.length||cu.length));tb._cu=cu;refocus()}
+$("pmrows").addEventListener("click",e=>{const b=e.target.closest("button[data-act]");if(!b)return;const tr=b.closest("tr"),m=tr.dataset.pm||tr.dataset.pc||tr.dataset.pi,act=b.dataset.act;
+  const cur=($("pmrows")._cu||[]).find(c=>c.model===m);
+  if(act==="set"||act==="edit"){priceDlg(m,cur,b);return}
+  busyRun(b,b.textContent,async()=>{try{
+    if(act==="ignore"){await pmodel({model:m,action:"ignore"});ok("已忽略 "+m+"，费用按 0 计",{undo:async()=>{await pmodel({model:m,action:"unignore"});toast("已取消忽略 "+m);await loadPrices()}})}
+    else if(act==="unignore"){await pmodel({model:m,action:"unignore"});ok("已取消忽略 "+m,{undo:async()=>{await pmodel({model:m,action:"ignore"});toast("已重新忽略 "+m);await loadPrices()}})}
+    else if(act==="unset"){await pmodel({model:m,action:"unset"});ok("已删除 "+m+" 的自定价格",{undo:cur?async()=>{await pmodel({model:m,action:"set",in:cur.in,cache:cur.cache,out:cur.out});toast("已恢复 "+m+" 的自定价格");await loadPrices()}:null})}
+    await loadPrices()}catch(e){fail(e)}},"处理中…")});
+function priceDlg(m,cur,from){const inp=(id,v,ph)=>h("input",{id,type:"number",min:"0",max:"10000",step:"any",inputmode:"decimal",value:v===null||v===undefined?"":String(v),placeholder:ph||""});
+  const err=h("p",{class:"warnp hide",id:"pp-err",role:"alert"});
+  const box=h("div",null,h("p",null,"按 API 标价填写，单位为美元 / 百万 token"),
+    h("div","pgrid",h("label",{for:"pp-in"},"输入"),inp("pp-in",cur&&cur.in),h("label",{for:"pp-cache"},"缓存输入"),inp("pp-cache",cur&&cur.cache,"空 = 同输入"),h("label",{for:"pp-out"},"输出"),inp("pp-out",cur&&cur.out)),
+    err,h("p","mut","保存后立即用于所有费用统计（含历史记录）；检查更新不会改动它"));
+  dialog((cur?"修改 ":"设置 ")+m+" 的价格",box,"保存价格","pri",async()=>{
+    const num=id=>{const t=$(id).value.trim();if(t==="")return null;const v=Number(t);return Number.isFinite(v)&&v>=0&&v<=10000?v:NaN};
+    const i=num("pp-in"),c=num("pp-cache"),o=num("pp-out");
+    if(i===null||o===null||Number.isNaN(i)||Number.isNaN(o)||Number.isNaN(c)){err.textContent="输入和输出必填，价格是 0 到 10000 之间的数字";err.classList.remove("hide");(Number.isNaN(i)||i===null?$("pp-in"):Number.isNaN(o)||o===null?$("pp-out"):$("pp-cache")).focus();return false}
+    await pmodel({model:m,action:"set",in:i,cache:c,out:o});ok("已设置 "+m+" 的价格");await loadPrices()},from);
+  for(const id of ["pp-in","pp-cache","pp-out"])$(id).addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();$("dyes").click()}});
+  $("pp-in").focus()}
 $("pcheck").addEventListener("click",()=>busyRun($("pcheck"),"检查更新",async()=>{const b=$("pcheck");
-  try{const {j}=await call("POST","/admin/v1/prices/check",{});const act=j.changes.filter(c=>c.kind==="add"||c.kind==="update"),rest=j.changes.filter(c=>c.kind==="skip_dated");
+  try{const {j}=await call("POST","/admin/v1/prices/check",{});const act=j.changes.filter(c=>c.kind==="add"||c.kind==="update"),rest=j.changes.filter(c=>c.kind==="skip_dated"||c.kind==="skip_custom"||c.kind==="skip_ignored");
     if(!j.token){toast("价格已是最新（来源里有 "+j.remote_models+" 个模型）");await loadPrices();return}
     const box=h("div");box.appendChild(h("div","tw",h("table",null,h("thead",null,h("tr",null,["模型","原价","新价（美元 / 百万 token）"].map(x=>h("th",{scope:"col"},x)))),
       h("tbody",null,act.map(c=>h("tr",null,h("td","mono",(c.kind==="add"?"+ ":"~ ")+c.model),h("td","mono mut",c.old||"（新增）"),h("td","mono",c.new)))))));
-    if(rest.length)box.appendChild(h("p","mut","有促销价的模型不改动："+rest.map(c=>c.model).join("、")));
+    if(rest.length)box.appendChild(h("p","mut","有促销价、自定价格或已忽略的模型不改动："+rest.map(c=>c.model).join("、")));
     box.appendChild(h("p","mut","写入 "+PPATH+" 前会把原文件备份为 .bak；新价格立即用于所有费用统计（含历史记录）。"));
     dialog("新增 "+j.added+" 个、变化 "+j.updated+" 个模型的价格",box,"应用","pri",async()=>{const {j:r}=await call("POST","/admin/v1/prices/apply",{token:j.token});await loadPrices();ok("已更新 "+r.applied+" 项价格"+(r.backup?"，原文件已备份为 "+r.backup:""))},b)}
   catch(e){fail(e)}finally{loadPrices().catch(()=>{})}},"正在下载…"));
@@ -627,7 +662,7 @@ async function loadAudit(){const j=await get("/admin/v1/config/audit?limit=20"),
 function dialog(title,body,yes,cls,cb,from){$("dlgt").textContent=title;clear($("dlgc"));$("dlgc").appendChild(body);$("dyes").textContent=yes;$("dyes").className=cls;$("dyes").toggleAttribute("data-arm",cls.includes("danger"));$("dyes").classList.toggle("hide",!cb);$("dno").textContent=cb?"取消":"知道了";
   $("dlgb").classList.toggle("dz",cls.includes("danger"));$("dlgb").classList.toggle("wide",!!body.querySelector("table"));$("dlg")._yes=cb;openModal($("dlg"),$("dno"),from)}
 $("dno").addEventListener("click",()=>closeModal($("dlg")));
-$("dyes").addEventListener("click",()=>{const f=$("dlg")._yes;if(!f)return;const t=$("dyes").textContent;busyRun($("dyes"),t,async()=>{try{await f();closeModal($("dlg"))}catch(e){closeModal($("dlg"));fail(e)}},"处理中…")});
+$("dyes").addEventListener("click",()=>{const f=$("dlg")._yes;if(!f)return;const t=$("dyes").textContent;busyRun($("dyes"),t,async()=>{try{if(await f()!==false)closeModal($("dlg"))}catch(e){closeModal($("dlg"));fail(e)}},"处理中…")});
 async function reviewEdits(){const changes={...EDITS},rev=EDIT_REV,auth=key();const {j}=await call("POST","/admin/v1/config/validate",{changes});
   if(auth!==key())return;if(rev!==EDIT_REV){toast("编辑已变化，请重新检查后保存");return}const box=h("div");
   if(!j.ok){box.append(h("p",null,"有错误，无法保存："),h("ul",null,j.errors.map(e=>h("li",null,(e.key?e.key+"：":"")+e.message))));dialog("检查未通过",box,"","",null,$("check"));return}

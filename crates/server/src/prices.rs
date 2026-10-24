@@ -90,7 +90,7 @@ pub fn write_table(
 ) -> Result<(PriceTable, Option<PathBuf>), Err> {
     let next = prices::apply(local, changes);
     let body = format!(
-        "# ciallopa price table: USD per 1M tokens, notional for subscription traffic.\n\
+        "{OWN_HEADER}: USD per 1M tokens, notional for subscription traffic.\n\
          # Updated from {source}. Comments are not kept by updates (see the .bak);\n\
          # dated entries (effective_from / effective_until) are never changed by an update.\n{}",
         next.to_toml()
@@ -112,6 +112,37 @@ pub fn write_table(
     Ok((parsed, bak))
 }
 
+/// Header of a file written by [`write_edited`] / [`write_table`].
+const OWN_HEADER: &str = "# ciallopa price table";
+
+/// Write `next` after a management-page edit (ignore / custom price). A hand-written file
+/// (not starting with ciallopa's header, so its comments would be lost) is copied to
+/// `.toml.bak` once; later edits do not back up again. Atomic (tmp + rename).
+pub fn write_edited(path: &Path, next: &PriceTable) -> Result<(PriceTable, Option<PathBuf>), Err> {
+    let body = format!(
+        "{OWN_HEADER}: USD per 1M tokens, notional for subscription traffic.\n\
+         # Edited on the management page. `ignore`: never priced (cost 0); `custom = true`:\n\
+         # set by hand, never changed by a price update.\n{}",
+        next.to_toml()
+    );
+    let parsed = PriceTable::parse(&body)?;
+    if let Some(d) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(d)?;
+    }
+    let bak = match std::fs::read_to_string(path) {
+        Ok(cur) if !cur.trim().is_empty() && !cur.starts_with(OWN_HEADER) => {
+            let b = path.with_extension("toml.bak");
+            std::fs::copy(path, &b)?;
+            Some(b)
+        }
+        _ => None,
+    };
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, body)?;
+    std::fs::rename(&tmp, path)?;
+    Ok((parsed, bak))
+}
+
 /// A change as JSON for the management page.
 pub fn change_json(c: &Change) -> Value {
     match c {
@@ -121,6 +152,8 @@ pub fn change_json(c: &Change) -> Value {
         Change::Update { old, new } => json!({"kind": "update", "model": prices::label(old),
             "old": prices::fmt_entry(old), "new": prices::fmt_entry(new)}),
         Change::SkipDated(m) => json!({"kind": "skip_dated", "model": m}),
+        Change::SkipCustom(m) => json!({"kind": "skip_custom", "model": m}),
+        Change::SkipIgnored(m) => json!({"kind": "skip_ignored", "model": m}),
         Change::Missing(m) => json!({"kind": "missing", "model": m}),
     }
 }

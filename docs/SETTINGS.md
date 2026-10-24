@@ -125,7 +125,7 @@ All routes sit behind the client-key middleware.
   permissions. Without the switch the API answers 403 and the pages are read-only. Validate and
   reload stay available without `allow_config_write` (they only read the file the operator
   already controls), but they still need an admin key. Price updates (settings → 「价格」,
-  `POST /admin/v1/prices/check` / `apply`) need an admin key only: they write the price table,
+  `POST /admin/v1/prices/check` / `apply` / `models`) need an admin key only: they write the price table,
   not `config.toml`.
 - Same CSRF rules as the reset-credit action: client key in a header (`Authorization: Bearer` or
   `x-api-key`; cookies are ignored, never used for auth), `Content-Type: application/json`

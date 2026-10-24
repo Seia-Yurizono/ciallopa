@@ -96,6 +96,8 @@ pub struct Settings {
     audit_path: Option<PathBuf>,
     /// Last price check (「检查更新」) waiting for 「应用」.
     price_check: Mutex<Option<PriceCheck>>,
+    /// Last price-table write from a model edit (throttle, see [`PRICE_EDIT_GAP`]).
+    price_edit_at: Mutex<Option<std::time::Instant>>,
 }
 
 struct PriceCheck {
@@ -108,6 +110,9 @@ struct PriceCheck {
 
 /// A price check older than this must be repeated before applying.
 const PRICE_CHECK_TTL: Duration = Duration::from_secs(15 * 60);
+/// Minimum spacing of price-table writes from model edits (ignore / custom price): a burst
+/// of clicks waits instead of rewriting the file many times a second.
+const PRICE_EDIT_GAP: Duration = Duration::from_millis(1000);
 /// Models of the usage log looked at for the "unpriced" hint.
 const UNPRICED_WINDOW_MS: i64 = 30 * 86_400_000;
 
@@ -163,6 +168,7 @@ impl Settings {
             known_accounts: Default::default(),
             audit_path,
             price_check: Default::default(),
+            price_edit_at: Default::default(),
         })
     }
 
@@ -920,6 +926,7 @@ pub fn routes(s: S) -> Router {
         .route("/admin/v1/prices", get(prices_status))
         .route("/admin/v1/prices/check", post(prices_check))
         .route("/admin/v1/prices/apply", post(prices_apply))
+        .route("/admin/v1/prices/models", post(prices_model))
         .with_state(s)
 }
 
@@ -934,7 +941,7 @@ impl Settings {
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_millis() as i64);
-        let (models, unpriced) = match &self.st.usage {
+        let (models, unpriced, ignored, custom) = match &self.st.usage {
             Some(u) => {
                 let t = u.prices();
                 let now = now_ms();
@@ -955,9 +962,19 @@ impl Settings {
                             .is_none()
                     })
                     .collect();
-                (t.models.len(), unpriced)
+                let custom: Vec<Value> = t
+                    .models
+                    .iter()
+                    .filter(|e| e.custom)
+                    .map(|e| {
+                        json!({"model": ciallopa_usage::prices::label(e), "in": e.input,
+                            "cache": e.cache, "out": e.out,
+                            "summary": ciallopa_usage::prices::fmt_entry(e)})
+                    })
+                    .collect();
+                (t.models.len(), unpriced, t.ignore.clone(), custom)
             }
-            None => (0, vec![]),
+            None => (0, vec![], vec![], vec![]),
         };
         let src = cfg.usage.prices_source.trim();
         json!({
@@ -968,6 +985,8 @@ impl Settings {
             "models": models,
             "updated_ms": updated_ms.filter(|_| models > 0),
             "unpriced": unpriced,
+            "ignored": ignored,
+            "custom": custom,
         })
     }
 }
@@ -1100,6 +1119,131 @@ async fn prices_apply(
         "models": models,
         "backup": bak.map(|b| b.display().to_string()),
     }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PriceModelReq {
+    model: String,
+    /// `ignore`, `unignore`, `set` (needs `in`, `out`; `cache` optional) or `unset`.
+    action: String,
+    #[serde(default, rename = "in")]
+    input: Option<f64>,
+    #[serde(default)]
+    cache: Option<f64>,
+    #[serde(default)]
+    out: Option<f64>,
+}
+
+/// Ignore / un-ignore a model, or set / remove its hand-set price. Read-modify-write of the
+/// price table under the apply lock, used at once (costs are computed at query time, so
+/// history follows); writes are spaced by [`PRICE_EDIT_GAP`].
+async fn prices_model(
+    State(s): State<S>,
+    headers: HeaderMap,
+    key: Option<axum::Extension<ClientKey>>,
+    body: Result<Json<PriceModelReq>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    use ciallopa_usage::prices::Edit;
+    if let Some(r) = csrf(&headers) {
+        return r;
+    }
+    let Ok(Json(req)) = body else {
+        return price_error(
+            StatusCode::BAD_REQUEST,
+            "expected {\"model\", \"action\": ignore|unignore|set|unset, \"in\", \"cache\", \"out\"}",
+        );
+    };
+    let Some(u) = s.st.usage.clone() else {
+        return price_error(
+            StatusCode::CONFLICT,
+            "usage log disabled: no costs to price",
+        );
+    };
+    let edit = match (req.action.as_str(), req.input, req.out) {
+        ("ignore", ..) => Edit::Ignore,
+        ("unignore", ..) => Edit::Unignore,
+        ("unset", ..) => Edit::Unset,
+        ("set", Some(input), Some(out)) => Edit::Set {
+            input,
+            cache: req.cache,
+            out,
+        },
+        ("set", ..) => return price_error(StatusCode::BAD_REQUEST, "set needs \"in\" and \"out\""),
+        _ => {
+            return price_error(
+                StatusCode::BAD_REQUEST,
+                "action must be ignore, unignore, set or unset",
+            )
+        }
+    };
+    let _g = s.apply.lock().await;
+    let path = s.st.config.load().usage.prices.clone();
+    let mut table = match ciallopa_usage::PriceTable::load(&path) {
+        Ok(t) => t,
+        Err(e) => {
+            return price_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("usage.prices: {e}"),
+            )
+        }
+    };
+    let changed = match table.edit(&req.model, &edit) {
+        Ok(c) => c,
+        Err(e) => return price_error(StatusCode::BAD_REQUEST, e),
+    };
+    let model = req.model.trim().to_ascii_lowercase();
+    if !changed {
+        return Json(json!({"ok": true, "changed": false, "model": model})).into_response();
+    }
+    let wait = lock(&s.price_edit_at)
+        .and_then(|t| PRICE_EDIT_GAP.checked_sub(t.elapsed()))
+        .unwrap_or_default();
+    if !wait.is_zero() {
+        tokio::time::sleep(wait).await;
+    }
+    let written = {
+        let path = path.clone();
+        tokio::task::spawn_blocking(move || crate::prices::write_edited(&path, &table)).await
+    };
+    let (table, bak) = match written {
+        Ok(Ok(x)) => x,
+        Ok(Err(e)) => {
+            return price_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("write {}: {e}", path.display()),
+            )
+        }
+        Err(e) => return price_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    };
+    *lock(&s.price_edit_at) = Some(std::time::Instant::now());
+    let now = match &edit {
+        Edit::Ignore => json!("ignored"),
+        Edit::Set { .. } => table
+            .models
+            .iter()
+            .find(|e| e.custom && e.model == model && e.tier == ciallopa_usage::Tier::Standard)
+            .map(|e| json!(ciallopa_usage::prices::fmt_entry(e)))
+            .unwrap_or(Value::Null),
+        Edit::Unignore | Edit::Unset => Value::Null,
+    };
+    u.set_prices(table);
+    // Own write: the file watcher must not reload it again.
+    lock(&s.status).prices_hash = Some(crate::prices::file_hash(&path));
+    s.audit(
+        actor(&key).as_deref(),
+        &format!("price {}", req.action),
+        "admin",
+        &[Change {
+            key: format!("price:{model}"),
+            old: Value::Null,
+            new: now,
+            effect: Effect::Hot,
+        }],
+    );
+    Json(json!({"ok": true, "changed": true, "model": model,
+        "backup": bak.map(|b| b.display().to_string())}))
     .into_response()
 }
 
