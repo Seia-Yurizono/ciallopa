@@ -408,6 +408,28 @@ async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: Bytes) -> Re
             ))
         }
         "metaover" => return sse_resp(OK_B),
+        // Real chatgpt shape: empty item / part announcements, then an overload (no output yet).
+        "emptyadded_over" if auth.contains("tok-a") => {
+            return sse_resp(concat!(
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-a\"}}\n\n",
+                "data: {\"type\":\"response.in_progress\",\"response\":{\"id\":\"r-a\"}}\n\n",
+                "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"rs_a\",\"type\":\"reasoning\",\"summary\":[]}}\n\n",
+                "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"id\":\"msg_a\",\"type\":\"message\",\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]}}\n\n",
+                "data: {\"type\":\"response.content_part.added\",\"item_id\":\"msg_a\",\"output_index\":1,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"annotations\":[],\"text\":\"\"}}\n\n",
+                "event: error\ndata: {\"type\":\"service_unavailable_error\",\"code\":\"server_is_overloaded\",\"message\":\"Our servers are currently overloaded. Please try again later.\",\"sequence_number\":1}\n\n",
+                "data: {\"type\":\"response.failed\",\"sequence_number\":2,\"response\":{\"id\":\"r-a\",\"error\":{\"code\":\"server_is_overloaded\",\"message\":\"Our servers are currently overloaded.\"}}}\n\n"
+            ))
+        }
+        "emptyadded_over" => return sse_resp(OK_B),
+        // Tool-call arguments already streamed are real output: never replayed.
+        "tooladded_over" => {
+            return sse_resp(concat!(
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-a\"}}\n\n",
+                "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"fc_a\",\"type\":\"function_call\",\"name\":\"shell\",\"call_id\":\"call_a\",\"arguments\":\"\"}}\n\n",
+                "data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_a\",\"output_index\":0,\"delta\":\"{\\\"cmd\"}\n\n",
+                "event: error\ndata: {\"type\":\"service_unavailable_error\",\"code\":\"server_is_overloaded\",\"message\":\"overloaded\"}\n\n"
+            ))
+        }
         "repro_cf1010_text" | "repro_cf1010_json" | "repro_cf_challenge" => {
             let (ct, body) = match mode.as_str() {
                 "repro_cf1010_text" => ("text/plain; charset=UTF-8", "error code: 1010".to_string()),
@@ -848,7 +870,19 @@ async fn up_ws(State(m): State<Mock>, h: HeaderMap, ws: WebSocketUpgrade) -> Res
                     }
                     continue;
                 }
-                if t.as_str().contains("\"metaover\"") {
+                if t.as_str().contains("\"emptyadded_over\"") && auth.contains("tok-a") {
+                    for f in [
+                        r#"{"type":"response.created","response":{"id":"r-a"}}"#,
+                        r#"{"type":"response.in_progress","response":{"id":"r-a"}}"#,
+                        r#"{"type":"response.output_item.added","output_index":0,"item":{"id":"msg_a","type":"message","status":"in_progress","role":"assistant","content":[]}}"#,
+                        r#"{"type":"response.content_part.added","item_id":"msg_a","output_index":0,"content_index":0,"part":{"type":"output_text","annotations":[],"text":""}}"#,
+                        r#"{"type":"error","error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"overloaded"}}"#,
+                    ] {
+                        let _ = s.send(Message::Text(f.into())).await;
+                    }
+                    continue;
+                }
+                if t.as_str().contains("\"metaover\"") || t.as_str().contains("\"emptyadded_over\"") {
                     if auth.contains("tok-a") {
                         let _ = s.send(Message::Text(r#"{"type":"response.created","response":{"id":"r-a"}}"#.into())).await;
                         let _ = s.send(Message::Text(r#"{"type":"response.queued","response":{"id":"r-a","status":"queued"}}"#.into())).await;
@@ -3834,6 +3868,14 @@ async fn sse_overload_everywhere_passes_through_verbatim() {
     assert!(o
         .iter()
         .any(|(a, o)| a == "b" && matches!(o, Outcome::Overloaded { cool: false, .. })));
+    // Once per attempt on b: the passed-through event is not counted again by the stream.
+    assert_eq!(
+        o.iter()
+            .filter(|(a, o)| a == "b" && matches!(o, Outcome::Overloaded { .. }))
+            .count(),
+        2,
+        "{o:?}"
+    );
 }
 
 #[tokio::test]
@@ -5402,4 +5444,121 @@ async fn websocket_handshake_cloudflare_block_is_egress() {
     let o = e.outcomes();
     assert_eq!(o.len(), 1, "{o:?}");
     assert!(matches!(o[0].1, Outcome::EgressBlocked));
+}
+
+/// Regression: chatgpt announces an empty message item / text part before an overload.
+/// Those announcements are not output: the attempt must switch with nothing duplicated.
+#[tokio::test]
+async fn sse_empty_added_before_overload_switches() {
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    let t = sse_text(&e, "emptyadded_over").await;
+    assert!(!t.contains("overloaded"), "{t}");
+    assert!(
+        !t.contains("r-a") && !t.contains("msg_a") && !t.contains("rs_a"),
+        "{t}"
+    );
+    assert_eq!(t.matches("response.created").count(), 1, "{t}");
+    assert!(t.contains("r-b") && t.contains("response.completed"), "{t}");
+    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 2);
+    let o = e.outcomes();
+    assert!(
+        o.iter()
+            .any(|(a, o)| a == "a" && matches!(o, Outcome::Overloaded { cool: true, .. })),
+        "{o:?}"
+    );
+    let rows = wait_rows(&e, 1).await;
+    assert!(rows[0]["error"].is_null(), "{}", rows[0]);
+    assert_eq!(rows[0]["account"], "b", "{}", rows[0]);
+}
+
+/// Streamed tool-call arguments are real output: the overload after them is forwarded, never
+/// replayed, and the request is recorded as a failure (not a success) on the account.
+#[tokio::test]
+async fn sse_overload_after_tool_call_arguments_is_a_failure() {
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    let t = sse_text(&e, "tooladded_over").await;
+    assert!(
+        t.contains("fc_a") && t.contains("server_is_overloaded"),
+        "{t}"
+    );
+    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 1);
+    let rows = wait_rows(&e, 1).await;
+    assert_eq!(rows[0]["error"], "server_is_overloaded", "{}", rows[0]);
+    assert_eq!(rows[0]["err_source"], "stream", "{}", rows[0]);
+    let o = e.outcomes();
+    assert!(
+        o.iter()
+            .any(|(a, o)| a == "a" && matches!(o, Outcome::Overloaded { .. })),
+        "a late overload still counts against the account: {o:?}"
+    );
+}
+
+/// Late overload (after real text) is recorded as a failure as well.
+#[tokio::test]
+async fn sse_overload_after_output_is_recorded_as_failure() {
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    let t = sse_text(&e, "lateover").await;
+    assert!(
+        t.contains("delta") && t.contains("server_is_overloaded"),
+        "{t}"
+    );
+    let rows = wait_rows(&e, 1).await;
+    assert_eq!(rows[0]["error"], "server_is_overloaded", "{}", rows[0]);
+    assert!(e
+        .outcomes()
+        .iter()
+        .any(|(a, o)| a == "a" && matches!(o, Outcome::Overloaded { .. })));
+}
+
+/// WS: the same empty announcements before an overload still allow the pre-output replay.
+#[tokio::test]
+async fn ws_empty_added_before_overload_switches() {
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as M};
+    let e = env(300).await;
+    let mut req = format!("ws://{}/backend-api/codex/responses", e.proxy)
+        .into_client_request()
+        .unwrap();
+    req.headers_mut()
+        .insert("authorization", format!("Bearer {KEY}").parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    ws.send(M::text(
+        r#"{"type":"response.create","model":"gpt-5.5","tag":"emptyadded_over"}"#,
+    ))
+    .await
+    .unwrap();
+    let mut got = Vec::new();
+    loop {
+        let t = ws
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .to_text()
+            .unwrap()
+            .to_string();
+        assert!(!t.contains("overloaded"), "overload leaked: {t}");
+        assert!(
+            !t.contains("msg_a") && !t.contains("r-a"),
+            "discarded preamble leaked: {t}"
+        );
+        got.push(t.clone());
+        if t.contains("response.completed") {
+            break;
+        }
+    }
+    assert_eq!(
+        got.iter()
+            .filter(|t| t.contains("response.created"))
+            .count(),
+        1,
+        "{got:?}"
+    );
+    assert!(got.iter().any(|t| t.contains("r-b")), "{got:?}");
+    assert!(e
+        .outcomes()
+        .iter()
+        .any(|(a, o)| a == "a" && matches!(o, Outcome::Overloaded { .. })));
 }
