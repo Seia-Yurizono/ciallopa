@@ -502,19 +502,25 @@ function delAcct(a,from){const rc=RCM[a.id],n=rc&&rc.available_count,c=$("dlgc")
 for(const [id,k,name] of [["dyes","_yes","删除"],["dalt","_alt","停用"]])$(id).addEventListener("click",async()=>{const f=$("dlg")[k];if(!f)return;await busyRun($(id),name,f,name+"中…");closeModal($("dlg"))});
 $("dno").addEventListener("click",()=>closeModal($("dlg")));
 function opLabel(b,o){clear(b);b.append("操作",h("span",{"aria-hidden":"true"},o?" ▴":" ▾"))}
-function row(a,usage_on){const s=ST[a.status]||[a.status,"off",""],full=a.email?a.email+"（"+a.id+"）":a.id,q=QM[a.id],qq=q&&q.quota;
+// Reset cards: the newer of the card listing and the last 刷新额度 answer. Display only
+function cardCount(r){if(!r)return null;const L=r.available_count,U=r.usage_available_count,l=L!=null,u=U!=null;
+  if(l&&u)return (r.usage_observed_ms||0)>(r.fetched_ms||0)?U:L;return l?L:u?U:null}
+// limit_reached of the last 刷新额度, unless a newer quota observation replaced it
+function limitHit(r,qq){return !!(r&&r.limit_reached&&r.usage_observed_ms&&!(qq&&qq.observed_at_ms>r.usage_observed_ms+5e3))}
+function row(a,usage_on){const s=ST[a.status]||[a.status,"off",""],full=a.email?a.email+"（"+a.id+"）":a.id,q=QM[a.id],qq=q&&q.quota,rc=RCM[a.id],cards=cardCount(rc),lim=limitHit(rc,qq);
   const stale=!!(qq&&qq.observed_at_ms&&Date.now()-qq.observed_at_ms>36e5),ws=wslots(qq);
   const dot=h("span","sdot "+s[1]);dot.title=s[0];
-  const who=h("td","who-c",h("div","row nw",h("span","m-only",dot),h("div",{class:"who",title:full},h("b","trunc",nm(a)),h("span","mut xs trunc",a.id+(a.plan?" · "+a.plan:"")))));
+  const who=h("td","who-c",h("div","row nw",h("span","m-only",dot),h("div",{class:"who",title:full},h("b","trunc",nm(a)),h("span","mut xs trunc",a.id+(a.plan?" · "+a.plan:"")),cards===null?null:h("span",{class:"mut xs num",title:"这个账号可用的重置卡数量（只显示，不会自动使用）"},"重置卡 "+cards+" 张"))));
   const stc=h("div","stack",h("span",{class:"tag dot "+s[1]+" d-only",title:s[2]},s[0]),h("span","m-only sm "+(s[1]==="cool"?"c-cool":s[1]==="err"?"c-err":"mut"),s[0]));
   if(a.status==="cooling"&&a.cooling_until_ms){stc.append(h("span","sm c-cool",CR[a.cooling_reason]||a.cooling_reason||""),h("span",{class:"sm mut num","data-until":a.cooling_until_ms,"data-pre":"还剩 ",title:"至 "+fmtTime(a.cooling_until_ms,true)},"还剩 "+dur((a.cooling_until_ms-Date.now())/1000)));
     stc.appendChild(act(h("button",{class:"xs",type:"button",title:"清除这个账号的全部冷却以及连续 5xx、overloaded 计数，立即参与选号","data-fk":a.id+"|cc"},"解除冷却"),async()=>{const j=await apost(path(a)+"/clear-cooldown",{});ok(j&&j.cleared?"已解除 "+nm(a)+" 的冷却，立即参与选号":nm(a)+" 已不在冷却中");await load()},"解除冷却","解除中…"))}
   else if(a.status!=="normal")stc.appendChild(h("span","sm mut",s[2]));else stc.appendChild(h("span","sm mut d-only",s[2]));
+  if(lim)stc.appendChild(h("span",{class:"sm c-err",title:"最近一次刷新额度时上游报告这个账号已达额度上限"},"已达额度上限"));
   if(QERR[a.id])stc.appendChild(h("span",{class:"sm c-err qerr",title:"最近一次刷新额度失败"},"额度刷新失败："+QERR[a.id]));
   const u=a.usage_24h,use=h("div","use");
   if(u){use.appendChild(h("div","num",NF.format(u.requests)+" 次 · "+fmtN(u.input_tokens+u.output_tokens)));if(u.errors)use.appendChild(h("div","num xs c-err",u.errors+" 次错误"))}else use.appendChild(h("span","faint sm",usage_on?"无请求":"–"));
   const o=a.overload_24h;if(o&&o.overloaded)use.appendChild(h("div",{class:"xs mut",title:"近 24 小时上游回复 overloaded / at capacity 的次数与上游请求总数（内存统计，重启清零）"},"overloaded "+o.overloaded+"/"+o.attempts));
-  const r=h("tr",{"data-acc":a.id},who,h("td","st-c"+(a.status==="normal"&&!QERR[a.id]?" nrm":""),stc),qcell("q5",ws.s?ws.s[0]:"5h",ws.s&&ws.s[1],stale),qcell("qw",ws.l?ws.l[0]:"周",ws.l&&ws.l[1],stale));
+  const r=h("tr",{"data-acc":a.id},who,h("td","st-c"+(a.status==="normal"&&!QERR[a.id]&&!lim?" nrm":""),stc),qcell("q5",ws.s?ws.s[0]:"5h",ws.s&&ws.s[1],stale),qcell("qw",ws.l?ws.l[0]:"周",ws.l&&ws.l[1],stale));
   // weight / priority: own cells on desktop, inside 操作 on phone
   const wp=(cls)=>{const wi=numIn(a.weight,"权重："+nm(a),a.id+"|w"+cls),pi=numIn(a.priority,"优先级："+nm(a),a.id+"|p"+cls);wi.min="0";
     const save=act(h("button",{class:"xs",type:"button",disabled:true,title:"改动后可保存","aria-label":"保存 "+nm(a)+" 的权重和优先级","data-fk":a.id+"|s"+cls},"保存"),async()=>{const w=parseInt(wi.value,10),p=parseInt(pi.value,10);if(isNaN(w)||isNaN(p))throw new Error("权重和优先级必须是整数");
@@ -602,7 +608,8 @@ $("impf").addEventListener("change",async()=>{const fs=Array.from($("impf").file
 // with the usage writer's next batch. A failure stays on the row until the next success.
 const QERR={};
 function applyQuota(r){if(r.ok){delete QERR[r.account];const q=r.quota||{},old=QM[r.account]||{account:r.account};
-    QM[r.account]=Object.assign({},old,{quota:{plan:q.plan,observed_at_ms:r.observed_at_ms,observed_by:"manual",primary:q.primary,secondary:q.secondary}})}
+    QM[r.account]=Object.assign({},old,{quota:{plan:q.plan,observed_at_ms:r.observed_at_ms,observed_by:"manual",primary:q.primary,secondary:q.secondary}});
+    RCM[r.account]=Object.assign({},RCM[r.account],{usage_available_count:r.usage_available_count==null?null:r.usage_available_count,limit_reached:r.limit_reached==null?null:r.limit_reached,usage_observed_ms:r.observed_at_ms})}
   else if(r.error&&r.error.kind!=="rate_limited")QERR[r.account]=qerr(r.error)}
 async function quotaOne(a){const r=await apost(path(a)+"/quota-refresh",{});applyQuota(r);render();
   if(qskip(r)){toast(qerr(r.error));return}

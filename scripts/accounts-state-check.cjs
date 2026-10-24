@@ -16,6 +16,7 @@ const source = [
   section('// ---- account reads:', '$("refresh").addEventListener'),
   section('// Device-code login:', 'onLogout='),
   section('\nonLogout=()=>{', '\nlogin('),
+  section('// Reset cards: the newer', 'function row('),
 ].join('\n');
 const deferred = () => {
   let resolve;
@@ -286,10 +287,24 @@ const watchdog = setTimeout(() => {
   process.exitCode = 1;
 }, 5000);
 
+function resetCardDisplay() {
+  const {run} = harness();
+  assert.equal(run('cardCount(undefined)'), null);
+  assert.equal(run('cardCount({available_count: 2, fetched_ms: 10})'), 2);
+  assert.equal(run('cardCount({available_count: 2, fetched_ms: 10, usage_available_count: 1, usage_observed_ms: 20})'), 1);
+  assert.equal(run('cardCount({available_count: 2, fetched_ms: 30, usage_available_count: 1, usage_observed_ms: 20})'), 2);
+  assert.equal(run('cardCount({usage_available_count: 0, usage_observed_ms: 20})'), 0);
+  assert.equal(run('limitHit({limit_reached: true, usage_observed_ms: 1e6}, {observed_at_ms: 1e6})'), true);
+  assert.equal(run('limitHit({limit_reached: true, usage_observed_ms: 1e6}, null)'), true);
+  assert.equal(run('limitHit({limit_reached: true, usage_observed_ms: 1e6}, {observed_at_ms: 1e6 + 6e3})'), false, 'a newer quota observation wins');
+  assert.equal(run('limitHit({limit_reached: false, usage_observed_ms: 1e6}, null)'), false);
+}
+
 (async () => {
+  resetCardDisplay();
   await partialReads();
   await supersededReads();
   await loginChanges();
   await deviceLoginIsolation();
-  console.log('PASS: account snapshots, read/login races, device start/poll cancellation and identity isolation');
+  console.log('PASS: reset-card display, account snapshots, read/login races, device start/poll cancellation and identity isolation');
 })().catch(error => {console.error(error); process.exitCode = 1;}).finally(() => clearTimeout(watchdog));
