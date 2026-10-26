@@ -15,7 +15,7 @@ use http::StatusCode;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Bounded wait for budget room before 503 `gateway_busy` (`Retry-After: 1`).
+/// Bounded wait for budget room before 503 `gateway_busy` (`Retry-After: 3`).
 pub(crate) const BUDGET_WAIT: Duration = Duration::from_secs(1);
 /// Upper bound for [`discard`].
 const DISCARD_TIME: Duration = Duration::from_secs(10);

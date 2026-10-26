@@ -65,24 +65,27 @@ pub struct Entry {
     /// From the last `GET /wham/usage` (刷新额度): `rate_limit_reset_credits.available_count`.
     /// Display only; the listing above stays authoritative for the cards themselves.
     pub usage_available_count: Option<i64>,
+    /// From the same answer: `rate_limit.allowed`.
+    pub allowed: Option<bool>,
     /// From the same answer: `rate_limit.limit_reached`.
     pub limit_reached: Option<bool>,
     pub usage_observed_ms: Option<i64>,
 }
 
-/// The `/wham/usage` fields the quota snapshot does not keep: the reset-card count and
-/// `limit_reached`.
-pub fn usage_extras(v: &Value) -> (Option<i64>, Option<bool>) {
+/// The `/wham/usage` fields the quota snapshot does not keep: the reset-card count,
+/// `rate_limit.allowed`, and `rate_limit.limit_reached`.
+pub fn usage_extras(v: &Value) -> (Option<i64>, Option<bool>, Option<bool>) {
     let rc = v.get("rate_limit_reset_credits");
     let count = rc
         .and_then(|r| r.get("available_count"))
         .or(rc.filter(|r| r.is_number()))
         .and_then(Value::as_i64)
         .filter(|n| *n >= 0);
+    let allowed = v.pointer("/rate_limit/allowed").and_then(Value::as_bool);
     let reached = v
         .pointer("/rate_limit/limit_reached")
         .and_then(Value::as_bool);
-    (count, reached)
+    (count, allowed, reached)
 }
 
 /// Shared cache + per-account consume locks.
@@ -120,10 +123,11 @@ impl ResetCredits {
     }
     /// Keep the display-only `/wham/usage` fields of one account.
     pub fn note_usage(&self, account: &str, v: &Value) {
-        let (count, reached) = usage_extras(v);
+        let (count, allowed, reached) = usage_extras(v);
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         let e = cache.entry(account.to_string()).or_default();
         e.usage_available_count = count;
+        e.allowed = allowed;
         e.limit_reached = reached;
         e.usage_observed_ms = Some(now_ms());
     }
@@ -745,6 +749,12 @@ pub const QUOTA_MANUAL: &str = "manual";
 static QUOTA_LAST: std::sync::LazyLock<Mutex<HashMap<String, std::time::Instant>>> =
     std::sync::LazyLock::new(Default::default);
 
+/// Drop the per-account 刷新额度 throttle. Integration tests only (`#[doc(hidden)]`).
+#[doc(hidden)]
+pub fn quota_refresh_reset_throttle_for_tests() {
+    QUOTA_LAST.lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
 /// `GET /wham/usage` (codex-rs `backend-client` `get_rate_limits`) → snapshot. Windows map like
 /// the `x-codex-{primary,secondary}-*` headers: primary = short window, secondary = weekly.
 pub fn usage_to_quota(v: &Value, now_s: i64) -> Option<QuotaObs> {
@@ -849,14 +859,24 @@ async fn quota_refresh_account(st: &AppState, rc: &ResetCredits, account: &str) 
                 return fail("decode", None, "no rate_limit windows in the answer".into());
             };
             rc.note_usage(account, &v);
-            let (cards, reached) = usage_extras(&v);
+            let (cards, allowed, reached) = usage_extras(&v);
             if let Some(rec) = &st.usage {
                 if !rec.observe_quota(account, QUOTA_MANUAL, q.clone()) {
                     tracing::warn!(%account, "quota snapshot dropped (usage queue full)");
                 }
             }
-            json!({"account": account, "ok": true, "quota": quota_json(&q), "observed_at_ms": now_ms(),
-                "usage_available_count": cards, "limit_reached": reached})
+            // Upstream rate_limit says this account can serve again: drop usage-limit /
+            // rate-limit cooldowns (same as a successful reset-credit consume). Other
+            // cooldowns stay. Both flags must be present — a missing `allowed` never clears.
+            let mut out = json!({"account": account, "ok": true, "quota": quota_json(&q),
+                "observed_at_ms": now_ms(), "usage_available_count": cards,
+                "allowed": allowed, "limit_reached": reached});
+            if allowed == Some(true) && reached == Some(false) {
+                let cleared = st.router.clear_quota_cooldown(&account.to_string());
+                tracing::info!(%account, cleared, "quota refresh: usage-limit cooldown cleared");
+                out["cooldown_cleared"] = json!(cleared);
+            }
+            out
         }
         Ok((code, body)) => fail("http", Some(code), upstream_msg(&body)),
         Err(e) if e.starts_with("credentials:") => fail("credentials", None, e),
@@ -940,16 +960,20 @@ mod tests {
             (Some(40.5), Some(1_700_003_600), Some(10080))
         );
         assert!(usage_to_quota(&json!({"plan_type": "free", "rate_limit": null}), 0).is_none());
-        assert_eq!(usage_extras(&v), (None, Some(false)));
+        assert_eq!(usage_extras(&v), (None, Some(true), Some(false)));
         let w = json!({"rate_limit": {"limit_reached": true}, "rate_limit_reset_credits": {"available_count": 2}});
-        assert_eq!(usage_extras(&w), (Some(2), Some(true)));
+        assert_eq!(usage_extras(&w), (Some(2), None, Some(true)));
         assert_eq!(
             usage_extras(&json!({"rate_limit_reset_credits": 3})),
-            (Some(3), None)
+            (Some(3), None, None)
         );
         assert_eq!(
             usage_extras(&json!({"rate_limit_reset_credits": {"available_count": -1}})),
-            (None, None)
+            (None, None, None)
+        );
+        assert_eq!(
+            usage_extras(&json!({"rate_limit": {"allowed": false, "limit_reached": false}})),
+            (None, Some(false), Some(false))
         );
         assert_eq!(upstream_msg(r#"{"detail":"Unauthorized"}"#), "Unauthorized");
     }

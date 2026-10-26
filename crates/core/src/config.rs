@@ -374,7 +374,7 @@ pub struct Config {
     /// unlimited). Each one can hold several copies of its largest message (receive,
     /// inflate and send buffers) before the message can be counted in
     /// `max_buffered_body_mb`, so this and `ws_max_message_mb` bound WebSocket memory. A
-    /// handshake over the cap gets 503 `gateway_busy` (`Retry-After: 1`); Codex retries,
+    /// handshake over the cap gets 503 `gateway_busy` (`Retry-After: 3`); Codex retries,
     /// then uses HTTP for that session. Read at each handshake.
     pub ws_max_connections: usize,
     /// Largest client WebSocket message in MiB after decompression (default 16, 1..=4096).

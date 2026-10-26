@@ -18,6 +18,9 @@ use std::sync::{Arc, Mutex};
 
 const KEY: &str = "sk-cpa-0123456789abcdef";
 
+// QUOTA_LAST is process-global; serialize quota-refresh tests and clear it first.
+static QUOTA_REFRESH_TEST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 struct Store;
 #[async_trait]
 impl AccountStore for Store {
@@ -75,6 +78,8 @@ type Shared<T> = Arc<Mutex<Vec<T>>>;
 struct Mock {
     /// Scripted consume replies (status, body); default `reset`.
     replies: Arc<Mutex<VecDeque<(u16, Value)>>>,
+    /// Scripted `/wham/usage` bodies; default has `limit_reached: true` and no `allowed`.
+    usage: Arc<Mutex<VecDeque<Value>>>,
     consumes: Shared<(Hdrs, Value)>,
     lists: Shared<Hdrs>,
 }
@@ -111,11 +116,12 @@ async fn up_consume(State(m): State<Mock>, h: HeaderMap, Json(b): Json<Value>) -
     (StatusCode::from_u16(s).unwrap(), Json(v)).into_response()
 }
 
-async fn up_usage() -> Json<Value> {
-    Json(
+async fn up_usage(State(m): State<Mock>) -> Json<Value> {
+    let v = m.usage.lock().unwrap().pop_front().unwrap_or_else(|| {
         json!({"rate_limit": {"limit_reached": true, "primary_window": {"used_percent": 0}},
-        "rate_limit_reset_credits": {"available_count": 2}}),
-    )
+            "rate_limit_reset_credits": {"available_count": 2}})
+    });
+    Json(v)
 }
 
 struct Env {
@@ -573,6 +579,8 @@ fn no_automatic_consume_path() {
 
 #[tokio::test]
 async fn quota_refresh_stores_snapshot_and_rate_limits() {
+    let _gate = QUOTA_REFRESH_TEST.lock().await;
+    ciallopa::reset_credits::quota_refresh_reset_throttle_for_tests();
     let e = env(false).await;
     let post = |path: &str| {
         e.http
@@ -591,7 +599,16 @@ async fn quota_refresh_stores_snapshot_and_rate_limits() {
     assert_eq!(r["quota"]["primary"]["used_pct"], 0.0);
     // display-only fields of the same answer, also kept for the management page
     assert_eq!(r["usage_available_count"], 2, "{r}");
+    assert!(r["allowed"].is_null(), "default mock omits allowed: {r}");
     assert_eq!(r["limit_reached"], true, "{r}");
+    assert!(
+        r.get("cooldown_cleared").is_none(),
+        "missing allowed must not clear: {r}"
+    );
+    assert!(
+        e.router.0.lock().unwrap().is_empty(),
+        "clear_quota not called"
+    );
     let l = e.get("/usage/v1/reset-credits").await;
     let a = l["accounts"]
         .as_array()
@@ -654,4 +671,111 @@ async fn quota_refresh_stores_snapshot_and_rate_limits() {
         .status();
     assert_eq!(s, 400);
     assert_eq!(e.n_consumes(), 0);
+}
+
+#[tokio::test]
+async fn quota_refresh_clears_cooldown_only_when_restored() {
+    let _gate = QUOTA_REFRESH_TEST.lock().await;
+    ciallopa::reset_credits::quota_refresh_reset_throttle_for_tests();
+    let e = env(false).await;
+    let post = |path: &str| {
+        e.http
+            .post(format!("{}{path}", e.base))
+            .bearer_auth(KEY)
+            .json(&json!({}))
+            .send()
+    };
+    // One scripted answer per account (a/b): the 30 s throttle is per account, so both run.
+    // Restored on `a` clears; `allowed: false` on `b` does not.
+    {
+        let mut u = e.mock.usage.lock().unwrap();
+        u.push_back(json!({
+            "rate_limit": {
+                "allowed": true,
+                "limit_reached": false,
+                "primary_window": {"used_percent": 10.0, "reset_after_seconds": 600, "reset_at": 1700000600}
+            },
+            "rate_limit_reset_credits": {"available_count": 1}
+        }));
+        u.push_back(json!({
+            "rate_limit": {
+                "allowed": false,
+                "limit_reached": false,
+                "primary_window": {"used_percent": 100.0, "reset_after_seconds": 600, "reset_at": 1700000600}
+            },
+            "rate_limit_reset_credits": {"available_count": 0}
+        }));
+    }
+    let r: Value = post("/admin/v1/accounts/a/quota-refresh")
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(r["allowed"], true, "{r}");
+    assert_eq!(r["limit_reached"], false, "{r}");
+    assert_eq!(r["cooldown_cleared"], true, "{r}");
+    assert_eq!(*e.router.0.lock().unwrap(), ["a"]);
+
+    let r: Value = post("/admin/v1/accounts/b/quota-refresh")
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(r["allowed"], false, "{r}");
+    assert_eq!(r["limit_reached"], false, "{r}");
+    assert!(
+        r.get("cooldown_cleared").is_none(),
+        "allowed false must not clear: {r}"
+    );
+    assert_eq!(*e.router.0.lock().unwrap(), ["a"], "b must not clear");
+}
+
+#[tokio::test]
+async fn quota_refresh_no_clear_when_limit_reached_or_allowed_absent() {
+    let _gate = QUOTA_REFRESH_TEST.lock().await;
+    ciallopa::reset_credits::quota_refresh_reset_throttle_for_tests();
+    let e = env(false).await;
+    let post = |acct: &str| {
+        e.http
+            .post(format!("{}/admin/v1/accounts/{acct}/quota-refresh", e.base))
+            .bearer_auth(KEY)
+            .json(&json!({}))
+            .send()
+    };
+    {
+        let mut u = e.mock.usage.lock().unwrap();
+        // a: allowed true but still limit_reached
+        u.push_back(json!({
+            "rate_limit": {
+                "allowed": true,
+                "limit_reached": true,
+                "primary_window": {"used_percent": 100.0}
+            },
+            "rate_limit_reset_credits": {"available_count": 0}
+        }));
+        // b: limit_reached false but allowed omitted
+        u.push_back(json!({
+            "rate_limit": {
+                "limit_reached": false,
+                "primary_window": {"used_percent": 0.0}
+            },
+            "rate_limit_reset_credits": {"available_count": 1}
+        }));
+    }
+    let r: Value = post("a").await.unwrap().json().await.unwrap();
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(r["allowed"], true);
+    assert_eq!(r["limit_reached"], true);
+    assert!(r.get("cooldown_cleared").is_none(), "{r}");
+
+    let r: Value = post("b").await.unwrap().json().await.unwrap();
+    assert_eq!(r["ok"], true, "{r}");
+    assert!(r["allowed"].is_null(), "{r}");
+    assert_eq!(r["limit_reached"], false);
+    assert!(r.get("cooldown_cleared").is_none(), "absent allowed: {r}");
+    assert!(e.router.0.lock().unwrap().is_empty());
 }

@@ -17,6 +17,11 @@ use std::{
     task::{Context, Poll},
 };
 
+/// `Retry-After` on every 503 `gateway_busy` (HTTP admission, body budget, WS connection
+/// cap, and the WS turn busy frame). Chosen so Codex's ~4 fast 5xx retries wait between
+/// attempts instead of re-hitting a full gate within one second.
+pub(crate) const BUSY_RETRY_AFTER_SECS: u64 = 3;
+
 pub(crate) fn refused(reason: Refused) -> Response {
     let (code, message) = match reason {
         Refused::Busy => ("gateway_busy", "Gateway is busy; retry shortly."),
@@ -24,7 +29,13 @@ pub(crate) fn refused(reason: Refused) -> Response {
     };
     let mut r = crate::proxy::json_error(StatusCode::SERVICE_UNAVAILABLE, code, message);
     // Outside the Retry-After filter: set both headers here.
-    errors::set_retry_after(r.headers_mut(), 1);
+    // Busy: 3 s so Codex's fast 5xx retries space out instead of hammering the cap.
+    // Draining keeps a short hint; the process is going away either way.
+    let ra = match reason {
+        Refused::Busy => BUSY_RETRY_AFTER_SECS,
+        Refused::Draining => 1,
+    };
+    errors::set_retry_after(r.headers_mut(), ra);
     r.extensions_mut().insert(errors::ErrMeta {
         source: errors::SRC_LOCAL,
         code: code.into(),
