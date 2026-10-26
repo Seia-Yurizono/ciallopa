@@ -569,9 +569,12 @@ See [METRICS.md](METRICS.md) for the current outcome, sampling, cursor and bucke
   accounts, four at a time; admin key, JSON body, same-origin) ask upstream `GET /wham/usage`
   (5 s, Codex client headers, egress proxy) for the current windows. Read-only; one call per
   account per 30 s (`QUOTA_REFRESH_MIN`), a repeat inside that answers `rate_limited` without an
-  upstream call. There is no background `/wham/usage` poll — only this manual 刷新额度 (and the
-  post-consume fetch after a successful reset card) hits that endpoint. The only period limit
-  today is that 30 s per account.
+  upstream call. An optional background poll (`[ui] quota_refresh_mins`, default `0` = off;
+  1–60 when on) runs the same path for accounts whose 「自动刷新额度」 switch is on (same
+  cooldown clear when `allowed == true && limit_reached == false`). Codex TUI polls usage while
+  running with adaptive 60/30/15/5 s by used%; ciallopa's multi-account default when enabled
+  (UI lands on 5 min) is intentionally coarser. The post-consume fetch after a successful reset
+  card also hits `/wham/usage`.
   Result per account: `{account, ok:true, quota:{plan, primary, secondary}, observed_at_ms,
   usage_available_count, allowed, limit_reached, cooldown_cleared?}` or
   `{account, ok:false, error:{kind: rate_limited|http|network|timeout|credentials|token_invalid|decode,
@@ -830,13 +833,14 @@ Config (`[ui]`):
 | key | default | |
 |---|---|---|
 | `allow_reset_consume` | `false` | enable the manual consume API + page button (not the automatic use) |
-| `reset_credits_refresh_mins` | `60` | background listing refresh (read-only); `0` = on demand only |
+| `reset_credits_refresh_mins` | `0` | background listing refresh (read-only); `0` = on demand only; 1–60 when on |
+| `quota_refresh_mins` | `0` | background 刷新额度 for accounts with 「自动刷新额度」 on; `0` = off; 1–60 when on |
 | `reset_credits_auto_lead_mins` | `10` | 快到期时自动使用: minutes before expiry (5–1440) |
 
 API (client key):
-- `GET /usage/v1/reset-credits` → `{consume_enabled, can_consume, is_admin, refresh_mins, accounts: [{account, email,
+- `GET /usage/v1/reset-credits` → `{consume_enabled, can_consume, is_admin, refresh_mins, quota_refresh_mins, accounts: [{account, email,
   disabled, reset_credits: {fetched_ms, available_count, credits, nearest_expires_at, error,
-  error_ms, usage_available_count, allowed, limit_reached, usage_observed_ms} | null}], attempts: [last 20
+  error_ms, usage_available_count, allowed, limit_reached, usage_observed_ms} | null, auto, auto_next_ms, quota_auto}], attempts: [last 20
   consume attempts]}`. The `usage_*` fields, `allowed` and `limit_reached` come from the last 刷新额度
   (`/wham/usage`) answer; the listing fields stay authoritative for consuming. The 账号 page shows
   the newer of the two counts and 「已达额度上限」 until a newer quota observation replaces it. Cache is in memory (re-fetched
@@ -844,6 +848,7 @@ API (client key):
   `can_consume` = consume switch on **and** the calling key is admin (the page shows the button
   only then).
 - `POST /usage/v1/reset-credits/refresh` — admin-only, JSON + same-origin (optional `{"account": "<id>"}`) → same body.
+- `POST /admin/v1/accounts/{id}/quota-refresh/auto` — `{"enabled": true|false}` (needs `allow_config_write` and `[usage]`); per-account 「自动刷新额度」.
 - `POST /admin/v1/accounts/{id}/reset-credits/consume` — `{"confirm": "<id>", "credit_id"?,
   "redeem_request_id"?}`. Guards: switch off → 403; key only via header (middleware), JSON
   content type (browser cross-origin forms cannot send it without a CORS preflight, which is

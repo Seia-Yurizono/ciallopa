@@ -178,8 +178,12 @@ pub struct UiConfig {
     /// manual action; automatic use is the per-account switch on the accounts page.
     pub allow_reset_consume: bool,
     /// Background refresh of each account's reset-credit list (read-only GET), minutes.
-    /// `0` = only on demand.
+    /// `0` = only on demand; when on, `1..=60`.
     pub reset_credits_refresh_mins: u64,
+    /// Background 刷新额度 (`GET /wham/usage`) for accounts with the per-account switch on,
+    /// minutes. `0` = only on demand; when on, `1..=60`. Coarser than Codex TUI's adaptive
+    /// 60/30/15/5 s single-account poll — multi-account default when enabled is 5 min.
+    pub quota_refresh_mins: u64,
     /// Automatic use (accounts with the per-account switch on): use a card this many minutes
     /// before it expires. `5..=1440`.
     pub reset_credits_auto_lead_mins: u64,
@@ -193,7 +197,8 @@ impl Default for UiConfig {
         Self {
             enabled: true,
             allow_reset_consume: false,
-            reset_credits_refresh_mins: 60,
+            reset_credits_refresh_mins: 0,
+            quota_refresh_mins: 0,
             reset_credits_auto_lead_mins: 10,
             allow_config_write: false,
         }
@@ -458,6 +463,19 @@ impl Config {
                 "ui.reset_credits_auto_lead_mins must be in 5..=1440".into(),
             ));
         }
+        for (name, v) in [
+            (
+                "ui.reset_credits_refresh_mins",
+                self.ui.reset_credits_refresh_mins,
+            ),
+            ("ui.quota_refresh_mins", self.ui.quota_refresh_mins),
+        ] {
+            if v != 0 && !(1..=60).contains(&v) {
+                return Err(ConfigError::Invalid(format!(
+                    "{name} must be 0 or in 1..=60"
+                )));
+            }
+        }
         if !(0.0..=1.0).contains(&self.routing.quota_avoid_threshold) {
             return Err(ConfigError::Invalid(
                 "routing.quota_avoid_threshold must be in 0..=1".into(),
@@ -716,6 +734,21 @@ mod tests {
         assert_eq!(c.routing.strategy, Strategy::RoundRobin);
         assert_eq!(c.routing.session_affinity_rebind_on, RebindOn::Quota);
         assert_eq!(c.routing.ttl().unwrap(), Duration::from_secs(24 * 3600));
+        assert_eq!(c.ui.reset_credits_refresh_mins, 0);
+        assert_eq!(c.ui.quota_refresh_mins, 0);
+    }
+
+    #[test]
+    fn refresh_mins_zero_or_1_to_60() {
+        assert!(
+            Config::parse("[ui]\nreset_credits_refresh_mins = 0\nquota_refresh_mins = 0\n").is_ok()
+        );
+        assert!(
+            Config::parse("[ui]\nreset_credits_refresh_mins = 5\nquota_refresh_mins = 60\n")
+                .is_ok()
+        );
+        assert!(Config::parse("[ui]\nquota_refresh_mins = 61\n").is_err());
+        assert!(Config::parse("[ui]\nreset_credits_refresh_mins = 61\n").is_err());
     }
 
     #[test]

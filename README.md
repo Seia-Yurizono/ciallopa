@@ -489,7 +489,9 @@ the last 刷新额度 reported it. Quota data comes from
 upstream response headers whenever an account serves a request; 刷新额度 (per account, in the
 reset-card panel of the overview and in the account's actions) and 刷新全部额度 ask upstream
 directly instead (`GET /wham/usage`, which the Codex backend client reads rate limits from: read-only, spends no
-usage), at most once per account every 30 s and four accounts at a time. Strict CSP (`default-src 'none'`, script/style
+usage), at most once per account every 30 s and four accounts at a time. Optional background
+刷新额度 (`[ui] quota_refresh_mins`, default off) runs the same path for accounts whose
+「自动刷新额度」 switch is on. Strict CSP (`default-src 'none'`, script/style
 allowed by SHA-256 hash only, `connect-src 'self'`); all data rendered via `textContent`.
 Local demo with fake data: `cargo run --example ui_demo` → http://127.0.0.1:8399/ui
 (key `sk-demo-0123456789abcdef`; the demo writes its own `config.toml` with
@@ -497,7 +499,7 @@ Local demo with fake data: `cargo run --example ui_demo` → http://127.0.0.1:83
 
 Reset credits (重置卡) — **manual, or automatic only where you turn it on per account**. Each account's cards are listed
 from upstream `GET /wham/rate-limit-reset-credits` (same headers as Codex CLI) every
-`[ui] reset_credits_refresh_mins` (default 60, `0` = only on demand), including disabled accounts
+`[ui] reset_credits_refresh_mins` (default 0 = only on demand; 1–60 when on), including disabled accounts
 (they only leave routing), and shown in the quota table (count; amber when one expires within
 24 h; the popover lists every card). Read: `GET /usage/v1/reset-credits`; re-fetch:
 `POST /usage/v1/reset-credits/refresh` (`{"account": "..."}` optional). Spending a card is

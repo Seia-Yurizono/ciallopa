@@ -370,6 +370,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         affinity.flush();
         ciallopa::client_fp::flush();
         ciallopa::auto_reset::flush();
+        ciallopa::reset_credits::quota_auto_flush();
         if let Some(u) = usage {
             u.shutdown();
         }
