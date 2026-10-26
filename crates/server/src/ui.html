@@ -362,10 +362,10 @@ select.ivl{height:24px;padding:0 var(--s1);font-size:var(--fs-xs)}
 .fcl i,.legend i.fc{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:3px}
 .kpi .k .dl{margin-left:var(--s1);font-weight:600;color:var(--mut)}.dl.good,.kpi .k .dl.good{color:var(--ok)}.dl.bad,.kpi .k .dl.bad{color:var(--err)}
 .kpi.live{flex-wrap:wrap;column-gap:var(--s3)}.fcls{display:flex;flex-wrap:wrap;gap:0 var(--s2)}.livepk{display:inline-flex;align-items:center;gap:var(--s1);font-size:var(--fs-s)}.livepk .w{color:var(--cool);font-weight:600}
-.ln.p50,.ln.inf{stroke:var(--focus)}.ln.p90,.ln.ws{stroke:var(--fc-rate_limit)}.ln.p99{stroke:var(--err)}.ln.prev{stroke:var(--mut);stroke-dasharray:4 3}.ln.lim{stroke:var(--faint);stroke-width:1;stroke-dasharray:3 3}
+.ln.p50,.ln.inf{stroke:var(--focus)}.ln.p90,.ln.ws{stroke:var(--fc-rate_limit)}.ln.p99{stroke:var(--err)}.ln.prev{stroke:var(--mut);stroke-dasharray:4 3}.ln.lim{stroke-width:1.25;stroke-dasharray:5 3;opacity:.75}
 .pt.p50,.pt.inf{fill:var(--focus)}.pt.p90,.pt.ws{fill:var(--fc-rate_limit)}.pt.p99{fill:var(--err)}.pt.prev{fill:var(--mut)}
 .b-ref{fill:var(--err);fill-opacity:.4}
-.legend i.l-p50,.legend i.l-inf{background:var(--focus)}.legend i.l-p90,.legend i.l-ws{background:var(--fc-rate_limit)}.legend i.l-p99{background:var(--err)}.legend i.l-ref{background:var(--err);opacity:.4}.legend i.l-lim{background:transparent;height:0;width:12px;border-top:2px dashed var(--faint);border-radius:0}.legend i.l-prev{background:transparent;height:0;width:12px;border-top:2px dashed var(--mut);border-radius:0}
+.legend i.l-p50,.legend i.l-inf{background:var(--focus)}.legend i.l-p90,.legend i.l-ws{background:var(--fc-rate_limit)}.legend i.l-p99{background:var(--err)}.legend i.l-ref{background:var(--err);opacity:.4}.legend i.l-lim-inf,.legend i.l-lim-ws{background:transparent;height:0;width:12px;border-top:2px dashed var(--focus);border-radius:0}.legend i.l-lim-ws{border-top-color:var(--fc-rate_limit)}.legend i.l-prev{background:transparent;height:0;width:12px;border-top:2px dashed var(--mut);border-radius:0}
 #sum td.l .fc{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:var(--s1)}
 .chip{font-size:var(--fs-xs);color:var(--mut);margin-left:var(--s1);white-space:nowrap}
 .chip.fast{color:var(--cool)}.chip.dg{color:var(--cool);text-decoration:line-through}
@@ -988,7 +988,7 @@ $("cpyes").addEventListener("click",async()=>{const acct=cpFor;if(!acct)return;$
 const GN={account:"账号",key:"密钥",instance:"实例",model:"模型",response_model:"实际模型",endpoint:"接口",reasoning_effort:"推理",transport:"传输",service_tier:"档位",error:"错误码",err_source:"错误来源"};
 // Scope groups filter the whole page; error, source and tier groups open the matching failed requests.
 const GSCOPE={account:"facct",model:"fmodel",key:"fkey",instance:"finstance"},GDRILL={error:"fcode",err_source:"fsrc",service_tier:"ftier"};
-function groupName(g,v){return g==="err_source"?(SRC[v]?SRC[v][0]:v):g==="service_tier"?tierName(v):v}
+function groupName(g,v){return g==="error"?ERR_LBL[v]||v:g==="err_source"?(SRC[v]?SRC[v][0]:v):g==="service_tier"?tierName(v):v}
 function drillGroup(id,v){if(!summaryCurrent())return;recordWindow=null;for(const k of RF){const e=$(k);if(e.type==="checkbox")e.checked=false;else e.value=""}
   $("foutcome").value=id==="ftier"?"":"failed";$(id).value=v;saveF();showScope();renderTrend();loadRecords(false).catch(fail);revealRecords()}
 function unkIcon(unk,tip){const i=h("span",{class:"wi",tabindex:"0",role:"img","aria-label":"部分未定价"},"⚠");i.dataset.tt="部分未定价：实际成本不低于此值\n"+unk+" 条请求缺少价格；已定价部分 "+tip;return i}
@@ -997,10 +997,10 @@ function renderSummary(){const s=SUM;if(!s)return;ttHide();const g=$("group").va
   const tb=$("sum").tBodies[0];
   keepScroll("sw",()=>steady([tb],()=>{clear(tb);
     const row=(name,x,tot)=>{const v=x.group&&x.group[g],shown=tot||v===null||v===undefined?name:groupName(g,v),link=!tot&&v&&(GSCOPE[g]||GDRILL[g]);
-      const label=link?h("button",{class:"statlink",type:"button",title:(GSCOPE[g]?"筛选到 ":"查看请求：")+shown},shown):shown;
+      const label=link?h("button",{class:"statlink",type:"button",title:(GSCOPE[g]?"筛选到 ":"查看请求：")+shown+(g==="error"&&shown!==v?"（"+v+"）":"")},shown):shown;
       if(link&&GDRILL[g])label.addEventListener("click",()=>drillGroup(GDRILL[g],v));
       else if(link)label.addEventListener("click",()=>{const id=GSCOPE[g];if(id==="facct"&&!Array.from($(id).options).some(o=>o.value===x.group[g]))$(id).appendChild(h("option",{value:x.group[g]},x.group[g]));$(id).value=x.group[g];changeScope();$("main").scrollIntoView({block:"start"})});
-      return h("tr",{class:tot?"tot":null,"data-ak":"sum|"+(tot?"=":"-")+name},h("td",{class:"l",title:shown+(g==="error"&&v&&ERR_LBL[v]?" · "+ERR_LBL[v]:"")},label),h("td",{class:"n",title:exact(x.count)+" 条"},fmtN(x.count)),
+      return h("tr",{class:tot?"tot":null,"data-ak":"sum|"+(tot?"=":"-")+name},h("td",{class:"l",title:g==="error"&&v?v:shown},label),h("td",{class:"n",title:exact(x.count)+" 条"},fmtN(x.count)),
       h("td",{class:"n",title:exact(x.failures)+" 失败 · "+exact(x.cancelled)+" 取消 · "+exact(x.incomplete)+" 未完成 · "+exact(x.unknown||0)+" 结果未知"+(x.failure_classes?FCLS.filter(([c])=>x.failure_classes[c]).map(([c,l])=>"\n"+l+" "+exact(x.failure_classes[c])).join(""):"")},pct(x.failure_rate)),
       h("td",{class:"n x",title:upTip()+" · "+exact(x.upstream_failures||0)+" 条"},pct(x.upstream_failure_rate)),
       h("td",{class:"n x",title:"p90 "+fmtMs(x.stream_ttft_p90_ms)+" · "+exact(x.stream_ttft_samples)+" 样本"},fmtMs(x.stream_ttft_p50_ms)),
@@ -1029,7 +1029,7 @@ function trendPoints(summary,hourly,tz){const step=hourly?36e5:864e5,off=tz*6000
   return pts}
 function selectBucket(p){if(!summaryCurrent())return;recordWindow={from:p.from,to:p.to};scopeWindow.fixed=true;saveF();showScope();renderTrend();loadRecords(false).catch(fail);revealRecords()}
 // Occupancy rows (one per bucket and instance) folded to one value per bucket start.
-function occBy(occ){const m=new Map();for(const r of occ&&occ.rows||[]){const o=m.get(r.minute_ms)||{inf:0,ws:0,li:0,lw:0,full:0};
+function occBy(occ){const m=new Map();for(const r of occ&&occ.rows||[]){const o=m.get(r.minute_ms)||{inf:0,ws:0,li:0,lw:0,full:0,ia:0,wa:0};o.ia+=r.inflight_avg||0;o.wa+=r.ws_avg||0;
   o.inf=Math.max(o.inf,r.inflight_peak);o.ws=Math.max(o.ws,r.ws_peak);o.li=Math.max(o.li,r.max_inflight_requests);o.lw=Math.max(o.lw,r.ws_max_connections);o.full+=r.full_minutes||0;m.set(r.minute_ms,o)}return m}
 function niceMs(v){const st=[100,200,250,500,1e3,2e3,2500,5e3,1e4,2e4,25e3,5e4,1e5,2e5,5e5];const s=st.find(x=>x*4>=v)||Math.ceil(v/4e5)*1e5;return Math.max(1000,s*4)}
 function msAxis(n){return n>=1000?(n/1e3).toFixed(n>=1e4?0:1)+"s":Math.round(n)+"ms"}
@@ -1071,7 +1071,7 @@ function renderTrend(){if(!TREND)return;const {summary,hourly,tz}=TREND,pts=tren
     let body;
     if(fail)body="失败 "+exact(p.f)+" · 失败率 "+pct(p.n?p.f/p.n:null)+" · 上游 "+pct(p.n?p.up/p.n:null)+FCLS.filter(([c])=>p.cls[c]).map(([c,l])=>"\n"+l+" "+exact(p.cls[c])).join("")+(refs?"\n"+refs:"")+(q?"\n上一周期 失败 "+exact(q.f):"");
     else if(lat)body="首输出 p50 / p90 / p99 "+[p.t50,p.t90,p.t99].map(fmtMs).join(" / ")+"\n耗时 p50 / p90 / p99 "+[p.d50,p.d90,p.d99].map(fmtMs).join(" / ")+(q?"\n上一周期 首输出 p90 "+fmtMs(q.t90):"");
-    else if(cap)body=(o?"转发峰值 "+exact(o.inf)+" / "+(o.li?exact(o.li):"不限")+" · WS 峰值 "+exact(o.ws)+" / "+(o.lw?exact(o.lw):"不限")+(o.full?"\n满载 "+exact(o.full)+" 分钟":""):"没有占用采样")+(refs?"\n"+refs:"");
+    else if(cap)body=(o?"转发峰值 "+exact(o.inf)+" / "+(o.li?exact(o.li):"不限")+" · 均值 "+o.ia.toFixed(1)+"\nWS 峰值 "+exact(o.ws)+" / "+(o.lw?exact(o.lw):"不限")+" · 均值 "+o.wa.toFixed(1)+(o.full?"\n满载 "+exact(o.full)+" 分钟":""):"没有占用采样")+(refs?"\n"+refs:"");
     else{const tokenText=p.tokens===null?"未报告":exact(p.tokens)+(p.records?"（"+exact(p.samples)+" / "+exact(p.records)+" 条已报告，"+pwText()+"）":"");
       body="请求 "+exact(p.n)+" · 失败 "+exact(p.f)+" · 取消 "+exact(p.cancel)+(p.unobserved?" · 结果未知 "+exact(p.unobserved):"")+"\nToken "+tokenText+" · 估算费用 "+(p.unknown&&!p.cost?"未定价":(p.unknown?"≥":"")+fmtUsd(p.cost))+(q?"\n上一周期 "+(metric==="tokens"?"Token "+(q.tokens===null?"未报告":exact(q.tokens)):metric==="cost"?"估算费用 "+fmtUsd(q.cost):"请求 "+exact(q.n)):"")}
     const txt=head+"\n"+body+"\n选择以查看这段时间的请求";
@@ -1083,7 +1083,7 @@ function renderTrend(){if(!TREND)return;const {summary,hourly,tz}=TREND,pts=tren
   const firstHit=svg.querySelector?svg.querySelector(".hit"):null,mark=svg.childNodes?svg.childNodes.length:0;
   if(lat){line(p=>p.t99,"p99");line(p=>p.t90,"p90");line(p=>p.t50,"p50")}
   if(cap){const lim=k=>{let m=0;for(const o of occ.values())m=Math.max(m,o[k]);return m},li=lim("li"),lw=lim("lw");
-    for(const l of [li,lw])if(l&&l<=max)svg.appendChild(sv("line",{x1:L,x2:W-R,y1:yv(l),y2:yv(l),class:"ln lim"}));
+    for(const [l,k] of [[li,"inf"],[lw,"ws"]])if(l&&l<=max)svg.appendChild(sv("line",{x1:L,x2:W-R,y1:yv(l),y2:yv(l),class:"ln lim "+k}));
     line(p=>oc(p)?oc(p).inf:null,"inf");line(p=>oc(p)?oc(p).ws:null,"ws")}
   if(prevOn)line((p,i)=>pval(pp(i)),"prev");
   if(firstHit&&svg.childNodes)for(const n of Array.from(svg.childNodes).slice(mark))svg.insertBefore(n,firstHit);
@@ -1091,7 +1091,7 @@ function renderTrend(){if(!TREND)return;const {summary,hourly,tz}=TREND,pts=tren
   if(metric==="requests")lg.append(sw("req","请求"),sw("err","失败"),sw("cancel","取消"));
   else if(fail){const seen=FCLS.filter(([c])=>pts.some(p=>p.cls[c]));if(seen.length)for(const [c,l] of seen)lg.append(sw("fc "+c,l));else lg.append(h("span",null,"无失败"))}
   else if(lat)lg.append(sw("l-p50","首输出 p50"),sw("l-p90","p90"),sw("l-p99","p99"));
-  else if(cap)lg.append(sw("l-inf","转发峰值"),sw("l-ws","WS 峰值"),sw("l-lim","上限"),sw("l-ref","已拒绝（右轴）"));
+  else if(cap)lg.append(sw("l-inf","转发峰值"),sw("l-ws","WS 峰值"),sw("l-lim-inf","转发上限"),sw("l-lim-ws","WS 上限"),sw("l-ref","已拒绝"));
   else lg.append(sw("req",metric==="tokens"?"Token":"估算 $"),h("span",null,metric==="tokens"?"– 未报告":"– 未定价"));
   if(prevOn)lg.append(sw("l-prev",lat?"上一周期 p90":"上一周期"));
   if(!lat&&!cap&&!fail)lg.append(sw("now","部分时段"))}
@@ -1390,9 +1390,9 @@ $("facct").addEventListener("change",changeScope);
 $("fprewarm").addEventListener("change",()=>{localStorage.setItem(PW,withPrewarm()?"1":"0");changeScope()});
 for(const id of ["ferr","ftier","fsrc","fretry","fcode"])$(id).addEventListener("change",changeRecords);
 // A failure class only matches failed requests: picking one moves the outcome to 失败, other outcomes clear it.
-const CLASS_OK=["","failed","business"];
-$("fclass").addEventListener("change",()=>{if($("fclass").value&&!CLASS_OK.includes($("foutcome").value))$("foutcome").value="failed";changeRecords()});
-$("foutcome").addEventListener("change",()=>{if(!CLASS_OK.includes($("foutcome").value))$("fclass").value="";changeRecords()});
+// A failure class implies 结果 = 失败; clearing the class leaves 结果 as it is, another 结果 clears the class.
+$("fclass").addEventListener("change",()=>{if($("fclass").value)$("foutcome").value="failed";changeRecords()});
+$("foutcome").addEventListener("change",()=>{if($("foutcome").value!=="failed")$("fclass").value="";changeRecords()});
 const CMP="ciallopa_compare";$("fcompare").checked=localStorage.getItem(CMP)!=="0";
 $("fcompare").addEventListener("change",()=>{localStorage.setItem(CMP,compareOn()?"1":"0");if(compareOn())loadSummary().catch(fail);else{SUM_PREV=null;if(TREND)TREND.prev=null;renderKpis();renderTrend()}});
 let kt;for(const id of ["fmodel","fkey","finstance"])$(id).addEventListener("input",()=>{saveF();showScope();clearTimeout(kt);kt=setTimeout(changeScope,400)});

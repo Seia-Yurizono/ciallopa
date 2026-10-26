@@ -779,13 +779,15 @@ Page behavior:
   the previous period is cached for 60 s, so auto-refresh does not rescan it every tick.
 - Trend metrics: 请求, Token, 费用, 失败原因 (bars stacked by class; the tooltip has the failure
   and upstream rates and the bucket's refusals, marked as not counted), 延迟分位 (首输出 p50 / p90
-  / p99, tooltip adds 耗时 percentiles) and 占用与拒绝 (转发 / WS peak against their limits, with
-  refusals as bars on the right axis).
+  / p99, tooltip adds 耗时 percentiles) and 占用与拒绝 (转发 / WS peaks against their limits, each limit a dashed
+  line in its series' colour on the left axis, refusals as bars on the right axis; the tooltip adds
+  the per-minute averages, summed over instances).
 - 分布 groups: 账号, 模型, 密钥, 实例, 接口, 推理, 传输, 档位, 错误码, 错误来源. Columns add
-  上游 (upstream failure rate), 重试 and 降级. Clicking an error code, source or tier row filters
-  the request list to it.
+  上游 (upstream failure rate), 重试 and 降级. 错误码 rows show the Chinese label, with the raw
+  code on hover. Clicking an error code, source or tier row filters the request list to it.
 - Request filter 失败原因 (`fclass`, `failure_class=` on `/usage/v1/records`) selects one class;
-  it implies failed rows, is kept in the URL and shows as a chip.
+  choosing one sets 结果 to 失败 (clearing it leaves 结果 as it is; picking another 结果 clears it).
+  It is kept in the URL and shows as a chip.
 - Quota cards show **remaining** percent (bar width = remaining). Color follows remaining:
   green when ≥ 50%, yellow when < 50%, red when < 20%. The card top strip is yellow when
   the account's max used percent is over 50%, and red when over 80%.
