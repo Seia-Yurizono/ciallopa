@@ -27,7 +27,10 @@ pub struct Drain {
     active: AtomicUsize,
     inflight: AtomicUsize,
     workers: AtomicUsize,
-    rejected: AtomicU64,
+    /// Refusals per [`RefusalKind`] since start (in memory; persisted per minute by usage).
+    rejected: [AtomicU64; 4],
+    /// Admitted requests exempt from the inflight cap (model lists, quota polls).
+    exempt: AtomicUsize,
     idle: Notify,
     /// Bytes of buffered HTTP request bodies currently reserved (see [`BodyPermit`]).
     body_bytes: AtomicU64,
@@ -86,11 +89,19 @@ impl Drop for WsSlot {
 pub struct Lease {
     _inner: Arc<LeaseInner>,
 }
-struct LeaseInner(Arc<Drain>);
+struct LeaseInner {
+    drain: Arc<Drain>,
+    exempt: bool,
+}
 impl Drop for LeaseInner {
     fn drop(&mut self) {
-        self.0.inflight.fetch_sub(1, Ordering::AcqRel);
-        self.0.idle.notify_waiters();
+        let n = if self.exempt {
+            &self.drain.exempt
+        } else {
+            &self.drain.inflight
+        };
+        n.fetch_sub(1, Ordering::AcqRel);
+        self.drain.idle.notify_waiters();
     }
 }
 
@@ -109,6 +120,30 @@ pub enum Refused {
     Draining,
 }
 
+/// Which limit refused an operation. Draining refusals are never counted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RefusalKind {
+    /// `max_inflight_requests`.
+    Inflight = 0,
+    /// `ws_max_connections`.
+    Ws = 1,
+    /// `max_buffered_body_mb`, HTTP request body.
+    Body = 2,
+    /// `max_buffered_body_mb`, client WebSocket message.
+    WsMsg = 3,
+}
+impl RefusalKind {
+    pub const ALL: [Self; 4] = [Self::Inflight, Self::Ws, Self::Body, Self::WsMsg];
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Inflight => "inflight",
+            Self::Ws => "ws",
+            Self::Body => "body",
+            Self::WsMsg => "ws_msg",
+        }
+    }
+}
+
 impl Drain {
     /// No queue. A lower hot limit affects the next operation; zero still counts occupancy.
     pub fn admit(self: &Arc<Self>, limit: usize) -> Result<Lease, Refused> {
@@ -123,11 +158,14 @@ impl Drain {
                     .flatten()
             });
         if result.is_err() {
-            self.rejected.fetch_add(1, Ordering::Relaxed);
+            self.count(RefusalKind::Inflight);
             return Err(Refused::Busy);
         }
         let lease = Lease {
-            _inner: Arc::new(LeaseInner(self.clone())),
+            _inner: Arc::new(LeaseInner {
+                drain: self.clone(),
+                exempt: false,
+            }),
         };
         // Close the race with shutdown starting between the phase check and increment.
         if self.phase() != Phase::Running {
@@ -135,6 +173,28 @@ impl Drain {
             return Err(Refused::Draining);
         }
         Ok(lease)
+    }
+    /// Admit a light request (model list, quota poll) outside the inflight cap. It is still
+    /// refused while draining and still waited for on shutdown.
+    pub fn admit_exempt(self: &Arc<Self>) -> Result<Lease, Refused> {
+        if self.phase() != Phase::Running {
+            return Err(Refused::Draining);
+        }
+        self.exempt.fetch_add(1, Ordering::AcqRel);
+        let lease = Lease {
+            _inner: Arc::new(LeaseInner {
+                drain: self.clone(),
+                exempt: true,
+            }),
+        };
+        if self.phase() != Phase::Running {
+            drop(lease);
+            return Err(Refused::Draining);
+        }
+        Ok(lease)
+    }
+    fn count(&self, kind: RefusalKind) {
+        self.rejected[kind as usize].fetch_add(1, Ordering::Relaxed);
     }
     /// An empty budget share; grow it with [`Self::reserve_body`].
     pub fn body_permit(self: &Arc<Self>) -> BodyPermit {
@@ -165,7 +225,7 @@ impl Drain {
                     .flatten()
             });
         if r.is_err() {
-            self.rejected.fetch_add(1, Ordering::Relaxed);
+            self.count(RefusalKind::Ws);
             return Err(Refused::Busy);
         }
         Ok(WsSlot(self.clone()))
@@ -193,8 +253,13 @@ impl Drain {
             return Ok(());
         }
         let fits = |c: u64| c.checked_add(n).filter(|&t| limit == 0 || t <= limit);
+        let kind = if permit.ws {
+            RefusalKind::WsMsg
+        } else {
+            RefusalKind::Body
+        };
         if limit != 0 && permit.held.saturating_add(n) > limit {
-            self.rejected.fetch_add(1, Ordering::Relaxed);
+            self.count(kind);
             return Err(Refused::Busy);
         }
         let deadline = tokio::time::Instant::now() + wait;
@@ -214,7 +279,7 @@ impl Drain {
                 return Ok(());
             }
             if tokio::time::timeout_at(deadline, freed).await.is_err() {
-                self.rejected.fetch_add(1, Ordering::Relaxed);
+                self.count(kind);
                 return Err(Refused::Busy);
             }
         }
@@ -227,8 +292,17 @@ impl Drain {
     pub fn inflight(&self) -> usize {
         self.inflight.load(Ordering::Acquire)
     }
+    /// All refusals since start (draining excluded).
     pub fn rejected(&self) -> u64 {
-        self.rejected.load(Ordering::Relaxed)
+        self.rejected_by().iter().sum()
+    }
+    /// Refusals since start, indexed by [`RefusalKind`].
+    pub fn rejected_by(&self) -> [u64; 4] {
+        RefusalKind::ALL.map(|k| self.rejected[k as usize].load(Ordering::Relaxed))
+    }
+    /// Exempt requests currently admitted (see [`Self::admit_exempt`]).
+    pub fn exempt(&self) -> usize {
+        self.exempt.load(Ordering::Acquire)
     }
     pub fn worker(self: &Arc<Self>) -> Worker {
         self.workers.fetch_add(1, Ordering::AcqRel);
@@ -269,7 +343,7 @@ impl Drain {
         self.phase.send_replace(Phase::Force);
     }
     fn pending(&self) -> usize {
-        self.active() + self.inflight() + self.workers.load(Ordering::Acquire)
+        self.active() + self.inflight() + self.exempt() + self.workers.load(Ordering::Acquire)
     }
     /// Wait for admitted requests, WS sessions and body producers, at most `bound`.
     /// The return value is remaining work, not a request count (a WS has both guards).

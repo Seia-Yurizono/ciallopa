@@ -17,6 +17,7 @@ pub(crate) struct Writer {
     pub retention_days: Arc<std::sync::atomic::AtomicU32>,
     pub counters: Arc<Counters>,
     pub state: store::WriterState,
+    pub refusals: Arc<crate::refusals::Aggregator>,
 }
 
 impl Writer {
@@ -24,7 +25,12 @@ impl Writer {
         let mut batch: Vec<Record> = Vec::with_capacity(self.batch_size);
         let mut acks = Vec::new();
         let mut next_purge = Instant::now();
+        let mut next_refusals = Instant::now() + crate::refusals::FLUSH_EVERY;
         loop {
+            if Instant::now() >= next_refusals {
+                self.flush_refusals();
+                next_refusals = Instant::now() + crate::refusals::FLUSH_EVERY;
+            }
             let days = self.retention_days.load(Ordering::Relaxed);
             if days == 0 && Instant::now() >= next_purge {
                 // Retention off (hot-reloadable): look again in a minute instead of spinning.
@@ -40,6 +46,7 @@ impl Writer {
             }
             // Wait for the first message of a batch (wake up for purges).
             let wait = next_purge
+                .min(next_refusals)
                 .saturating_duration_since(Instant::now())
                 .max(Duration::from_millis(1));
             let first = match self.rx.recv_timeout(wait) {
@@ -102,6 +109,10 @@ impl Writer {
                     tracing::warn!(error = %e, "quota snapshot write failed");
                 }
             }
+            if stop || !acks.is_empty() {
+                // Shutdown and explicit flushes include refusals counted so far.
+                self.flush_refusals();
+            }
             for a in acks.drain(..) {
                 let _ = a.send(());
             }
@@ -112,22 +123,42 @@ impl Writer {
         }
     }
 
+    fn flush_refusals(&mut self) {
+        if self.refusals.is_empty() {
+            return;
+        }
+        let rows = self.refusals.take();
+        if let Err(e) = store::upsert_refusals(&mut self.conn, &mut self.state, &rows) {
+            self.state.reset();
+            tracing::warn!(error = %e, groups = rows.len(), "refusal write failed; retrying later");
+            self.refusals.restore(rows);
+        }
+    }
+
     /// Returns true when more rows may remain.
     fn purge(&mut self) -> bool {
         let cutoff =
             crate::now_ms() - i64::from(self.retention_days.load(Ordering::Relaxed)) * 86_400_000;
-        match store::purge_before(&mut self.conn, cutoff, PURGE_CHUNK) {
-            Ok(n) => {
-                if n > 0 {
-                    self.counters.purged.fetch_add(n, Ordering::Relaxed);
-                    tracing::debug!(rows = n, "usage retention purge chunk");
-                }
-                n >= PURGE_CHUNK
-            }
+        let more_refusals = match store::purge_refusals_before(&self.conn, cutoff) {
+            Ok(more) => more,
             Err(e) => {
-                tracing::warn!(error = %e, "usage purge failed");
+                tracing::warn!(error = %e, "refusal purge failed");
                 false
             }
-        }
+        };
+        more_refusals
+            | match store::purge_before(&mut self.conn, cutoff, PURGE_CHUNK) {
+                Ok(n) => {
+                    if n > 0 {
+                        self.counters.purged.fetch_add(n, Ordering::Relaxed);
+                        tracing::debug!(rows = n, "usage retention purge chunk");
+                    }
+                    n >= PURGE_CHUNK
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "usage purge failed");
+                    false
+                }
+            }
     }
 }

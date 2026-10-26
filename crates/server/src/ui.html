@@ -342,6 +342,13 @@ select.ivl{height:24px;padding:0 var(--s1);font-size:var(--fs-xs)}
 #rec tr.e.px>td:first-child{box-shadow:inset 2px 0 0 var(--proxy)}
 #rec tr.e.rl>td:first-child{box-shadow:inset 2px 0 0 var(--cool)}
 #rec tr.dim>td{color:var(--faint)}
+#refrec td{white-space:nowrap}#refrec td.key,#refrec td.ua{max-width:160px}#refrec td.ep{max-width:260px;overflow:hidden;text-overflow:ellipsis}
+#refrec td.rr{display:flex;gap:var(--s1);align-items:center}#refrec td.cnt{font-weight:600;font-variant-numeric:tabular-nums}
+#refrec tr.rf>td:first-child{box-shadow:inset 2px 0 0 var(--cool)}
+.statlink.refchip{color:var(--mut)}.statlink.refchip.w{color:var(--cool);font-weight:600}
+.refpop{width:240px}.refpop .rpt{display:flex;flex-direction:column;gap:2px}
+.refpop .rpl{display:grid;grid-template-columns:1fr auto;gap:var(--s1) var(--s3);margin:0}.refpop dt{color:var(--fg-2)}.refpop dd{margin:0;text-align:right;font-variant-numeric:tabular-nums}.refpop dd.w{color:var(--cool);font-weight:600}
+.refpop button{align-self:flex-start}
 #rec tr.dt{cursor:pointer}
 #rec tr.dt:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
 .st{display:inline-block;min-width:32px;text-align:center;font-size:var(--fs-xs);font-weight:600;font-variant-numeric:tabular-nums;border-radius:var(--r1);line-height:20px;background:var(--off-bg);color:var(--fg-2)}
@@ -425,6 +432,10 @@ select.ivl{height:24px;padding:0 var(--s1);font-size:var(--fs-xs)}
 #rec tr.e{box-shadow:inset 2px 0 0 var(--err)}#rec tr.e.px{box-shadow:inset 2px 0 0 var(--proxy)}#rec tr.e.rl{box-shadow:inset 2px 0 0 var(--cool)}
 #rec tr.e>td:first-child{box-shadow:none}
 #rec td[colspan]{grid-column:1/-1}#rec tr:has(td[colspan]){display:block}
+#refrec tr{grid-template-columns:auto minmax(0,1fr) auto;grid-template-areas:"t r c" "e e o" "k k k"}
+#refrec td.t{grid-area:t}#refrec td.rr{grid-area:r}#refrec td.cnt{grid-area:c;text-align:right}#refrec td.ep{grid-area:e;max-width:none}#refrec td.occ{grid-area:o;text-align:right;color:var(--mut)}#refrec td.key{grid-area:k;max-width:none}
+#refrec td.x{display:none}#refrec tr.rf{box-shadow:inset 2px 0 0 var(--cool)}#refrec tr.rf>td:first-child{box-shadow:none}
+#refrec td[colspan]{grid-column:1/-1}#refrec tr:has(td[colspan]){display:block}
 .filters select{flex:1 1 40%;min-width:0}
 }
 </style>
@@ -478,7 +489,7 @@ select.ivl{height:24px;padding:0 var(--s1);font-size:var(--fs-xs)}
       <div class="scope-note hide" id="rwindow"><span id="rwindowtext"></span><button id="rwindowclear" class="ghost xs" type="button">返回整个范围</button></div>
       <div class="filters" role="search" aria-label="仅筛选请求列表">
         <span class="mut xs">请求筛选</span>
-        <select id="foutcome" aria-label="按请求结果筛选"><option value="">全部结果</option><option value="business">业务请求（不含预热）</option><option value="completed">完成</option><option value="failed">失败</option><option value="cancelled">客户端取消</option><option value="incomplete">未完成 · incomplete</option><option value="unknown">结果未知 · 观察不完整</option><option value="prewarm">预热</option></select>
+        <select id="foutcome" aria-label="按请求结果筛选"><option value="">全部结果</option><option value="business">业务请求（不含预热）</option><option value="completed">完成</option><option value="failed">失败</option><option value="cancelled">客户端取消</option><option value="incomplete">未完成 · incomplete</option><option value="unknown">结果未知 · 观察不完整</option><option value="prewarm">预热</option><option value="refused">已拒绝</option></select>
         <details class="request-extra" id="recordextra"><summary>更多筛选<span id="fsummary"></span></summary><div class="row">
         <select id="fsrc" aria-label="按错误来源筛选"><option value="">全部来源</option><option value="upstream">上游</option><option value="stream">流内</option><option value="network">网络</option><option value="local">ciallopa</option><option value="client">客户端</option><option value="upstream,stream,network,local">排除客户端</option></select>
         <select id="ftier" aria-label="按档位筛选"><option value="">全部档位</option><option value="priority">Fast</option><option value="flex">Flex</option><option value="standard">标准</option><option value="dg">仅降级</option></select>
@@ -490,6 +501,7 @@ select.ivl{height:24px;padding:0 var(--s1);font-size:var(--fs-xs)}
       </div>
       <div class="filterchips hide" id="recordchips" role="group" aria-label="已应用请求筛选，仅影响请求列表"></div>
       <div class="tw" id="rw"><table class="stk" id="rec"><thead><tr><th scope="col">时间</th><th scope="col">状态</th><th scope="col">结果</th><th scope="col">账号</th><th scope="col" class="x">密钥</th><th scope="col">模型</th><th scope="col" class="x">推理</th><th scope="col" class="n x" title="流请求首输出延迟（TTFT）">首输出</th><th scope="col" class="n">耗时</th><th scope="col" class="n x">输入</th><th scope="col" class="n x">输出</th><th scope="col" class="n x" title="按 API 标价估算">估算 $</th></tr></thead><tbody><tr><td colspan="12"><span class="skel"></span><span class="skel"></span></td></tr></tbody></table></div>
+      <div class="tw hide" id="refw"><table class="stk" id="refrec"><thead><tr><th scope="col">时间</th><th scope="col">原因</th><th scope="col">密钥</th><th scope="col">接口</th><th scope="col" class="x">客户端</th><th scope="col" class="n">次数</th><th scope="col" class="n">上限 / 占用</th></tr></thead><tbody></tbody></table></div>
       <div class="pager"><button id="rmore" class="hide" type="button">加载更多</button><span class="mut sm" id="rpage"></span></div>
     </div>
     <div class="legend foot"><details id="rlegend"><summary>图例</summary><span><span class="chip fast">⚡Fast</span> 实际以 Fast 处理</span><span><span class="chip dg">Fast</span> 请求 Fast 但被降级</span><span>↳ 上游实际值，与请求不同</span><span><span class="tag line">预热</span> WS 预热，不计入请求数</span></details></div>
@@ -687,7 +699,7 @@ function needAdmin(e){if(!e||!e.body||!e.body.error||e.body.error.type!=="admin_
 const AS="ciallopa_auto",RANGE_MS={"1h":36e5,"24h":864e5,"7d":7*864e5,"30d":30*864e5},RANGE_N={"1h":"1 小时","24h":"24 小时","7d":"7 天","30d":"30 天"};
 const CR={usage_limit:"额度用完",rate_limited:"上游限流",auth:"认证失败",transient:"上游连续 5xx",overloaded:"上游过载（overloaded）",challenge:"Cloudflare 拦截",model_unsupported:"模型不可用",not_found:"上游 404",payment_required:"上游 402 付费问题",workspace_deactivated:"工作区已停用（402）"};
 const ST={normal:["正常","ok"],cooling:["冷却中","cool"],disabled:["已停用","off"],token_invalid:["需要重新登录","err"],unconfigured:["未配置","off"]};
-let timer=null,Q=null,RC=null,AC=null,EG=null,SUM=null,TREND=null,ACCTS=[],RECORDER=null,SUM_SCOPE="";
+let timer=null,Q=null,RC=null,AC=null,EG=null,SUM=null,TREND=null,ACCTS=[],RECORDER=null,SUM_SCOPE="",REFS=null;
 let scopeWindow={from:0,to:0,fixed:false},recordWindow=null,activeRecord=null;
 function rollWindow(){const to=Date.now();scopeWindow={from:to-RANGE_MS[$("range").value],to,fixed:false}}
 function scopeFilters(){return {from:scopeWindow.from,to:scopeWindow.to,account:$("facct").value,model:$("fmodel").value.trim(),key:$("fkey").value.trim(),instance:$("finstance").value.trim(),exclude_prewarm:withPrewarm()?"":1}}
@@ -788,7 +800,7 @@ function renderKpis(){const t=SUM&&SUM.total,span=SUM?Math.max(1,SUM.to_ms-SUM.f
   const cost=t&&t.cost_usd,u=t&&t.unknown_price,costV=!t?"–":u&&!cost?"未定价":(u?"≥":"")+fmtUsd(cost);
   const bad=!!t&&t.failure_rate>=0.05,nu=t&&t.no_usage||0,reported=t&&(t.usage_samples||!(t.count+t.prewarm_count));
   const cells=[
-    ["请求",t?statLink(fmtN(t.count),"business"):"–",t?rpm(t.count*60000/span):"","已结束的业务请求，不含预热；RPM 为窗口平均，不是实时入口速率"],
+    ["请求",t?statLink(fmtN(t.count),"business"):"–",t?joinSep([rpm(t.count*60000/span),refChip()]):"","已结束的业务请求，不含预热；RPM 为窗口平均，不是实时入口速率"],
     ["失败率",t?statLink(pct(t.failure_rate),"failed"):"–",t?outcomeLinks(t):"","失败 / 业务请求；取消、未完成和结果未知分开计数",bad],
     ["首输出 p50",t?fmtMs(t.stream_ttft_p50_ms):"–",t?"p90 "+fmtMs(t.stream_ttft_p90_ms):"","流请求从开始到首个文本、推理或工具参数输出；"+exact(t&&t.stream_ttft_samples||0)+" 个样本，无输出的不填零"],
     ["生成速度",t&&t.generation_tps!==null&&t.generation_tps!==undefined?[t.generation_tps.toFixed(1),h("small",null,"tok/s")]:"–","","完成流的总输出 Token / 总生成时长；"+exact(t&&t.tps_samples||0)+" 个完成样本。估算值，含尾部传输时间"],
@@ -799,6 +811,44 @@ function renderKpis(){const t=SUM&&SUM.total,span=SUM?Math.max(1,SUM.to_ms-SUM.f
   renderRuntime();
   const g=$("gapban"),R=RECORDER,gap=!!R&&!!(R.dropped||R.write_errors);clear(g);g.classList.toggle("hide",!gap);
   if(gap)g.append(h("b",null,"用量记录有缺口"),h("span",null,"丢弃 "+exact(R.dropped)+" · 写入失败 "+exact(R.write_errors)))}
+// ---- Local-limit refusals (503 gateway_busy): per-minute rows from /usage/v1/refusals. They follow
+// the range, key and instance scope only; under an account or model filter the server sends null.
+const REASON={inflight:["转发上限","达到 max_inflight_requests"],ws:["WS 上限","达到 WebSocket 连接上限"],body:["请求体缓冲","请求体缓冲预算已满"],ws_msg:["WS 消息缓冲","WebSocket 消息缓冲预算已满"]};
+function refChip(){const t=REFS;if(!t)return null;const n=t.count||0;
+  const b=h("button",{class:"statlink refchip"+(n?" w":""),type:"button","aria-haspopup":"dialog","aria-expanded":"false"},"已拒绝 "+fmtN(n));
+  b.addEventListener("mouseenter",()=>refPop(b,false));b.addEventListener("mouseleave",()=>{if(refpop&&!refpop._pinned)refPopClose()});
+  b.addEventListener("focus",()=>refPop(b,false));b.addEventListener("blur",()=>setTimeout(()=>{if(refpop&&!refpop._pinned&&!refpop.contains(document.activeElement))refPopClose()},120));
+  b.addEventListener("click",e=>{e.stopPropagation();if(refpop&&refpop._pinned&&refpop._for===b)refPopClose();else refPop(b,true)});return b}
+// Created on first use (also keeps the source-section checks free of DOM side effects).
+let refpop=null;
+function refPopEl(){if(refpop)return refpop;refpop=h("div",{class:"pop refpop hide",id:"refpop",role:"dialog","aria-label":"已拒绝请求"});document.body.appendChild(refpop);
+  refpop.addEventListener("mouseleave",()=>{if(!refpop._pinned)refPopClose()});
+  document.addEventListener("click",e=>{if(!refpop.classList.contains("hide")&&!refpop.contains(e.target))refPopClose()});
+  document.addEventListener("keydown",e=>{if(e.key==="Escape"&&!refpop.classList.contains("hide")){const b=refpop._for;refPopClose();if(b&&b.isConnected)b.focus();e.preventDefault()}});return refpop}
+function refPop(b,pin){const t=REFS;if(!t)return;refPopEl();clear(refpop);refpop._for=b;refpop._pinned=pin;b.setAttribute("aria-expanded","true");
+  refpop.appendChild(h("div","rpt",h("b",null,"已拒绝 "+exact(t.count||0)),h("span","mut xs","本地上限 503 · "+(SUM?scopeLabel():""))));
+  const dl=h("dl","rpl");for(const k in REASON)dl.append(h("dt",{title:REASON[k][1]},REASON[k][0]),h("dd",{class:t[k]?"w":"mut"},exact(t[k]||0)));refpop.appendChild(dl);
+  if(t.count){const go=h("button",{class:"ghost xs",type:"button"},"查看记录 ›");go.addEventListener("click",()=>{refPopClose();drillOutcome("refused")});refpop.appendChild(go)}
+  refpop.classList.remove("hide");const r=b.getBoundingClientRect(),w=refpop.offsetWidth;
+  refpop.style.left=Math.max(8,Math.min(innerWidth-w-8,r.left+scrollX))+"px";refpop.style.top=(r.bottom+scrollY+6)+"px"}
+function refPopClose(){if(!refpop)return;if(refpop._for)refpop._for.setAttribute("aria-expanded","false");refpop._pinned=false;refpop._for=null;refpop.classList.add("hide")}
+function refRow(r){const tr=h("tr",{class:"rf"}),today=new Date(r.minute_ms).toDateString()===new Date().toDateString(),rs=REASON[r.reason]||[r.reason,""];
+  const span=r.first_ms===r.last_ms?isoLocal(r.first_ms):isoLocal(r.first_ms)+" – "+isoLocal(r.last_ms);
+  tr.appendChild(h("td",{class:"t num sm",title:"该分钟内 "+span},today?p2(new Date(r.minute_ms).getHours())+":"+p2(new Date(r.minute_ms).getMinutes()):fmtTime(r.minute_ms,true)));
+  tr.appendChild(h("td",{class:"rr",title:rs[1]},h("span","tag cool",rs[0]),r.transport==="ws"?h("span","tag line","WS"):""));
+  tr.appendChild(h("td",{class:"key sm mut",title:r.key||""},h("span","trunc",r.key||"–")));
+  tr.appendChild(h("td",{class:"ep mono xs",title:r.route+(r.model?" · "+r.model:"")+(r.account?" · "+r.account:"")},r.route||"–",r.model?h("span","mut"," · "+r.model):""));
+  tr.appendChild(h("td",{class:"ua x sm mut",title:r.ua||""},h("span","trunc",r.ua||"–")));
+  tr.appendChild(h("td",{class:"n cnt"},"×"+exact(r.count)));
+  const buf=r.reason==="body"||r.reason==="ws_msg",occ=r.reason==="ws"?"WS "+exact(r.max_ws):buf?fmtB(r.max_buffered_bytes):"转发 "+exact(r.max_inflight);
+  const lim=r.limit?(buf?fmtB(r.limit):exact(r.limit)):"不限";
+  tr.appendChild(h("td",{class:"n occ sm",title:"上限 "+lim+"；该分钟最高占用：转发 "+exact(r.max_inflight)+" · WS "+exact(r.max_ws)+" · 缓冲 "+fmtB(r.max_buffered_bytes)+(r.max_bytes?"；单次最大请求 "+fmtB(r.max_bytes):"")},lim+" / "+occ));
+  return tr}
+function renderRefusals(){const tb=$("refrec").tBodies[0];clear(tb);
+  for(const r of refState.rows)tb.appendChild(refRow(r));
+  if(!refState.rows.length)emptyRow(tb,7,scopedOut()?"按账号或模型筛选时不显示拒绝记录":"没有被拒绝的请求",scopedOut()?"拒绝发生在选号之前，清除账号和模型筛选后查看":"换个时间段试试");
+  $("rcount").textContent=scopedOut()?"":"共 "+exact(refState.total)+" 次 · "+exact(refState.rows.length)+" 组";
+  $("rmore").classList.toggle("hide",!refState.more);$("rpage").textContent=""}
 function drillOutcome(outcome){if(!summaryCurrent())return;recordWindow=null;$("foutcome").value=outcome;for(const id of ["fsrc","ftier","fcode"])$(id).value="";$("fretry").checked=false;$("ferr").checked=false;saveF();showScope();renderTrend();loadRecords(false).catch(fail);revealRecords()}
 function revealRecords(){const bar=document.querySelector(".fbar"),section=$("sr");
   section.style.scrollMarginTop=(parseFloat(getComputedStyle(bar).top)+bar.offsetHeight+12)+"px";
@@ -1055,8 +1105,19 @@ function renderRecords(){const tb=$("rec").tBodies[0],dp=$("dp"),opener=!dp.clas
   $("rmore").classList.toggle("hide",!recState.cursor);
   $("rpage").textContent=(recState.cursor?"已显示 "+exact(recState.rows.length)+" 条":"")+(recState.rows.length>PAGE?" · 已暂停滚动更新；刷新查看最新":"");renderDetailNav()}
 const PAGE=50;
+function refusedMode(){return $("foutcome").value==="refused"}
+let refState={rows:[],offset:0,more:false,total:0,signature:""};
+function refFilters(){const f=scopeFilters();return Object.assign({from:f.from,to:f.to,key:f.key,instance:f.instance},recordWindow||{})}
+function scopedOut(){const f=scopeFilters();return !!(f.account||f.model)}
+async function loadRefusals(append){const f=refFilters(),signature=qs(f);
+  const base=append&&refState.signature===signature?refState:{rows:[],offset:0,more:false,total:0,signature};
+  if(scopedOut()){refState=Object.assign(base,{rows:[],more:false,total:0});renderRefusals();return}
+  const q=qs(Object.assign({},f,{limit:PAGE,offset:base.offset}));
+  await currentLoad("sr",()=>"refused|"+qs(refFilters()),(_q,current)=>usageGet("/usage/v1/refusals?"+q,current),d=>{
+    const rows=base.rows.concat(d.rows);refState={rows,offset:base.offset+d.rows.length,more:d.rows.length===PAGE,total:d.totals.count,signature};renderRefusals()})}
+function showRefusedMode(){const on=refusedMode();$("rw").classList.toggle("hide",on);$("refw").classList.toggle("hide",!on);$("recordextra").classList.toggle("hide",on)}
 function recordFilters(){const t=$("ftier").value,o=$("foutcome").value;return Object.assign({},scopeFilters(),recordWindow||{},{outcome:o==="business"?"":o,exclude_prewarm:o==="business"||(o!=="prewarm"&&!withPrewarm())?1:"",errors:$("ferr").checked?1:"",source:$("fsrc").value,error:$("fcode").value.trim(),retried:$("fretry").checked?1:"",tier:t==="dg"?"":t,downgraded:t==="dg"?1:""})}
-async function loadRecords(append){const filters=recordFilters(),signature=qs(filters);
+async function loadRecords(append){showRefusedMode();if(refusedMode())return loadRefusals(append);const filters=recordFilters(),signature=qs(filters);
   const base=append&&recState.signature===signature?recState:{cursor:null,total:0,rows:[]};
   if(append&&base.rows.length&&!base.cursor)return;
   const q=qs(Object.assign({},filters,{limit:PAGE,before_id:base.cursor}));
@@ -1141,7 +1202,7 @@ function resetQuotaReads(){for(const state of Object.values(QUOTA_READ)){state.a
 function summaryQuery(){const q=new URLSearchParams(trendQuery());q.set("group",$("group").value);return q.toString()}
 // The API returns both grouped metrics and buckets. One scan serves the whole overview.
 async function loadSummary(){try{await currentLoad("ss",summaryQuery,(q,current)=>{$("st").setAttribute("aria-busy","true");return usageGet("/usage/v1/summary?"+q,current)},(s,q)=>{
-  const p=new URLSearchParams(q),hourly=p.get("bucket")==="hour";SUM=s.summary;SUM_SCOPE=qs(scopeFilters());RECORDER=s.recorder;
+  const p=new URLSearchParams(q),hourly=p.get("bucket")==="hour";SUM=s.summary;SUM_SCOPE=qs(scopeFilters());RECORDER=s.recorder;REFS=s.refusals||null;
   TREND={summary:s.summary,hourly,tz:Number(p.get("tz"))};$("trange").textContent=hourly?"每小时":"每天";renderSummary();renderKpis();renderTrend()})}
   finally{if(!loading.ss)$("st").setAttribute("aria-busy","false")}}
 function trendQuery(){const mode=$("tmode").value,hourly=mode==="hour"||(mode==="auto"&&scopeWindow.to-scopeWindow.from<=2*864e5),tz=-new Date(scopeWindow.to).getTimezoneOffset();
@@ -1152,9 +1213,9 @@ function renderRuntime(){const st=$("strip"),r=EG&&EG.runtime;let row=$("liverow
   if(!row){row=h("div",{class:"kpi live",id:"liverow"},h("span","k","实时"),h("span",{id:"live"}))}
   st.appendChild(row);const e=$("live"),near=!!r.limit&&r.inflight/r.limit>=0.8;clear(e);
   if(r.draining){e.className="tag dot err";e.textContent="正在关闭"}
-  else{e.className="tag dot "+(r.rejected||near?"cool":r.inflight||r.ws_connections?"ok":"off");
-    e.textContent=(r.rejected?"已拒绝 "+exact(r.rejected)+" · ":"")+"转发 "+exact(r.inflight)+(near?" / "+exact(r.limit):"")+" · WS "+exact(r.ws_connections)}
-  row.title="进程状态，读取于 "+hms(new Date())+"，不受时间范围影响。上限 "+(r.limit?exact(r.limit):"不限")+"；HTTP 占用到响应结束，WS 含空闲连接；达到上限立即返回 503，不排队"+(r.rejected?"；已拒绝数从进程启动起累计":"")}
+  else{e.className="tag dot "+(near?"cool":r.inflight||r.ws_connections?"ok":"off");
+    e.textContent="转发 "+exact(r.inflight)+(near?" / "+exact(r.limit):"")+" · WS "+exact(r.ws_connections)}
+  row.title="进程状态，读取于 "+hms(new Date())+"，不受时间范围影响。上限 "+(r.limit?exact(r.limit):"不限")+"；HTTP 占用到响应结束，WS 含空闲连接；达到上限立即返回 503，不排队"}
 // ---- memory panel (admin keys only): /admin/v1/memory is an in-memory 10 s sampler, no disk
 // ---- Scope suggestions: model / key / instance comboboxes. Values come from recent usage rows
 // plus configured keys and this instance (cached 60 s on the server and here); free text stays allowed.

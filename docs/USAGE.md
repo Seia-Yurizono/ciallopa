@@ -379,14 +379,44 @@ CREATE INDEX quota_obs_account ON quota_obs(account, id);
 CREATE TABLE error_detail(id INTEGER PRIMARY KEY, message TEXT, body TEXT,
   body_len INTEGER NOT NULL, truncated INTEGER NOT NULL, headers TEXT NOT NULL,
   up_req_id TEXT, attempts TEXT);                             -- v9
+-- v10: requests refused by a local limit, one row per minute and group (label columns: labels.id or 0)
+CREATE TABLE refusals(minute INTEGER NOT NULL, reason INTEGER NOT NULL, transport INTEGER NOT NULL,
+  key INTEGER NOT NULL, route INTEGER NOT NULL, ua INTEGER NOT NULL, model INTEGER NOT NULL,
+  account INTEGER NOT NULL, instance INTEGER NOT NULL, lim INTEGER NOT NULL,
+  count INTEGER NOT NULL, first_ms INTEGER NOT NULL, last_ms INTEGER NOT NULL,
+  max_inflight INTEGER NOT NULL, max_ws INTEGER NOT NULL, max_buffered INTEGER NOT NULL,
+  max_bytes INTEGER, sum_bytes INTEGER,
+  PRIMARY KEY(minute, reason, transport, key, route, ua, model, account, instance, lim));
 ```
-- Schema is at `user_version = 9`. Opening an older file upgrades it in place (`ALTER TABLE` /
+- Schema is at `user_version = 10`. Opening an older file upgrades it in place (`ALTER TABLE` /
   new tables); columns that did not exist yet stay NULL on old rows.
 - `quota_obs` gets a row only when used % / plan changes or a reset time moves by > 120 s
   (upstream reset times jitter by a few seconds). Purge keeps each account's latest row.
 - **No secondary index.** Time ranges are rowid range scans (`id BETWEEN from<<20 AND to<<20`),
   purge is a rowid range delete, "recent" is a reverse rowid scan. Strings (account e-mails,
   model names) are interned in `labels`, so a row is ~51 bytes on disk (1M rows ≈ 51 MB).
+
+## Refusals (local limits)
+Requests refused by ciallopa itself never reach an account, so they have no `requests` row.
+They are counted in memory and merged into `refusals`, one row per minute and group:
+- `reason`: `inflight` (`max_inflight_requests`, 503 `gateway_busy`), `ws` (WebSocket connection
+  cap), `body` (buffered request body budget), `ws_msg` (buffered WebSocket message budget).
+- Group: reason, transport (`http`/`ws`), client key, route (client path without query, ids
+  collapsed), User-Agent, instance, limit in effect, and model/account (known only for `ws_msg`).
+- Per row: `count`, `first_ms`/`last_ms`, and the highest occupancy seen at a refusal
+  (`max_inflight`, `max_ws`, `max_buffered`), plus `max_bytes`/`sum_bytes` for body kinds. This is
+  the context needed to tune a limit: a refusal at `64 / 64` with `max_ws = 24` means idle
+  WebSockets held a third of the slots.
+- The usage writer flushes the counters every 5 s, at shutdown and on an explicit flush; a
+  failed write keeps the counters for the next flush. Rows follow `retention_days` like requests.
+  With `[usage] enabled = false` nothing is stored; the process-lifetime counters in
+  `GET /admin/v1/config` → `runtime.rejected_by` still work.
+- Refusals while draining (shutdown) are not counted: the client is told to retry elsewhere.
+- Exempt from the inflight cap (GET only): `/v1/models`, `/backend-api/codex/models`,
+  `/backend-api/wham/usage`, `/api/codex/usage`. They are cheap and Codex polls them; refusing
+  them made the client look broken while the cap was only full of idle WebSockets.
+- Logs: at most one WARN per reason per minute, carrying `refused=<n>` (refusals since the
+  previous line). Counting log lines (`grep -c`) therefore undercounts; sum `refused` or use the API.
 
 ## Retention
 - `retention_days` (default 90; `0` = keep forever, no purge at all). Error details follow the
@@ -447,6 +477,14 @@ See [METRICS.md](METRICS.md) for the current outcome, sampling, cursor and bucke
   cached_tokens, reasoning_tokens, cost_usd, unknown_price}]` (ascending, empty days omitted;
   `tz` −840..840, default 0; unsupported `bucket` values → 400). `end_ms` is exclusive;
   partial first/last buckets are clipped to the shared scope by the `/ui` trend chart.
+- `GET /usage/v1/refusals?range=24h&reason=inflight&key=<label>&instance=&limit=50&offset=0`
+  (or `from`/`to`; `to` is inclusive at minute granularity) → `{"totals":{count, rows, inflight, ws,
+  body, ws_msg}, "rows":[{minute_ms, reason, transport, key, route, ua, model, account, instance,
+  limit, count, first_ms, last_ms, max_inflight, max_ws, max_buffered_bytes, max_bytes,
+  sum_bytes}]}` newest first. Unknown `reason` → 400. Account and model filters do not apply
+  (refusals happen before an account is picked).
+- `GET /usage/v1/summary` also returns `"refusals"`: the totals for the same range, key and
+  instance, or `null` when an `account` or `model` filter is set.
 - `GET /usage/v1/quota` → `{"accounts":[{account, email, disabled, needs_relogin, quota:
   {plan, observed_at_ms, observed_by, primary:{used_pct, resets_at, window_minutes, estimate},
   secondary:{…}}}], "note": …}`. Every configured account is listed (`quota: null` if never
@@ -647,6 +685,11 @@ Page behavior:
   address row shows the current egress and a 测试连接 button (`POST /admin/v1/proxy/test`) that
   probes the address as typed, saved or not, and shows exit IP, location, Cloudflare colo and
   latency, or the failure.
+- The 请求 tile shows 「已拒绝 N」 for the current range, key and instance (orange when N > 0;
+  hidden under an account or model filter). Hover or tap opens the per-reason breakdown with
+  「查看记录 ›」, which sets 结果 = 已拒绝: the request list then shows the per-minute refusal rows
+  (time, reason, key, route, UA, ×count, limit / occupancy). The 实时 row shows only the current
+  转发 / WS occupancy.
 - Quota cards show **remaining** percent (bar width = remaining). Color follows remaining:
   green when ≥ 50%, yellow when < 50%, red when < 20%. The card top strip is yellow when
   the account's max used percent is over 50%, and red when over 80%.

@@ -39,7 +39,17 @@ pub(crate) async fn admit(
     next: Next,
 ) -> Response {
     let drain = st.upstream.drain.clone();
-    let lease = match drain.admit(st.config.load().max_inflight_requests) {
+    let admitted = if exempt(&req) {
+        drain.admit_exempt()
+    } else {
+        let limit = st.config.load().max_inflight_requests;
+        drain.admit(limit).inspect_err(|r| {
+            if *r == Refused::Busy {
+                note_inflight(&st, &req, limit);
+            }
+        })
+    };
+    let lease = match admitted {
         Ok(lease) => lease,
         Err(reason) => return refused(reason),
     };
@@ -60,6 +70,45 @@ pub(crate) async fn admit(
             forced: Box::pin(async move { drain.forced().await }),
         }),
     )
+}
+
+/// Model lists and quota polls are small, frequent and needed to show the user what is
+/// going on, so they never take or wait for an inflight slot.
+fn exempt(req: &Request<Body>) -> bool {
+    req.method() == http::Method::GET
+        && matches!(
+            req.uri().path(),
+            "/v1/models"
+                | "/backend-api/codex/models"
+                | "/backend-api/wham/usage"
+                | "/api/codex/usage"
+        )
+}
+
+fn note_inflight(st: &AppState, req: &Request<Body>, limit: usize) {
+    let ws = req
+        .headers()
+        .get(http::header::UPGRADE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case("websocket"));
+    let key = req
+        .extensions()
+        .get::<crate::ClientKey>()
+        .map(|k| &*k.label);
+    crate::refusal::note(
+        st,
+        crate::refusal::Refusal {
+            kind: ciallopa_upstream::drain::RefusalKind::Inflight,
+            ws,
+            key,
+            path: req.uri().path(),
+            headers: req.headers(),
+            model: None,
+            account: None,
+            limit: limit as u64,
+            bytes: None,
+        },
+    );
 }
 
 struct LeasedBody {

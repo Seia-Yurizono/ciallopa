@@ -1,5 +1,5 @@
 //! Read-only usage API (behind the client key): records, record metadata/detail,
-//! summary, quota and scope-filter suggestions under `/usage/v1`.
+//! summary, quota, local-limit refusals and scope-filter suggestions under `/usage/v1`.
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -46,6 +46,7 @@ pub fn routes(
         .route("/usage/v1/records/{id}/detail", get(detail))
         .route("/usage/v1/summary", get(summary))
         .route("/usage/v1/quota", get(quota))
+        .route("/usage/v1/refusals", get(refusals))
         .route("/usage/v1/scope-values", get(scope_values))
         .with_state(St {
             rec,
@@ -339,8 +340,89 @@ async fn summary(State(St { rec, .. }): State<St>, Query(q): Query<SummaryQ>) ->
         bucket_hour: q.bucket.as_deref() == Some("hour"),
         exclude_prewarm: matches!(q.exclude_prewarm.as_deref().map(str::trim), Some(v) if !v.is_empty() && v != "0"),
     };
-    match rec.summary(sq).await {
-        Ok(s) => Json(serde_json::json!({"summary": s, "recorder": rec.stats()})).into_response(),
+    // Refusals happen before an account or model is known, so they only follow the key /
+    // instance scope; with an account or model filter they are left out (`null`).
+    let rq = (sq.filters.account.is_none() && sq.filters.model.is_none()).then(|| {
+        ciallopa_usage::RefusalQuery {
+            from_ms: from,
+            to_ms: to,
+            key: sq.filters.key.clone(),
+            instance: sq.filters.instance.clone(),
+            ..Default::default()
+        }
+    });
+    let s = match rec.summary(sq).await {
+        Ok(s) => s,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    };
+    let refusals = match rq {
+        None => None,
+        Some(rq) => match rec.refusal_totals(rq).await {
+            Ok(t) => Some(t),
+            Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+        },
+    };
+    Json(serde_json::json!({"summary": s, "refusals": refusals, "recorder": rec.stats()}))
+        .into_response()
+}
+
+#[derive(Deserialize)]
+struct RefusalsQ {
+    from: Option<i64>,
+    to: Option<i64>,
+    range: Option<String>,
+    /// `inflight`, `ws`, `body` or `ws_msg`.
+    reason: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+    key: Option<String>,
+    instance: Option<String>,
+}
+
+/// Local-limit refusals aggregated per minute: `{totals, rows}`, newest minute first.
+async fn refusals(State(St { rec, .. }): State<St>, Query(q): Query<RefusalsQ>) -> Response {
+    let Some(rec) = rec else {
+        return err(StatusCode::NOT_FOUND, "usage log disabled");
+    };
+    let to = q.to.unwrap_or_else(now_ms);
+    let from = match (q.from, q.range.as_deref()) {
+        (Some(f), _) => f,
+        (None, r) => match parse_range(r.unwrap_or("24h")) {
+            Some(d) => to - d,
+            None => return err(StatusCode::BAD_REQUEST, "bad range (use e.g. 30m, 24h, 7d)"),
+        },
+    };
+    if from > to {
+        return err(StatusCode::BAD_REQUEST, "from > to");
+    }
+    let reason = match q.reason.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+        None => None,
+        Some(r) => match ciallopa_usage::RefusalReason::parse(r) {
+            Some(r) => Some(r),
+            None => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "bad reason (inflight,ws,body,ws_msg)",
+                )
+            }
+        },
+    };
+    let nonempty = |v: Option<String>| v.filter(|v| !v.trim().is_empty());
+    let rq = ciallopa_usage::RefusalQuery {
+        from_ms: from,
+        to_ms: to,
+        key: nonempty(q.key),
+        instance: nonempty(q.instance),
+        reason,
+        limit: q.limit.unwrap_or(100),
+        offset: q.offset.unwrap_or(0),
+    };
+    let totals = match rec.refusal_totals(rq.clone()).await {
+        Ok(t) => t,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    };
+    match rec.refusal_rows(rq).await {
+        Ok(rows) => Json(serde_json::json!({"totals": totals, "rows": rows})).into_response(),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     }
 }

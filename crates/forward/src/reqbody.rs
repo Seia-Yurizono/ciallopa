@@ -109,7 +109,27 @@ impl FromRequest<AppState> for ReqBody {
             .get(http::header::CONTENT_LENGTH)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.trim().parse::<u64>().ok());
-        let mut stream = req.into_body().into_data_stream();
+        let (parts, body) = req.into_parts();
+        let mut stream = body.into_data_stream();
+        let note = |n: u64| {
+            crate::refusal::note(
+                st,
+                crate::refusal::Refusal {
+                    kind: ciallopa_upstream::drain::RefusalKind::Body,
+                    ws: false,
+                    key: parts
+                        .extensions
+                        .get::<crate::ClientKey>()
+                        .map(|k| &*k.label),
+                    path: parts.uri.path(),
+                    headers: &parts.headers,
+                    model: None,
+                    account: None,
+                    limit: budget,
+                    bytes: Some(n),
+                },
+            )
+        };
         if declared.is_some_and(|n| n > max) {
             return Err(discard(stream, too_large()).await);
         }
@@ -120,6 +140,7 @@ impl FromRequest<AppState> for ReqBody {
                 .reserve_body(&mut permit, n, budget, BUDGET_WAIT)
                 .await
             {
+                note(n);
                 return Err(discard(stream, crate::admission::refused(r)).await);
             }
         }
@@ -138,6 +159,7 @@ impl FromRequest<AppState> for ReqBody {
                     .await
                 {
                     drop(buf);
+                    note(len);
                     return Err(discard(stream, crate::admission::refused(r)).await);
                 }
             }
