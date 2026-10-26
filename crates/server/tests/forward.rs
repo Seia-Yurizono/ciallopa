@@ -1196,8 +1196,8 @@ fn sized_post(len: usize, chunked: bool) -> http::Request<Body> {
 
 async fn busy_json(r: Response) -> serde_json::Value {
     assert_eq!(r.status(), 503);
-    assert_eq!(r.headers()["retry-after"], "1");
-    assert_eq!(r.headers()["retry-after-ms"], "1000");
+    assert_eq!(r.headers()["retry-after"], "3");
+    assert_eq!(r.headers()["retry-after-ms"], "3000");
     serde_json::from_slice(&axum::body::to_bytes(r.into_body(), 4096).await.unwrap()).unwrap()
 }
 
@@ -1336,8 +1336,8 @@ async fn admission_holds_http_body_and_hot_limit_keeps_existing_occupancy() {
         .unwrap();
     let busy = e.app.clone().oneshot(req).await.unwrap();
     assert_eq!(busy.status(), 503);
-    assert_eq!(busy.headers()["retry-after"], "1");
-    assert_eq!(busy.headers()["retry-after-ms"], "1000");
+    assert_eq!(busy.headers()["retry-after"], "3");
+    assert_eq!(busy.headers()["retry-after-ms"], "3000");
     let json: serde_json::Value =
         serde_json::from_slice(&axum::body::to_bytes(busy.into_body(), 4096).await.unwrap())
             .unwrap();
@@ -1500,8 +1500,8 @@ async fn ws_connection_cap_refuses_handshakes_until_one_closes() {
     match tokio_tungstenite::connect_async(ws_req(&e)).await {
         Err(tokio_tungstenite::tungstenite::Error::Http(r)) => {
             assert_eq!(r.status(), 503);
-            assert_eq!(r.headers()["retry-after"], "1");
-            assert_eq!(r.headers()["retry-after-ms"], "1000");
+            assert_eq!(r.headers()["retry-after"], "3");
+            assert_eq!(r.headers()["retry-after-ms"], "3000");
             let body: serde_json::Value =
                 serde_json::from_slice(r.body().as_deref().unwrap()).unwrap();
             assert_eq!(body["error"]["type"], "gateway_busy");
@@ -2402,7 +2402,7 @@ async fn websocket_messages_share_the_buffered_body_budget() {
             "type": "error",
             "status": 503,
             "error": {"type": "gateway_busy", "message": "Gateway is busy; retry shortly."},
-            "headers": {"retry-after": "1", "retry-after-ms": "1000"},
+            "headers": {"retry-after": "3", "retry-after-ms": "3000"},
         })
     );
     assert_eq!(e.drain.body_bytes(), 900 * 1024);

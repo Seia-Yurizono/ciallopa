@@ -623,7 +623,7 @@ function wslots(q){const o={s:null,l:null};if(!q)return o;
 function whead(labels,def){const L=[...new Set(labels.map(x=>x==="5h"?"5 小时":x))];return(L.length?L.join(" / "):def)+"剩余"}
 // 刷新额度 answered "asked moments ago": neutral, not a failure.
 const qskip=r=>!r.ok&&r.error&&r.error.kind==="rate_limited";
-function qsummary(j){const sk=j.skipped!==undefined?j.skipped:j.results.filter(qskip).length,p=[];if(j.ok)p.push("已刷新 "+j.ok+" 个账号的额度");if(sk)p.push(sk+" 个 30 秒内刚查询过，已跳过");return p.join("，")||"没有可刷新的账号"}
+function qsummary(j){const sk=j.skipped!==undefined?j.skipped:j.results.filter(qskip).length,cleared=(j.results||[]).filter(r=>r.cooldown_cleared).length,p=[];if(j.ok)p.push("已刷新 "+j.ok+" 个账号的额度");if(cleared)p.push(cleared+" 个已解除额度冷却");if(sk)p.push(sk+" 个 30 秒内刚查询过，已跳过");return p.join("，")||"没有可刷新的账号"}
 function qerr(e){e=e||{};const m=e.message||"";return{rate_limited:"刚查询过，"+(e.retry_after_s||30)+" 秒后再试",http:"上游 HTTP "+e.status+(m?" · "+m:""),network:"连不上上游（"+m.replace(/^send: /,"")+"）",timeout:"上游 5 秒内没有响应",credentials:"获取令牌失败（"+m.replace(/^credentials: /,"")+"）",token_invalid:"令牌失效，需要重新登录",decode:"上游返回里没有额度数据"}[e.kind]||m||"未知错误"}
 // The button stays focusable while busy (aria-disabled), so keyboard focus is not dropped.
 async function busyRun(b,name,f,label){if(b.disabled||b._busy)return false;const t=b.textContent;b._busy=true;b.classList.add("busy");b.setAttribute("aria-disabled","true");b.setAttribute("aria-busy","true");if(label)b.textContent=label;
@@ -945,7 +945,7 @@ document.addEventListener("click",async e=>{const t=e.target.closest("[data-pop]
   const rb=e.target.closest("[data-rcref]");if(rb){const id=rb.dataset.rcref;await busyRun(rb,"刷新重置卡",async()=>{RC=(await req("POST","/usage/v1/reset-credits/refresh",{account:id},null,T)).j;renderQuota();toast("已刷新 "+nmOf(id)+" 的重置卡")},"刷新中…");return}
   const qb=e.target.closest("[data-qref]");if(qb){const id=qb.dataset.qref;await busyRun(qb,"刷新额度",async()=>{const r=(await req("POST","/admin/v1/accounts/"+encodeURIComponent(id)+"/quota-refresh",{},null,T)).j;applyQuota(r);renderQuota();
     if(qskip(r)){toast(qerr(r.error));return}
-    if(!r.ok)throw Object.assign(new Error(qerr(r.error)),{kind:r.error.kind});toast("已刷新 "+nmOf(id)+" 的额度")},"查询中…");return}
+    if(!r.ok)throw Object.assign(new Error(qerr(r.error)),{kind:r.error.kind});toast("已刷新 "+nmOf(id)+" 的额度"+(r.cooldown_cleared?"，已解除额度冷却":""))},"查询中…");return}
   const cb=e.target.closest("[data-consume]");if(cb){const a=acctById(cb.dataset.consume);if(a){const c=cb.dataset.credit?(a.rc.credits||[]).find(x=>x.id===cb.dataset.credit):null;openConsume(a,c,cb)}return}
   if(e.target.closest("#rcpop a")){closePop(false);return}
   if(popFor&&!e.target.closest("#rcpop")&&!e.target.closest(".modal"))closePop(false)});

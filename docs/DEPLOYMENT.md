@@ -104,7 +104,7 @@ capacity and the acceptable delay in retiring old routes. It does not protect pr
 
 `max_inflight_requests` defaults to 64 and is hot-reloadable. An HTTP request holds its slot
 through the response body; a WebSocket turn holds one until its terminal event, and an idle
-WebSocket holds none. At capacity HTTP receives 503 `gateway_busy` and `Retry-After: 1` before
+WebSocket holds none. At capacity HTTP receives 503 `gateway_busy` and `Retry-After: 3` before
 its body is read; a WS turn gets the same error as a frame and the connection stays open. There is no queue;
 health, admin and usage queries remain outside this limit. `0` disables rejection while
 continuing to count occupancy. This is a conservative guard, not a measured capacity or memory

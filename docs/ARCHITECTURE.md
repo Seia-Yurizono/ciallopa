@@ -91,7 +91,7 @@ HTTP 请求占一个槽直到 Body EOF、错误或丢弃；WS 每个 turn 从客
 空闲 WS 不占槽（连接数只由 `ws_max_connections` 限制），握手本身不占槽。满额时该 turn 收到 503 `gateway_busy`
 错误帧、不转发，连接保持，并记为 ws 的 `inflight` 拒绝。没有每客户端 key、每账号公平调度或等待队列。
 
-超额立即返回503、`gateway_busy` 和 `Retry-After: 1`。停机时拒绝新转发为 `shutdown`。
+超额立即返回503、`gateway_busy` 和 `Retry-After: 3`。停机时拒绝新转发为 `shutdown`。
 准入只包住 Responses、compact、models、images 及已有透传路由；health、UI、admin和usage查询不占槽。
 这使它们不会被同一准入计数挡住，但不保证在CPU、内存或磁盘过载时仍有独立资源。
 
@@ -104,7 +104,7 @@ HTTP 请求占一个槽直到 Body EOF、错误或丢弃；WS 每个 turn 从客
 重试和流内重放共享的 `Bytes`、zstd压缩副本都持有同一预留。没有空间时最多等1秒，再返回与准入相同的503；
 返回前读掉并丢弃剩余请求体（最多10秒），避免客户端只看到连接重置。实测进程峰值约为该预算的1.4–2倍。
 请求体按 `Content-Length` 预分配，解析出的JSON在压缩前释放；zstd请求体的解压inspection上限等于 `max_body_mb`。
-客户端WS消息到达时预留其大小（最多整个预算），因为要留作重放，一直占用到该轮结束；没有空间时最多等1秒，再回一个503 `gateway_busy` 错误帧（`retry-after: 1`），连接保持。
+客户端WS消息到达时预留其大小（最多整个预算），因为要留作重放，一直占用到该轮结束；没有空间时最多等1秒，再回一个503 `gateway_busy` 错误帧（`retry-after: 3`），连接保持。
 这一预算不限制WS的峰值内存：每个连接的接收与解压缓冲在消息可被计数之前就已存在，上界是 `ws_max_connections`（默认24，超出时握手回503）× `ws_max_message_mb`（默认16MiB，超出时以1009关闭）。
 WS握手时还不知道模型，因此选号不带模型；每一轮 `response.create` 到达后按该轮模型重新检查所选账号的按模型冷却：可重放的轮次改连另一个可用账号（或等短冷却），依赖 `previous_response_id` 的轮次以1012关闭让客户端重放，都无可用账号时回一个与HTTP相同的错误帧，连接保持。
 图像结果不计入这一预算，SSE通道的16个槽按chunk计数。

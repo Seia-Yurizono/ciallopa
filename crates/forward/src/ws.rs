@@ -424,16 +424,20 @@ fn to_down(m: WsMessage) -> Option<Message> {
 }
 
 /// Answer to a client message refused by the buffered-body budget: the same 503
-/// `gateway_busy` wording and `Retry-After: 1` (`retry-after-ms: 1000`) as HTTP, as an upstream-style wrapped error
-/// event (Codex maps it to a retryable HTTP 503). The message is not forwarded and no turn
-/// starts; the connection stays open.
+/// `gateway_busy` wording and `Retry-After` as HTTP ([`crate::admission::BUSY_RETRY_AFTER_SECS`]),
+/// as an upstream-style wrapped error event (Codex maps it to a retryable HTTP 503). The
+/// message is not forwarded and no turn starts; the connection stays open.
 fn busy_frame() -> Message {
+    let secs = crate::admission::BUSY_RETRY_AFTER_SECS;
     Message::text(
         serde_json::json!({
             "type": "error",
             "status": 503,
             "error": {"type": "gateway_busy", "message": "Gateway is busy; retry shortly."},
-            "headers": {"retry-after": "1", "retry-after-ms": "1000"},
+            "headers": {
+                "retry-after": secs.to_string(),
+                "retry-after-ms": (secs.saturating_mul(1000)).to_string(),
+            },
         })
         .to_string(),
     )

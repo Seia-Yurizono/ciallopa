@@ -23,7 +23,7 @@ max_inflight_requests = 64
 max_body_mb = 64
 # Total MiB of HTTP request bodies and client WebSocket messages buffered at once (hot). A body
 # reserves its size before it is read; without room it waits up to 1 s, then gets 503 +
-# Retry-After: 1 (a WebSocket message gets a 503 error frame; the connection stays open). Process memory is about
+# Retry-After: 3 (a WebSocket message gets a 503 error frame; the connection stays open). Process memory is about
 # 1.4-2x this value; 256 fits a ~1 GiB process budget on a 2 GB host. 0 = unlimited, otherwise
 # at least max_body_mb.
 max_buffered_body_mb = 256
@@ -31,7 +31,7 @@ max_buffered_body_mb = 256
 # unlimited). Each connection can hold a few copies of its largest message (receive, inflate,
 # send) before max_buffered_body_mb can count it, so this times ws_max_message_mb bounds
 # WebSocket memory; 24 x 16 fits a 2 GB host. Over the cap a handshake gets 503 gateway_busy +
-# Retry-After: 1; Codex retries, then uses HTTP for that session.
+# Retry-After: 3; Codex retries, then uses HTTP for that session.
 ws_max_connections = 24
 # Largest client WebSocket message in MiB after decompression (hot: new handshakes; 1-4096).
 # A larger one closes the connection with 1009; Codex retries, then falls back to HTTP, where

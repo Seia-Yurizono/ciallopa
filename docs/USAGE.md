@@ -568,16 +568,23 @@ See [METRICS.md](METRICS.md) for the current outcome, sampling, cursor and bucke
 - `POST /admin/v1/accounts/{id}/quota-refresh` and `POST /admin/v1/accounts/quota-refresh` (all
   accounts, four at a time; admin key, JSON body, same-origin) ask upstream `GET /wham/usage`
   (5 s, Codex client headers, egress proxy) for the current windows. Read-only; one call per
-  account per 30 s, a repeat inside that answers `rate_limited` without an upstream call.
+  account per 30 s (`QUOTA_REFRESH_MIN`), a repeat inside that answers `rate_limited` without an
+  upstream call. There is no background `/wham/usage` poll — only this manual 刷新额度 (and the
+  post-consume fetch after a successful reset card) hits that endpoint. The only period limit
+  today is that 30 s per account.
   Result per account: `{account, ok:true, quota:{plan, primary, secondary}, observed_at_ms,
-  usage_available_count, limit_reached}` or
+  usage_available_count, allowed, limit_reached, cooldown_cleared?}` or
   `{account, ok:false, error:{kind: rate_limited|http|network|timeout|credentials|token_invalid|decode,
   status?, message, retry_after_s?}}`; the batch call returns `{ok, skipped, failed, results}`
   (`skipped`: `rate_limited` accounts, `failed`: the rest). A successful answer is stored as a quota snapshot with `observed_by: "manual"` through the usage writer's
   batches (written even when unchanged, so its time shows the freshness).
-  `usage_available_count` (`rate_limit_reset_credits.available_count`) and `limit_reached`
-  (`rate_limit.limit_reached`) are `null` when upstream omits them. They are kept in memory on the
-  account's reset-credit entry for display only (see below); nothing acts on them.
+  `usage_available_count` (`rate_limit_reset_credits.available_count`), `allowed`
+  (`rate_limit.allowed`) and `limit_reached` (`rate_limit.limit_reached`) are `null` when
+  upstream omits them; they are kept in memory on the account's reset-credit entry for display.
+  When both `allowed == true` and `limit_reached == false`, the account's usage-limit /
+  rate-limit cooldowns are dropped (same as a successful reset-credit consume; other cooldowns
+  stay) and the response carries `cooldown_cleared` (`true` if a live cooldown was dropped).
+  A missing `allowed` never clears.
 
 ## Quota estimate
 **The used % comes from upstream and includes usage by other clients (Codex app, other
@@ -829,8 +836,8 @@ Config (`[ui]`):
 API (client key):
 - `GET /usage/v1/reset-credits` → `{consume_enabled, can_consume, is_admin, refresh_mins, accounts: [{account, email,
   disabled, reset_credits: {fetched_ms, available_count, credits, nearest_expires_at, error,
-  error_ms, usage_available_count, limit_reached, usage_observed_ms} | null}], attempts: [last 20
-  consume attempts]}`. The `usage_*` fields and `limit_reached` come from the last 刷新额度
+  error_ms, usage_available_count, allowed, limit_reached, usage_observed_ms} | null}], attempts: [last 20
+  consume attempts]}`. The `usage_*` fields, `allowed` and `limit_reached` come from the last 刷新额度
   (`/wham/usage`) answer; the listing fields stay authoritative for consuming. The 账号 page shows
   the newer of the two counts and 「已达额度上限」 until a newer quota observation replaces it. Cache is in memory (re-fetched
   after restart); `nearest_expires_at` = earliest expiry among `status == "available"`.
@@ -849,7 +856,8 @@ API (client key):
   After a `reset` the account's usage-limit and rate-limit cooldowns (account and per-model)
   are dropped at once, so it serves the next request; other cooldowns (401/403, 402, 404, 5xx,
   overload) stay. The response then carries `cooldown_cleared` (`true` if a live
-  cooldown was dropped). Only this manual consume does it; nothing consumes a card by itself.
+  cooldown was dropped). A successful 刷新额度 with `allowed && !limit_reached` clears the same
+  way; nothing consumes a card by itself.
   Also per account `auto` (switch) and `auto_next_ms` (next planned automatic use or `null`), and
   top level `auto_lead_mins`, `auto_available` (usage DB present).
 - `POST /admin/v1/accounts/{id}/reset-credits/auto` (admin key, `allow_config_write`, same-origin

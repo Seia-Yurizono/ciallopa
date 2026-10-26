@@ -323,7 +323,7 @@ ipv6 = false                            # IPv4 only (direct and to the proxy hos
 max_body_mb = 64                        # incoming HTTP body limit in MiB
 max_buffered_body_mb = 256              # buffered HTTP bodies + WS messages; full: wait 1 s, then 503
 max_inflight_requests = 64              # HTTP response / running WS turn; 0 disables rejection
-                                        # at capacity: 503 + Retry-After: 1, no queue; hot-reloadable
+                                        # at capacity: 503 + Retry-After: 3, no queue; hot-reloadable
 ws_compression = true                   # permessage-deflate on the client WebSocket when the client
                                         # offers it (Codex always does); applies to new connections
 ws_max_connections = 24                 # client WebSockets open at once (idle too); over: handshake 503,
