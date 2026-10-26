@@ -125,6 +125,21 @@ Not recorded: `/models`, `/wham/*` and other passthrough, WS handshakes that suc
 | `upstream` | upstream HTTP error, passed through verbatim | upstream `error.code` / `error.type`, else `http_<status>`; `invalid_encrypted_content` (also when the upstream reports it inside a 200 stream or WS turn, see below; panel label 加密推理被拒) |
 | `stream` | error inside a 200 stream | `usage_limit`, `response_failed`, `upstream_error_event`, `stream_truncated`, Images `image_output_missing`, WS `upstream_closed` |
 
+### Failure classes
+Every failure (status ≥ 400 or an error code, except cancellations and unknown outcomes) has
+one class, returned as `failure_classes` per summary group, total and day bucket, so quota
+exhaustion is counted as a failure yet charted apart from real faults:
+
+| class | rule (first match) |
+|---|---|
+| `quota` | code `usage_limit`, `usage_limit_reached` (upstream 429 or in-stream), `all_quota_exhausted`, `first_quota_reset` (local) |
+| `rate_limit` | any other 429 sent to the client, or an upstream 429 |
+| `upstream` / `network` / `stream` / `local` | by `err_source` |
+| `other` | no source recorded (old rows) |
+
+`group=error` and `group=err_source` give the codes and origin behind each class (a local
+`all_quota_exhausted` is `quota` with source `local`).
+
 What the client receives:
 - Complete upstream errors within the buffering bounds ⇒ the most meaningful one is returned verbatim (status, body and
   `retry-after`, `x-codex-*`, `x-request-id`, `cf-ray`, …). Priority: usage-limit 429 > other 429 >
@@ -488,14 +503,14 @@ See [METRICS.md](METRICS.md) for the current outcome, sampling, cursor and bucke
 - `GET /usage/v1/records/{request_id}/detail` → `{request_id, ts_ms, message, body, body_len,
   truncated, headers:{…}}` (404 if none, 400 if the id is not 16 hex chars). See *Error details*.
 - `GET /usage/v1/summary?range=24h&group=key,instance&<filters>` (or `7d`, `30m`, …; or
-  `from=<ms>&to=<ms>`). `group` = comma list of `account,model,key,instance,effort,transport,endpoint,tier,response_model`
+  `from=<ms>&to=<ms>`). `group` = comma list of `account,model,key,instance,effort,transport,endpoint,tier,response_model,error,err_source`
   (default `account,model`; unknown → 400)
   → `{"summary":{"group_by":[…],"total":{…},"groups":[{group:{key:…,instance:…}, count, errors, error_rate,
-  ttft_p50_ms, ttft_p90_ms, duration_p50_ms, duration_p90_ms, input_tokens, output_tokens,
+  failures, failure_classes:{quota, rate_limit, …}, ttft_p50_ms, ttft_p90_ms, duration_p50_ms, duration_p90_ms, input_tokens, output_tokens,
   cached_tokens, reasoning_tokens, tps, cost_usd, unknown_price}]}, "unknown_price_models":[…]}, "recorder":{accepted, dropped, written,
   write_errors, purged}}`. Percentiles are exact (nearest rank).
 - `GET /usage/v1/summary?…&bucket=day&tz=<minutes east of UTC>` (or `bucket=hour`) additionally returns
-  `"buckets":[{day:"YYYY-MM-DD", start_ms, end_ms, count, errors, input_tokens, output_tokens,
+  `"buckets":[{day:"YYYY-MM-DD", start_ms, end_ms, count, errors, failures, failure_classes, input_tokens, output_tokens,
   cached_tokens, reasoning_tokens, cost_usd, unknown_price}]` (ascending, empty days omitted;
   `tz` −840..840, default 0; unsupported `bucket` values → 400). `end_ms` is exclusive;
   partial first/last buckets are clipped to the shared scope by the `/ui` trend chart.

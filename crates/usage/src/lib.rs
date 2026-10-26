@@ -13,11 +13,12 @@ pub use detail::{DetailRow, ErrorDetail};
 pub use occupancy::{OccupancyRow, Sample as OccupancySample};
 pub use prices::{PriceTable, Tier};
 pub use refusals::{Reason as RefusalReason, Refusal, RefusalRow, RefusalTotals};
-pub use store::{occupancy_step, OccupancyQuery, RefusalQuery};
 pub use store::{
-    AccountQuota, DayBucket, Dim, Estimate, Filters, Outcome, RecentQuery, RecordRow, ScopeValue,
-    Summary, SummaryGroup, SummaryQuery, WindowQuota, PREWARM_ENDPOINT,
+    failure_class, AccountQuota, DayBucket, Dim, Estimate, Filters, Outcome, RecentQuery,
+    RecordRow, ScopeValue, Summary, SummaryGroup, SummaryQuery, WindowQuota, PREWARM_ENDPOINT,
+    QUOTA_ERRORS,
 };
+pub use store::{occupancy_step, OccupancyQuery, RefusalQuery};
 
 use ciallopa_core::config::{QuotaWeights, UsageConfig};
 use std::path::{Path, PathBuf};

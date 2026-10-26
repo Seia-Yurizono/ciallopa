@@ -300,24 +300,23 @@ async fn summary(State(St { rec, .. }): State<St>, Query(q): Query<SummaryQ>) ->
     if from > to {
         return err(StatusCode::BAD_REQUEST, "from > to");
     }
-    let group_by =
-        match q.group.as_deref() {
-            None => SummaryQuery::default().group_by,
-            Some(g) => {
-                let mut v = vec![];
-                for p in g.split(',').filter(|p| !p.trim().is_empty()) {
-                    match Dim::parse(p) {
+    let group_by = match q.group.as_deref() {
+        None => SummaryQuery::default().group_by,
+        Some(g) => {
+            let mut v = vec![];
+            for p in g.split(',').filter(|p| !p.trim().is_empty()) {
+                match Dim::parse(p) {
                         Some(d) if !v.contains(&d) => v.push(d),
                         Some(_) => {}
                         None => return err(
                             StatusCode::BAD_REQUEST,
-                            "bad group (account,model,key,instance,effort,transport,endpoint,tier)",
+                            "bad group (account,model,key,instance,effort,transport,endpoint,tier,response_model,error,err_source)",
                         ),
                     }
-                }
-                v
             }
-        };
+            v
+        }
+    };
     let bucket_day = match (q.bucket.as_deref(), q.tz.as_deref()) {
         (None, _) => None,
         (Some("day" | "hour"), tz) => match tz.map(|t| t.trim().parse::<i32>()) {
