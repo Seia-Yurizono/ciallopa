@@ -1,137 +1,101 @@
-ciallopa v0.2.0
+ciallopa v0.2.1
 
-This release follows v0.1.2. It asks for confirmation before irreversible account actions,
-lets you price or ignore unpriced models, reworks the settings page, adds an opt-in automatic
-reset-card use, bounds WebSocket memory and shows memory use on the overview. The overview
-now leaves prewarm out by default, suggests filter values, shows the input cache rate and
-replaces the grey footnotes under the cards with state that only appears when it matters.
-The implemented upstream adapter is still the Codex backend.
+This release follows v0.2.0. It records requests refused by local limits and per-minute
+occupancy, so `max_inflight_requests`, `ws_max_connections` and the buffer budgets can be tuned
+from history. An idle WebSocket no longer holds an inflight slot. Failures are classified (quota,
+rate limit, upstream, network, stream, local) and the overview breaks them down in place, with
+an upstream failure rate, a previous-period comparison and latency percentiles. 刷新额度 now
+clears a usage-limit cooldown when upstream reports the quota restored, and it can run in the
+background for accounts that opt in. The implemented upstream adapter is still the Codex backend.
 
-**Safety**
+**Admission and WebSocket**
 
-- 更新令牌 (token refresh) no longer runs on one click: it opens a danger dialog naming the
-  account, because a refresh invalidates the old refresh token (and logs out any other tool
-  sharing that auth.json). The refresh API now requires `{"confirm": "<account id>"}`, like
-  delete.
-- Pasting tokens for an account that already exists used to replace its tokens silently.
-  The UI now does a `dry_run` import first and asks before replacing; a dry run writes
-  nothing and reports whether the target exists.
-- Deleting a client key shows a 不可逆 tag in its confirmation.
+- A WebSocket now holds one `max_inflight_requests` slot per running turn (from the client
+  request to its terminal event, cancel or close), not for the whole connection. Idle
+  connections and the handshake are outside the cap; connections stay bounded by
+  `ws_max_connections`. A turn at capacity gets a 503 `gateway_busy` error frame, is not
+  forwarded, and the connection stays open.
+- Every admission 503 `gateway_busy` (inflight cap, body buffer budget, WebSocket connection cap
+  and the WebSocket busy frame) now advertises `Retry-After: 3` (`retry-after-ms: 3000`)
+  instead of 1, so Codex's fast 5xx retries space out.
+- GET `/v1/models`, `/backend-api/codex/models`, `/backend-api/wham/usage` and
+  `/api/codex/usage` are exempt from the inflight cap. Codex polls them; refusing them made the
+  client look broken while the cap was full.
 
-**Prices**
+**Refusals**
 
-- Unpriced models are listed in settings with 设置价格 / 忽略. Ignored models cost exactly 0
-  and no longer trigger the unpriced hint. Custom prices are never overwritten by price
-  updates. Writes go through `POST /admin/v1/prices/models`, are atomic, throttled to one
-  per second, audited, and back up a hand-written table once.
+- Requests refused by a local limit (`inflight`, `ws`, `body`, `ws_msg`) are counted per minute
+  in a new `refusals` table (schema v10), grouped by reason, transport, key, route, User-Agent,
+  instance and limit, with the highest occupancy seen at a refusal. Counters are flushed every
+  5 s and follow `retention_days`. Refusals while shutting down are not counted.
+- Logs carry at most one WARN per reason per minute with `refused=<n>`; sum `refused` or use the
+  API instead of counting lines.
+- New `GET /usage/v1/refusals`; `GET /usage/v1/summary` returns `refusals` for the same range,
+  key and instance; `GET /admin/v1/config` → `runtime.rejected_by` gives per-reason
+  process-lifetime counts.
+- The 请求 tile shows 「已拒绝 N」 with a per-reason breakdown; 「查看记录 ›」 sets 结果 = 已拒绝 and
+  lists the per-minute refusal rows.
 
-**Settings page**
+**Occupancy history**
 
-- Settings are split into grouped pages (转发 / 数据与账号 / 系统) with a left nav, a search
-  over every page and 只看已修改. On phones the nav is a drill-down list with a one-line
-  summary per page. Old `#g-*` links still land on the right page.
-- Rarely used options sit in a collapsed 高级 section per page. Dependent settings are
-  indented under their parent and greyed out while it is off (values are kept).
-- Non-default rows show a blue bar with 「默认 X · 恢复」. Unsaved switches show diagonal
-  stripes in the new value's colour; the nav marks pages with unsaved changes and the save
-  bar counts them. Leaving the page with unsaved edits asks first.
-- 变更记录 now refreshes when shown and every 15 s while visible.
+- About once a second the process samples inflight, WebSocket connections and buffered body
+  bytes, including the exact peak between samples, and stores one row per minute and instance in
+  a new `occupancy` table (schema v11). Read it at `GET /usage/v1/occupancy`.
+- The 实时 row shows only 转发 / WS now, plus the range peak and 满载 minutes; clicking it switches
+  the trend to 占用与拒绝 (peaks against the dashed limits, refusals as bars).
 
-**Reset cards**
+**Failures**
 
-- New per-account switch 「快到期时自动使用」 (off by default) on the accounts page. When it is
-  on, a background sweep uses the earliest-expiring available reset card within
-  `[ui] reset_credits_auto_lead_mins` (default 10, range 5–1440) of its expiry, and the page
-  shows 「下次自动使用 HH:MM」. Turning it on needs `allow_config_write`.
-- Manual and automatic use share one per-account lock and re-check the card list, the
-  switch and the account state under it. Attempts are logged with key label `(auto)`, so a
-  restart retries with the same redeem id; at most 5 tries per card, at least 60 s apart,
-  never past expiry. Switch states are kept in the usage database.
+- Every failure gets one class: `quota` (usage-limit codes, including the local
+  `all_quota_exhausted` / `first_quota_reset`), `rate_limit` (other 429s), then `upstream`,
+  `network`, `stream` or `local` by error source, `other` for old rows. The summary returns
+  `failure_classes`, `upstream_failures` / `upstream_failure_rate`, retry / account-switch /
+  downgrade counts and p99 latencies; `group=error` and `group=err_source` are new groups; the
+  records API filters by `failure_class`.
+- The upstream failure rate counts only error HTTP responses from the upstream itself
+  (including its 429s), not local, network or in-stream errors.
+- `compare=1` on the summary returns the previous equal-length window.
 
-**WebSocket memory**
+**Overview**
 
-- New hot settings `ws_max_connections` (default 24) and `ws_max_message_mb` (default 16),
-  sized for a 2 GB host. Over the connection cap the handshake gets a 503 (Codex falls back
-  to HTTP); an oversize message closes the connection with 1009. In a 40 × 12 MiB local test
-  the peak RSS dropped from 1384 MiB to 940 MiB with the defaults.
-- WebSocket turns now re-check the account's per-model cooldown for each message's model.
-  The handshake chose an account before the model was known, so a model cooling on that
-  account was still used.
+- Failure analysis sits in the tiles instead of a separate panel: the 失败率 tile shows 「上游
+  x%」, a bar by failure class and the top three classes as links to their records.
+- New trend metrics 失败原因 (stacked by class), 延迟分位 (首输出 p50 / p90 / p99) and 占用与拒绝.
+  对比上一周期 (on by default) adds KPI deltas and a dashed previous-period line.
+- 分布 adds 接口, 推理, 传输, 档位, 错误码 and 错误来源 groups and 上游 / 重试 / 降级 columns. Error
+  codes show a Chinese label with the raw code on hover.
+- The request list has a 失败原因 filter; choosing one sets 结果 to 失败. `first_quota_reset` is
+  shown as 额度用尽.
 
-**Memory panel**
+**刷新额度 and cooldowns**
 
-- The overview has a 内存 panel: process RSS and peak, jemalloc allocated / resident (when
-  jemalloc is the allocator), buffered request bodies against `max_buffered_body_mb`,
-  WebSocket connections against the cap with their buffered bytes, and a 15-minute
-  sparkline. It reads the new `GET /admin/v1/memory`, sampled every 10 s in memory only.
-
-**Upstream and clients**
-
-- Responses that carry `Retry-After` now also carry `retry-after-ms`, clamped together to
-  1–20 s; when the upstream sends only `retry-after-ms`, `Retry-After` is derived from it.
-  WebSocket error frames carry both.
-- The default `images.main_model` is now `gpt-6.1-sol`.
-
-**Overview and usage**
-
-- Prewarm (Codex WebSocket `generate:false`) is hidden by default: tokens, cost, charts,
-  per-account and per-model usage and the request list count business requests only. A
-  「含预热」 checkbox in 筛选范围, remembered in the browser, includes it again; the 预热
-  outcome filter still lists prewarm rows. The summary, trend and group APIs accept
-  `exclude_prewarm=1` and the accounts API accepts `include_prewarm=1`; API defaults and
-  stored data are unchanged.
-- The 模型 / 密钥 / 实例 filters suggest values from the usage database (most used first,
-  with counts and last use) plus the configured keys and instance. They are accessible
-  comboboxes that accept free text and work on phones. Suggestions come from the new
-  `GET /usage/v1/scope-values` (newest 200k rows, cached 60 s, at most 50 per field).
-- The Token card shows the input cache rate (「缓存 46.2%」: cached input tokens / input
-  tokens) with a tooltip; it follows the filter scope and the 含预热 setting. The duplicate
-  entry under the cards is gone.
-
-**Overview footnotes**
-
-- The grey lines under the overview cards are gone. Explanations that never change (window
-  average, sample basis, data source, prewarm scope) moved into tooltips or were dropped.
-- Card sub-lines use units: requests show `RPM`, latency shows p90 only. The failure-rate card
-  lists only non-zero outcomes (unknown in amber) and turns red at 5 % or more.
-- Unpriced models show an amber chip on the cost card that opens 设置 › 价格.
-- The Token card shows an amber 「N 未报告」 when finished requests came back without upstream
-  token usage, so tokens and cost are undercounted. The count is exact: the summary API returns
-  a new `no_usage` field in its totals and groups (prewarm, failed, cancelled and unknown
-  requests are not counted).
-- Lost or failed usage writes show as a red banner above the cards. Stale data dims the strip
-  and chart instead of adding a note.
-- Live forwarding and WebSocket connections sit in a 实时 row inside the overview panel: grey
-  when idle, green with traffic, amber from 80 % of a cap or when refusing, red while shutting
-  down. The `/cap` part shows only from 80 %.
-- The display timezone and the internal request User-Agent moved to 设置 › 常规.
+- A successful 刷新额度 (`GET /wham/usage`) now reads `rate_limit.allowed`. When upstream reports
+  `allowed` and not `limit_reached`, the account's usage-limit and rate-limit cooldowns are
+  dropped the same way a used reset card drops them (`cooldown_cleared` in the response; the
+  page says 已解除额度冷却). A missing `allowed` never clears.
+- New per-account switch 「自动刷新额度」 (off by default) on the accounts page. Accounts with it
+  on are refreshed in the background every `[ui] quota_refresh_mins` minutes (default `0` =
+  off; 1–60, the settings page lands on 5 when switched on) through the same path as the manual
+  button: four at a time, the 30 s per-account throttle still applies, disabled accounts
+  included, accounts that need a new login skipped. The switch needs `allow_config_write` and
+  `[usage]`, where it is stored. New `POST /admin/v1/accounts/{id}/quota-refresh/auto`.
+- 设置 › 账号与重置卡 has a new 后台刷新 section with both refresh intervals.
 
 **Validation**
 
-Checked with the workspace tests (398 passed), the UI state checks, desktop and phone
-browser screenshots against a mock demo server, a 40 × 12 MiB WebSocket memory test and a
-WebSocket per-model cooldown reproduction. No real model provider or account was used.
+Checked with the workspace tests (419 passed), the UI, settings and account state
+checks, clippy with warnings denied and the container cleanup rule tests. No real model provider or account
+was used.
 
 **Upgrade**
 
-- Image tags: `ghcr.io/seia-yurizono/ciallopa:0.2.0`, `0.2` and `latest`, for `linux/amd64` and
-  `linux/arm64`. `0.1` stays on 0.1.2. Change a pinned old Compose tag before pulling and
-  recreating.
-- Scripts that call the token refresh API must now send `{"confirm": "<account id>"}`.
-- More than 24 simultaneous client WebSocket connections, or WebSocket messages over 16 MiB,
-  are now refused by default; raise `ws_max_connections` / `ws_max_message_mb` (0 disables
-  the connection cap) if you need more.
-- The new `images.main_model` default applies only if the key is not set in `config.toml`.
-- The config/data layout and SQLite schema are unchanged. Keep a data backup and the
-  previous image locally: registry cleanup keeps only the newest two tag names.
-- Download the .deb or static musl tarball and verify it against the accompanying SHA256SUMS.
-
-[Installation][install] · [Recovery boundaries][recovery] · [Deployment and backup][deploy] · [Documentation][docs]
-
-Licensed under the [MIT License][license].
-
-[install]: https://github.com/Seia-Yurizono/ciallopa/blob/v0.2.0/README.md#quick-start-linux-x86_64--arm64
-[recovery]: https://github.com/Seia-Yurizono/ciallopa/blob/v0.2.0/docs/RECOVERY.md
-[deploy]: https://github.com/Seia-Yurizono/ciallopa/blob/v0.2.0/docs/DEPLOYMENT.md
-[docs]: https://github.com/Seia-Yurizono/ciallopa/blob/v0.2.0/docs/README.md
-[license]: https://github.com/Seia-Yurizono/ciallopa/blob/v0.2.0/LICENSE
+- Image tags: `ghcr.io/seia-yurizono/ciallopa:0.2.1`, `0.2` and `latest`, for `linux/amd64` and
+  `linux/arm64`. Change a pinned `0.2.0` Compose tag before pulling and recreating.
+- **Behavior change:** `[ui] reset_credits_refresh_mins` now defaults to `0` (reset cards are
+  listed only on demand) instead of 60. Set it explicitly to keep a background listing refresh.
+  Both `reset_credits_refresh_mins` and `quota_refresh_mins` must be `0` or 1–60; a larger value
+  is now a configuration error.
+- `max_inflight_requests` counts running WebSocket turns instead of open connections, so the same
+  value admits more idle Codex sessions. Clients that relied on `Retry-After: 1` from
+  `gateway_busy` now see 3 s.
+- The usage database is upgraded in place to schema v11 (two new tables only).
