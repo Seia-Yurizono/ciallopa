@@ -1033,6 +1033,10 @@ pub enum Dim {
     Endpoint,
     Tier,
     RespModel,
+    /// Error code (`usage_limit_reached`, `all_cooling`, …; null = no error).
+    Error,
+    /// Error source (`upstream`, `network`, `stream`, `local`, `client`; null = no error).
+    ErrSource,
 }
 impl Dim {
     pub fn parse(s: &str) -> Option<Self> {
@@ -1046,6 +1050,8 @@ impl Dim {
             "endpoint" => Dim::Endpoint,
             "tier" | "service_tier" => Dim::Tier,
             "response_model" | "resp_model" => Dim::RespModel,
+            "error" | "error_code" => Dim::Error,
+            "err_source" | "error_source" => Dim::ErrSource,
             _ => return None,
         })
     }
@@ -1060,6 +1066,8 @@ impl Dim {
             Dim::Endpoint => "endpoint",
             Dim::Tier => "tier",
             Dim::RespModel => "resp_model",
+            Dim::Error => "error",
+            Dim::ErrSource => "err_source",
         }
     }
     pub fn name(self) -> &'static str {
@@ -1069,6 +1077,40 @@ impl Dim {
             Dim::RespModel => "response_model",
             d => d.col(),
         }
+    }
+}
+
+/// Error codes that mean an account (or every account) is out of usage quota: the upstream
+/// 429 / in-stream `usage_limit_reached`, and the gateway's own answer when the first account
+/// to recover is out of quota.
+pub const QUOTA_ERRORS: &[&str] = &[
+    "usage_limit",
+    "usage_limit_reached",
+    "all_quota_exhausted",
+    "first_quota_reset",
+];
+
+/// Why a failed request failed, coarse enough to chart: `quota` (usage limit, upstream or
+/// local), `rate_limit` (another 429), then by source: `upstream`, `network`, `stream`,
+/// `local` (the gateway itself), `other`. Cancellations are not failures and have no class.
+pub fn failure_class(
+    status: u16,
+    error: Option<&str>,
+    source: Option<&str>,
+    upstream_status: Option<u16>,
+) -> &'static str {
+    if error.is_some_and(|e| QUOTA_ERRORS.contains(&e)) {
+        return "quota";
+    }
+    if status == 429 || (source == Some("upstream") && upstream_status == Some(429)) {
+        return "rate_limit";
+    }
+    match source {
+        Some("upstream") => "upstream",
+        Some("network") => "network",
+        Some("stream") => "stream",
+        Some("local") => "local",
+        _ => "other",
     }
 }
 
@@ -1110,6 +1152,8 @@ pub struct SummaryGroup {
     pub error_rate: f64,
     /// Outcome counts exclude prewarm. Unlike legacy `errors`, failures exclude cancellations.
     pub failures: u64,
+    /// `failures` by [`failure_class`] (classes with no failure are omitted).
+    pub failure_classes: std::collections::BTreeMap<&'static str, u64>,
     pub cancelled: u64,
     pub incomplete: u64,
     /// The gateway could not observe enough of the response to determine its outcome.
@@ -1178,6 +1222,8 @@ pub struct DayBucket {
     pub count: u64,
     pub errors: u64,
     pub failures: u64,
+    /// `failures` by [`failure_class`].
+    pub failure_classes: std::collections::BTreeMap<&'static str, u64>,
     pub cancelled: u64,
     pub incomplete: u64,
     pub unknown: u64,
@@ -1211,6 +1257,7 @@ struct Acc {
     count: u64,
     errors: u64,
     failures: u64,
+    classes: std::collections::BTreeMap<&'static str, u64>,
     cancelled: u64,
     incomplete: u64,
     unknown_outcome: u64,
@@ -1236,6 +1283,8 @@ struct Acc {
 struct Observation {
     counted: bool,
     err: bool,
+    /// Set for failures.
+    class: Option<&'static str>,
     cancelled: bool,
     incomplete: bool,
     unknown: bool,
@@ -1251,6 +1300,7 @@ impl Acc {
         let Observation {
             counted,
             err,
+            class,
             cancelled,
             incomplete,
             unknown,
@@ -1284,6 +1334,9 @@ impl Acc {
         self.errors += u64::from(err);
         self.cancelled += u64::from(cancelled);
         self.failures += u64::from(err && !cancelled && !unknown);
+        if let Some(c) = class {
+            *self.classes.entry(c).or_default() += 1;
+        }
         self.unknown_outcome += u64::from(unknown);
         self.incomplete += u64::from(incomplete && !err && !cancelled);
         self.no_usage +=
@@ -1312,6 +1365,9 @@ impl Acc {
         self.count += o.count;
         self.errors += o.errors;
         self.failures += o.failures;
+        for (c, n) in &o.classes {
+            *self.classes.entry(c).or_default() += n;
+        }
         self.cancelled += o.cancelled;
         self.incomplete += o.incomplete;
         self.unknown_outcome += o.unknown_outcome;
@@ -1346,6 +1402,7 @@ impl Acc {
             count: self.count,
             errors: self.errors,
             failures: self.failures,
+            failure_classes: std::mem::take(&mut self.classes),
             cancelled: self.cancelled,
             incomplete: self.incomplete,
             unknown: self.unknown_outcome,
@@ -1422,7 +1479,7 @@ pub(crate) fn summary(
     }
     let dim_cols: Vec<&str> = dims.iter().map(|d| d.col()).collect();
     let sql = format!(
-        "SELECT status,error,ttft_ms,duration_ms,in_tok,out_tok,cached_tok,reasoning_tok,model,id,tier,cw_tok,endpoint,err_source,incomplete,transport,{} \
+        "SELECT status,error,ttft_ms,duration_ms,in_tok,out_tok,cached_tok,reasoning_tok,model,id,tier,cw_tok,endpoint,err_source,incomplete,transport,up_status,{} \
          FROM requests WHERE id BETWEEN ? AND ?{fsql}",
         dim_cols.join(",")
     );
@@ -1442,7 +1499,7 @@ pub(crate) fn summary(
     let mut days: std::collections::BTreeMap<i64, DayBucket> = Default::default();
     while let Some(r) = rows.next()? {
         let key: Vec<Option<i64>> = (0..dims.len())
-            .map(|i| r.get(16 + i))
+            .map(|i| r.get(17 + i))
             .collect::<rusqlite::Result<_>>()?;
         let status: u16 = r.get(0)?;
         let err: Option<i64> = r.get(1)?;
@@ -1459,6 +1516,8 @@ pub(crate) fn summary(
             && status < 400
             && !cancelled;
         let failed = (err.is_some() || status >= 400) && !cancelled && !unknown;
+        let (src, up): (Option<i64>, Option<u16>) = (r.get(13)?, r.get(16)?);
+        let class = failed.then(|| failure_class(status, lbl(err), lbl(src), up));
         let incomplete = r.get::<_, Option<i64>>(14)?.is_some();
         let streaming = matches!(r.get::<_, i64>(15)?, 1 | 2);
         if cost.1 == "unknown_price" {
@@ -1498,6 +1557,9 @@ pub(crate) fn summary(
                 b.count += 1;
                 b.errors += u64::from(err.is_some() || status >= 400);
                 b.failures += u64::from(failed);
+                if let Some(c) = class {
+                    *b.failure_classes.entry(c).or_default() += 1;
+                }
                 b.cancelled += u64::from(cancelled);
                 b.incomplete += u64::from(incomplete && !failed && !cancelled && !unknown);
                 b.unknown += u64::from(unknown);
@@ -1518,6 +1580,7 @@ pub(crate) fn summary(
         groups.entry(key).or_default().add(Observation {
             counted,
             err: err.is_some() || status >= 400,
+            class,
             cancelled,
             incomplete,
             unknown,

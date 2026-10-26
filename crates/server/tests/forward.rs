@@ -6307,3 +6307,110 @@ async fn occupancy_samples_are_stored_and_served_by_the_usage_api() {
     assert_eq!(get("step=90s").await.unwrap().status(), 400);
     assert_eq!(get("range=bogus").await.unwrap().status(), 400);
 }
+
+/// 429 quota errors count as failures, and the summary tells their reason apart from other
+/// upstream, network/stream and local failures (`failure_classes`), with `group=error` /
+/// `group=err_source` for the codes behind them. Cancellations are not failures.
+#[tokio::test]
+async fn summary_breaks_failures_down_by_class_error_code_and_source() {
+    let d = tempfile::tempdir().unwrap();
+    let rec = usage_recorder(d.path());
+    let e = env_usage(300, Some(rec.clone())).await;
+    let now = ciallopa_usage::now_ms() - 1_000;
+    let row = |status: u16, error: Option<&str>, src: Option<&'static str>, up: Option<u16>| {
+        let mut r = ciallopa_usage::Record::new(
+            rec.ids.next_at(now),
+            ciallopa_usage::Transport::Sse,
+            "responses",
+        );
+        r.account = Some("a".into());
+        r.model = Some("m".into());
+        r.status = status;
+        r.error = error.map(Into::into);
+        r.err_source = src;
+        r.upstream_status = up;
+        assert!(rec.record(r));
+    };
+    row(200, None, None, None);
+    row(
+        429,
+        Some("usage_limit_reached"),
+        Some("upstream"),
+        Some(429),
+    );
+    row(200, Some("usage_limit"), Some("stream"), None); // mid-stream quota
+    row(429, Some("all_quota_exhausted"), Some("local"), None);
+    row(
+        429,
+        Some("rate_limit_exceeded"),
+        Some("upstream"),
+        Some(429),
+    );
+    row(500, Some("server_error"), Some("upstream"), Some(500));
+    row(502, Some("connect_timeout"), Some("network"), None);
+    row(200, Some("stream_truncated"), Some("stream"), None);
+    row(503, Some("all_cooling"), Some("local"), None);
+    row(499, Some("client_closed"), Some("client"), None);
+    let r2 = rec.clone();
+    tokio::task::spawn_blocking(move || r2.flush_blocking())
+        .await
+        .unwrap()
+        .unwrap();
+    let get = |q: &str| {
+        e.http
+            .get(format!("http://{}/usage/v1/summary?range=1h&{q}", e.proxy))
+            .bearer_auth(KEY)
+            .send()
+    };
+    let r = get("group=error,err_source").await.unwrap();
+    assert_eq!(r.status(), 200, "error / err_source are summary groups");
+    let v = r.json::<serde_json::Value>().await.unwrap();
+    let t = &v["summary"]["total"];
+    assert_eq!(
+        (
+            t["count"].as_u64(),
+            t["failures"].as_u64(),
+            t["cancelled"].as_u64()
+        ),
+        (Some(10), Some(8), Some(1)),
+        "{t}"
+    );
+    assert_eq!(
+        t["failure_classes"],
+        serde_json::json!({"quota": 3, "rate_limit": 1, "upstream": 1, "network": 1, "stream": 1, "local": 1}),
+        "{t}"
+    );
+    let groups = v["summary"]["groups"].as_array().unwrap();
+    let g = groups
+        .iter()
+        .find(|g| g["group"]["error"] == "all_quota_exhausted")
+        .unwrap();
+    assert_eq!(g["group"]["err_source"], "local");
+    assert_eq!(g["failure_classes"], serde_json::json!({"quota": 1}));
+    let ok = groups
+        .iter()
+        .find(|g| g["group"]["error"].is_null())
+        .unwrap();
+    assert_eq!(
+        (ok["count"].as_u64(), ok["failures"].as_u64()),
+        (Some(1), Some(0))
+    );
+    let v = get("group=err_source")
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    let up = v["summary"]["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["group"]["err_source"] == "upstream")
+        .unwrap()
+        .clone();
+    assert_eq!(up["failures"], 3, "{up}");
+    assert_eq!(
+        up["failure_classes"],
+        serde_json::json!({"quota": 1, "rate_limit": 1, "upstream": 1})
+    );
+}
