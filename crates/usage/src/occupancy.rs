@@ -133,6 +133,9 @@ pub struct OccupancyRow {
     pub max_inflight_requests: u64,
     pub ws_max_connections: u64,
     pub max_buffered_body_bytes: u64,
+    /// Minutes in the bucket whose inflight or WebSocket peak reached its limit (0 = unlimited
+    /// never counts).
+    pub full_minutes: u64,
 }
 
 #[cfg(test)]

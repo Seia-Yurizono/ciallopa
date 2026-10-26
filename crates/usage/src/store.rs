@@ -2355,10 +2355,12 @@ pub(crate) fn occupancy_rows(
     let mut st = c.prepare(&format!(
         "SELECT ((minute + {off}) / {step}) * {step} - {off} AS b, instance, sum(samples), sum(inflight_sum), max(inflight_peak), \
          sum(ws_sum), max(ws_peak), sum(buffered_sum), max(buffered_peak), max(lim_inflight), max(lim_ws), \
-         max(lim_buffered) FROM occupancy{w} GROUP BY b, instance ORDER BY b, instance"
+         max(lim_buffered), \
+         sum(CASE WHEN (lim_inflight > 0 AND inflight_peak >= lim_inflight) OR (lim_ws > 0 AND ws_peak >= lim_ws) THEN 1 ELSE 0 END) \
+         FROM occupancy{w} GROUP BY b, instance ORDER BY b, instance"
     ))?;
     let rows = st.query_map(params_from_iter(p), |r| {
-        let mut n = [0i64; 10];
+        let mut n = [0i64; 11];
         for (i, v) in n.iter_mut().enumerate() {
             *v = r.get(i + 2)?;
         }
@@ -2389,6 +2391,7 @@ pub(crate) fn occupancy_rows(
             max_inflight_requests: u(n[7]),
             ws_max_connections: u(n[8]),
             max_buffered_body_bytes: u(n[9]),
+            full_minutes: u(n[10]),
         });
     }
     Ok(out)

@@ -354,6 +354,19 @@ select.ivl{height:24px;padding:0 var(--s1);font-size:var(--fs-xs)}
 .st{display:inline-block;min-width:32px;text-align:center;font-size:var(--fs-xs);font-weight:600;font-variant-numeric:tabular-nums;border-radius:var(--r1);line-height:20px;background:var(--off-bg);color:var(--fg-2)}
 .st.s2{background:var(--ok-bg);color:var(--ok)}.st.s4{background:var(--err-bg);color:var(--err)}.st.s429{background:var(--cool-bg);color:var(--cool)}.st.s5{background:var(--st5-bg);color:var(--st5);box-shadow:inset 0 0 0 1px currentColor}
 :root{--st5:#b91c1c;--st5-bg:#fdecec}@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--st5:#fca5a5;--st5-bg:#2c1414}}:root[data-theme=dark]{--st5:#fca5a5;--st5-bg:#2c1414}
+/* Failure classes: one colour per class, used by the 失败率 bar, the 失败原因 trend and 分布. */
+:root{--fc-quota:#b45309;--fc-rate_limit:#0e7490;--fc-upstream:#be123c;--fc-network:#6d28d9;--fc-stream:#1d4ed8;--fc-local:#4b5563;--fc-other:#8b8f96}@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--fc-quota:#f59e0b;--fc-rate_limit:#22d3ee;--fc-upstream:#fb7185;--fc-network:#a78bfa;--fc-stream:#60a5fa;--fc-local:#9ca3af;--fc-other:#6b7280}}:root[data-theme=dark]{--fc-quota:#f59e0b;--fc-rate_limit:#22d3ee;--fc-upstream:#fb7185;--fc-network:#a78bfa;--fc-stream:#60a5fa;--fc-local:#9ca3af;--fc-other:#6b7280}
+.fc.quota{background:var(--fc-quota);fill:var(--fc-quota)}.fc.rate_limit{background:var(--fc-rate_limit);fill:var(--fc-rate_limit)}.fc.upstream{background:var(--fc-upstream);fill:var(--fc-upstream)}.fc.network{background:var(--fc-network);fill:var(--fc-network)}.fc.stream{background:var(--fc-stream);fill:var(--fc-stream)}.fc.local{background:var(--fc-local);fill:var(--fc-local)}.fc.other{background:var(--fc-other);fill:var(--fc-other)}
+.fcbar{display:flex;gap:1px;height:5px;border-radius:3px;overflow:hidden;margin:1px 0 4px;background:var(--bar)}
+.fcbar i{display:block;min-width:3px;flex-basis:0}
+.fcl i,.legend i.fc{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:3px}
+.kpi .k .dl{margin-left:var(--s1);font-weight:600;color:var(--mut)}.dl.good,.kpi .k .dl.good{color:var(--ok)}.dl.bad,.kpi .k .dl.bad{color:var(--err)}
+.kpi.live{flex-wrap:wrap;column-gap:var(--s3)}.fcls{display:flex;flex-wrap:wrap;gap:0 var(--s2)}.livepk{display:inline-flex;align-items:center;gap:var(--s1);font-size:var(--fs-s)}.livepk .w{color:var(--cool);font-weight:600}
+.ln.p50,.ln.inf{stroke:var(--focus)}.ln.p90,.ln.ws{stroke:var(--fc-rate_limit)}.ln.p99{stroke:var(--err)}.ln.prev{stroke:var(--mut);stroke-dasharray:4 3}.ln.lim{stroke:var(--faint);stroke-width:1;stroke-dasharray:3 3}
+.pt.p50,.pt.inf{fill:var(--focus)}.pt.p90,.pt.ws{fill:var(--fc-rate_limit)}.pt.p99{fill:var(--err)}.pt.prev{fill:var(--mut)}
+.b-ref{fill:var(--err);fill-opacity:.4}
+.legend i.l-p50,.legend i.l-inf{background:var(--focus)}.legend i.l-p90,.legend i.l-ws{background:var(--fc-rate_limit)}.legend i.l-p99{background:var(--err)}.legend i.l-ref{background:var(--err);opacity:.4}.legend i.l-lim{background:transparent;height:0;width:12px;border-top:2px dashed var(--faint);border-radius:0}.legend i.l-prev{background:transparent;height:0;width:12px;border-top:2px dashed var(--mut);border-radius:0}
+#sum td.l .fc{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:var(--s1)}
 .chip{font-size:var(--fs-xs);color:var(--mut);margin-left:var(--s1);white-space:nowrap}
 .chip.fast{color:var(--cool)}.chip.dg{color:var(--cool);text-decoration:line-through}
 .more{font-size:var(--fs-xs);color:var(--mut);margin-left:var(--s1);white-space:nowrap}
@@ -479,7 +492,7 @@ select.ivl{height:24px;padding:0 var(--s1);font-size:var(--fs-xs)}
     <div class="strip memstrip" id="memstrip"></div>
   </section>
   <section id="st" aria-busy="true">
-    <div class="sh"><h2>调用趋势</h2><select id="tmetric" aria-label="趋势指标"><option value="requests">请求</option><option value="tokens">Token</option><option value="cost">估算费用</option></select><select id="tmode" aria-label="趋势粒度"><option value="auto">自动粒度</option><option value="day">按天</option><option value="hour">按小时</option></select><span class="sp"></span><span class="mut sm" id="trange"></span></div>
+    <div class="sh"><h2>调用趋势</h2><select id="tmetric" aria-label="趋势指标"><option value="requests">请求</option><option value="tokens">Token</option><option value="cost">估算费用</option><option value="fail">失败原因</option><option value="lat">延迟分位</option><option value="cap">占用与拒绝</option></select><select id="tmode" aria-label="趋势粒度"><option value="auto">自动粒度</option><option value="day">按天</option><option value="hour">按小时</option></select><label class="chk" title="与等长的上一周期对比"><input type="checkbox" class="sw" id="fcompare"> 对比上一周期</label><span class="sp"></span><span class="mut sm" id="trange"></span></div>
     <div class="panel chart" id="chart"><svg id="svg" viewBox="0 0 1200 160" role="group" aria-label="时间趋势；选择时间桶查看请求"></svg><div id="ctip" class="hide" role="tooltip"></div></div>
     <div class="foot legend" id="chartlegend"></div>
   </section>
@@ -490,11 +503,12 @@ select.ivl{height:24px;padding:0 var(--s1);font-size:var(--fs-xs)}
       <div class="filters" role="search" aria-label="仅筛选请求列表">
         <span class="mut xs">请求筛选</span>
         <select id="foutcome" aria-label="按请求结果筛选"><option value="">全部结果</option><option value="business">业务请求（不含预热）</option><option value="completed">完成</option><option value="failed">失败</option><option value="cancelled">客户端取消</option><option value="incomplete">未完成 · incomplete</option><option value="unknown">结果未知 · 观察不完整</option><option value="prewarm">预热</option><option value="refused">已拒绝</option></select>
+        <select id="fclass" aria-label="按失败原因筛选"><option value="">全部失败原因</option><option value="quota">额度用尽</option><option value="rate_limit">限流</option><option value="upstream">上游错误</option><option value="network">网络</option><option value="stream">流中断</option><option value="local">本地</option><option value="other">其他</option></select>
         <details class="request-extra" id="recordextra"><summary>更多筛选<span id="fsummary"></span></summary><div class="row">
         <select id="fsrc" aria-label="按错误来源筛选"><option value="">全部来源</option><option value="upstream">上游</option><option value="stream">流内</option><option value="network">网络</option><option value="local">ciallopa</option><option value="client">客户端</option><option value="upstream,stream,network,local">排除客户端</option></select>
         <select id="ftier" aria-label="按档位筛选"><option value="">全部档位</option><option value="priority">Fast</option><option value="flex">Flex</option><option value="standard">标准</option><option value="dg">仅降级</option></select>
         <input id="fcode" type="text" placeholder="错误码（回车）" aria-label="按错误码筛选，回车应用">
-        <label class="chk" title="只看重试过或换过账号的请求"><input type="checkbox" id="fretry"> 重试/换号</label>
+        <label class="chk" title="只看重试过或换过账号的请求"><input type="checkbox" class="sw" id="fretry"> 重试/换号</label>
         <label class="chk hide" id="legacyerror"><input type="checkbox" id="ferr"> 旧错误筛选（含取消）</label>
         </div></details>
         <button id="fclear" class="ghost xs hide" type="button">清除请求筛选</button>
@@ -513,8 +527,8 @@ select.ivl{height:24px;padding:0 var(--s1);font-size:var(--fs-xs)}
     <div id="qnote" class="foot" role="status"></div>
   </section>
   <section id="ss" aria-busy="true">
-    <div class="sh"><h2>分布</h2><select id="group" aria-label="汇总分组"><option value="account">按账号</option><option value="key">按密钥</option><option value="instance">按实例</option><option value="model">按模型</option><option value="response_model">按实际模型</option></select></div>
-    <div class="panel"><div class="tw" id="sw"><table id="sum"><thead><tr><th scope="col" id="gh">账号</th><th scope="col" class="n">请求</th><th scope="col" class="n" title="失败数 / 非预热请求数；客户端取消、incomplete 与未知结果单列">失败率</th><th scope="col" class="n x" title="流请求的首输出延迟（TTFT），包括文本或推理输出">首输出 p50</th><th scope="col" class="n x">耗时 p50</th><th scope="col" class="n">Token</th><th scope="col" class="n" title="按 API 标价估算，订阅实际费用不同">估算 $</th></tr></thead><tbody></tbody></table></div></div>
+    <div class="sh"><h2>分布</h2><select id="group" aria-label="汇总分组"><option value="account">按账号</option><option value="key">按密钥</option><option value="instance">按实例</option><option value="model">按模型</option><option value="response_model">按实际模型</option><option value="endpoint">按接口</option><option value="reasoning_effort">按推理</option><option value="transport">按传输</option><option value="service_tier">按档位</option><option value="error">按错误码</option><option value="err_source">按错误来源</option></select></div>
+    <div class="panel"><div class="tw" id="sw"><table id="sum"><thead><tr><th scope="col" id="gh">账号</th><th scope="col" class="n">请求</th><th scope="col" class="n" title="失败数 / 非预热请求数；客户端取消、incomplete 与未知结果单列">失败率</th><th scope="col" class="n x" title="上游返回的失败 / 业务请求">上游</th><th scope="col" class="n x" title="流请求的首输出延迟（TTFT），包括文本或推理输出">首输出 p50</th><th scope="col" class="n x">耗时 p50</th><th scope="col" class="n x" title="重试过或换过账号的请求">重试</th><th scope="col" class="n x" title="请求 Fast 或 Flex 但实际档位不同">降级</th><th scope="col" class="n">Token</th><th scope="col" class="n" title="按 API 标价估算，订阅实际费用不同">估算 $</th></tr></thead><tbody></tbody></table></div></div>
     <div class="foot" id="unk"></div>
   </section>
   </div>
@@ -699,7 +713,7 @@ function needAdmin(e){if(!e||!e.body||!e.body.error||e.body.error.type!=="admin_
 const AS="ciallopa_auto",RANGE_MS={"1h":36e5,"24h":864e5,"7d":7*864e5,"30d":30*864e5},RANGE_N={"1h":"1 小时","24h":"24 小时","7d":"7 天","30d":"30 天"};
 const CR={usage_limit:"额度用完",rate_limited:"上游限流",auth:"认证失败",transient:"上游连续 5xx",overloaded:"上游过载（overloaded）",challenge:"Cloudflare 拦截",model_unsupported:"模型不可用",not_found:"上游 404",payment_required:"上游 402 付费问题",workspace_deactivated:"工作区已停用（402）"};
 const ST={normal:["正常","ok"],cooling:["冷却中","cool"],disabled:["已停用","off"],token_invalid:["需要重新登录","err"],unconfigured:["未配置","off"]};
-let timer=null,Q=null,RC=null,AC=null,EG=null,SUM=null,TREND=null,ACCTS=[],RECORDER=null,SUM_SCOPE="",REFS=null;
+let timer=null,Q=null,RC=null,AC=null,EG=null,SUM=null,TREND=null,ACCTS=[],RECORDER=null,SUM_SCOPE="",REFS=null,SUM_PREV=null,PREV_CACHE=null,OCC=null;
 let scopeWindow={from:0,to:0,fixed:false},recordWindow=null,activeRecord=null;
 function rollWindow(){const to=Date.now();scopeWindow={from:to-RANGE_MS[$("range").value],to,fixed:false}}
 function scopeFilters(){return {from:scopeWindow.from,to:scopeWindow.to,account:$("facct").value,model:$("fmodel").value.trim(),key:$("fkey").value.trim(),instance:$("finstance").value.trim(),exclude_prewarm:withPrewarm()?"":1}}
@@ -790,22 +804,37 @@ function cacheTip(t){return "缓存率 = 缓存命中的输入 Token / 输入 To
 function statLink(text,outcome){const b=h("button",{class:"statlink",type:"button",title:"在下方查看这些请求",disabled:SUM_SCOPE!==qs(scopeFilters())},text);b.addEventListener("click",()=>drillOutcome(outcome));return b}
 function sep(){return h("span","sep","·")}
 function joinSep(xs){const o=[];xs.filter(Boolean).forEach((x,i)=>{if(i)o.push(sep());o.push(typeof x==="string"?h("span",null,x):x)});return o}
-function outcomeLinks(t){return joinSep([
-  t.failures?statLink(exact(t.failures)+" 失败","failed"):null,
+function outcomeLinks(t){return [
+  t.failures&&!t.failure_classes?statLink(exact(t.failures)+" 失败","failed"):null,
   t.cancelled?statLink(exact(t.cancelled)+" 取消","cancelled"):null,
   t.incomplete?statLink(exact(t.incomplete)+" 未完成","incomplete"):null,
-  t.unknown?h("span","w",statLink(exact(t.unknown)+" 未知","unknown")):null])}
+  t.unknown?h("span","w",statLink(exact(t.unknown)+" 未知","unknown")):null].filter(Boolean)}
+// Failure classes, in display order; the same labels and colours everywhere. first_quota_reset is quota.
+const FCLS=[["quota","额度用尽"],["rate_limit","限流"],["upstream","上游错误"],["network","网络"],["stream","流中断"],["local","本地"],["other","其他"]];
+const FCN=Object.fromEntries(FCLS);
+function compareOn(){return !!$("fcompare").checked}
+// Change against the previous period. better: "up" / "down" colours the direction, null stays neutral.
+function delta(cur,prev,kind,better,fmt){if(cur===null||cur===undefined||prev===null||prev===undefined)return null;if(kind==="rel"&&!prev)return null;
+  const d=kind==="pt"?(cur-prev)*100:kind==="ms"?cur-prev:(cur-prev)/prev*100,a=Math.abs(d),zero=kind==="ms"?a<1:a<0.05;
+  const txt=zero?"±0":(d>0?"+":"−")+(kind==="ms"?fmtMs(a).replace(" ",""):a.toFixed(a>=10?0:1)+(kind==="pt"?"pt":"%"));
+  const cls=zero||!better?"":(d>0)===(better==="up")?" good":" bad";return h("span",{class:"dl"+cls,title:"上一周期 "+(fmt?fmt(prev):prev)},txt)}
+function fcBar(m,total){if(!total)return null;const seg=FCLS.filter(([c])=>m&&m[c]),parts=seg.map(([c,l])=>l+" "+exact(m[c])+"（"+(m[c]*100/total).toFixed(0)+"%）");
+  return h("div",{class:"fcbar",role:"img","aria-label":"失败原因："+parts.join("，"),title:parts.join("\n")},seg.map(([c])=>{const i=h("i","fc "+c);if(i.style)i.style.flexGrow=String(m[c]);return i}))}
+function classLinks(m,max){return FCLS.filter(([c])=>m&&m[c]).sort((a,b)=>m[b[0]]-m[a[0]]).slice(0,max).map(([c,l])=>{
+  const b=h("button",{class:"statlink fcl",type:"button",title:"在下方查看这些请求",disabled:SUM_SCOPE!==qs(scopeFilters())},h("i","fc "+c),l+" "+exact(m[c]));b.addEventListener("click",()=>drillOutcome("failed",c));return b})}
+function upTip(){return "上游失败率 = 上游返回的失败 / 业务请求；含上游额度用尽和限流 429，不含本地、网络和流中断"}
 function rpm(n){return (n>=1?n.toFixed(1):n.toFixed(2))+" RPM"}
-function renderKpis(){const t=SUM&&SUM.total,span=SUM?Math.max(1,SUM.to_ms-SUM.from_ms):0;
+function renderKpis(){const t=SUM&&SUM.total,span=SUM?Math.max(1,SUM.to_ms-SUM.from_ms):0,P=t&&SUM_PREV&&compareOn()?SUM_PREV.total:null;
+  const dl=(k,kind,better,fmt)=>P&&P.count?delta(t[k],P[k],kind,better,fmt):null,ms=n=>fmtMs(n);
   const cost=t&&t.cost_usd,u=t&&t.unknown_price,costV=!t?"–":u&&!cost?"未定价":(u?"≥":"")+fmtUsd(cost);
   const bad=!!t&&t.failure_rate>=0.05,nu=t&&t.no_usage||0,reported=t&&(t.usage_samples||!(t.count+t.prewarm_count));
   const cells=[
-    ["请求",t?statLink(fmtN(t.count),"business"):"–",t?joinSep([rpm(t.count*60000/span),refChip()]):"","已结束的业务请求，不含预热；RPM 为窗口平均，不是实时入口速率"],
-    ["失败率",t?statLink(pct(t.failure_rate),"failed"):"–",t?outcomeLinks(t):"","失败 / 业务请求；取消、未完成和结果未知分开计数",bad],
-    ["首输出 p50",t?fmtMs(t.stream_ttft_p50_ms):"–",t?"p90 "+fmtMs(t.stream_ttft_p90_ms):"","流请求从开始到首个文本、推理或工具参数输出；"+exact(t&&t.stream_ttft_samples||0)+" 个样本，无输出的不填零"],
-    ["生成速度",t&&t.generation_tps!==null&&t.generation_tps!==undefined?[t.generation_tps.toFixed(1),h("small",null,"tok/s")]:"–","","完成流的总输出 Token / 总生成时长；"+exact(t&&t.tps_samples||0)+" 个完成样本。估算值，含尾部传输时间"],
-    ["Token",t?[tokenValue(t),h("small",{class:"cr",title:cacheTip(t)},"缓存 "+cacheRate(t))]:"–",t?joinSep([reported?"入 "+fmtN(t.input_tokens):null,reported?"出 "+fmtN(t.output_tokens):null,nu?h("span",{class:"w",title:exact(nu)+" 个已完成的业务请求上游没有报告用量，Token 和费用未计入这些请求"},exact(nu)+" 未报告"):null]):"","仅累计上游报告的用量（"+exact(t&&t.usage_samples||0)+" 条），"+pwText()+"；输入含缓存命中，推理 Token 已包含在输出中"],
-    ["估算费用",costV,u?h("a",{class:"tag cool",href:"/ui/settings#prices",title:"去设置补充模型价格"},exact(u)+" 条未定价 ›"):"","按模型、档位和报告用量以 API 标价估算，"+pwText()+"；不是账单，订阅实际费用不同。未定价不会被算成免费"]];
+    [["请求",P?dl("count","rel",null,exact):null],t?statLink(fmtN(t.count),"business"):"–",t?joinSep([rpm(t.count*60000/span),refChip()]):"","已结束的业务请求，不含预热；RPM 为窗口平均，不是实时入口速率"],
+    [["失败率",dl("failure_rate","pt","down",pct)],t?[statLink(pct(t.failure_rate),"failed"),t.count?h("small",{class:"cr",title:upTip()},"上游 "+pct(t.upstream_failure_rate)):null]:"–",t?[fcBar(t.failure_classes,t.failures),h("div","fcls",[...classLinks(t.failure_classes,3),...outcomeLinks(t)])]:"","失败 / 业务请求；本地拒绝、取消、未完成和结果未知不计入",bad],
+    [["首输出 p50",dl("stream_ttft_p50_ms","ms","down",ms)],t?fmtMs(t.stream_ttft_p50_ms):"–",t?"p90 "+fmtMs(t.stream_ttft_p90_ms):"","流请求从开始到首个文本、推理或工具参数输出；"+exact(t&&t.stream_ttft_samples||0)+" 个样本，无输出的不填零"],
+    [["生成速度",dl("generation_tps","rel","up",n=>n.toFixed(1)+" tok/s")],t&&t.generation_tps!==null&&t.generation_tps!==undefined?[t.generation_tps.toFixed(1),h("small",null,"tok/s")]:"–","","完成流的总输出 Token / 总生成时长；"+exact(t&&t.tps_samples||0)+" 个完成样本。估算值，含尾部传输时间"],
+    [["Token",P&&P.usage_samples?delta((t.input_tokens||0)+(t.output_tokens||0),(P.input_tokens||0)+(P.output_tokens||0),"rel",null,exact):null],t?[tokenValue(t),h("small",{class:"cr",title:cacheTip(t)},"缓存 "+cacheRate(t))]:"–",t?joinSep([reported?"入 "+fmtN(t.input_tokens):null,reported?"出 "+fmtN(t.output_tokens):null,nu?h("span",{class:"w",title:exact(nu)+" 个已完成的业务请求上游没有报告用量，Token 和费用未计入这些请求"},exact(nu)+" 未报告"):null]):"","仅累计上游报告的用量（"+exact(t&&t.usage_samples||0)+" 条），"+pwText()+"；输入含缓存命中，推理 Token 已包含在输出中"],
+    [["估算费用",P&&!t.unknown_price&&!P.unknown_price?dl("cost_usd","rel",null,fmtUsd):null],costV,u?h("a",{class:"tag cool",href:"/ui/settings#prices",title:"去设置补充模型价格"},exact(u)+" 条未定价 ›"):"","按模型、档位和报告用量以 API 标价估算，"+pwText()+"；不是账单，订阅实际费用不同。未定价不会被算成免费"]];
   const st=$("strip");clear(st);st.classList.toggle("stale",!!SUM&&!summaryCurrent());
   for(const [k,v,sub,tip,red] of cells)st.appendChild(h("div",{class:"kpi",title:tip},h("div","k",k),h("div",red?"v bad":"v",v),h("div","s",sub)));
   renderRuntime();
@@ -849,7 +878,7 @@ function renderRefusals(){const tb=$("refrec").tBodies[0];clear(tb);
   if(!refState.rows.length)emptyRow(tb,7,scopedOut()?"按账号或模型筛选时不显示拒绝记录":"没有被拒绝的请求",scopedOut()?"拒绝发生在选号之前，清除账号和模型筛选后查看":"换个时间段试试");
   $("rcount").textContent=scopedOut()?"":"共 "+exact(refState.total)+" 次 · "+exact(refState.rows.length)+" 组";
   $("rmore").classList.toggle("hide",!refState.more);$("rpage").textContent=""}
-function drillOutcome(outcome){if(!summaryCurrent())return;recordWindow=null;$("foutcome").value=outcome;for(const id of ["fsrc","ftier","fcode"])$(id).value="";$("fretry").checked=false;$("ferr").checked=false;saveF();showScope();renderTrend();loadRecords(false).catch(fail);revealRecords()}
+function drillOutcome(outcome,cls){if(!summaryCurrent())return;recordWindow=null;$("foutcome").value=outcome;$("fclass").value=cls||"";for(const id of ["fsrc","ftier","fcode"])$(id).value="";$("fretry").checked=false;$("ferr").checked=false;saveF();showScope();renderTrend();loadRecords(false).catch(fail);revealRecords()}
 function revealRecords(){const bar=document.querySelector(".fbar"),section=$("sr");
   section.style.scrollMarginTop=(parseFloat(getComputedStyle(bar).top)+bar.offsetHeight+12)+"px";
   section.scrollIntoView({block:"start"});$("foutcome").focus({preventScroll:true})}
@@ -956,21 +985,31 @@ $("cpyes").addEventListener("click",async()=>{const acct=cpFor;if(!acct)return;$
     $("cpres").textContent="失败："+e.message+(pend?"\n结果未知；再次点击会用同一个 redeem_request_id 重试，不会重复扣卡。":"");$("cpyes").disabled=false;if(pend)$("cpyes").textContent="用同一请求重试"}});
 
 // ---- summary
-const GN={account:"账号",key:"密钥",instance:"实例",model:"模型",response_model:"实际模型"};
+const GN={account:"账号",key:"密钥",instance:"实例",model:"模型",response_model:"实际模型",endpoint:"接口",reasoning_effort:"推理",transport:"传输",service_tier:"档位",error:"错误码",err_source:"错误来源"};
+// Scope groups filter the whole page; error, source and tier groups open the matching failed requests.
+const GSCOPE={account:"facct",model:"fmodel",key:"fkey",instance:"finstance"},GDRILL={error:"fcode",err_source:"fsrc",service_tier:"ftier"};
+function groupName(g,v){return g==="err_source"?(SRC[v]?SRC[v][0]:v):g==="service_tier"?tierName(v):v}
+function drillGroup(id,v){if(!summaryCurrent())return;recordWindow=null;for(const k of RF){const e=$(k);if(e.type==="checkbox")e.checked=false;else e.value=""}
+  $("foutcome").value=id==="ftier"?"":"failed";$(id).value=v;saveF();showScope();renderTrend();loadRecords(false).catch(fail);revealRecords()}
 function unkIcon(unk,tip){const i=h("span",{class:"wi",tabindex:"0",role:"img","aria-label":"部分未定价"},"⚠");i.dataset.tt="部分未定价：实际成本不低于此值\n"+unk+" 条请求缺少价格；已定价部分 "+tip;return i}
 function costCell(c,unk){if(unk&&c)return h("td",{class:"n"},"≥"+c.toFixed(2),unkIcon(unk,exactUsd(c)));if(unk)return h("td",{class:"n",title:unk+" 条请求缺少价格"},"未定价");return h("td",{class:"n",title:exactUsd(c)},c===null||c===undefined?"–":c.toFixed(2))}
 function renderSummary(){const s=SUM;if(!s)return;ttHide();const g=$("group").value;$("gh").textContent=GN[g];
   const tb=$("sum").tBodies[0];
   keepScroll("sw",()=>steady([tb],()=>{clear(tb);
-    const row=(name,x,tot)=>{const label=!tot&&x.group[g]&&g!=="response_model"?h("button",{class:"statlink",type:"button",title:"筛选到 "+name},name):name;
-      if(typeof label!=="string")label.addEventListener("click",()=>{const id={account:"facct",model:"fmodel",key:"fkey",instance:"finstance"}[g];if(id==="facct"&&!Array.from($(id).options).some(o=>o.value===x.group[g]))$(id).appendChild(h("option",{value:x.group[g]},x.group[g]));$(id).value=x.group[g];changeScope();$("main").scrollIntoView({block:"start"})});
-      return h("tr",{class:tot?"tot":null,"data-ak":"sum|"+(tot?"=":"-")+name},h("td",{class:"l",title:name},label),h("td",{class:"n",title:exact(x.count)+" 条"},fmtN(x.count)),
-      h("td",{class:"n",title:exact(x.failures)+" 失败 · "+exact(x.cancelled)+" 取消 · "+exact(x.incomplete)+" 未完成 · "+exact(x.unknown||0)+" 结果未知"},pct(x.failure_rate)),
+    const row=(name,x,tot)=>{const v=x.group&&x.group[g],shown=tot||v===null||v===undefined?name:groupName(g,v),link=!tot&&v&&(GSCOPE[g]||GDRILL[g]);
+      const label=link?h("button",{class:"statlink",type:"button",title:(GSCOPE[g]?"筛选到 ":"查看请求：")+shown},shown):shown;
+      if(link&&GDRILL[g])label.addEventListener("click",()=>drillGroup(GDRILL[g],v));
+      else if(link)label.addEventListener("click",()=>{const id=GSCOPE[g];if(id==="facct"&&!Array.from($(id).options).some(o=>o.value===x.group[g]))$(id).appendChild(h("option",{value:x.group[g]},x.group[g]));$(id).value=x.group[g];changeScope();$("main").scrollIntoView({block:"start"})});
+      return h("tr",{class:tot?"tot":null,"data-ak":"sum|"+(tot?"=":"-")+name},h("td",{class:"l",title:shown+(g==="error"&&v&&ERR_LBL[v]?" · "+ERR_LBL[v]:"")},label),h("td",{class:"n",title:exact(x.count)+" 条"},fmtN(x.count)),
+      h("td",{class:"n",title:exact(x.failures)+" 失败 · "+exact(x.cancelled)+" 取消 · "+exact(x.incomplete)+" 未完成 · "+exact(x.unknown||0)+" 结果未知"+(x.failure_classes?FCLS.filter(([c])=>x.failure_classes[c]).map(([c,l])=>"\n"+l+" "+exact(x.failure_classes[c])).join(""):"")},pct(x.failure_rate)),
+      h("td",{class:"n x",title:upTip()+" · "+exact(x.upstream_failures||0)+" 条"},pct(x.upstream_failure_rate)),
       h("td",{class:"n x",title:"p90 "+fmtMs(x.stream_ttft_p90_ms)+" · "+exact(x.stream_ttft_samples)+" 样本"},fmtMs(x.stream_ttft_p50_ms)),
       h("td",{class:"n x",title:"p90 "+fmtMs(x.duration_p90_ms)+" · "+exact(x.duration_samples)+" 终结请求"},fmtMs(x.duration_p50_ms)),
+      h("td",{class:"n x",title:exact(x.retried||0)+" 重试过 · "+exact(x.switched||0)+" 换过账号"},x.retried?exact(x.retried):"–"),
+      h("td",{class:"n x",title:exact(x.downgraded||0)+" 实际档位与请求不同"},x.downgraded?exact(x.downgraded):"–"),
       h("td",{class:"n",title:"已报告 "+exact(x.usage_samples)+" 条 · 输入 "+exact(x.input_tokens)+"（缓存 "+exact(x.cached_tokens)+"）· 输出 "+exact(x.output_tokens)},tokenValue(x)),costCell(x.cost_usd,x.unknown_price))};
     for(const x of s.groups){const v=x.group[g];tb.appendChild(row(v===null||v===undefined?"（无）":v,x))}
-    if(s.groups.length)tb.appendChild(row("合计",s.total,true));else emptyRow(tb,7,"该时间段无请求","换个时间段试试")}));
+    if(s.groups.length)tb.appendChild(row("合计",s.total,true));else emptyRow(tb,10,"该时间段无请求","换个时间段试试")}));
   const unk=$("unk"),um=s.unknown_price_models||[];clear(unk);
   if(s.price_models===0)add(unk,["⚠ 还没有价格表，费用不显示 · ",h("a",{href:"/ui/settings#prices"},"去拉取价格")]);
   else if(um.length)add(unk,["⚠ 有 "+um.length+" 个模型未定价："+um.join("、")+" · ",h("a",{href:"/ui/settings#prices"},"去定价或忽略")])}
@@ -984,33 +1023,78 @@ function trendPoints(summary,hourly,tz){const step=hourly?36e5:864e5,off=tz*6000
   const by=new Map((summary.buckets||[]).map(b=>[b.start_ms,b])),pts=[];
   for(let start=first;start<=summary.to_ms;start+=step){const end=start+step,b=by.get(start),from=Math.max(start,summary.from_ms),to=Math.min(end-1,summary.to_ms);
     pts.push({start,end,from,to,partial:from!==start||to!==end-1,n:b?b.count:0,f:b?b.failures:0,cancel:b?b.cancelled:0,inc:b?b.incomplete:0,unobserved:b?b.unknown||0:0,
-      records:b?b.count+b.prewarm_count:0,samples:b?b.usage_samples:0,tokens:b?(b.usage_samples?b.input_tokens+b.output_tokens:null):0,cost:b?b.cost_usd:0,unknown:b?b.unknown_price:0})}
+      records:b?b.count+b.prewarm_count:0,samples:b?b.usage_samples:0,tokens:b?(b.usage_samples?b.input_tokens+b.output_tokens:null):0,cost:b?b.cost_usd:0,unknown:b?b.unknown_price:0,
+      cls:b&&b.failure_classes||{},up:b?b.upstream_failures||0:0,refused:b?b.refused:null,refusals:b&&b.refusals||null,
+      t50:b?b.stream_ttft_p50_ms:null,t90:b?b.stream_ttft_p90_ms:null,t99:b?b.stream_ttft_p99_ms:null,d50:b?b.duration_p50_ms:null,d90:b?b.duration_p90_ms:null,d99:b?b.duration_p99_ms:null})}
   return pts}
 function selectBucket(p){if(!summaryCurrent())return;recordWindow={from:p.from,to:p.to};scopeWindow.fixed=true;saveF();showScope();renderTrend();loadRecords(false).catch(fail);revealRecords()}
+// Occupancy rows (one per bucket and instance) folded to one value per bucket start.
+function occBy(occ){const m=new Map();for(const r of occ&&occ.rows||[]){const o=m.get(r.minute_ms)||{inf:0,ws:0,li:0,lw:0,full:0};
+  o.inf=Math.max(o.inf,r.inflight_peak);o.ws=Math.max(o.ws,r.ws_peak);o.li=Math.max(o.li,r.max_inflight_requests);o.lw=Math.max(o.lw,r.ws_max_connections);o.full+=r.full_minutes||0;m.set(r.minute_ms,o)}return m}
+function niceMs(v){const st=[100,200,250,500,1e3,2e3,2500,5e3,1e4,2e4,25e3,5e4,1e5,2e5,5e5];const s=st.find(x=>x*4>=v)||Math.ceil(v/4e5)*1e5;return Math.max(1000,s*4)}
+function msAxis(n){return n>=1000?(n/1e3).toFixed(n>=1e4?0:1)+"s":Math.round(n)+"ms"}
 function renderTrend(){if(!TREND)return;const {summary,hourly,tz}=TREND,pts=trendPoints(summary,hourly,tz),metric=$("tmetric").value,svg=$("svg");clear(svg);$("ctip").classList.add("hide");
-  const nar=narrow(),W=nar?360:1200,H=nar?130:160,L=nar?36:48,R=12,T=12,B=24,iw=W-L-R,ih=H-T-B;
-  const value=p=>metric==="tokens"?p.tokens:metric==="cost"?p.cost:p.n,values=pts.map(p=>value(p)||0),peak=Math.max(0,...values),max=metric==="cost"?Math.max(.01,peak*1.12):Math.max(4,Math.ceil(peak/4)*4);
+  const cap=metric==="cap",nar=narrow(),W=nar?360:1200,H=nar?130:160,L=nar?36:48,R=cap?(nar?28:40):12,T=12,B=24,iw=W-L-R,ih=H-T-B;
+  // Previous period, aligned bucket by bucket from the end (both windows have the same length).
+  const pv=TREND.prev&&TREND.prev.buckets?trendPoints({from_ms:TREND.prev.from,to_ms:TREND.prev.to,buckets:TREND.prev.buckets},hourly,tz):null,pp=i=>pv?pv[i-(pts.length-pv.length)]||null:null;
+  const occ=cap?occBy(OCC):null,oc=p=>occ&&occ.get(p.start)||null;
+  const lat=metric==="lat",fail=metric==="fail",prevOn=!!pv&&!cap;
+  const value=p=>metric==="tokens"?p.tokens:metric==="cost"?p.cost:fail?p.f:p.n;
+  const pval=p=>!p?null:lat?p.t90:value(p);
+  const values=pts.map((p,i)=>lat?Math.max(p.t99||0,p.t90||0,p.t50||0,prevOn&&pval(pp(i))||0):cap?Math.max(oc(p)?Math.max(oc(p).inf,oc(p).ws,oc(p).li,oc(p).lw):0):Math.max(value(p)||0,prevOn&&pval(pp(i))||0));
+  const peak=Math.max(0,...values),max=metric==="cost"?Math.max(.01,peak*1.12):lat?niceMs(peak*1.1):Math.max(4,Math.ceil(peak/4)*4);
+  const rmax=cap?Math.max(4,Math.ceil(Math.max(0,...pts.map(p=>p.refused||0))/4)*4):0;
   svg.setAttribute("viewBox","0 0 "+W+" "+H);
-  const axis=n=>metric==="cost"?(n<1?n.toFixed(2):fmtN(n)):fmtN(n);
-  for(let i=0;i<=4;i++){const y=T+ih*i/4;svg.appendChild(sv("line",{x1:L,x2:W-R,y1:y,y2:y,class:"gl"}));svg.appendChild(sv("text",{x:L-6,y:y+3,"text-anchor":"end",class:"ax"},axis(max*(1-i/4))))}
-  const bw=iw/pts.length,every=Math.ceil(pts.length/(nar?4:10));
-  pts.forEach((p,i)=>{const x=L+i*bw,v=value(p),hgt=ih*(v||0)/max,selected=recordWindow&&recordWindow.from===p.from&&recordWindow.to===p.to;
-    if(v!==null&&v!==undefined)svg.appendChild(sv("rect",{x:x+bw*.14,y:T+ih-hgt,width:Math.max(.5,bw*.72),height:hgt,class:p.partial?"b-now":"b-req"}));
-    else svg.appendChild(sv("text",{x:x+bw/2,y:T+ih-3,"text-anchor":"middle",class:"ax"},"–"));
-    if(metric==="requests"){const hf=ih*p.f/max,hc=ih*p.cancel/max;
-      if(hf)svg.appendChild(sv("rect",{x:x+bw*.14,y:T+ih-hf,width:Math.max(.5,bw*.72),height:hf,class:"b-err"}));
-      if(hc)svg.appendChild(sv("rect",{x:x+bw*.14,y:T+ih-hf-hc,width:Math.max(.5,bw*.72),height:hc,class:"b-cancel"}))}
+  const axis=n=>metric==="cost"?(n<1?n.toFixed(2):fmtN(n)):lat?msAxis(n):fmtN(n);
+  for(let i=0;i<=4;i++){const y=T+ih*i/4;svg.appendChild(sv("line",{x1:L,x2:W-R,y1:y,y2:y,class:"gl"}));svg.appendChild(sv("text",{x:L-6,y:y+3,"text-anchor":"end",class:"ax"},axis(max*(1-i/4))));
+    if(cap&&TREND.summary)svg.appendChild(sv("text",{x:W-R+6,y:y+3,"text-anchor":"start",class:"ax"},fmtN(rmax*(1-i/4))))}
+  const bw=iw/pts.length,every=Math.ceil(pts.length/(nar?4:10)),bx=x=>({x:x+bw*.14,width:Math.max(.5,bw*.72)});
+  const yv=v=>T+ih-ih*v/max;
+  // Line series with gaps for missing buckets; isolated points get a dot.
+  const line=(get,cls)=>{let d="",prev=false;pts.forEach((p,i)=>{const v=get(p,i);if(v===null||v===undefined){prev=false;return}const x=L+i*bw+bw/2,y=yv(v);
+    const nx=i+1<pts.length?get(pts[i+1],i+1):null;if(!prev&&(nx===null||nx===undefined))svg.appendChild(sv("circle",{cx:x,cy:y,r:2,class:"pt "+cls}));
+    d+=(prev?"L":"M")+x.toFixed(1)+" "+y.toFixed(1);prev=true});if(d)svg.appendChild(sv("path",{d,class:"ln "+cls}))};
+  pts.forEach((p,i)=>{const x=L+i*bw,v=value(p),selected=recordWindow&&recordWindow.from===p.from&&recordWindow.to===p.to;
+    if(fail){let y=T+ih;for(const [c] of FCLS){const n=p.cls[c]||0;if(!n)continue;const hh=ih*n/max;y-=hh;svg.appendChild(sv("rect",{...bx(x),y,height:hh,class:"fc "+c}))}
+      const rest=p.f-Object.values(p.cls).reduce((a,b)=>a+b,0);if(rest>0){const hh=ih*rest/max;svg.appendChild(sv("rect",{...bx(x),y:y-hh,height:hh,class:"fc other"}))}}
+    else if(cap){if(p.refused){const hh=ih*p.refused/rmax;svg.appendChild(sv("rect",{...bx(x),y:T+ih-hh,height:hh,class:"b-ref"}))}}
+    else if(!lat){const hgt=ih*(v||0)/max;
+      if(v!==null&&v!==undefined)svg.appendChild(sv("rect",{...bx(x),y:T+ih-hgt,height:hgt,class:p.partial?"b-now":"b-req"}));
+      else svg.appendChild(sv("text",{x:x+bw/2,y:T+ih-3,"text-anchor":"middle",class:"ax"},"–"));
+      if(metric==="requests"){const hf=ih*p.f/max,hc=ih*p.cancel/max;
+        if(hf)svg.appendChild(sv("rect",{...bx(x),y:T+ih-hf,height:hf,class:"b-err"}));
+        if(hc)svg.appendChild(sv("rect",{...bx(x),y:T+ih-hf-hc,height:hc,class:"b-cancel"}))}}
     const d=new Date(p.start),lab=hourly?p2(d.getHours())+":00":p2(d.getMonth()+1)+"/"+p2(d.getDate());
-    if(i%every===0)svg.appendChild(sv("text",{x:x+bw/2,y:H-6,"text-anchor":"middle",class:"ax"},lab));
-    const tokenText=p.tokens===null?"未报告":exact(p.tokens)+(p.records?"（"+exact(p.samples)+" / "+exact(p.records)+" 条已报告，"+pwText()+"）":"");
-    const txt=fmtTime(p.from,true)+" – "+fmtTime(p.to,true)+(p.partial?"（部分时段）":"")+"\n请求 "+exact(p.n)+" · 失败 "+exact(p.f)+" · 取消 "+exact(p.cancel)+(p.unobserved?" · 结果未知 "+exact(p.unobserved):"")+"\nToken "+tokenText+" · 估算费用 "+(p.unknown&&!p.cost?"未定价":(p.unknown?"≥":"")+fmtUsd(p.cost))+"\n选择以查看这段时间的请求";
+    if(i%every===0)svg.appendChild(sv("text",{x:x+bw/2,y:H-6,"text-anchor":i&&i+every>=pts.length&&nar?"end":"middle",class:"ax"},lab));
+    const head=fmtTime(p.from,true)+" – "+fmtTime(p.to,true)+(p.partial?"（部分时段）":""),q=pp(i),o=oc(p);
+    const refs=p.refused===null||p.refused===undefined?"":"已拒绝 "+exact(p.refused)+(p.refused&&p.refusals?"（"+Object.entries(p.refusals).filter(e=>e[1]).map(([k,n])=>(REASON[k]?REASON[k][0]:k)+" "+exact(n)).join("、")+"）":"")+"，不计入失败";
+    let body;
+    if(fail)body="失败 "+exact(p.f)+" · 失败率 "+pct(p.n?p.f/p.n:null)+" · 上游 "+pct(p.n?p.up/p.n:null)+FCLS.filter(([c])=>p.cls[c]).map(([c,l])=>"\n"+l+" "+exact(p.cls[c])).join("")+(refs?"\n"+refs:"")+(q?"\n上一周期 失败 "+exact(q.f):"");
+    else if(lat)body="首输出 p50 / p90 / p99 "+[p.t50,p.t90,p.t99].map(fmtMs).join(" / ")+"\n耗时 p50 / p90 / p99 "+[p.d50,p.d90,p.d99].map(fmtMs).join(" / ")+(q?"\n上一周期 首输出 p90 "+fmtMs(q.t90):"");
+    else if(cap)body=(o?"转发峰值 "+exact(o.inf)+" / "+(o.li?exact(o.li):"不限")+" · WS 峰值 "+exact(o.ws)+" / "+(o.lw?exact(o.lw):"不限")+(o.full?"\n满载 "+exact(o.full)+" 分钟":""):"没有占用采样")+(refs?"\n"+refs:"");
+    else{const tokenText=p.tokens===null?"未报告":exact(p.tokens)+(p.records?"（"+exact(p.samples)+" / "+exact(p.records)+" 条已报告，"+pwText()+"）":"");
+      body="请求 "+exact(p.n)+" · 失败 "+exact(p.f)+" · 取消 "+exact(p.cancel)+(p.unobserved?" · 结果未知 "+exact(p.unobserved):"")+"\nToken "+tokenText+" · 估算费用 "+(p.unknown&&!p.cost?"未定价":(p.unknown?"≥":"")+fmtUsd(p.cost))+(q?"\n上一周期 "+(metric==="tokens"?"Token "+(q.tokens===null?"未报告":exact(q.tokens)):metric==="cost"?"估算费用 "+fmtUsd(q.cost):"请求 "+exact(q.n)):"")}
+    const txt=head+"\n"+body+"\n选择以查看这段时间的请求";
     const hit=sv("rect",{x,y:T,width:bw,height:ih,class:"hit",tabindex:summaryCurrent()?0:-1,role:"button","aria-label":txt,"aria-disabled":String(!summaryCurrent()),"aria-pressed":String(!!selected)});if(selected)hit.style.fill="color-mix(in srgb,var(--focus) 10%,transparent)";
     hit.addEventListener("mousemove",ev=>tipAt(ev,txt));hit.addEventListener("mouseleave",()=>$("ctip").classList.add("hide"));
     hit.addEventListener("focus",()=>{const r=hit.getBoundingClientRect();tipAt({clientX:r.left+r.width/2,clientY:r.top},txt)});hit.addEventListener("blur",()=>$("ctip").classList.add("hide"));
     hit.addEventListener("click",()=>selectBucket(p));hit.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();selectBucket(p)}});svg.appendChild(hit)});
+  // Lines go above the bars but below the hit rects would block hover, so insert them before the first hit.
+  const firstHit=svg.querySelector?svg.querySelector(".hit"):null,mark=svg.childNodes?svg.childNodes.length:0;
+  if(lat){line(p=>p.t99,"p99");line(p=>p.t90,"p90");line(p=>p.t50,"p50")}
+  if(cap){const lim=k=>{let m=0;for(const o of occ.values())m=Math.max(m,o[k]);return m},li=lim("li"),lw=lim("lw");
+    for(const l of [li,lw])if(l&&l<=max)svg.appendChild(sv("line",{x1:L,x2:W-R,y1:yv(l),y2:yv(l),class:"ln lim"}));
+    line(p=>oc(p)?oc(p).inf:null,"inf");line(p=>oc(p)?oc(p).ws:null,"ws")}
+  if(prevOn)line((p,i)=>pval(pp(i)),"prev");
+  if(firstHit&&svg.childNodes)for(const n of Array.from(svg.childNodes).slice(mark))svg.insertBefore(n,firstHit);
   const lg=$("chartlegend"),sw=(c,t)=>h("span",null,h("i",c),t);clear(lg);$("chart").classList.toggle("stale",!summaryCurrent());
-  if(metric==="requests")lg.append(sw("req","请求"),sw("err","失败"),sw("cancel","取消"));else lg.append(sw("req",metric==="tokens"?"Token":"估算 $"),h("span",null,metric==="tokens"?"– 未报告":"– 未定价"));
-  lg.append(sw("now","部分时段"))}
+  if(metric==="requests")lg.append(sw("req","请求"),sw("err","失败"),sw("cancel","取消"));
+  else if(fail){const seen=FCLS.filter(([c])=>pts.some(p=>p.cls[c]));if(seen.length)for(const [c,l] of seen)lg.append(sw("fc "+c,l));else lg.append(h("span",null,"无失败"))}
+  else if(lat)lg.append(sw("l-p50","首输出 p50"),sw("l-p90","p90"),sw("l-p99","p99"));
+  else if(cap)lg.append(sw("l-inf","转发峰值"),sw("l-ws","WS 峰值"),sw("l-lim","上限"),sw("l-ref","已拒绝（右轴）"));
+  else lg.append(sw("req",metric==="tokens"?"Token":"估算 $"),h("span",null,metric==="tokens"?"– 未报告":"– 未定价"));
+  if(prevOn)lg.append(sw("l-prev",lat?"上一周期 p90":"上一周期"));
+  if(!lat&&!cap&&!fail)lg.append(sw("now","部分时段"))}
 let lastNarrow=narrow();addEventListener("resize",()=>{if(narrow()!==lastNarrow){lastNarrow=narrow();renderTrend()}});
 
 // ---- custom tooltips for [data-tt]
@@ -1042,7 +1126,7 @@ function effortCell(r){const box=h("span"),q=r.reasoning_effort,a=r.response_eff
   box.dataset.tip=tip;return box}
 const SRC={client:["客户端","off","客户端断开或请求本身的问题"],local:["ciallopa","off","ciallopa 本地产生（没有可用账号、全部冷却等）"],network:["网络","err","连不上上游、超时或流空闲超时"],proxy:["代理","proxy","出口代理连不上、拒绝隧道或超时（不计入账号冷却）"],upstream:["上游","err","上游 HTTP 返回的错误，原样转给客户端"],stream:["流内","err","上游流里的错误事件或流被截断"]};
 const PROXY_ERR={proxy_connect:"出口代理连接失败",proxy_timeout:"经出口代理连接超时"};
-const ERR_LBL=Object.assign({invalid_encrypted_content:"加密推理被拒",usage_limit:"额度用完",usage_limit_reached:"额度用完",rate_limit_exceeded:"限流",server_is_overloaded:"上游过载",client_closed:"客户端断开",no_account:"没有账号",no_usable_account:"没有可用账号",all_cooling:"全部账号冷却中",all_quota_exhausted:"全部账号额度用完",first_quota_reset:"最早恢复的账号额度用完",stream_truncated:"流被截断",observation_incomplete:"观察不完整",connect_timeout:"连接超时",header_timeout:"等待响应头超时",preparation_timeout:"准备等待超时",error_body_timeout:"读取错误响应超时",error_body_too_large:"错误响应过大",error_body_read:"错误响应中断",upstream_5xx:"上游 5xx",cf_blocked:"Cloudflare 拦截出口",challenge:"Cloudflare 质询"},PROXY_ERR);
+const ERR_LBL=Object.assign({invalid_encrypted_content:"加密推理被拒",usage_limit:"额度用尽",usage_limit_reached:"额度用尽",rate_limit_exceeded:"限流",server_is_overloaded:"上游过载",client_closed:"客户端断开",no_account:"没有账号",no_usable_account:"没有可用账号",all_cooling:"全部账号冷却中",all_quota_exhausted:"额度用尽",first_quota_reset:"额度用尽",stream_truncated:"流被截断",observation_incomplete:"观察不完整",connect_timeout:"连接超时",header_timeout:"等待响应头超时",preparation_timeout:"准备等待超时",error_body_timeout:"读取错误响应超时",error_body_too_large:"错误响应过大",error_body_read:"错误响应中断",upstream_5xx:"上游 5xx",cf_blocked:"Cloudflare 拦截出口",challenge:"Cloudflare 质询"},PROXY_ERR);
 const ERR_TIP={cf_blocked:"上游前面的 Cloudflare 返回了拦截页（如 1010 浏览器签名被封），拦的是本机出口（IP、TLS 或 HTTP 指纹），不是账号：不换号、不冷却账号，客户端收到中性的 502",challenge:"上游前面的 Cloudflare 返回了质询页，拦的是本机出口，不是账号：不换号、不冷却账号，客户端收到中性的 502",invalid_encrypted_content:"上游拒绝了对话历史里的加密推理内容（多为在另一个账号/组织下生成，原因见详情）。属于请求内容问题：不换号、不冷却、不重试；客户端收到明确提示，需新开会话",observation_incomplete:"响应已透传，但事件超过网关的有界观察范围，无法确认最终业务结果。未报告的用量不是零，未知结果不计为失败或客户端取消。"};
 function errorInfo(r){const known=r.error!=="observation_incomplete"||requestOutcome(r)==="unknown";return {label:known?ERR_LBL[r.error]:"",tip:known?ERR_TIP[r.error]:""}}
 function srcOf(r){return r.err_source==="network"&&PROXY_ERR[r.error]?"proxy":r.err_source}
@@ -1115,8 +1199,8 @@ async function loadRefusals(append){const f=refFilters(),signature=qs(f);
   const q=qs(Object.assign({},f,{limit:PAGE,offset:base.offset}));
   await currentLoad("sr",()=>"refused|"+qs(refFilters()),(_q,current)=>usageGet("/usage/v1/refusals?"+q,current),d=>{
     const rows=base.rows.concat(d.rows);refState={rows,offset:base.offset+d.rows.length,more:d.rows.length===PAGE,total:d.totals.count,signature};renderRefusals()})}
-function showRefusedMode(){const on=refusedMode();$("rw").classList.toggle("hide",on);$("refw").classList.toggle("hide",!on);$("recordextra").classList.toggle("hide",on)}
-function recordFilters(){const t=$("ftier").value,o=$("foutcome").value;return Object.assign({},scopeFilters(),recordWindow||{},{outcome:o==="business"?"":o,exclude_prewarm:o==="business"||(o!=="prewarm"&&!withPrewarm())?1:"",errors:$("ferr").checked?1:"",source:$("fsrc").value,error:$("fcode").value.trim(),retried:$("fretry").checked?1:"",tier:t==="dg"?"":t,downgraded:t==="dg"?1:""})}
+function showRefusedMode(){const on=refusedMode();$("rw").classList.toggle("hide",on);$("refw").classList.toggle("hide",!on);$("recordextra").classList.toggle("hide",on);$("fclass").classList.toggle("hide",on)}
+function recordFilters(){const t=$("ftier").value,o=$("foutcome").value;return Object.assign({},scopeFilters(),recordWindow||{},{outcome:o==="business"?"":o,exclude_prewarm:o==="business"||(o!=="prewarm"&&!withPrewarm())?1:"",errors:$("ferr").checked?1:"",source:$("fsrc").value,error:$("fcode").value.trim(),failure_class:$("fclass").value,retried:$("fretry").checked?1:"",tier:t==="dg"?"":t,downgraded:t==="dg"?1:""})}
 async function loadRecords(append){showRefusedMode();if(refusedMode())return loadRefusals(append);const filters=recordFilters(),signature=qs(filters);
   const base=append&&recState.signature===signature?recState:{cursor:null,total:0,rows:[]};
   if(append&&base.rows.length&&!base.cursor)return;
@@ -1201,12 +1285,22 @@ function quotaPart(result,previous,state,label){if(result.status==="fulfilled"){
 function resetQuotaReads(){for(const state of Object.values(QUOTA_READ)){state.at=0;state.note=""}$("qnote").textContent=""}
 function summaryQuery(){const q=new URLSearchParams(trendQuery());q.set("group",$("group").value);return q.toString()}
 // The API returns both grouped metrics and buckets. One scan serves the whole overview.
-async function loadSummary(){try{await currentLoad("ss",summaryQuery,(q,current)=>{$("st").setAttribute("aria-busy","true");return usageGet("/usage/v1/summary?"+q,current)},(s,q)=>{
-  const p=new URLSearchParams(q),hourly=p.get("bucket")==="hour";SUM=s.summary;SUM_SCOPE=qs(scopeFilters());RECORDER=s.recorder;REFS=s.refusals||null;
-  TREND={summary:s.summary,hourly,tz:Number(p.get("tz"))};$("trange").textContent=hourly?"每小时":"每天";renderSummary();renderKpis();renderTrend()})}
+// The previous period only changes with the scope and the window length, so a rolling window
+// reuses it for 60 s instead of doubling every auto-refresh scan.
+function prevSig(q){const p=new URLSearchParams(q);p.delete("group");const span=Number(p.get("to"))-Number(p.get("from"));if(!scopeWindow.fixed){p.delete("from");p.delete("to")}p.set("span",span);return p.toString()}
+function prevFresh(q){return !!PREV_CACHE&&PREV_CACHE.sig===prevSig(q)&&Date.now()-PREV_CACHE.at<60e3}
+function occQuery(q){const p=new URLSearchParams(q);return qs({from:p.get("from"),to:p.get("to"),instance:p.get("instance")||"",tz:p.get("tz"),step:p.get("bucket")==="hour"?"1h":"1d"})}
+async function loadSummary(){try{await currentLoad("ss",summaryQuery,(q,current)=>{$("st").setAttribute("aria-busy","true");const want=compareOn()&&!prevFresh(q);
+    return Promise.all([usageGet("/usage/v1/summary?"+q+(want?"&compare=1":""),current),usageGet("/usage/v1/occupancy?"+occQuery(q),current).catch(()=>null)])},([s,o],q)=>{
+  const p=new URLSearchParams(q),hourly=p.get("bucket")==="hour";SUM=s.summary;SUM_SCOPE=qs(scopeFilters());RECORDER=s.recorder;REFS=s.refusals||null;OCC=o;
+  if(s.previous)PREV_CACHE={sig:prevSig(q),at:Date.now(),data:s.previous};SUM_PREV=compareOn()&&PREV_CACHE&&PREV_CACHE.sig===prevSig(q)?PREV_CACHE.data:null;
+  TREND={summary:s.summary,hourly,tz:Number(p.get("tz")),prev:SUM_PREV};$("trange").textContent=hourly?"每小时":"每天";renderSummary();renderKpis();renderTrend()})}
   finally{if(!loading.ss)$("st").setAttribute("aria-busy","false")}}
 function trendQuery(){const mode=$("tmode").value,hourly=mode==="hour"||(mode==="auto"&&scopeWindow.to-scopeWindow.from<=2*864e5),tz=-new Date(scopeWindow.to).getTimezoneOffset();
   return qs(Object.assign({},scopeFilters(),{bucket:hourly?"hour":"day",tz}))}
+// Peak occupancy over the selected range (all instances in scope), from /usage/v1/occupancy.
+function occPeak(){const rows=OCC&&OCC.rows||[];if(!rows.length)return null;const o={inf:0,ws:0,li:0,lw:0,full:0};
+  for(const r of rows){o.inf=Math.max(o.inf,r.inflight_peak);o.ws=Math.max(o.ws,r.ws_peak);o.li=Math.max(o.li,r.max_inflight_requests);o.lw=Math.max(o.lw,r.ws_max_connections);o.full+=r.full_minutes||0}return o}
 // Live process state, not range-scoped: a full-width row at the end of the KPI strip.
 function renderRuntime(){const st=$("strip"),r=EG&&EG.runtime;let row=$("liverow");
   if(!r){if(row)row.remove();return}
@@ -1215,6 +1309,9 @@ function renderRuntime(){const st=$("strip"),r=EG&&EG.runtime;let row=$("liverow
   if(r.draining){e.className="tag dot err";e.textContent="正在关闭"}
   else{e.className="tag dot "+(near?"cool":r.inflight||r.ws_connections?"ok":"off");
     e.textContent="转发 "+exact(r.inflight)+(near?" / "+exact(r.limit):"")+" · WS "+exact(r.ws_connections)}
+  let pk=$("livepk");if(!pk){pk=h("span",{class:"livepk",id:"livepk"});row.appendChild(pk)}clear(pk);const o=occPeak();
+  if(o){const b=h("button",{class:"statlink",type:"button",title:"所选时间段的占用峰值；满载 = 转发或 WS 达到上限的分钟数（按实例累计）。查看占用趋势"},"峰值 转发 "+exact(o.inf)+(o.li?"/"+exact(o.li):"")+" · WS "+exact(o.ws)+(o.lw?"/"+exact(o.lw):""),o.full?[sep(),h("span","w","满载 "+exact(o.full)+" 分钟")]:null);
+    b.addEventListener("click",()=>{$("tmetric").value="cap";saveF();renderTrend();$("st").scrollIntoView({block:"start",behavior:"smooth"})});pk.append(b)}
   row.title="进程状态，读取于 "+hms(new Date())+"，不受时间范围影响。上限 "+(r.limit?exact(r.limit):"不限")+"；HTTP 占用到响应结束，WS 只在 turn 进行中占用，空闲连接不占；达到上限立即返回 503，不排队"}
 // ---- memory panel (admin keys only): /admin/v1/memory is an in-memory 10 s sampler, no disk
 // ---- Scope suggestions: model / key / instance comboboxes. Values come from recent usage rows
@@ -1291,22 +1388,28 @@ $("tmode").addEventListener("change",()=>{saveF();loadSummary().catch(fail)});
 $("tmetric").addEventListener("change",()=>{saveF();renderTrend()});
 $("facct").addEventListener("change",changeScope);
 $("fprewarm").addEventListener("change",()=>{localStorage.setItem(PW,withPrewarm()?"1":"0");changeScope()});
-for(const id of ["ferr","ftier","fsrc","fretry","foutcome","fcode"])$(id).addEventListener("change",changeRecords);
+for(const id of ["ferr","ftier","fsrc","fretry","fcode"])$(id).addEventListener("change",changeRecords);
+// A failure class only matches failed requests: picking one moves the outcome to 失败, other outcomes clear it.
+const CLASS_OK=["","failed","business"];
+$("fclass").addEventListener("change",()=>{if($("fclass").value&&!CLASS_OK.includes($("foutcome").value))$("foutcome").value="failed";changeRecords()});
+$("foutcome").addEventListener("change",()=>{if(!CLASS_OK.includes($("foutcome").value))$("fclass").value="";changeRecords()});
+const CMP="ciallopa_compare";$("fcompare").checked=localStorage.getItem(CMP)!=="0";
+$("fcompare").addEventListener("change",()=>{localStorage.setItem(CMP,compareOn()?"1":"0");if(compareOn())loadSummary().catch(fail);else{SUM_PREV=null;if(TREND)TREND.prev=null;renderKpis();renderTrend()}});
 let kt;for(const id of ["fmodel","fkey","finstance"])$(id).addEventListener("input",()=>{saveF();showScope();clearTimeout(kt);kt=setTimeout(changeScope,400)});
 $("scopefreeze").addEventListener("click",()=>{if(scopeWindow.fixed){recordWindow=null;rollWindow();changeScope()}else{scopeWindow.fixed=true;saveF();showScope()}});
 $("rwindowclear").addEventListener("click",()=>{recordWindow=null;saveF();showScope();renderTrend();loadRecords(false).catch(fail)});
 // ---- URL keeps the query and inspector context; only display preferences use localStorage.
-const SF=["facct","fmodel","fkey","finstance"],RF=["foutcome","ftier","fsrc","fcode","ferr","fretry"],FIDS=["range","group","tmode","tmetric",...SF,...RF],FDEF={range:"24h",group:"account",tmode:"auto",tmetric:"requests"},FL="ciallopa_f_";
+const SF=["facct","fmodel","fkey","finstance"],RF=["foutcome","fclass","ftier","fsrc","fcode","ferr","fretry"],FIDS=["range","group","tmode","tmetric",...SF,...RF],FDEF={range:"24h",group:"account",tmode:"auto",tmetric:"requests"},FL="ciallopa_f_";
 function fval(id){const e=$(id);return e.type==="checkbox"?(e.checked?"1":""):e.value}
 function anyF(){return RF.some(id=>fval(id))}
-const FILTER_NAMES={facct:"账号",fmodel:"模型",fkey:"密钥",finstance:"实例",foutcome:"结果",ftier:"档位",fsrc:"来源",fcode:"错误码",ferr:"旧错误筛选（含取消）",fretry:"重试/换号"};
+const FILTER_NAMES={facct:"账号",fmodel:"模型",fkey:"密钥",finstance:"实例",foutcome:"结果",fclass:"失败原因",ftier:"档位",fsrc:"来源",fcode:"错误码",ferr:"旧错误筛选（含取消）",fretry:"重试/换号"};
 function renderFilterChips(box,ids,scope,fallback){const parts=ids.filter(id=>fval(id).trim()).map(id=>{const e=$(id),value=fval(id).trim();return {id,label:FILTER_NAMES[id]+(e.type==="checkbox"?"":"："+(e.tagName==="SELECT"?e.options[e.selectedIndex].textContent:value))}}),signature=JSON.stringify(parts);
   if(box._signature===signature)return;box._signature=signature;
   const buttons=Array.from(box.querySelectorAll("button")),focused=document.activeElement,index=buttons.indexOf(focused);box.classList.toggle("hide",!parts.length);clear(box);
   const next=parts.map(({id,label})=>{const b=h("button",{type:"button",class:"filterchip","data-clear-filter":id,"aria-label":"清除"+scope+"筛选："+label,title:"清除"+scope+"筛选："+label},h("span","filterlabel",label),h("span",{class:"filterremove","aria-hidden":"true"},"×"));b.addEventListener("click",()=>clearFilter(id));box.appendChild(b);return b});
   if(index>=0)(next.find(b=>b.dataset.clearFilter===focused.dataset.clearFilter)||next[Math.min(index,next.length-1)]||fallback).focus({preventScroll:true})}
 function clearFilter(id){const e=$(id);if(e.type==="checkbox")e.checked=false;else e.value="";if(SF.includes(id))changeScope();else changeRecords()}
-function showRecordFilters(){const count=RF.filter(id=>id!=="foutcome"&&fval(id).trim()).length;$("fsummary").textContent=count?" · "+count+" 项":"";renderFilterChips($("recordchips"),RF,"请求",$("foutcome"))}
+function showRecordFilters(){const count=RF.filter(id=>id!=="foutcome"&&id!=="fclass"&&fval(id).trim()).length;$("fsummary").textContent=count?" · "+count+" 项":"";renderFilterChips($("recordchips"),RF,"请求",$("foutcome"))}
 function saveF(){const u=new URLSearchParams();for(const id of FIDS){const v=fval(id);if(v&&v!==FDEF[id])u.set(id,v)}
   if(scopeWindow.fixed){u.set("from",scopeWindow.from);u.set("to",scopeWindow.to)}if(recordWindow){u.set("rfrom",recordWindow.from);u.set("rto",recordWindow.to)}if(activeRecord)u.set("record",activeRecord);
   history.replaceState(null,"",location.pathname+(u.toString()?"?"+u:""));for(const id in FDEF)localStorage.setItem(FL+id,$(id).value);
