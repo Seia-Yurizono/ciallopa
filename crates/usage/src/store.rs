@@ -1,4 +1,5 @@
 //! Schema (+ migrations), batch insert, purge and read queries.
+use crate::problem::{Outcome, Preds, Problem};
 use crate::{QuotaObs, Record, Transport, UsageError, SEQ_BITS};
 use ciallopa_core::config::QuotaWeights;
 use rusqlite::{params, params_from_iter, Connection, OpenFlags, OptionalExtension};
@@ -543,7 +544,7 @@ fn label_map(c: &Connection) -> rusqlite::Result<HashMap<i64, String>> {
     rows.collect()
 }
 
-fn label_id(c: &Connection, name: &str) -> rusqlite::Result<Option<i64>> {
+pub(crate) fn label_id(c: &Connection, name: &str) -> rusqlite::Result<Option<i64>> {
     c.query_row("SELECT id FROM labels WHERE name = ?1", [name], |r| {
         r.get(0)
     })
@@ -612,30 +613,10 @@ pub struct RecentQuery {
     /// Only failures of this [`failure_class`] (implies `outcome = failed`; another outcome
     /// matches nothing). An unknown class matches nothing.
     pub failure_class: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Outcome {
-    Completed,
-    Failed,
-    Cancelled,
-    Incomplete,
-    Unknown,
-    Prewarm,
-}
-
-impl Outcome {
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "completed" => Some(Self::Completed),
-            "failed" => Some(Self::Failed),
-            "cancelled" => Some(Self::Cancelled),
-            "incomplete" => Some(Self::Incomplete),
-            "unknown" => Some(Self::Unknown),
-            "prewarm" => Some(Self::Prewarm),
-            _ => None,
-        }
-    }
+    /// Problem bucket ([`crate::problem`]); `Refused` matches no request row.
+    pub problem: Option<Problem>,
+    /// Cause within `problem`; a cause that `problem` does not have matches nothing.
+    pub cause: Option<String>,
 }
 
 /// WHERE clause (without ORDER/LIMIT) + params for [`recent`] / [`recent_count`].
@@ -708,79 +689,20 @@ fn recent_where(c: &Connection, q: &RecentQuery) -> rusqlite::Result<Option<(Str
         (Some(_), None | Some(Outcome::Failed)) => Some(Outcome::Failed),
         (Some(_), Some(_)) => return Ok(None),
     };
+    let preds = Preds::new(c)?;
     if let Some(class) = q.failure_class.as_deref() {
-        if !FAILURE_CLASSES.contains(&class) {
-            return Ok(None);
+        match preds.failure_class(class) {
+            Some(p) => s.push_str(&format!(" AND {p}")),
+            None => return Ok(None),
         }
-        // Mirrors `failure_class` on rows already known to be failures.
-        let mut quota = vec![];
-        for e in QUOTA_ERRORS {
-            quota.push(label_id(c, e)?.unwrap_or(-1));
-        }
-        let up = label_id(c, "upstream")?.unwrap_or(-1);
-        let is_quota = format!(
-            "coalesce(error IN ({}), 0)",
-            vec!["?"; quota.len()].join(",")
-        );
-        let is_rl = "(status = 429 OR coalesce(err_source = ? AND up_status = 429, 0))";
-        if class == "quota" {
-            s.push_str(&format!(" AND {is_quota}"));
-            ps.extend(quota);
-        } else {
-            s.push_str(&format!(" AND NOT {is_quota}"));
-            ps.extend(quota);
-            if class == "rate_limit" {
-                s.push_str(&format!(" AND {is_rl}"));
-                ps.push(up);
-            } else {
-                s.push_str(&format!(" AND NOT {is_rl}"));
-                ps.push(up);
-                let srcs = ["upstream", "network", "stream", "local"];
-                if class == "other" {
-                    s.push_str(" AND (err_source IS NULL OR err_source NOT IN (?, ?, ?, ?))");
-                    for n in srcs {
-                        ps.push(label_id(c, n)?.unwrap_or(-1));
-                    }
-                } else {
-                    s.push_str(" AND err_source = ?");
-                    ps.push(label_id(c, class)?.unwrap_or(-1));
-                }
-            }
-        }
+    } else if let Some(outcome) = outcome {
+        s.push_str(&format!(" AND {}", preds.outcome(outcome)));
     }
-    if let Some(outcome) = outcome {
-        let prewarm = label_id(c, PREWARM_ENDPOINT)?.unwrap_or(-1);
-        if outcome == Outcome::Prewarm {
-            s.push_str(" AND endpoint = ?");
-            ps.push(prewarm);
-        } else {
-            s.push_str(" AND (endpoint IS NULL OR endpoint != ?)");
-            ps.push(prewarm);
-            let client = label_id(c, "client")?.unwrap_or(-1);
-            let closed = label_id(c, "client_closed")?.unwrap_or(-1);
-            let cancelled = "(coalesce(err_source = ?, 0) OR coalesce(error = ?, 0))";
-            let failed = "(error IS NOT NULL OR status >= 400)";
-            let unknown =
-                "(coalesce(error = ?, 0) AND coalesce(err_source = ?, 0) AND status < 400)";
-            s.push_str(&match outcome {
-                Outcome::Cancelled => format!(" AND {cancelled}"),
-                Outcome::Unknown => format!(" AND NOT {cancelled} AND {unknown}"),
-                Outcome::Failed => {
-                    format!(" AND NOT {cancelled} AND NOT {unknown} AND {failed}")
-                }
-                Outcome::Incomplete => {
-                    format!(" AND NOT {cancelled} AND NOT {failed} AND incomplete IS NOT NULL")
-                }
-                Outcome::Completed => {
-                    format!(" AND NOT {cancelled} AND NOT {failed} AND incomplete IS NULL")
-                }
-                Outcome::Prewarm => unreachable!(),
-            });
-            ps.extend([client, closed]);
-            if matches!(outcome, Outcome::Unknown | Outcome::Failed) {
-                ps.push(label_id(c, "observation_incomplete")?.unwrap_or(-1));
-                ps.push(label_id(c, "local")?.unwrap_or(-1));
-            }
+    if let Some(problem) = q.problem {
+        let cause = q.cause.as_deref().map(str::trim).filter(|c| !c.is_empty());
+        match preds.problem(problem, cause) {
+            Some(p) => s.push_str(&format!(" AND {p}")),
+            None => return Ok(None),
         }
     }
     Ok(Some((s, ps)))
@@ -797,6 +719,29 @@ pub(crate) fn recent_count(c: &Connection, q: &RecentQuery) -> Result<u64, Usage
         |r| r.get(0),
     )?;
     Ok(n as u64)
+}
+
+/// Requests per problem and cause under `q` (its own `problem`/`cause` and paging ignored);
+/// `refused` is left for the caller, which reads the refusals table.
+pub(crate) fn problem_counts(
+    c: &Connection,
+    q: &RecentQuery,
+) -> Result<crate::problem::ProblemCounts, UsageError> {
+    let q = RecentQuery {
+        before_id: None,
+        problem: None,
+        cause: None,
+        ..q.clone()
+    };
+    let Some((w, ps)) = recent_where(c, &q)? else {
+        return Ok(crate::problem::ProblemCounts::zero());
+    };
+    let cols = crate::problem::count_columns(&Preds::new(c)?);
+    Ok(c.query_row(
+        &format!("SELECT {cols} FROM requests WHERE {w}"),
+        params_from_iter(ps),
+        crate::problem::counts_from,
+    )?)
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -853,6 +798,16 @@ pub struct RecordRow {
     pub has_detail: bool,
     /// [`failure_class`] when the row is a failure, else null.
     pub failure_class: Option<&'static str>,
+    /// `error` (报错) or `unfinished` (没答完); null for completed or prewarm rows.
+    pub problem: Option<&'static str>,
+    /// Cause within `problem` (see [`crate::problem`]).
+    pub cause: Option<&'static str>,
+    /// Counted under 上游出错: an upstream, stream or network failure, or rescued.
+    pub upstream_fault: bool,
+    /// Completed only after a retry or an account switch (已救回).
+    pub rescued: bool,
+    /// Suggested next steps (see [`crate::problem::Class::next`]).
+    pub next: Vec<&'static str>,
     /// `ok`, `ignored` (model on the price table's `ignore` list: cost 0), `unknown_price`
     /// (model/tier/date not in the price table) or `no_tokens`.
     pub price_status: &'static str,
@@ -1039,12 +994,29 @@ fn record_rows(
             upstream_status,
             endpoint.as_deref(),
         );
+        let incomplete = name(r.get(32)?);
+        let (retries, switches): (u32, u32) = (r.get(9)?, r.get(10)?);
+        let class = crate::problem::classify(&crate::problem::Facts {
+            status,
+            error: error.as_deref(),
+            source: err_source.as_deref(),
+            upstream_status,
+            endpoint: endpoint.as_deref(),
+            incomplete: incomplete.is_some(),
+            retries,
+            switches,
+        });
         Ok(RecordRow {
             failure_class,
+            problem: class.problem,
+            cause: class.cause,
+            upstream_fault: class.upstream_fault,
+            rescued: class.rescued,
+            next: class.next,
             requested_service_tier: name(r.get(29)?),
             response_model: resp_model,
             response_effort: name(r.get(31)?),
-            incomplete: name(r.get(32)?),
+            incomplete,
             model_mismatch,
             request_id: format!("{id:016x}"),
             ts_ms: id >> SEQ_BITS,
@@ -1065,8 +1037,8 @@ fn record_rows(
             error,
             err_source,
             upstream_status,
-            retries: r.get(9)?,
-            switches: r.get(10)?,
+            retries,
+            switches,
             ttft_ms: ttft,
             duration_ms: dur,
             input_tokens: inp,
@@ -1199,14 +1171,16 @@ pub fn row_failure_class(
     upstream_status: Option<u16>,
     endpoint: Option<&str>,
 ) -> Option<&'static str> {
-    if endpoint == Some(PREWARM_ENDPOINT) {
-        return None;
-    }
-    let cancelled = source == Some("client") || error == Some("client_closed");
-    let unknown =
-        error == Some("observation_incomplete") && source == Some("local") && status < 400;
-    let failed = (error.is_some() || status >= 400) && !cancelled && !unknown;
-    failed.then(|| failure_class(status, error, source, upstream_status))
+    let f = crate::problem::Facts {
+        status,
+        error,
+        source,
+        upstream_status,
+        endpoint,
+        ..Default::default()
+    };
+    (crate::problem::outcome(&f) == Outcome::Failed)
+        .then(|| failure_class(status, error, source, upstream_status))
 }
 
 #[derive(Debug, Clone)]
@@ -1695,13 +1669,18 @@ pub(crate) fn summary(
         let cost = row_cost(prices, lbl(m), lbl(t), r.get(9)?, tok, r.get(11)?);
         // Codex WS prewarm (`generate:false`): billed tokens count, the request itself does not.
         let counted = lbl(r.get(12)?) != Some(PREWARM_ENDPOINT);
-        let cancelled = lbl(r.get(13)?) == Some("client") || lbl(err) == Some("client_closed");
-        let unknown = lbl(err) == Some("observation_incomplete")
-            && lbl(r.get(13)?) == Some("local")
-            && status < 400
-            && !cancelled;
-        let failed = (err.is_some() || status >= 400) && !cancelled && !unknown;
         let (src, up): (Option<i64>, Option<u16>) = (r.get(13)?, r.get(16)?);
+        // Same outcome rules as the request list ([`crate::problem::outcome`]).
+        let o = crate::problem::outcome(&crate::problem::Facts {
+            status,
+            error: lbl(err),
+            source: lbl(src),
+            upstream_status: up,
+            ..Default::default()
+        });
+        let cancelled = o == Outcome::Cancelled;
+        let unknown = o == Outcome::Unknown;
+        let failed = o == Outcome::Failed;
         let class = failed.then(|| failure_class(status, lbl(err), lbl(src), up));
         let upstream = failed && lbl(src) == Some("upstream");
         let incomplete = r.get::<_, Option<i64>>(14)?.is_some();

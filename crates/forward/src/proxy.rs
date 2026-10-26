@@ -1842,8 +1842,26 @@ pub(crate) async fn send_streaming(
             );
         }
         if let Some(o) = switch {
+            let cooled_before = st.router.cooling_until(&account).is_some();
             st.router.report(&route, &account, &o);
+            let cooled = !cooled_before && st.router.cooling_until(&account).is_some();
             switches += 1;
+            // Recorded so a request rescued by this switch shows how (attempt chain).
+            let mut a = errors::attempt(&account, "stream");
+            a.status = Some(status.as_u16());
+            a.code = Some("usage_limit".into());
+            a.body = errors::body_snippet(&buf);
+            let tag = if cooled { "cooldown+" } else { "" };
+            let next = if switches < max_switches {
+                "switch"
+            } else {
+                "stop"
+            };
+            a.action = format!("{tag}{next}");
+            chain.push(a);
+            if let Some(t) = trk.as_mut() {
+                t.attempts(&chain);
+            }
             if switches < max_switches {
                 tracing::info!(account = %account, "quota error before first output; switching account");
                 ob.route = route;
