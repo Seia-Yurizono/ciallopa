@@ -14,9 +14,9 @@ pub use occupancy::{OccupancyRow, Sample as OccupancySample};
 pub use prices::{PriceTable, Tier};
 pub use refusals::{Reason as RefusalReason, Refusal, RefusalRow, RefusalTotals};
 pub use store::{
-    failure_class, AccountQuota, DayBucket, Dim, Estimate, Filters, Outcome, RecentQuery,
-    RecordRow, ScopeValue, Summary, SummaryGroup, SummaryQuery, WindowQuota, PREWARM_ENDPOINT,
-    QUOTA_ERRORS,
+    failure_class, row_failure_class, AccountQuota, DayBucket, Dim, Estimate, Filters, Outcome,
+    RecentQuery, RecordRow, ScopeValue, Summary, SummaryGroup, SummaryQuery, WindowQuota,
+    FAILURE_CLASSES, PREWARM_ENDPOINT, QUOTA_ERRORS,
 };
 pub use store::{occupancy_step, OccupancyQuery, RefusalQuery};
 
@@ -1984,6 +1984,204 @@ mod tests {
     }
 
     #[test]
+    fn ops_figures_upstream_rate_bucket_latency_refusals_and_failure_class_filter() {
+        let d = tempfile::tempdir().unwrap();
+        let r = Recorder::open(&cfg(d.path())).unwrap();
+        let day = 1_700_006_400_000; // 2023-11-15 00:00 UTC
+        let mk = |ms: i64,
+                  status: u16,
+                  error: Option<&str>,
+                  src: Option<&'static str>,
+                  up: Option<u16>| {
+            let mut x = Record::new(r.ids.next_at(ms), Transport::Sse, "responses");
+            x.account = Some("a".into());
+            x.model = Some("m".into());
+            x.status = status;
+            x.error = error.map(Into::into);
+            x.err_source = src;
+            x.upstream_status = up;
+            x.ttft_ms = Some(100);
+            x.duration_ms = 1000;
+            x
+        };
+        // Hour 0: 4 rows with durations 1000..4000, one upstream quota 429, one retried.
+        let mut a = mk(day + 1_000, 200, None, None, None);
+        a.retries = 1;
+        a.req_tier = Some("priority".into());
+        a.service_tier = Some("default".into());
+        r.record(a);
+        let mut b = mk(
+            day + 2_000,
+            429,
+            Some("usage_limit_reached"),
+            Some("upstream"),
+            Some(429),
+        );
+        b.duration_ms = 2000;
+        b.switches = 1;
+        r.record(b);
+        let mut c = mk(day + 3_000, 200, None, None, None);
+        c.duration_ms = 3000;
+        c.req_tier = Some("priority".into());
+        c.service_tier = Some("priority".into());
+        r.record(c);
+        let mut e = mk(
+            day + 4_000,
+            502,
+            Some("connect_failed"),
+            Some("network"),
+            None,
+        );
+        e.duration_ms = 4000;
+        e.ttft_ms = None;
+        r.record(e);
+        // Hour 1: local quota exhaustion (not upstream), a mid-stream drop and a cancel.
+        r.record(mk(
+            day + 3_600_000,
+            503,
+            Some("all_quota_exhausted"),
+            Some("local"),
+            None,
+        ));
+        r.record(mk(
+            day + 3_601_000,
+            200,
+            Some("stream_closed"),
+            Some("stream"),
+            None,
+        ));
+        r.record(mk(
+            day + 3_602_000,
+            499,
+            Some("client_closed"),
+            Some("client"),
+            None,
+        ));
+        r.record(mk(
+            day + 3_603_000,
+            500,
+            Some("server_error"),
+            Some("upstream"),
+            Some(500),
+        ));
+        for (ms, reason) in [
+            (day + 10_000, refusals::Reason::Inflight),
+            (day + 20_000, refusals::Reason::Inflight),
+            (day + 3_650_000, refusals::Reason::Ws),
+        ] {
+            r.refuse(Refusal {
+                ts_ms: ms,
+                reason: Some(reason),
+                route: "/v1/responses".into(),
+                limit: 1,
+                ..Default::default()
+            });
+        }
+        r.flush_blocking().unwrap();
+        let c = store::open_ro(r.path()).unwrap();
+        let prices = PriceTable::default();
+        let q = SummaryQuery {
+            from_ms: day,
+            to_ms: day + 7_200_000 - 1,
+            group_by: vec![Dim::Account],
+            bucket_day: Some(0),
+            bucket_hour: true,
+            bucket_refusals: true,
+            ..Default::default()
+        };
+        let s = store::summary(&c, &q, &prices).unwrap();
+        let t = &s.total;
+        assert_eq!((t.count, t.failures, t.cancelled), (8, 5, 1), "{t:?}");
+        assert_eq!(t.upstream_failures, 2, "upstream quota 429 + upstream 500");
+        assert_eq!(t.upstream_failure_rate, Some(0.25));
+        assert_eq!((t.retried, t.switched, t.downgraded), (2, 1, 1));
+        assert_eq!(s.groups[0].upstream_failures, 2);
+        let bs = s.buckets.as_ref().unwrap();
+        assert_eq!(bs.len(), 2, "{bs:?}");
+        let h0 = &bs[0];
+        assert_eq!((h0.count, h0.upstream_failures, h0.refused), (4, 1, 2));
+        assert_eq!(h0.refusals.get("inflight"), Some(&2));
+        assert_eq!(
+            (h0.duration_p50_ms, h0.duration_p90_ms, h0.duration_p99_ms),
+            (Some(2000), Some(4000), Some(4000))
+        );
+        assert_eq!(h0.stream_ttft_p50_ms, Some(100));
+        let h1 = &bs[1];
+        assert_eq!((h1.upstream_failures, h1.refused), (1, 1));
+        assert_eq!(h1.refusals.get("ws"), Some(&1));
+        // An account filter drops refusals (they precede account choice).
+        let scoped = SummaryQuery {
+            filters: Filters {
+                account: Some("a".into()),
+                ..Default::default()
+            },
+            ..q.clone()
+        };
+        let s2 = store::summary(&c, &scoped, &prices).unwrap();
+        assert!(s2.buckets.unwrap().iter().all(|b| b.refused == 0));
+        // total_only skips groups.
+        let s3 = store::summary(
+            &c,
+            &SummaryQuery {
+                total_only: true,
+                ..q.clone()
+            },
+            &prices,
+        )
+        .unwrap();
+        assert!(s3.groups.is_empty());
+        assert_eq!(s3.total.count, 8);
+
+        let rows = |class: &str, outcome: Option<Outcome>| {
+            store::recent(
+                &c,
+                &RecentQuery {
+                    limit: 50,
+                    failure_class: Some(class.into()),
+                    outcome,
+                    ..Default::default()
+                },
+                &prices,
+            )
+            .unwrap()
+            .into_iter()
+            .map(|x| x.error.unwrap_or_default())
+            .collect::<Vec<_>>()
+        };
+        let mut quota = rows("quota", None);
+        quota.sort();
+        assert_eq!(quota, ["all_quota_exhausted", "usage_limit_reached"]);
+        assert_eq!(rows("network", None), ["connect_failed"]);
+        assert_eq!(rows("stream", None), ["stream_closed"]);
+        assert_eq!(rows("upstream", None), ["server_error"]);
+        assert!(
+            rows("local", None).is_empty(),
+            "local quota is classed as quota"
+        );
+        assert!(rows("rate_limit", None).is_empty());
+        assert_eq!(rows("network", Some(Outcome::Failed)), ["connect_failed"]);
+        assert!(rows("network", Some(Outcome::Completed)).is_empty());
+        assert!(rows("bogus", None).is_empty());
+        let all = store::recent(
+            &c,
+            &RecentQuery {
+                limit: 50,
+                ..Default::default()
+            },
+            &prices,
+        )
+        .unwrap();
+        let cls = |e: &str| {
+            all.iter()
+                .find(|x| x.error.as_deref() == Some(e))
+                .and_then(|x| x.failure_class)
+        };
+        assert_eq!(cls("usage_limit_reached"), Some("quota"));
+        assert_eq!(cls("client_closed"), None, "cancels are not failures");
+        assert_eq!(cls("server_error"), Some("upstream"));
+    }
+
+    #[test]
     fn refusals_merge_across_flushes_persist_on_shutdown_and_follow_retention() {
         let d = tempfile::tempdir().unwrap();
         let r = Recorder::open(&cfg(d.path())).unwrap();
@@ -2034,6 +2232,36 @@ mod tests {
         let rows = store::refusal_rows(&c, &q).unwrap();
         assert_eq!(rows.len(), 1, "older minute purged");
         assert_eq!(rows[0].key.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn occupancy_buckets_align_to_the_requested_utc_offset() {
+        let d = tempfile::tempdir().unwrap();
+        let r = Recorder::open_as(&cfg(d.path()), "pod-a").unwrap();
+        let hour = 1_700_002_800_000; // a UTC hour boundary
+        for m in [0, 20, 40] {
+            r.occupancy(OccupancySample {
+                ts_ms: hour + m * 60_000 + 1_000,
+                inflight: 1,
+                peak_inflight: 1,
+                ..Default::default()
+            });
+        }
+        r.flush_blocking().unwrap();
+        let c = store::open_ro(r.path()).unwrap();
+        let q = |tz_min| OccupancyQuery {
+            from_ms: hour,
+            to_ms: hour + 3_600_000,
+            step_min: 60,
+            tz_min,
+            ..Default::default()
+        };
+        let utc = store::occupancy_rows(&c, &q(0)).unwrap();
+        assert_eq!(utc.len(), 1, "{utc:?}");
+        // UTC+5:30: local hours start at :30 UTC, splitting 00/20 from 40.
+        let ist = store::occupancy_rows(&c, &q(330)).unwrap();
+        let starts: Vec<i64> = ist.iter().map(|x| x.minute_ms).collect();
+        assert_eq!(starts, [hour - 1_800_000, hour + 1_800_000], "{ist:?}");
     }
 
     #[test]

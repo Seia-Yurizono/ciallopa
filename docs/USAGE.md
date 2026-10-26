@@ -140,6 +140,20 @@ exhaustion is counted as a failure yet charted apart from real faults:
 `group=error` and `group=err_source` give the codes and origin behind each class (a local
 `all_quota_exhausted` is `quota` with source `local`).
 
+Panel labels: `quota` 额度用尽, `rate_limit` 限流, `upstream` 上游错误, `network` 网络,
+`stream` 流中断, `local` 本地, `other` 其他. `first_quota_reset` is shown as 额度用尽 like the
+other quota codes; the code itself stays in the record.
+
+Rates (business requests: prewarm, and nothing else, is left out of the denominator):
+- **failure rate** (`failures / count`): every failure class; cancellations, unknown outcomes and
+  refusals are not failures. Refusals are not requests at all (no row in `requests`), so they
+  are in neither side and are reported apart (`refusals`).
+- **upstream failure rate** (`upstream_failures / count`, field `upstream_failure_rate`):
+  failures whose `err_source` is `upstream`, i.e. an error HTTP response from the upstream,
+  including upstream quota and rate-limit 429s. Local (including the locally synthesized
+  `all_quota_exhausted` / `first_quota_reset`), network and in-stream errors are excluded.
+  It answers "how often did the upstream itself say no", independent of ciallopa and the path.
+
 What the client receives:
 - Complete upstream errors within the buffering bounds ⇒ the most meaningful one is returned verbatim (status, body and
   `retry-after`, `x-codex-*`, `x-request-id`, `cf-ray`, …). Priority: usage-limit 429 > other 429 >
@@ -497,7 +511,9 @@ See [METRICS.md](METRICS.md) for the current outcome, sampling, cursor and bucke
   `cache_write_tokens`, `service_tier`, `requested_service_tier`, `response_model`, `response_effort`, `incomplete`,
   `model_mismatch` (null = no response model; false = same ignoring case and a `-YYYY-MM-DD` snapshot
   suffix; true = different), `thread_id`, `turn_id`, `cost_usd`, `price_status`
-  (`ok` | `unknown_price` | `no_tokens`), `has_detail`.
+  (`ok` | `unknown_price` | `no_tokens`), `has_detail`, `failure_class` (null unless the row is a
+  failure). `failure_class=<class>` keeps only failures of that class (implies `outcome=failed`;
+  another `outcome` matches nothing; an unknown class → 400).
 - `GET /usage/v1/records/{request_id}` → `{record: …}` for a preserved success, failure or prewarm.
   It does not require captured error detail. Returns 404 if the record is absent and 400 for an invalid ID.
 - `GET /usage/v1/records/{request_id}/detail` → `{request_id, ts_ms, message, body, body_len,
@@ -506,12 +522,24 @@ See [METRICS.md](METRICS.md) for the current outcome, sampling, cursor and bucke
   `from=<ms>&to=<ms>`). `group` = comma list of `account,model,key,instance,effort,transport,endpoint,tier,response_model,error,err_source`
   (default `account,model`; unknown → 400)
   → `{"summary":{"group_by":[…],"total":{…},"groups":[{group:{key:…,instance:…}, count, errors, error_rate,
-  failures, failure_classes:{quota, rate_limit, …}, ttft_p50_ms, ttft_p90_ms, duration_p50_ms, duration_p90_ms, input_tokens, output_tokens,
+  failures, failure_classes:{quota, rate_limit, …}, upstream_failures, upstream_failure_rate, retried, switched,
+  downgraded, ttft_p50_ms, ttft_p90_ms, ttft_p99_ms, duration_p50_ms, duration_p90_ms, duration_p99_ms,
+  stream_ttft_p50_ms, stream_ttft_p90_ms, stream_ttft_p99_ms, input_tokens, output_tokens,
   cached_tokens, reasoning_tokens, tps, cost_usd, unknown_price}]}, "unknown_price_models":[…]}, "recorder":{accepted, dropped, written,
-  write_errors, purged}}`. Percentiles are exact (nearest rank).
+  write_errors, purged}}`. Percentiles are exact (nearest rank). `retried` = requests that
+  retried or switched accounts, `switched` = switched accounts, `downgraded` = asked for
+  priority / flex and were served another tier (business requests only).
+- `GET /usage/v1/summary?…&compare=1` also returns `"previous":{from, to, total, buckets,
+  refusals}`: the same filters over the equal-length window ending 1 ms before `from` (total
+  only, no groups; `buckets` with `bucket=`; `refusals` null under an account or model filter).
+  Without `compare` it is `null`. One extra scan of the previous window.
 - `GET /usage/v1/summary?…&bucket=day&tz=<minutes east of UTC>` (or `bucket=hour`) additionally returns
-  `"buckets":[{day:"YYYY-MM-DD", start_ms, end_ms, count, errors, failures, failure_classes, input_tokens, output_tokens,
+  `"buckets":[{day:"YYYY-MM-DD", start_ms, end_ms, count, errors, failures, failure_classes, upstream_failures,
+  stream_ttft_p50_ms, stream_ttft_p90_ms, stream_ttft_p99_ms, duration_p50_ms, duration_p90_ms, duration_p99_ms,
+  refused, refusals:{inflight, ws, body, ws_msg}, input_tokens, output_tokens,
   cached_tokens, reasoning_tokens, cost_usd, unknown_price}]` (ascending, empty days omitted;
+  `refused` / `refusals` are local-limit refusals in the bucket, only without an account or model
+  filter; a bucket may hold only refusals (`count` 0);
   `tz` −840..840, default 0; unsupported `bucket` values → 400). `end_ms` is exclusive;
   partial first/last buckets are clipped to the shared scope by the `/ui` trend chart.
 - `GET /usage/v1/refusals?range=24h&reason=inflight&key=<label>&instance=&limit=50&offset=0`
@@ -520,7 +548,8 @@ See [METRICS.md](METRICS.md) for the current outcome, sampling, cursor and bucke
   limit, count, first_ms, last_ms, max_inflight, max_ws, max_buffered_bytes, max_bytes,
   sum_bytes}]}` newest first. Unknown `reason` → 400. Account and model filters do not apply
   (refusals happen before an account is picked).
-- `GET /usage/v1/occupancy?range=24h&instance=&step=1m` (or `from`/`to`) → `{from, to, step_min,
+- `GET /usage/v1/occupancy?range=24h&instance=&step=1m&tz=<minutes east of UTC>` (or `from`/`to`;
+  `tz` aligns hour / day buckets to local time like the summary) → `{from, to, step_min,
   "rows":[{minute_ms, instance, samples, inflight_avg, inflight_peak, ws_avg, ws_peak,
   buffered_avg_bytes, buffered_peak_bytes, max_inflight_requests, ws_max_connections,
   max_buffered_body_bytes}]}` oldest first, one row per bucket and instance. `step` is a whole

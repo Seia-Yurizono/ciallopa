@@ -6331,6 +6331,17 @@ async fn summary_breaks_failures_down_by_class_error_code_and_source() {
         r.upstream_status = up;
         assert!(rec.record(r));
     };
+    // One row in the previous hour (ids are time-ordered, so it goes first).
+    let mut old = ciallopa_usage::Record::new(
+        rec.ids.next_at(now - 5_400_000),
+        ciallopa_usage::Transport::Sse,
+        "responses",
+    );
+    old.status = 500;
+    old.error = Some("server_error".into());
+    old.err_source = Some("upstream");
+    old.upstream_status = Some(500);
+    assert!(rec.record(old));
     row(200, None, None, None);
     row(
         429,
@@ -6413,4 +6424,57 @@ async fn summary_breaks_failures_down_by_class_error_code_and_source() {
         up["failure_classes"],
         serde_json::json!({"quota": 1, "rate_limit": 1, "upstream": 1})
     );
+    // Upstream failure rate: upstream-sourced failures (incl. upstream 429s) / requests.
+    assert_eq!(t["upstream_failures"], 3, "{t}");
+    assert_eq!(t["upstream_failure_rate"].as_f64(), Some(0.3));
+
+    // Previous period: same length right before `from`, total only.
+    let v = get("compare=1&bucket=hour&tz=0")
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    let p = &v["previous"];
+    assert_eq!(p["total"]["count"], 1, "{p}");
+    assert_eq!(p["total"]["upstream_failures"], 1);
+    assert_eq!(
+        p["to"].as_i64().unwrap() - p["from"].as_i64().unwrap(),
+        3_600_000
+    );
+    assert!(p["buckets"].is_array(), "{p}");
+    assert!(v["summary"]["buckets"][0]["duration_p90_ms"].is_number());
+    let v = get("")
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert!(v["previous"].is_null(), "compare is opt-in");
+
+    // Records: failure_class filter and per-row class.
+    let rec_get = |q: &str| {
+        e.http
+            .get(format!("http://{}/usage/v1/records?range=1h&{q}", e.proxy))
+            .bearer_auth(KEY)
+            .send()
+    };
+    let v = rec_get("failure_class=quota")
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(v["total"], 3, "{v}");
+    let rows = v["records"].as_array().unwrap();
+    assert!(rows.iter().all(|r| r["failure_class"] == "quota"));
+    let r = rec_get("failure_class=bogus").await.unwrap();
+    assert_eq!(r.status(), 400);
+    let v = rec_get("failure_class=network&outcome=completed")
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(v["total"], 0, "a conflicting outcome matches nothing");
 }
