@@ -354,7 +354,9 @@ body. It is account-level throttling, not quota and not a credential problem.
 
 ## Error details
 Stored for failed requests (status ≥ 400 or `error` set) and for successful requests that
-retried or switched accounts (attempt chain only), in `error_detail`:
+retried or switched accounts (attempt chain only), in `error_detail`. That includes an HTTP
+stream that switched accounts before output and a WS turn replayed on another account or after
+an overload wait; a request with no retry stores no chain:
 - `body`: upstream error body (HTTP error response, in-stream `error` / `response.failed` /
   `response.incomplete` event, WS error / quota frame, WS handshake failure, or the local
   JSON error such as `no_account`). Capture stops at 64 KiB; the stored text is redacted and
@@ -366,7 +368,7 @@ retried or switched accounts (attempt chain only), in `error_detail`:
 - `attempts` (v9): JSON array, at most 8 entries (`{"dropped": n}` marks omitted middle ones):
   `account`, `t_ms` (since request start), `kind` (`http` / `transport` / `refresh` / `stream`), `status`,
   `code`, `action` (`ok`, `retry(<ms>ms)`, `switch`, `cooldown(<s>s)+switch`, `cooldown+switch`, `refresh+retry`,
-  `stop`) and `body` (first 512 bytes, redacted). Written by the same batched writer as the row.
+  `wait+retry`, `stop`) and `body` (first 512 bytes, redacted). Written by the same batched writer as the row.
 - `up_req_id` (v9): upstream `x-request-id` / `x-oai-request-id` / `cf-ray`.
 - `headers`: only `x-codex-*`, `cf-ray`, `retry-after`, `content-type`, `x-request-id`,
   `x-oai-request-id`, `openai-*request-id`/`openai-processing-ms`; never cookies or auth.
@@ -380,9 +382,10 @@ retried or switched accounts (attempt chain only), in `error_detail`:
   status differs from the last upstream one. The status chip is green for a 2xx success, amber
   for 429, orange-red for other 4xx failures and red with an outline for 5xx; cancelled,
   unknown-outcome and prewarm rows stay neutral (the code and its tooltip carry the meaning,
-  colour only reinforces it). Filters: account, source, code, errors only,
-  retried/switched only. Clicking a row opens the detail panel with the attempt timeline,
-  upstream request id, headers and body (copy button).
+  colour only reinforces it). Filters: problem chips and causes (see *Request problems*), account,
+  model and key; source, code, errors only and retried/switched only under 更多. Clicking a row
+  opens the detail panel with a 结论 block, the attempt timeline, upstream request id, headers
+  and body (copy button).
 - `GET /usage/v1/records` filters: `source=upstream,network` (comma list), `error=<code>`,
   `retried=1`.
 
@@ -513,7 +516,17 @@ See [METRICS.md](METRICS.md) for the current outcome, sampling, cursor and bucke
   suffix; true = different), `thread_id`, `turn_id`, `cost_usd`, `price_status`
   (`ok` | `unknown_price` | `no_tokens`), `has_detail`, `failure_class` (null unless the row is a
   failure). `failure_class=<class>` keeps only failures of that class (implies `outcome=failed`;
-  another `outcome` matches nothing; an unknown class → 400).
+  another `outcome` matches nothing; an unknown class → 400). Each row also has `problem`
+  (`error` | `unfinished` | null), `cause`, `upstream_fault`, `rescued` and `next` (see
+  *Request problems*). `problem=all|error|upstream|unfinished` with an optional
+  `cause=<cause>` filters by those buckets (`problem=refused`, an unknown value or a cause
+  without a problem → 400; refusals are in `/usage/v1/refusals?reason=`).
+- `GET /usage/v1/records/counts?<same filters>` → `{all, error, upstream, unfinished, refused,
+  causes:{error:{quota, rate_limit, upstream, network, gateway, stream}, upstream:{unrescued,
+  rescued}, unfinished:{client_closed, truncated, unconfirmed}, refused:{inflight, ws, body,
+  ws_msg}}}`. `problem`, `cause` and paging are ignored. `refused` (and `causes.refused`)
+  covers the same range, key and instance from the refusals table, and is null when an
+  account, model or another request-only filter is set.
 - `GET /usage/v1/records/{request_id}` → `{record: …}` for a preserved success, failure or prewarm.
   It does not require captured error detail. Returns 404 if the record is absent and 400 for an invalid ID.
 - `GET /usage/v1/records/{request_id}/detail` → `{request_id, ts_ms, message, body, body_len,
@@ -799,9 +812,34 @@ Page behavior:
 - 分布 groups: 账号, 模型, 密钥, 实例, 接口, 推理, 传输, 档位, 错误码, 错误来源. Columns add
   上游 (upstream failure rate), 重试 and 降级. 错误码 rows show the Chinese label, with the raw
   code on hover. Clicking an error code, source or tier row filters the request list to it.
-- Request filter 失败原因 (`fclass`, `failure_class=` on `/usage/v1/records`) selects one class;
-  choosing one sets 结果 to 失败 (clearing it leaves 结果 as it is; picking another 结果 clears it).
-  It is kept in the URL and shows as a chip.
+- Request problems: the list opens with chips 全部 / 报错 / 上游出错 / 没答完 / 本地拒绝, each
+  with its count (`fproblem` in the URL), and a cause row under the chosen one (`fcause`):
+  - 报错 = the client got an error (counts in 失败率). Causes 额度, 限流, 上游, 网络代理, 网关
+    (local and other), 流中断.
+  - 上游出错 = the upstream side (upstream / stream / network source) failed at least once,
+    including requests a retry or account switch rescued. Causes 未救回 and 已救回; the hint
+    shows both counts. 上游失败率 on the dashboard keeps its definition and no new rate is added.
+  - 没答完 = 客户端断开 (`client_closed`), 上游截断 (`response.incomplete`) and 未确认结束
+    (the former 结果未知); not counted as failures.
+  - 本地拒绝 = refusals by a local limit (503 before a row exists), by reason; disabled while an
+    account, model or request-only filter is set.
+  There is no 慢 bucket. 全部 excludes prewarm unless 含预热 is ticked under 更多.
+  Classification lives in `crates/usage/src/problem.rs`; the page only shows the row fields.
+  Rescued rows are tagged 已救回 with “重试 N 次后成功” or “换号 A → B 后成功”. `retries`
+  counts transport retries only, so a same-account overload wait+retry keeps its attempt chain
+  but is not marked 已救回.
+- Next steps: each problem row has up to two 下一步 buttons (one on a phone) and the detail
+  panel repeats them under its 结论. They only navigate: 刷新额度 scrolls to the quota card's
+  normal 刷新 button (or opens the account page), 看账号 / 账号状态 open the 账号 page,
+  看冷却 opens the account, 检查出口 and the 本地拒绝 hint open 设置 (网络 / 限流与容错),
+  尝试链 opens the detail at the attempt timeline, 新开会话 opens the detail whose 结论 explains why
+  (encrypted reasoning from another account; switching cannot fix it).
+  Nothing consumes a reset card.
+- Request filters under 更多: 结果 (完成 / 失败 / 客户端断开 / 上游截断 · incomplete / 未确认结束 /
+  预热 / 本地拒绝), 失败原因 (`fclass`, `failure_class=`), 错误来源, 档位, 错误码, 重试 and
+  含预热. They and the old `outcome`, `failure_class`, `source`, `error`, `retried` and `errors`
+  params keep working, so old links open; picking one clears the problem chip. They show as
+  chips and are kept in the URL.
 - Quota cards show **remaining** percent (bar width = remaining). Color follows remaining:
   green when ≥ 50%, yellow when < 50%, red when < 20%. The card top strip is yellow when
   the account's max used percent is over 50%, and red when over 80%.
