@@ -998,6 +998,7 @@ struct Env {
     config: Arc<ciallopa_core::settings::SharedConfig>,
     drain: Arc<ciallopa_upstream::drain::Drain>,
     app: Router,
+    state: AppState,
 }
 
 async fn env(idle: u64) -> Env {
@@ -1054,9 +1055,10 @@ async fn env_cfg_accounts(
     };
     let config = state.config.clone();
     let drain = state.upstream.drain.clone();
-    let app = ciallopa::build_app(state);
+    let app = ciallopa::build_app(state.clone());
     let proxy = serve(app.clone()).await;
     Env {
+        state,
         proxy,
         mock,
         rec,
@@ -6217,4 +6219,91 @@ async fn idle_websockets_hold_no_inflight_slot_only_running_turns_do() {
             .sum()
     };
     assert_eq!((by("ws"), by("http")), (1, 1), "{v}");
+}
+
+/// The sampler stores current occupancy, exact peaks between samples and the limits in
+/// effect; `/usage/v1/occupancy` serves them per minute and instance.
+#[tokio::test]
+async fn occupancy_samples_are_stored_and_served_by_the_usage_api() {
+    use tokio_tungstenite::tungstenite::Message as M;
+    let d = tempfile::tempdir().unwrap();
+    let rec = usage_recorder(d.path());
+    let e = env_usage(300, Some(rec.clone())).await;
+    let mut cfg = (*e.config.load()).clone();
+    cfg.max_inflight_requests = 4;
+    cfg.ws_max_connections = 3;
+    e.config.store(cfg);
+    let (mut ws, r) = tokio_tungstenite::connect_async(ws_req(&e)).await.unwrap();
+    assert_eq!(r.status(), 101);
+    ws.send(M::Ping(Bytes::from_static(b"ready")))
+        .await
+        .unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(2), ws.next()).await;
+    // A burst between samples: two turns start and one ends before the sample.
+    let a = held_response(&e).await;
+    let b = held_response(&e).await;
+    assert_eq!((a.status().as_u16(), b.status().as_u16()), (200, 200));
+    drop(b);
+    wait_inflight(&e, 1).await;
+    let s = ciallopa_forward::occupancy::sample(&e.state).unwrap();
+    assert_eq!(
+        (s.inflight, s.peak_inflight),
+        (1, 2),
+        "the burst peak is kept"
+    );
+    assert_eq!((s.ws, s.peak_ws), (1, 1));
+    assert_eq!((s.limit_inflight, s.limit_ws), (4, 3));
+    rec.occupancy(s);
+    ciallopa_forward::occupancy::record(&e.state);
+    drop(a);
+    drop(ws);
+    let r2 = rec.clone();
+    tokio::task::spawn_blocking(move || r2.flush_blocking())
+        .await
+        .unwrap()
+        .unwrap();
+    let get = |q: &str| {
+        e.http
+            .get(format!("http://{}/usage/v1/occupancy?{q}", e.proxy))
+            .bearer_auth(KEY)
+            .send()
+    };
+    let v = get("range=1h")
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(v["step_min"], 1, "{v}");
+    let rows = v["rows"].as_array().unwrap();
+    // One minute (two if the samples straddle a boundary).
+    assert!(matches!(rows.len(), 1 | 2), "{v}");
+    let n: u64 = rows.iter().map(|r| r["samples"].as_u64().unwrap()).sum();
+    assert_eq!(n, 2);
+    let peak = rows
+        .iter()
+        .map(|r| r["inflight_peak"].as_u64().unwrap())
+        .max();
+    assert_eq!(peak, Some(2), "{v}");
+    let row = &rows[0];
+    assert_eq!(row["ws_peak"], 1);
+    assert_eq!(row["max_inflight_requests"], 4);
+    assert_eq!(row["ws_max_connections"], 3);
+    assert!(row["instance"].is_string(), "{v}");
+    let v = get("range=1h&instance=nowhere")
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(v["rows"].as_array().unwrap().len(), 0);
+    let v = get("range=7d&step=1m")
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(v["step_min"], 7, "a week is at most 1440 buckets");
+    assert_eq!(get("step=90s").await.unwrap().status(), 400);
+    assert_eq!(get("range=bogus").await.unwrap().status(), 400);
 }

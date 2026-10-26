@@ -387,8 +387,14 @@ CREATE TABLE refusals(minute INTEGER NOT NULL, reason INTEGER NOT NULL, transpor
   max_inflight INTEGER NOT NULL, max_ws INTEGER NOT NULL, max_buffered INTEGER NOT NULL,
   max_bytes INTEGER, sum_bytes INTEGER,
   PRIMARY KEY(minute, reason, transport, key, route, ua, model, account, instance, lim));
+-- v11: process occupancy, one row per minute and instance (labels.id or 0)
+CREATE TABLE occupancy(minute INTEGER NOT NULL, instance INTEGER NOT NULL, samples INTEGER NOT NULL,
+  inflight_sum INTEGER NOT NULL, inflight_peak INTEGER NOT NULL, ws_sum INTEGER NOT NULL,
+  ws_peak INTEGER NOT NULL, buffered_sum INTEGER NOT NULL, buffered_peak INTEGER NOT NULL,
+  lim_inflight INTEGER NOT NULL, lim_ws INTEGER NOT NULL, lim_buffered INTEGER NOT NULL,
+  PRIMARY KEY(minute, instance));
 ```
-- Schema is at `user_version = 10`. Opening an older file upgrades it in place (`ALTER TABLE` /
+- Schema is at `user_version = 11`. Opening an older file upgrades it in place (`ALTER TABLE` /
   new tables); columns that did not exist yet stay NULL on old rows.
 - `quota_obs` gets a row only when used % / plan changes or a reset time moves by > 120 s
   (upstream reset times jitter by a few seconds). Purge keeps each account's latest row.
@@ -417,6 +423,22 @@ They are counted in memory and merged into `refusals`, one row per minute and gr
   them made the client look broken while the cap was full.
 - Logs: at most one WARN per reason per minute, carrying `refused=<n>` (refusals since the
   previous line). Counting log lines (`grep -c`) therefore undercounts; sum `refused` or use the API.
+
+## Occupancy history
+How full the local limits were over time, so a limit can be tuned from history rather than
+from the moment of a refusal:
+- About once a second the process samples the counters behind `max_inflight_requests` (HTTP
+  requests plus running WebSocket turns), `ws_max_connections` and `max_buffered_body_mb`, plus
+  the **exact peak since the previous sample** (tracked on every increment, so a burst that
+  starts and ends between two samples still shows), and the limits in effect.
+- Samples are summed in memory per minute (atomic reads plus a short mutex; no I/O on the
+  proxy path). The usage writer stores each minute once it is complete, so about one write
+  per minute and instance; shutdown and an explicit flush also store the current minute
+  (later samples merge into the same row). Memory holds at most a day of unstored minutes.
+- Per row: `samples` (≈ seconds the process ran in that minute), sums for averages
+  (`*_sum / samples`), exact peaks, and the latest limits (`0` = unlimited). Several
+  instances sharing one database each write their own rows.
+- Rows follow `retention_days`. With `[usage] enabled = false` nothing is sampled.
 
 ## Retention
 - `retention_days` (default 90; `0` = keep forever, no purge at all). Error details follow the
@@ -483,6 +505,13 @@ See [METRICS.md](METRICS.md) for the current outcome, sampling, cursor and bucke
   limit, count, first_ms, last_ms, max_inflight, max_ws, max_buffered_bytes, max_bytes,
   sum_bytes}]}` newest first. Unknown `reason` → 400. Account and model filters do not apply
   (refusals happen before an account is picked).
+- `GET /usage/v1/occupancy?range=24h&instance=&step=1m` (or `from`/`to`) → `{from, to, step_min,
+  "rows":[{minute_ms, instance, samples, inflight_avg, inflight_peak, ws_avg, ws_peak,
+  buffered_avg_bytes, buffered_peak_bytes, max_inflight_requests, ws_max_connections,
+  max_buffered_body_bytes}]}` oldest first, one row per bucket and instance. `step` is a whole
+  number of minutes (`5m`, `1h`) and is widened so a range has at most 1440 buckets
+  (`step_min` is the width used). In a bucket, averages are over all its samples, peaks are
+  the highest and limits the highest seen. Bad `range` / `step` → 400.
 - `GET /usage/v1/summary` also returns `"refusals"`: the totals for the same range, key and
   instance, or `null` when an `account` or `model` filter is set.
 - `GET /usage/v1/quota` → `{"accounts":[{account, email, disabled, needs_relogin, quota:
@@ -836,7 +865,7 @@ thread):
 
 | Path | Policy |
 |---|---|
-| Usage SQLite (`[usage]`) | Writer thread: batch up to `batch_size` rows or `flush_ms`, then one transaction. |
+| Usage SQLite (`[usage]`) | Writer thread: batch up to `batch_size` rows or `flush_ms`, then one transaction. Refusal counters every 5 s; occupancy once per completed minute. |
 | Learned client fingerprint | One background writer; coalesces to the latest UA/originator; saves on change, at most once per 60 s, and at most hourly for an unchanged pair. Request path never blocks on I/O. Flushed on graceful shutdown. |
 | Auth files (`auth_dir`) | Only on login / import / token refresh / admin account edits — never per forward. |
 | Config write-back + `.bak` | Only on an explicit admin save. |

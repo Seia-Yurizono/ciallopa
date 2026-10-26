@@ -16,6 +16,7 @@ mod image_events;
 mod images;
 mod limits;
 mod models;
+pub mod occupancy;
 mod proxy;
 mod refusal;
 mod reqbody;
