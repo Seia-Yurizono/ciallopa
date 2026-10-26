@@ -1398,7 +1398,7 @@ async fn admission_holds_http_body_and_hot_limit_keeps_existing_occupancy() {
 }
 
 #[tokio::test]
-async fn admission_keeps_websocket_slot_after_upgrade_until_close() {
+async fn idle_websocket_is_a_session_without_an_inflight_slot() {
     use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as M};
     let e = env(300).await;
     let mut cfg = (*e.config.load()).clone();
@@ -1421,9 +1421,14 @@ async fn admission_keeps_websocket_slot_after_upgrade_until_close() {
             .unwrap(),
         Some(Ok(M::Pong(_)))
     ));
-    assert_eq!(e.drain.inflight(), 1);
-    assert_eq!(e.drain.active(), 1);
-    assert_eq!(held_response(&e).await.status(), 503);
+    assert_eq!(e.drain.inflight(), 0, "an idle socket holds no slot");
+    assert_eq!(
+        e.drain.active(),
+        1,
+        "but shutdown still waits for its session"
+    );
+    assert_eq!(held_response(&e).await.status(), 200);
+    wait_inflight(&e, 0).await;
     ws.send(M::Close(None)).await.unwrap();
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
@@ -1461,6 +1466,7 @@ async fn admission_keeps_websocket_slot_after_upgrade_until_close() {
         .to_text()
         .unwrap()
         .contains("response.output_text.delta"));
+    assert_eq!(e.drain.inflight(), 1, "the running turn holds the slot");
     let drain = e.drain.clone();
     let stopped = tokio::spawn(async move {
         drain
@@ -5944,10 +5950,10 @@ async fn ws_empty_added_before_overload_switches() {
         .any(|(a, o)| a == "a" && matches!(o, Outcome::Overloaded { .. })));
 }
 
-/// Idle Codex WebSockets each keep an inflight slot for their whole life. Once they fill
-/// `max_inflight_requests`, new turns are refused, but model lists and quota polls are exempt.
+/// Running WS turns fill `max_inflight_requests`; new turns are then refused, but model
+/// lists and quota polls are exempt.
 #[tokio::test]
-async fn idle_websockets_fill_inflight_but_models_and_quota_polls_are_exempt() {
+async fn running_turns_fill_inflight_but_models_and_quota_polls_are_exempt() {
     use tokio_tungstenite::tungstenite::Message as M;
     use tower::ServiceExt;
     let e = env(300).await;
@@ -5958,13 +5964,15 @@ async fn idle_websockets_fill_inflight_but_models_and_quota_polls_are_exempt() {
     for _ in 0..2 {
         let (mut ws, r) = tokio_tungstenite::connect_async(ws_req(&e)).await.unwrap();
         assert_eq!(r.status(), 101);
-        ws.send(M::Ping(Bytes::from_static(b"ready")))
+        ws.send(M::text(r#"{"type":"response.create","input":"held"}"#))
             .await
             .unwrap();
-        let _ = tokio::time::timeout(Duration::from_secs(2), ws.next()).await;
+        assert!(ws_text(&mut ws)
+            .await
+            .contains("response.output_text.delta"));
         idle.push(ws);
     }
-    assert_eq!(e.drain.inflight(), 2, "two idle sockets hold both slots");
+    assert_eq!(e.drain.inflight(), 2, "two running turns hold both slots");
     assert_eq!(
         held_response(&e).await.status(),
         503,
@@ -6086,4 +6094,127 @@ async fn refusals_are_stored_per_minute_and_served_by_the_usage_api() {
         "no refusal count under an account filter"
     );
     drop(held);
+}
+
+/// Next text frame, skipping pings and pongs (bounded).
+async fn ws_text<S>(ws: &mut tokio_tungstenite::WebSocketStream<S>) -> String
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use tokio_tungstenite::tungstenite::Message as M;
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            match ws.next().await.unwrap().unwrap() {
+                M::Text(t) => return t.as_str().to_string(),
+                M::Ping(_) | M::Pong(_) => {}
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+    })
+    .await
+    .unwrap()
+}
+
+async fn wait_inflight(e: &Env, n: usize) {
+    for _ in 0..200 {
+        if e.drain.inflight() == n {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("inflight stayed {} (want {n})", e.drain.inflight());
+}
+
+/// `max_inflight_requests` counts running work only: an idle WebSocket holds no slot (it is
+/// bounded by `ws_max_connections`), a WS turn holds one from its client request to its
+/// terminal event, and a turn that finds the cap full gets the `gateway_busy` frame and is
+/// recorded as an inflight refusal over ws.
+#[tokio::test]
+async fn idle_websockets_hold_no_inflight_slot_only_running_turns_do() {
+    use tokio_tungstenite::tungstenite::Message as M;
+    let d = tempfile::tempdir().unwrap();
+    let rec = usage_recorder(d.path());
+    let e = env_usage(300, Some(rec.clone())).await;
+    let mut cfg = (*e.config.load()).clone();
+    cfg.max_inflight_requests = 1;
+    e.config.store(cfg);
+    let mut idle = Vec::new();
+    for _ in 0..2 {
+        let (mut ws, r) = tokio_tungstenite::connect_async(ws_req(&e)).await.unwrap();
+        assert_eq!(r.status(), 101);
+        ws.send(M::Ping(Bytes::from_static(b"ready")))
+            .await
+            .unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(2), ws.next()).await;
+        idle.push(ws);
+    }
+    wait_inflight(&e, 0).await;
+    assert_eq!(e.drain.ws_connections(), 2);
+    assert_eq!(
+        e.drain.active(),
+        2,
+        "idle sessions are still waited for on shutdown"
+    );
+    let held = held_response(&e).await;
+    assert_eq!(held.status(), 200, "idle sockets leave the slot free");
+    assert_eq!(e.drain.inflight(), 1);
+
+    // The cap is full: a WS turn is refused with the busy frame, the socket stays open.
+    let ws = &mut idle[0];
+    ws.send(M::text(r#"{"type":"response.create","input":"plain"}"#))
+        .await
+        .unwrap();
+    let busy = ws_text(ws).await;
+    assert!(busy.contains("gateway_busy"), "{busy}");
+    assert_eq!(e.drain.rejected_by(), [1, 0, 0, 0]);
+    drop(held);
+    wait_inflight(&e, 0).await;
+
+    // A completed turn releases its slot at the terminal event.
+    ws.send(M::text(r#"{"type":"response.create","input":"plain"}"#))
+        .await
+        .unwrap();
+    assert!(ws_text(ws).await.contains("response.completed"));
+    wait_inflight(&e, 0).await;
+
+    // A running turn holds one slot and keeps HTTP out.
+    ws.send(M::text(r#"{"type":"response.create","input":"held"}"#))
+        .await
+        .unwrap();
+    assert!(ws_text(ws).await.contains("response.output_text.delta"));
+    assert_eq!(e.drain.inflight(), 1, "a running WS turn holds a slot");
+    assert_eq!(held_response(&e).await.status(), 503);
+    // Closing mid-turn releases it.
+    let mut ws = idle.remove(0);
+    ws.send(M::Close(None)).await.unwrap();
+    drop(ws);
+    wait_inflight(&e, 0).await;
+    assert_eq!(held_response(&e).await.status(), 200);
+    drop(idle);
+    assert_eq!(e.drain.wait_idle(Duration::from_secs(3)).await, 0);
+
+    let r2 = rec.clone();
+    tokio::task::spawn_blocking(move || r2.flush_blocking())
+        .await
+        .unwrap()
+        .unwrap();
+    let v = e
+        .http
+        .get(format!("http://{}/usage/v1/refusals?range=1h", e.proxy))
+        .bearer_auth(KEY)
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(v["totals"]["inflight"], 2, "{v}");
+    let rows = v["rows"].as_array().unwrap();
+    let by = |t: &str| -> u64 {
+        rows.iter()
+            .filter(|r| r["reason"] == "inflight" && r["transport"] == t)
+            .map(|r| r["count"].as_u64().unwrap())
+            .sum()
+    };
+    assert_eq!((by("ws"), by("http")), (1, 1), "{v}");
 }

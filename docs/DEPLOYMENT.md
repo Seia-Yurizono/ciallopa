@@ -97,14 +97,15 @@ Do not describe this as a cost-free or exactly-once hot reload. For planned chan
 traffic and drain active work before replacing the gateway or reloading its proxy routes.
 The follow-up [local recovery experiment](RECOVERY.md) compares the default with
 finite `stream_close_delay`: finishing within the delay keeps the original generation;
-exceeding it still closes and recovers. An idle old WS also keeps an admission slot until it
+exceeding it still closes and recovers. An idle old WS keeps its `ws_max_connections` slot (not an inflight slot) until it
 closes. New HTTP requests can see the reloaded configuration while that old WS remains attached
 to the old handler. The option remains opt-in; choose its duration together with connection
 capacity and the acceptable delay in retiring old routes. It does not protect process exits.
 
-`max_inflight_requests` defaults to 64 and is hot-reloadable. A request holds its slot through
-the HTTP response body or entire WebSocket connection, including idle time. At capacity it
-receives 503 `gateway_busy` and `Retry-After: 1` before its body is read. There is no queue;
+`max_inflight_requests` defaults to 64 and is hot-reloadable. An HTTP request holds its slot
+through the response body; a WebSocket turn holds one until its terminal event, and an idle
+WebSocket holds none. At capacity HTTP receives 503 `gateway_busy` and `Retry-After: 1` before
+its body is read; a WS turn gets the same error as a frame and the connection stays open. There is no queue;
 health, admin and usage queries remain outside this limit. `0` disables rejection while
 continuing to count occupancy. This is a conservative guard, not a measured capacity or memory
 guarantee: body sizes, stream buffers and idle connections still matter. Observe current
