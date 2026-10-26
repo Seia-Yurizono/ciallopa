@@ -80,6 +80,8 @@ struct Mock {
     replies: Arc<Mutex<VecDeque<(u16, Value)>>>,
     /// Scripted `/wham/usage` bodies; default has `limit_reached: true` and no `allowed`.
     usage: Arc<Mutex<VecDeque<Value>>>,
+    /// Bearer tokens seen by `/wham/usage` (order = call order).
+    usage_hits: Arc<Mutex<Vec<String>>>,
     consumes: Shared<(Hdrs, Value)>,
     lists: Shared<Hdrs>,
 }
@@ -116,7 +118,13 @@ async fn up_consume(State(m): State<Mock>, h: HeaderMap, Json(b): Json<Value>) -
     (StatusCode::from_u16(s).unwrap(), Json(v)).into_response()
 }
 
-async fn up_usage(State(m): State<Mock>) -> Json<Value> {
+async fn up_usage(State(m): State<Mock>, h: HeaderMap) -> Json<Value> {
+    let auth = h
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    m.usage_hits.lock().unwrap().push(auth);
     let v = m.usage.lock().unwrap().pop_front().unwrap_or_else(|| {
         json!({"rate_limit": {"limit_reached": true, "primary_window": {"used_percent": 0}},
             "rate_limit_reset_credits": {"available_count": 2}})
@@ -128,6 +136,8 @@ struct Env {
     base: String,
     mock: Mock,
     router: Arc<NoRoute>,
+    st: AppState,
+    rc: ciallopa::reset_credits::ResetCredits,
     http: reqwest::Client,
     _dir: tempfile::TempDir,
 }
@@ -140,6 +150,10 @@ async fn serve(app: Router) -> std::net::SocketAddr {
 }
 
 async fn env(allow: bool) -> Env {
+    env_cfg(allow, false).await
+}
+
+async fn env_cfg(allow: bool, write: bool) -> Env {
     let mock = Mock::default();
     let up = Router::new()
         .route("/backend-api/wham/rate-limit-reset-credits", get(up_list))
@@ -153,7 +167,7 @@ async fn env(allow: bool) -> Env {
     let dir = tempfile::tempdir().unwrap();
     let cfg = Config::parse(&format!(
         "instance_id = \"inst\"\napi_keys = [{{label = \"admin\", key = \"{KEY}\", admin = true}}]\nupstream = \"http://{up}/backend-api\"\n\
-         [usage]\npath = \"{}\"\n[ui]\nallow_reset_consume = {allow}\nreset_credits_refresh_mins = 0\n",
+         [usage]\npath = \"{}\"\n[ui]\nallow_reset_consume = {allow}\nreset_credits_refresh_mins = 0\nquota_refresh_mins = 0\nallow_config_write = {write}\n",
         dir.path().join("u.db").display()
     ))
     .unwrap();
@@ -167,11 +181,15 @@ async fn env(allow: bool) -> Env {
         config: Arc::new(cfg.into()),
         egress: Default::default(),
     };
-    let p = serve(ciallopa::build_app(state)).await;
+    let s = ciallopa::settings::Settings::new(state.clone(), None, None);
+    let rc = s.reset_credits();
+    let p = serve(ciallopa::build_app_with(s)).await;
     Env {
         base: format!("http://{p}"),
         mock,
         router,
+        st: state,
+        rc,
         http: reqwest::Client::new(),
         _dir: dir,
     }
@@ -778,4 +796,104 @@ async fn quota_refresh_no_clear_when_limit_reached_or_allowed_absent() {
     assert_eq!(r["limit_reached"], false);
     assert!(r.get("cooldown_cleared").is_none(), "absent allowed: {r}");
     assert!(e.router.0.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn quota_auto_switch_and_opted_in_refresh() {
+    let _gate = QUOTA_REFRESH_TEST.lock().await;
+    ciallopa::reset_credits::quota_refresh_reset_throttle_for_tests();
+    let e = env_cfg(false, true).await;
+    let list = e.get("/usage/v1/reset-credits").await;
+    assert_eq!(list["quota_refresh_mins"], 0, "{list}");
+    assert_eq!(list["refresh_mins"], 0, "{list}");
+    assert_eq!(list["accounts"][0]["quota_auto"], false);
+    assert_eq!(list["accounts"][1]["quota_auto"], false);
+
+    // needs allow_config_write
+    let ro = env_cfg(false, false).await;
+    let s = ro
+        .http
+        .post(format!(
+            "{}/admin/v1/accounts/a/quota-refresh/auto",
+            ro.base
+        ))
+        .bearer_auth(KEY)
+        .json(&json!({"enabled": true}))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .as_u16();
+    assert_eq!(s, 403);
+
+    let r = e
+        .http
+        .post(format!("{}/admin/v1/accounts/a/quota-refresh/auto", e.base))
+        .bearer_auth(KEY)
+        .json(&json!({"enabled": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200, "{}", r.text().await.unwrap_or_default());
+    let list = e.get("/usage/v1/reset-credits").await;
+    let a = list["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["account"] == "a")
+        .unwrap();
+    let b = list["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["account"] == "b")
+        .unwrap();
+    assert_eq!(a["quota_auto"], true, "{list}");
+    assert_eq!(b["quota_auto"], false, "{list}");
+
+    // Only opted-in `a` is asked (disabled `b` is not opted in).
+    e.mock.usage_hits.lock().unwrap().clear();
+    ciallopa::reset_credits::quota_refresh_opted_in(&e.st, &e.rc).await;
+    let hits = e.mock.usage_hits.lock().unwrap().clone();
+    assert_eq!(hits.len(), 1, "only opted-in account: {hits:?}");
+    assert_eq!(hits[0], "Bearer tok-a");
+
+    // Opt in `b` (disabled still refreshes when opted in, like manual).
+    let r = e
+        .http
+        .post(format!("{}/admin/v1/accounts/b/quota-refresh/auto", e.base))
+        .bearer_auth(KEY)
+        .json(&json!({"enabled": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    ciallopa::reset_credits::quota_refresh_reset_throttle_for_tests();
+    e.mock.usage_hits.lock().unwrap().clear();
+    ciallopa::reset_credits::quota_refresh_opted_in(&e.st, &e.rc).await;
+    let mut hits = e.mock.usage_hits.lock().unwrap().clone();
+    hits.sort();
+    assert_eq!(
+        hits,
+        vec!["Bearer tok-a".to_string(), "Bearer tok-b".to_string()],
+        "{hits:?}"
+    );
+
+    // Debounced persist
+    let rec = e.st.usage.clone().unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(2600)).await;
+    let stored = rec.kv_get("quota_refresh_auto_accounts").unwrap();
+    let mut ids: Vec<String> = serde_json::from_str(stored.as_deref().unwrap_or("[]")).unwrap();
+    ids.sort();
+    assert_eq!(ids, vec!["a", "b"]);
+}
+
+#[tokio::test]
+async fn quota_auto_forget_on_account_removal_via_switch_off() {
+    let _gate = QUOTA_REFRESH_TEST.lock().await;
+    let e = env_cfg(false, true).await;
+    e.rc.quota_auto().set("a", true);
+    assert!(e.rc.quota_auto().is_on("a"));
+    e.rc.forget("a");
+    assert!(!e.rc.quota_auto().is_on("a"));
 }

@@ -614,7 +614,7 @@ const ZO={"routing.quota_avoid_threshold":["关闭",0.9],"routing.cooldown_wait_
   "max_buffered_body_mb":["不限",256],"max_inflight_requests":["不限",64],"ws_max_connections":["不限",24],
   "upstream_opts.transient_cooldown_secs":["不冷却",15],"upstream_opts.overload_streak":["不冷却",2],"upstream_opts.overload_retry_wait_secs":["不重试",3],
   "upstream_opts.deactivated_cooldown_secs":["不冷却",86400],"upstream_opts.payment_required_cooldown_secs":["不冷却",1800],"upstream_opts.not_found_cooldown_secs":["只换号不冷却",600],
-  "usage.retention_days":["永久保留",90],"ui.reset_credits_refresh_mins":["只手动刷新",60]};
+  "usage.retention_days":["永久保留",90],"ui.reset_credits_refresh_mins":["只手动刷新",5],"ui.quota_refresh_mins":["只手动刷新",5]};
 function zinput(f,v,tr){const [offt,fb0]=ZO[f.key],d=CFG&&CFG.defaults?Number(CFG.defaults[f.key]):0,fb=d>0?d:fb0,orig=Number(v)||0,on0=orig>0,u=unit(f);
   const sw=h("input",{type:"checkbox",class:"sw","aria-label":f.desc+"：开启","data-fk":f.key+"|on"});sw.checked=on0;sw.addEventListener("animationend",()=>sw.classList.remove("anim"));
   const e=h("input",{type:"number",step:f.kind==="int"?"1":"any",min:"0","aria-label":f.desc,"data-fk":f.key});e.value=String(on0?v:fb);e.disabled=!on0;
@@ -669,7 +669,8 @@ const PAGES=[
     {box:"pricebox"},{t:"价格来源",rows:["usage.prices","usage.prices_source"]}]},
   {g:"数据与账号",id:"accounts",name:"账号与重置卡",sub:"对所有账号生效的策略",secs:[
     {t:"账号",rows:[{fn:acctLink},"auth_dir"]},
-    {t:"重置卡",rows:["ui.reset_credits_refresh_mins","ui.reset_credits_auto_lead_mins","ui.allow_reset_consume"]}]},
+    {t:"后台刷新",rows:["ui.reset_credits_refresh_mins","ui.quota_refresh_mins"]},
+    {t:"重置卡",rows:["ui.reset_credits_auto_lead_mins","ui.allow_reset_consume"]}]},
   {g:"系统",id:"general",name:"常规",sub:"实例、日志和配置文件",secs:[
     {rows:["instance_id","log.level"]},
     {t:"运行信息",note:"只能在配置文件中修改",rows:[{fn:fileInfo},"listen","ui.enabled","ui.allow_config_write","usage.path"]},
@@ -783,7 +784,7 @@ function summ(id){const yn=k=>on(k)?"开":"关";
     case"forward":{const m=Number(cur("max_inflight_requests"))||0;return "在途上限 "+(m?m:"不限")+" · 换号重试 "+cur("upstream_opts.max_attempts")+" 次"}
     case"images":return on("images.enabled")?"已开启 · "+(cur("images.main_model")||""):"已关闭";
     case"usage":{const r=Number(cur("usage.retention_days"))||0,u=PST&&(PST.unpriced||[]).length;return on("usage.enabled")?"保留 "+(r?r+" 天":"永久")+(u?" · "+u+" 个未定价":""):"已关闭"}
-    case"accounts":{const m=Number(cur("ui.reset_credits_refresh_mins"))||0;return (ACCN===null?"":ACCN+" 个账号 · ")+"重置卡"+(m?"每 "+m+" 分钟刷新":"只手动刷新")+" · 自动使用提前 "+(Number(cur("ui.reset_credits_auto_lead_mins"))||10)+" 分钟"}
+    case"accounts":{const m=Number(cur("ui.reset_credits_refresh_mins"))||0,q=Number(cur("ui.quota_refresh_mins"))||0;return (ACCN===null?"":ACCN+" 个账号 · ")+"重置卡"+(m?"每 "+m+" 分钟刷新":"只手动刷新")+" · 额度"+(q?"每 "+q+" 分钟刷新":"只手动刷新")+" · 自动使用提前 "+(Number(cur("ui.reset_credits_auto_lead_mins"))||10)+" 分钟"}
     case"general":return (cur("instance_id")||"未命名实例")+" · 日志 "+(cur("log.level")||"");
     case"keys":return ((CFG.running.api_keys||[]).length)+" 个密钥";
     case"audit":return AUD_LAST?"最近 "+fmtTime(AUD_LAST):"暂无记录";

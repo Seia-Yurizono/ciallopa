@@ -191,6 +191,7 @@ pub fn build_app_with(s: Arc<settings::Settings>) -> Router {
         tokio::spawn(async move { s2.init_known_accounts().await });
     }
     reset_credits::spawn_poller(state.clone(), rc.clone());
+    reset_credits::spawn_quota_poller(state.clone(), rc.clone());
     auto_reset::spawn(state.clone(), rc.clone());
     memory::spawn_sampler(state.clone());
     let resets = reset_credits::routes(state.clone(), rc);

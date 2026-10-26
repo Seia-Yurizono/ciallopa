@@ -60,7 +60,8 @@ streaming, including Images; a reload cannot shorten an already-running stream's
 | `usage.prices` (file content) | Reloaded; costs are computed at query time, so history is re-priced. |
 | `usage.prices_source` | Used by the next price check (「检查更新」 / `ciallopa prices sync`). |
 | `ui.allow_reset_consume`, `ui.allow_config_write` | Next request. **File only.** |
-| `ui.reset_credits_refresh_mins` | The poller re-reads it every 30 s (`0` = on demand only). |
+| `ui.reset_credits_refresh_mins` | The poller re-reads it every 30 s (`0` = on demand only; 1–60 when on). |
+| `ui.quota_refresh_mins` | Background 刷新额度 poller for accounts with 「自动刷新额度」 on; re-reads every 30 s (`0` = off; 1–60 when on). |
 | `ui.reset_credits_auto_lead_mins` | Next automatic-use sweep (≤ 60 s); also re-checked right before a card is used. |
 
 **Restart** (written to the file, reported as `pending_restart` with running and file value, and

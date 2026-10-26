@@ -4,6 +4,10 @@
 //! explicit client request) and the opt-in automatic use in [`crate::auto_reset`] (accounts
 //! whose 「快到期时自动使用」 switch is on, shortly before a card expires).
 //!
+//! Active quota (刷新额度): manual admin POST plus an optional background poll
+//! (`[ui] quota_refresh_mins`, default off) of accounts whose 「自动刷新额度」 switch is on.
+//! Both call [`quota_refresh_account`] (same `/wham/usage` path, snapshot, cooldown clear).
+//!
 //! Upstream calls mirror codex-rs `backend-client` (`client/rate_limit_resets.rs`): same paths,
 //! `User-Agent` + `originator` of the latest learned Codex client (`ciallopa_core::fingerprint`), `Authorization: Bearer`,
 //! `ChatGPT-Account-Id`; 5 s timeout for the listing, 10 s for consume.
@@ -17,9 +21,10 @@ use ciallopa_usage::reset::ConsumeOutcome;
 use ciallopa_usage::{now_ms, QuotaObs, Recorder};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::Notify;
 
 const LIST_PATH: &str = "/wham/rate-limit-reset-credits";
 const CONSUME_PATH: &str = "/wham/rate-limit-reset-credits/consume";
@@ -88,6 +93,116 @@ pub fn usage_extras(v: &Value) -> (Option<i64>, Option<bool>, Option<bool>) {
     (count, allowed, reached)
 }
 
+// ---------------- per-account 「自动刷新额度」 switches ----------------
+
+const QUOTA_AUTO_KV: &str = "quota_refresh_auto_accounts";
+const QUOTA_AUTO_PERSIST_DEBOUNCE: Duration = Duration::from_secs(2);
+
+#[derive(Default)]
+struct QuotaAutoFlags {
+    on: BTreeSet<String>,
+    gen: u64,
+    saved: u64,
+}
+
+#[derive(Default)]
+struct QuotaAutoInner {
+    flags: Mutex<QuotaAutoFlags>,
+    dirty: Notify,
+}
+
+/// Opt-in switches for background 刷新额度. Persisted in the usage KV (debounced), like
+/// [`crate::auto_reset::AutoState`]. Default off per account.
+#[derive(Clone, Default)]
+pub struct QuotaAutoState(Arc<QuotaAutoInner>);
+
+impl QuotaAutoState {
+    fn flags(&self) -> std::sync::MutexGuard<'_, QuotaAutoFlags> {
+        self.0.flags.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    pub fn is_on(&self, id: &str) -> bool {
+        self.flags().on.contains(id)
+    }
+    /// Returns whether anything changed. Changes are persisted (debounced).
+    pub fn set(&self, id: &str, on: bool) -> bool {
+        let mut f = self.flags();
+        let changed = if on {
+            f.on.insert(id.to_string())
+        } else {
+            f.on.remove(id)
+        };
+        if changed {
+            f.gen += 1;
+            drop(f);
+            self.0.dirty.notify_one();
+        }
+        changed
+    }
+    pub fn ids(&self) -> Vec<String> {
+        self.flags().on.iter().cloned().collect()
+    }
+    fn load(&self, ids: Vec<String>) {
+        let mut f = self.flags();
+        f.on = ids.into_iter().collect();
+    }
+    fn unsaved(&self) -> Option<(u64, String)> {
+        let f = self.flags();
+        (f.gen != f.saved).then(|| {
+            let ids: Vec<&String> = f.on.iter().collect();
+            (
+                f.gen,
+                serde_json::to_string(&ids).unwrap_or_else(|_| "[]".into()),
+            )
+        })
+    }
+    fn saved(&self, gen: u64) {
+        let mut f = self.flags();
+        f.saved = f.saved.max(gen);
+    }
+}
+
+static QUOTA_AUTO_REG: Mutex<Option<(Arc<Recorder>, QuotaAutoState)>> = Mutex::new(None);
+
+/// Graceful shutdown: write a switch change still waiting for the debounce.
+pub fn quota_auto_flush() {
+    let reg = QUOTA_AUTO_REG
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    if let Some((rec, a)) = reg {
+        if let Some((gen, v)) = a.unsaved() {
+            match rec.kv_set(QUOTA_AUTO_KV, &v) {
+                Ok(()) => a.saved(gen),
+                Err(e) => tracing::warn!(error = %e, "quota auto-refresh switches not saved"),
+            }
+        }
+    }
+}
+
+async fn quota_auto_persist(rec: Arc<Recorder>, a: QuotaAutoState) {
+    loop {
+        a.0.dirty.notified().await;
+        tokio::time::sleep(QUOTA_AUTO_PERSIST_DEBOUNCE).await;
+        let Some((gen, v)) = a.unsaved() else {
+            continue;
+        };
+        let r = rec.clone();
+        match tokio::task::spawn_blocking(move || r.kv_set(QUOTA_AUTO_KV, &v)).await {
+            Ok(Ok(())) => a.saved(gen),
+            Ok(Err(e)) => tracing::warn!(error = %e, "quota auto-refresh switches not saved"),
+            Err(e) => tracing::warn!(error = %e, "quota auto-refresh switches not saved"),
+        }
+    }
+}
+
+fn quota_auto_load(rec: &Recorder, a: &QuotaAutoState) {
+    match rec.kv_get(QUOTA_AUTO_KV) {
+        Ok(Some(v)) => a.load(serde_json::from_str::<Vec<String>>(&v).unwrap_or_default()),
+        Ok(None) => {}
+        Err(e) => tracing::warn!(error = %e, "quota auto-refresh switches not loaded"),
+    }
+}
+
 /// Shared cache + per-account consume locks.
 #[derive(Clone, Default)]
 pub struct ResetCredits {
@@ -95,6 +210,8 @@ pub struct ResetCredits {
     locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     /// Per-account automatic-use switches (see [`crate::auto_reset`]).
     pub(crate) auto: crate::auto_reset::AutoState,
+    /// Per-account 「自动刷新额度」 switches (see [`QuotaAutoState`]).
+    pub(crate) quota_auto: QuotaAutoState,
 }
 
 impl ResetCredits {
@@ -116,10 +233,15 @@ impl ResetCredits {
         }
         drop(locks);
         self.auto.set(account, false);
+        self.quota_auto.set(account, false);
     }
     /// Per-account automatic-use switches.
     pub fn auto(&self) -> &crate::auto_reset::AutoState {
         &self.auto
+    }
+    /// Per-account 「自动刷新额度」 switches.
+    pub fn quota_auto(&self) -> &QuotaAutoState {
+        &self.quota_auto
     }
     /// Keep the display-only `/wham/usage` fields of one account.
     pub fn note_usage(&self, account: &str, v: &Value) {
@@ -283,6 +405,67 @@ pub fn spawn_poller(st: AppState, rc: ResetCredits) {
     });
 }
 
+/// Background 刷新额度 for accounts with 「自动刷新额度」 on. Same work as the manual button
+/// ([`quota_refresh_account`]). Interval from live `[ui] quota_refresh_mins` (`0` = off);
+/// reload takes effect within 30 s. Needs `[usage]` to load/persist the switches.
+pub fn spawn_quota_poller(st: AppState, rc: ResetCredits) {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    let Some(rec) = st.usage.clone() else {
+        return;
+    };
+    quota_auto_load(&rec, &rc.quota_auto);
+    *QUOTA_AUTO_REG.lock().unwrap_or_else(|e| e.into_inner()) =
+        Some((rec.clone(), rc.quota_auto.clone()));
+    tokio::spawn(quota_auto_persist(rec, rc.quota_auto.clone()));
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(20)).await;
+        let mut last: Option<std::time::Instant> = None;
+        loop {
+            let mins = st.config.load().ui.quota_refresh_mins;
+            let due = mins > 0
+                && last.is_none_or(|t| t.elapsed() >= Duration::from_secs(mins.saturating_mul(60)));
+            if due {
+                last = Some(std::time::Instant::now());
+                quota_refresh_opted_in(&st, &rc).await;
+            }
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        }
+    });
+}
+
+/// Refresh every opted-in account that still exists (disabled included; re-login skipped).
+/// Four at a time; the 30 s per-account throttle still applies. Integration tests call this
+/// directly (`#[doc(hidden)]` via the same path the poller uses).
+pub async fn quota_refresh_opted_in(st: &AppState, rc: &ResetCredits) {
+    let relogin = st.accounts.relogin_required().await;
+    let known: BTreeSet<String> = st.accounts.list().await.into_iter().map(|a| a.id).collect();
+    let ids: Vec<String> = rc
+        .quota_auto
+        .ids()
+        .into_iter()
+        .filter(|id| known.contains(id))
+        .collect();
+    if ids.is_empty() {
+        return;
+    }
+    let sem = Arc::new(tokio::sync::Semaphore::new(QUOTA_REFRESH_PARALLEL));
+    let mut set = tokio::task::JoinSet::new();
+    for id in ids {
+        let (st, rc, sem, skip) = (st.clone(), rc.clone(), sem.clone(), relogin.contains(&id));
+        set.spawn(async move {
+            if skip {
+                tracing::debug!(%id, "quota auto-refresh skipped: re-login required");
+                return;
+            }
+            let _p = sem.acquire_owned().await;
+            let _ = quota_refresh_account(&st, &rc, &id).await;
+        });
+    }
+    let _ = set.join_all().await;
+}
+
 #[derive(Clone)]
 struct S {
     st: AppState,
@@ -300,6 +483,10 @@ pub fn routes(st: AppState, rc: ResetCredits) -> Router {
             post(consume),
         )
         .route("/admin/v1/accounts/{id}/reset-credits/auto", post(set_auto))
+        .route(
+            "/admin/v1/accounts/{id}/quota-refresh/auto",
+            post(set_quota_auto),
+        )
         .route("/admin/v1/accounts/{id}/quota-refresh", post(quota_one))
         .route("/admin/v1/accounts/quota-refresh", post(quota_all))
         .with_state(S { st, rc })
@@ -335,6 +522,7 @@ async fn list_body(s: &S, admin: bool) -> Value {
             "reset_credits": snap.get(&a.id),
             "auto": auto,
             "auto_next_ms": next,
+            "quota_auto": s.rc.quota_auto.is_on(&a.id),
         }));
     }
     attempts.truncate(20);
@@ -345,8 +533,9 @@ async fn list_body(s: &S, admin: bool) -> Value {
         "can_consume": consume_enabled && admin,
         "is_admin": admin,
         "refresh_mins": cfg.ui.reset_credits_refresh_mins,
+        "quota_refresh_mins": cfg.ui.quota_refresh_mins,
         "auto_lead_mins": cfg.ui.reset_credits_auto_lead_mins,
-        // Automatic use keeps its idempotency rows in the usage DB, like the manual action.
+        // Automatic use / quota auto-refresh keep switches in the usage DB.
         "auto_available": s.st.usage.is_some(),
         "accounts": out,
         "attempts": attempts,
@@ -443,6 +632,45 @@ async fn set_auto(
         tracing::info!(%account, enabled = req.enabled, "auto reset-card switch changed");
     }
     Json(json!({"account": account, "auto": req.enabled, "changed": changed})).into_response()
+}
+
+/// Per-account 「自动刷新额度」 switch. Needs `[ui] allow_config_write = true` and `[usage]`
+/// (switches are persisted there). Same CSRF rules as other management POSTs.
+async fn set_quota_auto(
+    State(s): State<S>,
+    Path(account): Path<String>,
+    headers: HeaderMap,
+    body: Option<Json<AutoReq>>,
+) -> Response {
+    if !s.st.config.load().ui.allow_config_write {
+        return err(
+            StatusCode::FORBIDDEN,
+            "changes from the management page are disabled; set [ui] allow_config_write = true in the config file",
+        );
+    }
+    if let Some(r) = crate::settings::csrf(&headers) {
+        return r;
+    }
+    let Some(Json(req)) = body else {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "body must be JSON {\"enabled\": true|false}",
+        );
+    };
+    if s.st.usage.is_none() {
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "automatic quota refresh needs [usage] enabled (switches are stored there)",
+        );
+    }
+    if !s.st.accounts.list().await.iter().any(|a| a.id == account) {
+        return err(StatusCode::NOT_FOUND, "unknown account");
+    }
+    let changed = s.rc.quota_auto.set(&account, req.enabled);
+    if changed {
+        tracing::info!(%account, enabled = req.enabled, "quota auto-refresh switch changed");
+    }
+    Json(json!({"account": account, "quota_auto": req.enabled, "changed": changed})).into_response()
 }
 
 #[derive(Deserialize)]

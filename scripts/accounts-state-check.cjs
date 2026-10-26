@@ -327,11 +327,11 @@ function resetCardDisplay() {
   assert.equal(run('limitHit({limit_reached: true, usage_observed_ms: 1e6}, null)'), true);
   assert.equal(run('limitHit({limit_reached: true, usage_observed_ms: 1e6}, {observed_at_ms: 1e6 + 6e3})'), false, 'a newer quota observation wins');
   assert.equal(run('limitHit({limit_reached: false, usage_observed_ms: 1e6}, null)'), false);
-  // 快到期时自动使用: switch + next time per account; a failed listing keeps the last answer
-  run('AUTO = {}; AUTOTOP = null; readAuto({status: "fulfilled", value: {j: {auto_lead_mins: 15, auto_available: true, accounts: [{account: "a", auto: true, auto_next_ms: 5}, {account: "b"}]}}})');
-  assert.equal(run('JSON.stringify([AUTO, AUTOTOP])'), JSON.stringify([{a: {on: true, next: 5}, b: {on: false, next: null}}, {lead: 15, ok: true}]));
+  // 快到期时自动使用 + 自动刷新额度: switches per account; a failed listing keeps the last answer
+  run('AUTO = {}; QAUTO = {}; AUTOTOP = null; readAuto({status: "fulfilled", value: {j: {auto_lead_mins: 15, auto_available: true, quota_refresh_mins: 5, accounts: [{account: "a", auto: true, auto_next_ms: 5, quota_auto: true}, {account: "b", quota_auto: false}]}}})');
+  assert.equal(run('JSON.stringify([AUTO, QAUTO, AUTOTOP])'), JSON.stringify([{a: {on: true, next: 5}, b: {on: false, next: null}}, {a: true, b: false}, {lead: 15, ok: true, qmins: 5}]));
   run('readAuto({status: "rejected", reason: new Error("x")})');
-  assert.equal(run('AUTO.a.on && AUTOTOP.lead'), 15);
+  assert.equal(run('AUTO.a.on && QAUTO.a && AUTOTOP.lead === 15 && AUTOTOP.qmins'), 5);
 }
 
 // 24 h account usage follows the overview's 「含预热」 preference (business only by default).
@@ -357,5 +357,5 @@ async function prewarmFollowsOverview() {
   await loginChanges();
   await deviceLoginIsolation();
   await accessGate();
-  console.log('PASS: reset-card display and auto-use switch state, account snapshots, prewarm preference, read/login races, device start/poll cancellation and identity isolation, Cloudflare Access expiry');
+  console.log('PASS: reset-card display, auto-use and quota-auto switch state, account snapshots, prewarm preference, read/login races, device start/poll cancellation and identity isolation, Cloudflare Access expiry');
 })().catch(error => {console.error(error); process.exitCode = 1;}).finally(() => clearTimeout(watchdog));
