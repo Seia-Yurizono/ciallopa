@@ -109,6 +109,8 @@ struct RecordsQ {
     error: Option<String>,
     /// `1` ⇒ only requests that retried or switched accounts.
     retried: Option<u8>,
+    /// Failure class (`quota,rate_limit,upstream,network,stream,local,other`); implies failed.
+    failure_class: Option<String>,
     #[serde(flatten)]
     f: FiltersQ,
 }
@@ -149,6 +151,16 @@ async fn records(State(St { rec, .. }): State<St>, Query(q): Query<RecordsQ>) ->
         }
         None => None,
     };
+    let failure_class = match q.failure_class.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(c) if ciallopa_usage::FAILURE_CLASSES.contains(&c) => Some(c.to_string()),
+        Some(_) => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "bad failure_class (quota,rate_limit,upstream,network,stream,local,other)",
+            )
+        }
+    };
     let limit = q.limit.unwrap_or(100).clamp(1, 1000);
     let offset = if before_id.is_some() {
         0
@@ -178,6 +190,7 @@ async fn records(State(St { rec, .. }): State<St>, Query(q): Query<RecordsQ>) ->
         retried: q.retried.unwrap_or(0) != 0,
         outcome,
         exclude_prewarm: q.exclude_prewarm.unwrap_or(0) != 0,
+        failure_class,
     };
     let total = match rec
         .recent_count(RecentQuery {
@@ -266,6 +279,9 @@ struct SummaryQ {
     /// `1` ⇒ leave prewarm rows out of every figure (tokens, cost, buckets, groups).
     /// String for the same `flatten` reason.
     exclude_prewarm: Option<String>,
+    /// `1` ⇒ also return `previous`: the total (and buckets, with `bucket`) and refusal
+    /// totals of the equal-length window right before `from`.
+    compare: Option<String>,
     #[serde(flatten)]
     f: FiltersQ,
 }
@@ -339,7 +355,18 @@ async fn summary(State(St { rec, .. }): State<St>, Query(q): Query<SummaryQ>) ->
         bucket_day,
         bucket_hour: q.bucket.as_deref() == Some("hour"),
         exclude_prewarm: matches!(q.exclude_prewarm.as_deref().map(str::trim), Some(v) if !v.is_empty() && v != "0"),
+        total_only: false,
+        bucket_refusals: true,
     };
+    let flag = |v: Option<&str>| matches!(v.map(str::trim), Some(v) if !v.is_empty() && v != "0");
+    // Previous period: same length, ending 1 ms before `from`; no groups.
+    let prev = flag(q.compare.as_deref()).then(|| SummaryQuery {
+        from_ms: from - (to - from) - 1,
+        to_ms: from - 1,
+        group_by: vec![],
+        total_only: true,
+        ..sq.clone()
+    });
     // Refusals happen before an account or model is known, so they only follow the key /
     // instance scope; with an account or model filter they are left out (`null`).
     let rq = (sq.filters.account.is_none() && sq.filters.model.is_none()).then(|| {
@@ -355,15 +382,44 @@ async fn summary(State(St { rec, .. }): State<St>, Query(q): Query<SummaryQ>) ->
         Ok(s) => s,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     };
-    let refusals = match rq {
+    let refusals = match rq.clone() {
         None => None,
         Some(rq) => match rec.refusal_totals(rq).await {
             Ok(t) => Some(t),
             Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
         },
     };
-    Json(serde_json::json!({"summary": s, "refusals": refusals, "recorder": rec.stats()}))
-        .into_response()
+    let previous = match prev {
+        None => None,
+        Some(pq) => {
+            let (pf, pt) = (pq.from_ms, pq.to_ms);
+            let ps = match rec.summary(pq).await {
+                Ok(s) => s,
+                Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+            };
+            let pr = match rq {
+                None => None,
+                Some(rq) => match rec
+                    .refusal_totals(ciallopa_usage::RefusalQuery {
+                        from_ms: pf,
+                        to_ms: pt,
+                        ..rq
+                    })
+                    .await
+                {
+                    Ok(t) => Some(t),
+                    Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+                },
+            };
+            Some(serde_json::json!({
+                "from": pf, "to": pt, "total": ps.total, "buckets": ps.buckets, "refusals": pr,
+            }))
+        }
+    };
+    Json(serde_json::json!({
+        "summary": s, "refusals": refusals, "previous": previous, "recorder": rec.stats(),
+    }))
+    .into_response()
 }
 
 #[derive(Deserialize)]
@@ -435,6 +491,8 @@ struct OccupancyQ {
     /// Bucket width (`1m`, `5m`, `1h`); widened so a range has at most 1440 buckets.
     step: Option<String>,
     instance: Option<String>,
+    /// Minutes east of UTC that buckets align to (like the summary's `tz`).
+    tz: Option<i32>,
 }
 
 /// Process occupancy history (inflight, WebSocket connections, buffered body bytes and the
@@ -474,6 +532,7 @@ async fn occupancy(State(St { rec, .. }): State<St>, Query(q): Query<OccupancyQ>
         to_ms: to,
         instance: q.instance.filter(|v| !v.trim().is_empty()),
         step_min,
+        tz_min: q.tz.unwrap_or(0).clamp(-840, 840),
     };
     let step = ciallopa_usage::occupancy_step(&oq);
     match rec.occupancy_rows(oq).await {

@@ -609,6 +609,9 @@ pub struct RecentQuery {
     pub outcome: Option<Outcome>,
     /// Business requests only, matching summary.count; composes with other filters.
     pub exclude_prewarm: bool,
+    /// Only failures of this [`failure_class`] (implies `outcome = failed`; another outcome
+    /// matches nothing). An unknown class matches nothing.
+    pub failure_class: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -700,7 +703,52 @@ fn recent_where(c: &Connection, q: &RecentQuery) -> rusqlite::Result<Option<(Str
         s.push_str(" AND (endpoint IS NULL OR endpoint != ?)");
         ps.push(label_id(c, PREWARM_ENDPOINT)?.unwrap_or(-1));
     }
-    if let Some(outcome) = q.outcome {
+    let outcome = match (q.failure_class.as_deref(), q.outcome) {
+        (None, o) => o,
+        (Some(_), None | Some(Outcome::Failed)) => Some(Outcome::Failed),
+        (Some(_), Some(_)) => return Ok(None),
+    };
+    if let Some(class) = q.failure_class.as_deref() {
+        if !FAILURE_CLASSES.contains(&class) {
+            return Ok(None);
+        }
+        // Mirrors `failure_class` on rows already known to be failures.
+        let mut quota = vec![];
+        for e in QUOTA_ERRORS {
+            quota.push(label_id(c, e)?.unwrap_or(-1));
+        }
+        let up = label_id(c, "upstream")?.unwrap_or(-1);
+        let is_quota = format!(
+            "coalesce(error IN ({}), 0)",
+            vec!["?"; quota.len()].join(",")
+        );
+        let is_rl = "(status = 429 OR coalesce(err_source = ? AND up_status = 429, 0))";
+        if class == "quota" {
+            s.push_str(&format!(" AND {is_quota}"));
+            ps.extend(quota);
+        } else {
+            s.push_str(&format!(" AND NOT {is_quota}"));
+            ps.extend(quota);
+            if class == "rate_limit" {
+                s.push_str(&format!(" AND {is_rl}"));
+                ps.push(up);
+            } else {
+                s.push_str(&format!(" AND NOT {is_rl}"));
+                ps.push(up);
+                let srcs = ["upstream", "network", "stream", "local"];
+                if class == "other" {
+                    s.push_str(" AND (err_source IS NULL OR err_source NOT IN (?, ?, ?, ?))");
+                    for n in srcs {
+                        ps.push(label_id(c, n)?.unwrap_or(-1));
+                    }
+                } else {
+                    s.push_str(" AND err_source = ?");
+                    ps.push(label_id(c, class)?.unwrap_or(-1));
+                }
+            }
+        }
+    }
+    if let Some(outcome) = outcome {
         let prewarm = label_id(c, PREWARM_ENDPOINT)?.unwrap_or(-1);
         if outcome == Outcome::Prewarm {
             s.push_str(" AND endpoint = ?");
@@ -803,6 +851,8 @@ pub struct RecordRow {
     pub upstream_status: Option<u16>,
     /// An `error_detail` row exists (`GET /usage/v1/records/{id}/detail`).
     pub has_detail: bool,
+    /// [`failure_class`] when the row is a failure, else null.
+    pub failure_class: Option<&'static str>,
     /// `ok`, `ignored` (model on the price table's `ignore` list: cost 0), `unknown_price`
     /// (model/tier/date not in the price table) or `no_tokens`.
     pub price_status: &'static str,
@@ -975,7 +1025,22 @@ fn record_rows(
         );
         let resp_model = name(r.get(30)?);
         let model_mismatch = crate::model_mismatch(model.as_deref(), resp_model.as_deref());
+        let (status, error, err_source, endpoint): (u16, _, _, _) = (
+            r.get(7)?,
+            name(r.get(8)?),
+            name(r.get(33)?),
+            name(r.get(6)?),
+        );
+        let upstream_status: Option<u16> = r.get(34)?;
+        let failure_class = row_failure_class(
+            status,
+            error.as_deref(),
+            err_source.as_deref(),
+            upstream_status,
+            endpoint.as_deref(),
+        );
         Ok(RecordRow {
+            failure_class,
             requested_service_tier: name(r.get(29)?),
             response_model: resp_model,
             response_effort: name(r.get(31)?),
@@ -995,11 +1060,11 @@ fn record_rows(
             model,
             reasoning_effort: name(r.get(4)?),
             transport: Transport::from_i64(r.get(5)?),
-            endpoint: name(r.get(6)?),
-            status: r.get(7)?,
-            error: name(r.get(8)?),
-            err_source: name(r.get(33)?),
-            upstream_status: r.get(34)?,
+            endpoint,
+            status,
+            error,
+            err_source,
+            upstream_status,
             retries: r.get(9)?,
             switches: r.get(10)?,
             ttft_ms: ttft,
@@ -1114,6 +1179,36 @@ pub fn failure_class(
     }
 }
 
+/// Failure classes in display order.
+pub const FAILURE_CLASSES: &[&str] = &[
+    "quota",
+    "rate_limit",
+    "upstream",
+    "network",
+    "stream",
+    "local",
+    "other",
+];
+
+/// [`failure_class`] of a stored row, or `None` when the row is not a failure (completed,
+/// incomplete, cancelled, unknown outcome or prewarm). Same rules as the summary counts.
+pub fn row_failure_class(
+    status: u16,
+    error: Option<&str>,
+    source: Option<&str>,
+    upstream_status: Option<u16>,
+    endpoint: Option<&str>,
+) -> Option<&'static str> {
+    if endpoint == Some(PREWARM_ENDPOINT) {
+        return None;
+    }
+    let cancelled = source == Some("client") || error == Some("client_closed");
+    let unknown =
+        error == Some("observation_incomplete") && source == Some("local") && status < 400;
+    let failed = (error.is_some() || status >= 400) && !cancelled && !unknown;
+    failed.then(|| failure_class(status, error, source, upstream_status))
+}
+
 #[derive(Debug, Clone)]
 pub struct SummaryQuery {
     pub from_ms: i64,
@@ -1128,6 +1223,11 @@ pub struct SummaryQuery {
     /// Leave out `endpoint=prewarm` rows entirely: their tokens, cost and `prewarm_count`
     /// (request counts and latency never include them). Same rows as the records filter.
     pub exclude_prewarm: bool,
+    /// Only the total: no groups (cheaper; used for the previous-period comparison).
+    pub total_only: bool,
+    /// With `bucket_day` and no account / model filter: add local-limit refusals per bucket
+    /// (key / instance scope only, like the refusal totals).
+    pub bucket_refusals: bool,
 }
 impl Default for SummaryQuery {
     fn default() -> Self {
@@ -1139,6 +1239,8 @@ impl Default for SummaryQuery {
             bucket_day: None,
             bucket_hour: false,
             exclude_prewarm: false,
+            total_only: false,
+            bucket_refusals: false,
         }
     }
 }
@@ -1154,6 +1256,17 @@ pub struct SummaryGroup {
     pub failures: u64,
     /// `failures` by [`failure_class`] (classes with no failure are omitted).
     pub failure_classes: std::collections::BTreeMap<&'static str, u64>,
+    /// Failures whose error came from the upstream HTTP response (`err_source = upstream`,
+    /// including upstream quota and rate-limit 429s); local, network and stream errors excluded.
+    pub upstream_failures: u64,
+    /// `upstream_failures / count`.
+    pub upstream_failure_rate: Option<f64>,
+    /// Business requests that retried or switched accounts at least once.
+    pub retried: u64,
+    /// Business requests that switched accounts at least once.
+    pub switched: u64,
+    /// Business requests that asked for priority / flex and were served another tier.
+    pub downgraded: u64,
     pub cancelled: u64,
     pub incomplete: u64,
     /// The gateway could not observe enough of the response to determine its outcome.
@@ -1163,12 +1276,15 @@ pub struct SummaryGroup {
     pub cancel_rate: Option<f64>,
     pub ttft_p50_ms: Option<u32>,
     pub ttft_p90_ms: Option<u32>,
+    pub ttft_p99_ms: Option<u32>,
     pub duration_p50_ms: Option<u32>,
     pub duration_p90_ms: Option<u32>,
+    pub duration_p99_ms: Option<u32>,
     pub duration_samples: u64,
     /// First model output of streaming rows, including rows that later fail or are cancelled.
     pub stream_ttft_p50_ms: Option<u32>,
     pub stream_ttft_p90_ms: Option<u32>,
+    pub stream_ttft_p99_ms: Option<u32>,
     pub stream_ttft_samples: u64,
     pub input_tokens: i64,
     pub output_tokens: i64,
@@ -1224,10 +1340,25 @@ pub struct DayBucket {
     pub failures: u64,
     /// `failures` by [`failure_class`].
     pub failure_classes: std::collections::BTreeMap<&'static str, u64>,
+    /// Failures with `err_source = upstream` (see [`SummaryGroup::upstream_failures`]).
+    pub upstream_failures: u64,
     pub cancelled: u64,
     pub incomplete: u64,
     pub unknown: u64,
     pub prewarm_count: u64,
+    /// Nearest-rank percentiles of the bucket's business rows: stream first output and
+    /// duration (null without samples).
+    pub stream_ttft_p50_ms: Option<u32>,
+    pub stream_ttft_p90_ms: Option<u32>,
+    pub stream_ttft_p99_ms: Option<u32>,
+    pub duration_p50_ms: Option<u32>,
+    pub duration_p90_ms: Option<u32>,
+    pub duration_p99_ms: Option<u32>,
+    /// Local-limit refusals in the bucket (only with `bucket_refusals`; not requests, never
+    /// failures). By reason in `refusals`.
+    pub refused: u64,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub refusals: std::collections::BTreeMap<&'static str, u64>,
     /// Rows reporting input or output usage, including prewarm and explicit zero usage.
     pub usage_samples: u64,
     pub input_tokens: i64,
@@ -1258,6 +1389,10 @@ struct Acc {
     errors: u64,
     failures: u64,
     classes: std::collections::BTreeMap<&'static str, u64>,
+    upstream: u64,
+    retried: u64,
+    switched: u64,
+    downgraded: u64,
     cancelled: u64,
     incomplete: u64,
     unknown_outcome: u64,
@@ -1285,6 +1420,10 @@ struct Observation {
     err: bool,
     /// Set for failures.
     class: Option<&'static str>,
+    upstream: bool,
+    retried: bool,
+    switched: bool,
+    downgraded: bool,
     cancelled: bool,
     incomplete: bool,
     unknown: bool,
@@ -1301,6 +1440,10 @@ impl Acc {
             counted,
             err,
             class,
+            upstream,
+            retried,
+            switched,
+            downgraded,
             cancelled,
             incomplete,
             unknown,
@@ -1336,7 +1479,11 @@ impl Acc {
         self.failures += u64::from(err && !cancelled && !unknown);
         if let Some(c) = class {
             *self.classes.entry(c).or_default() += 1;
+            self.upstream += u64::from(upstream);
         }
+        self.retried += u64::from(retried);
+        self.switched += u64::from(switched);
+        self.downgraded += u64::from(downgraded);
         self.unknown_outcome += u64::from(unknown);
         self.incomplete += u64::from(incomplete && !err && !cancelled);
         self.no_usage +=
@@ -1368,6 +1515,10 @@ impl Acc {
         for (c, n) in &o.classes {
             *self.classes.entry(c).or_default() += n;
         }
+        self.upstream += o.upstream;
+        self.retried += o.retried;
+        self.switched += o.switched;
+        self.downgraded += o.downgraded;
         self.cancelled += o.cancelled;
         self.incomplete += o.incomplete;
         self.unknown_outcome += o.unknown_outcome;
@@ -1403,6 +1554,12 @@ impl Acc {
             errors: self.errors,
             failures: self.failures,
             failure_classes: std::mem::take(&mut self.classes),
+            upstream_failures: self.upstream,
+            upstream_failure_rate: (self.count > 0)
+                .then(|| self.upstream as f64 / self.count as f64),
+            retried: self.retried,
+            switched: self.switched,
+            downgraded: self.downgraded,
             cancelled: self.cancelled,
             incomplete: self.incomplete,
             unknown: self.unknown_outcome,
@@ -1416,11 +1573,14 @@ impl Acc {
             },
             ttft_p50_ms: pct(&mut self.ttft, 0.5),
             ttft_p90_ms: pct(&mut self.ttft, 0.9),
+            ttft_p99_ms: pct(&mut self.ttft, 0.99),
             duration_p50_ms: pct(&mut self.dur, 0.5),
             duration_p90_ms: pct(&mut self.dur, 0.9),
+            duration_p99_ms: pct(&mut self.dur, 0.99),
             duration_samples: self.dur.len() as u64,
             stream_ttft_p50_ms: pct(&mut self.stream_ttft, 0.5),
             stream_ttft_p90_ms: pct(&mut self.stream_ttft, 0.9),
+            stream_ttft_p99_ms: pct(&mut self.stream_ttft, 0.99),
             stream_ttft_samples: self.stream_ttft.len() as u64,
             input_tokens: self.tok[0],
             output_tokens: self.tok[1],
@@ -1457,7 +1617,9 @@ pub(crate) fn summary(
     prices: &crate::PriceTable,
 ) -> Result<Summary, UsageError> {
     let names = label_map(c)?;
-    let dims = if q.group_by.is_empty() {
+    let dims = if q.total_only {
+        vec![]
+    } else if q.group_by.is_empty() {
         vec![Dim::Account, Dim::Model]
     } else {
         q.group_by.clone()
@@ -1477,12 +1639,14 @@ pub(crate) fn summary(
         fsql.push_str(" AND (endpoint IS NULL OR endpoint != ?)");
         fparams.push(label_id(c, PREWARM_ENDPOINT)?.unwrap_or(-1));
     }
-    let dim_cols: Vec<&str> = dims.iter().map(|d| d.col()).collect();
+    let dim_cols: String = dims.iter().map(|d| format!(",{}", d.col())).collect();
+    const DIM0: usize = 20;
     let sql = format!(
-        "SELECT status,error,ttft_ms,duration_ms,in_tok,out_tok,cached_tok,reasoning_tok,model,id,tier,cw_tok,endpoint,err_source,incomplete,transport,up_status,{} \
-         FROM requests WHERE id BETWEEN ? AND ?{fsql}",
-        dim_cols.join(",")
+        "SELECT status,error,ttft_ms,duration_ms,in_tok,out_tok,cached_tok,reasoning_tok,model,id,tier,cw_tok,endpoint,err_source,incomplete,transport,up_status,\
+         retries,switches,req_tier{dim_cols} FROM requests WHERE id BETWEEN ? AND ?{fsql}"
     );
+    let prio = label_id(c, "priority")?;
+    let flex = label_id(c, "flex")?;
     let mut ps: Vec<i64> = vec![
         q.from_ms << SEQ_BITS,
         if q.to_ms >= i64::MAX >> SEQ_BITS {
@@ -1497,9 +1661,30 @@ pub(crate) fn summary(
     let mut rows = st.query(params_from_iter(ps))?;
     let mut unknown_models = std::collections::BTreeSet::new();
     let mut days: std::collections::BTreeMap<i64, DayBucket> = Default::default();
+    // Per-bucket latency samples (stream first output, duration), turned into percentiles.
+    let mut lat: HashMap<i64, (Vec<u32>, Vec<u32>)> = HashMap::new();
+    let width = if q.bucket_hour { 3_600_000 } else { 86_400_000 };
+    let off = i64::from(q.bucket_day.unwrap_or(0)) * 60_000;
+    let bucket_of = |k: i64| {
+        let local = k * width;
+        DayBucket {
+            day: if q.bucket_hour {
+                format!(
+                    "{} {:02}",
+                    civil(local.div_euclid(86_400_000)),
+                    local.rem_euclid(86_400_000) / 3_600_000
+                )
+            } else {
+                civil(k)
+            },
+            start_ms: k * width - off,
+            end_ms: (k + 1) * width - off,
+            ..Default::default()
+        }
+    };
     while let Some(r) = rows.next()? {
         let key: Vec<Option<i64>> = (0..dims.len())
-            .map(|i| r.get(17 + i))
+            .map(|i| r.get(DIM0 + i))
             .collect::<rusqlite::Result<_>>()?;
         let status: u16 = r.get(0)?;
         let err: Option<i64> = r.get(1)?;
@@ -1518,8 +1703,15 @@ pub(crate) fn summary(
         let failed = (err.is_some() || status >= 400) && !cancelled && !unknown;
         let (src, up): (Option<i64>, Option<u16>) = (r.get(13)?, r.get(16)?);
         let class = failed.then(|| failure_class(status, lbl(err), lbl(src), up));
+        let upstream = failed && lbl(src) == Some("upstream");
         let incomplete = r.get::<_, Option<i64>>(14)?.is_some();
         let streaming = matches!(r.get::<_, i64>(15)?, 1 | 2);
+        let (retries, switches, req_tier): (i64, i64, Option<i64>) =
+            (r.get(17)?, r.get(18)?, r.get(19)?);
+        let downgraded =
+            req_tier.is_some() && (req_tier == prio || req_tier == flex) && t != req_tier;
+        let ttft: Option<u32> = r.get(2)?;
+        let dur: u32 = r.get(3)?;
         if cost.1 == "unknown_price" {
             let k = match lbl(t) {
                 Some(t) if crate::Tier::from_service_tier(Some(t)) != crate::Tier::Standard => {
@@ -1533,33 +1725,23 @@ pub(crate) fn summary(
             };
             unknown_models.insert(k);
         }
-        if let Some(tz) = q.bucket_day {
-            let off = i64::from(tz) * 60_000;
+        if q.bucket_day.is_some() {
             let id: i64 = r.get(9)?;
-            let width = if q.bucket_hour { 3_600_000 } else { 86_400_000 };
-            let local = (id >> SEQ_BITS) + off;
-            let k = local.div_euclid(width);
-            let b = days.entry(k).or_insert_with(|| DayBucket {
-                day: if q.bucket_hour {
-                    format!(
-                        "{} {:02}",
-                        civil(local.div_euclid(86_400_000)),
-                        local.rem_euclid(86_400_000) / 3_600_000
-                    )
-                } else {
-                    civil(k)
-                },
-                start_ms: k * width - off,
-                end_ms: (k + 1) * width - off,
-                ..Default::default()
-            });
+            let k = ((id >> SEQ_BITS) + off).div_euclid(width);
+            let b = days.entry(k).or_insert_with(|| bucket_of(k));
             if counted {
                 b.count += 1;
                 b.errors += u64::from(err.is_some() || status >= 400);
                 b.failures += u64::from(failed);
+                b.upstream_failures += u64::from(upstream);
                 if let Some(c) = class {
                     *b.failure_classes.entry(c).or_default() += 1;
                 }
+                let l = lat.entry(k).or_default();
+                if let (Some(t), true) = (ttft, streaming) {
+                    l.0.push(t);
+                }
+                l.1.push(dur);
                 b.cancelled += u64::from(cancelled);
                 b.incomplete += u64::from(incomplete && !failed && !cancelled && !unknown);
                 b.unknown += u64::from(unknown);
@@ -1581,12 +1763,16 @@ pub(crate) fn summary(
             counted,
             err: err.is_some() || status >= 400,
             class,
+            upstream,
+            retried: retries > 0 || switches > 0,
+            switched: switches > 0,
+            downgraded,
             cancelled,
             incomplete,
             unknown,
             streaming,
-            ttft: r.get(2)?,
-            dur: r.get(3)?,
+            ttft,
+            dur,
             tok,
             cost,
         });
@@ -1612,8 +1798,40 @@ pub(crate) fn summary(
         .collect();
     gs.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.group.cmp(&b.group)));
     out.total = total.finish(Default::default());
-    out.groups = gs;
+    if !q.total_only {
+        out.groups = gs;
+    }
     out.unknown_price_models = unknown_models.into_iter().collect();
+    for (k, (mut t, mut d)) in lat {
+        if let Some(b) = days.get_mut(&k) {
+            b.stream_ttft_p50_ms = pct(&mut t, 0.5);
+            b.stream_ttft_p90_ms = pct(&mut t, 0.9);
+            b.stream_ttft_p99_ms = pct(&mut t, 0.99);
+            b.duration_p50_ms = pct(&mut d, 0.5);
+            b.duration_p90_ms = pct(&mut d, 0.9);
+            b.duration_p99_ms = pct(&mut d, 0.99);
+        }
+    }
+    if q.bucket_day.is_some()
+        && q.bucket_refusals
+        && q.filters.account.is_none()
+        && q.filters.model.is_none()
+    {
+        let rq = RefusalQuery {
+            from_ms: q.from_ms,
+            to_ms: q.to_ms,
+            key: q.filters.key.clone(),
+            instance: q.filters.instance.clone(),
+            ..Default::default()
+        };
+        for (minute, reason, n) in refusal_minutes(c, &rq)? {
+            // A minute row belongs to the bucket holding its start, clipped to the window.
+            let k = (minute.max(q.from_ms) + off).div_euclid(width);
+            let b = days.entry(k).or_insert_with(|| bucket_of(k));
+            b.refused += n;
+            *b.refusals.entry(reason.as_str()).or_default() += n;
+        }
+    }
     out.buckets = q.bucket_day.map(|_| days.into_values().collect());
     Ok(out)
 }
@@ -1944,6 +2162,34 @@ pub(crate) fn refusal_totals(
     Ok(t)
 }
 
+/// `(minute, reason, count)` per minute and reason, for bucketing.
+fn refusal_minutes(
+    c: &Connection,
+    q: &RefusalQuery,
+) -> rusqlite::Result<Vec<(i64, crate::refusals::Reason, u64)>> {
+    let Some((w, p)) = refusal_where(c, q)? else {
+        return Ok(vec![]);
+    };
+    let mut st = c.prepare(&format!(
+        "SELECT minute, reason, sum(count) FROM refusals{w} GROUP BY minute, reason"
+    ))?;
+    let rows = st.query_map(params_from_iter(p), |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, i64>(2)?,
+        ))
+    })?;
+    let mut out = vec![];
+    for row in rows {
+        let (m, reason, n) = row?;
+        if let Some(reason) = crate::refusals::Reason::from_code(reason) {
+            out.push((m, reason, n.max(0) as u64));
+        }
+    }
+    Ok(out)
+}
+
 pub(crate) fn refusal_rows(
     c: &Connection,
     q: &RefusalQuery,
@@ -2072,6 +2318,9 @@ pub struct OccupancyQuery {
     pub instance: Option<String>,
     /// Bucket width in minutes (at least 1).
     pub step_min: u32,
+    /// UTC offset (minutes) that bucket boundaries align to, so hour / day buckets match
+    /// the summary's local buckets.
+    pub tz_min: i32,
 }
 
 /// Buckets per instance at most; a wider range gets a wider step.
@@ -2089,6 +2338,8 @@ pub(crate) fn occupancy_rows(
     q: &OccupancyQuery,
 ) -> rusqlite::Result<Vec<crate::occupancy::OccupancyRow>> {
     let step = occupancy_step(q) * 60_000;
+    // Non-negative offset modulo the step keeps the integer division floor-like.
+    let off = (i64::from(q.tz_min) * 60_000).rem_euclid(step);
     let mut w = String::from(" WHERE minute > ? AND minute <= ?");
     let mut p = vec![q.from_ms - 60_000, q.to_ms];
     if let Some(i) = &q.instance {
@@ -2102,7 +2353,7 @@ pub(crate) fn occupancy_rows(
     }
     let labels = label_map(c)?;
     let mut st = c.prepare(&format!(
-        "SELECT (minute / {step}) * {step} AS b, instance, sum(samples), sum(inflight_sum), max(inflight_peak), \
+        "SELECT ((minute + {off}) / {step}) * {step} - {off} AS b, instance, sum(samples), sum(inflight_sum), max(inflight_peak), \
          sum(ws_sum), max(ws_peak), sum(buffered_sum), max(buffered_peak), max(lim_inflight), max(lim_ws), \
          max(lim_buffered) FROM occupancy{w} GROUP BY b, instance ORDER BY b, instance"
     ))?;
