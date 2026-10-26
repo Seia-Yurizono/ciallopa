@@ -5,7 +5,8 @@
 //! whose 「快到期时自动使用」 switch is on, shortly before a card expires).
 //!
 //! Active quota (刷新额度): manual admin POST plus an optional background poll
-//! (`[ui] quota_refresh_mins`, default off) of accounts whose 「自动刷新额度」 switch is on.
+//! (`[ui] quota_refresh_mins..=quota_refresh_max_mins`, default off; each account at its own
+//! random time, see [`crate::refresh_sched`]) of accounts whose 「自动刷新额度」 switch is on.
 //! Both call [`quota_refresh_account`] (same `/wham/usage` path, snapshot, cooldown clear).
 //!
 //! Upstream calls mirror codex-rs `backend-client` (`client/rate_limit_resets.rs`): same paths,
@@ -383,31 +384,58 @@ async fn refresh_all(st: &AppState, rc: &ResetCredits) {
     }
 }
 
-/// Periodic read-only refresh. Never consumes. The interval is read from the live config on
-/// every pass (`0` = on demand only), so a reload takes effect within 30 s.
+/// Longest sleep of a poller between two looks at the live config (a reload takes effect
+/// within this) and the shortest (granularity of the random times).
+const POLL_MAX: Duration = Duration::from_secs(30);
+const POLL_MIN: Duration = Duration::from_secs(1);
+
+/// Sleep until the earliest pending time, but at most [`POLL_MAX`].
+fn poll_sleep(sched: &crate::refresh_sched::Schedule, now: u64) -> Duration {
+    sched
+        .earliest()
+        .map(|t| Duration::from_millis(t.saturating_sub(now)))
+        .unwrap_or(POLL_MAX)
+        .clamp(POLL_MIN, POLL_MAX)
+}
+
+fn sched_rng() -> rand::rngs::StdRng {
+    use rand::SeedableRng;
+    rand::rngs::StdRng::from_rng(&mut rand::rng())
+}
+
+/// Key of the reset-credit refresh: it runs as one round over all accounts.
+const ROUND_KEY: &str = "*";
+
+/// Periodic read-only refresh. Never consumes. The range is read from the live config on
+/// every pass (`[ui] reset_credits_refresh_mins..=reset_credits_refresh_max_mins`, `0` = on
+/// demand only), so a reload takes effect within 30 s. Each next round is drawn at random in
+/// the range, the first one too (see [`crate::refresh_sched`]).
 pub fn spawn_poller(st: AppState, rc: ResetCredits) {
     if tokio::runtime::Handle::try_current().is_err() {
         return;
     }
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(20)).await;
-        let mut last: Option<std::time::Instant> = None;
+        let t0 = tokio::time::Instant::now();
+        let mut rng = sched_rng();
+        let mut sched = crate::refresh_sched::Schedule::default();
+        let key = [ROUND_KEY.to_string()];
         loop {
-            let mins = st.config.load().ui.reset_credits_refresh_mins;
-            let due = mins > 0
-                && last.is_none_or(|t| t.elapsed() >= Duration::from_secs(mins.saturating_mul(60)));
-            if due {
-                last = Some(std::time::Instant::now());
+            let range = st.config.load().ui.reset_credits_refresh_range();
+            let now = t0.elapsed().as_millis() as u64;
+            if !sched.due(now, range, &key, &mut rng).is_empty() {
                 refresh_all(&st, &rc).await;
             }
-            tokio::time::sleep(Duration::from_secs(30)).await;
+            let now = t0.elapsed().as_millis() as u64;
+            tokio::time::sleep(poll_sleep(&sched, now)).await;
         }
     });
 }
 
 /// Background 刷新额度 for accounts with 「自动刷新额度」 on. Same work as the manual button
-/// ([`quota_refresh_account`]). Interval from live `[ui] quota_refresh_mins` (`0` = off);
-/// reload takes effect within 30 s. Needs `[usage]` to load/persist the switches.
+/// ([`quota_refresh_account`]). Range from live `[ui] quota_refresh_mins..=quota_refresh_max_mins`
+/// (`0` = off); reload takes effect within 30 s. Every account has its own random next time
+/// (also the first, after start or after its switch is turned on), so accounts are not asked
+/// in lockstep. Needs `[usage]` to load/persist the switches; next times stay in memory.
 pub fn spawn_quota_poller(st: AppState, rc: ResetCredits) {
     if tokio::runtime::Handle::try_current().is_err() {
         return;
@@ -420,36 +448,50 @@ pub fn spawn_quota_poller(st: AppState, rc: ResetCredits) {
         Some((rec.clone(), rc.quota_auto.clone()));
     tokio::spawn(quota_auto_persist(rec, rc.quota_auto.clone()));
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(20)).await;
-        let mut last: Option<std::time::Instant> = None;
+        let t0 = tokio::time::Instant::now();
+        let mut rng = sched_rng();
+        let mut sched = crate::refresh_sched::Schedule::default();
         loop {
-            let mins = st.config.load().ui.quota_refresh_mins;
-            let due = mins > 0
-                && last.is_none_or(|t| t.elapsed() >= Duration::from_secs(mins.saturating_mul(60)));
-            if due {
-                last = Some(std::time::Instant::now());
-                quota_refresh_opted_in(&st, &rc).await;
+            let range = st.config.load().ui.quota_refresh_range();
+            let ids = if range.is_some() {
+                quota_opted_in_ids(&st, &rc).await
+            } else {
+                vec![]
+            };
+            let now = t0.elapsed().as_millis() as u64;
+            let due = sched.due(now, range, &ids, &mut rng);
+            if !due.is_empty() {
+                quota_refresh_ids(&st, &rc, due).await;
             }
-            tokio::time::sleep(Duration::from_secs(30)).await;
+            let now = t0.elapsed().as_millis() as u64;
+            tokio::time::sleep(poll_sleep(&sched, now)).await;
         }
     });
 }
 
-/// Refresh every opted-in account that still exists (disabled included; re-login skipped).
-/// Four at a time; the 30 s per-account throttle still applies. Integration tests call this
-/// directly (`#[doc(hidden)]` via the same path the poller uses).
-pub async fn quota_refresh_opted_in(st: &AppState, rc: &ResetCredits) {
-    let relogin = st.accounts.relogin_required().await;
+/// Opted-in accounts that still exist (disabled included).
+async fn quota_opted_in_ids(st: &AppState, rc: &ResetCredits) -> Vec<String> {
     let known: BTreeSet<String> = st.accounts.list().await.into_iter().map(|a| a.id).collect();
-    let ids: Vec<String> = rc
-        .quota_auto
+    rc.quota_auto
         .ids()
         .into_iter()
         .filter(|id| known.contains(id))
-        .collect();
+        .collect()
+}
+
+/// Refresh every opted-in account that still exists (disabled included; re-login skipped).
+/// Integration tests call this directly; the poller refreshes the due subset the same way.
+pub async fn quota_refresh_opted_in(st: &AppState, rc: &ResetCredits) {
+    let ids = quota_opted_in_ids(st, rc).await;
+    quota_refresh_ids(st, rc, ids).await;
+}
+
+/// Four at a time; re-login skipped; the 30 s per-account throttle still applies.
+async fn quota_refresh_ids(st: &AppState, rc: &ResetCredits, ids: Vec<String>) {
     if ids.is_empty() {
         return;
     }
+    let relogin = st.accounts.relogin_required().await;
     let sem = Arc::new(tokio::sync::Semaphore::new(QUOTA_REFRESH_PARALLEL));
     let mut set = tokio::task::JoinSet::new();
     for id in ids {
@@ -533,7 +575,9 @@ async fn list_body(s: &S, admin: bool) -> Value {
         "can_consume": consume_enabled && admin,
         "is_admin": admin,
         "refresh_mins": cfg.ui.reset_credits_refresh_mins,
+        "refresh_max_mins": cfg.ui.reset_credits_refresh_range().map_or(0, |r| r.1),
         "quota_refresh_mins": cfg.ui.quota_refresh_mins,
+        "quota_refresh_max_mins": cfg.ui.quota_refresh_range().map_or(0, |r| r.1),
         "auto_lead_mins": cfg.ui.reset_credits_auto_lead_mins,
         // Automatic use / quota auto-refresh keep switches in the usage DB.
         "auto_available": s.st.usage.is_some(),

@@ -569,11 +569,15 @@ See [METRICS.md](METRICS.md) for the current outcome, sampling, cursor and bucke
   accounts, four at a time; admin key, JSON body, same-origin) ask upstream `GET /wham/usage`
   (5 s, Codex client headers, egress proxy) for the current windows. Read-only; one call per
   account per 30 s (`QUOTA_REFRESH_MIN`), a repeat inside that answers `rate_limited` without an
-  upstream call. An optional background poll (`[ui] quota_refresh_mins`, default `0` = off;
-  1–60 when on) runs the same path for accounts whose 「自动刷新额度」 switch is on (same
-  cooldown clear when `allowed == true && limit_reached == false`). Codex TUI polls usage while
-  running with adaptive 60/30/15/5 s by used%; ciallopa's multi-account default when enabled
-  (UI lands on 5 min) is intentionally coarser. The post-consume fetch after a successful reset
+  upstream call. An optional background poll (`[ui] quota_refresh_mins`–`quota_refresh_max_mins`,
+  default `0` = off; 1–60 when on) runs the same path for accounts whose 「自动刷新额度」 switch
+  is on (same cooldown clear when `allowed == true && limit_reached == false`). Every opted-in
+  account is scheduled on its own: its next refresh is drawn uniformly in [min, max] minutes
+  after its last one, and the first one (server start, switch just turned on, range just
+  turned on) also waits a random [min, max], so accounts are never asked in lockstep. Next
+  times are kept in memory only. Codex TUI polls usage while running with adaptive
+  60/30/15/5 s by used% and no jitter; ciallopa's multi-account default when enabled (UI fills
+  5–10 min) is intentionally coarser. The post-consume fetch after a successful reset
   card also hits `/wham/usage`.
   Result per account: `{account, ok:true, quota:{plan, primary, secondary}, observed_at_ms,
   usage_available_count, allowed, limit_reached, cooldown_cleared?}` or
@@ -833,12 +837,18 @@ Config (`[ui]`):
 | key | default | |
 |---|---|---|
 | `allow_reset_consume` | `false` | enable the manual consume API + page button (not the automatic use) |
-| `reset_credits_refresh_mins` | `0` | background listing refresh (read-only); `0` = on demand only; 1–60 when on |
-| `quota_refresh_mins` | `0` | background 刷新额度 for accounts with 「自动刷新额度」 on; `0` = off; 1–60 when on |
+| `reset_credits_refresh_mins` | `0` | background listing refresh (read-only), shortest gap between rounds; `0` = on demand only; 1–60 when on |
+| `reset_credits_refresh_max_mins` | `0` | longest gap; each round is drawn at random in [min, max]; `0` = same as min (fixed); else min–60 |
+| `quota_refresh_mins` | `0` | background 刷新额度 for accounts with 「自动刷新额度」 on, shortest gap per account; `0` = off; 1–60 when on |
+| `quota_refresh_max_mins` | `0` | longest gap; each account draws its own next time in [min, max]; `0` = same as min (fixed); else min–60 |
+
+A config with only `*_mins` (v0.2.1 and earlier) loads as a fixed interval. `*_max_mins` below
+`*_mins`, or either outside 1–60, is a configuration error. The settings page shows each range
+as a switch plus 最短–最长 and fills 5–10 when switched on.
 | `reset_credits_auto_lead_mins` | `10` | 快到期时自动使用: minutes before expiry (5–1440) |
 
 API (client key):
-- `GET /usage/v1/reset-credits` → `{consume_enabled, can_consume, is_admin, refresh_mins, quota_refresh_mins, accounts: [{account, email,
+- `GET /usage/v1/reset-credits` → `{consume_enabled, can_consume, is_admin, refresh_mins, refresh_max_mins, quota_refresh_mins, quota_refresh_max_mins, accounts: [{account, email,
   disabled, reset_credits: {fetched_ms, available_count, credits, nearest_expires_at, error,
   error_ms, usage_available_count, allowed, limit_reached, usage_observed_ms} | null, auto, auto_next_ms, quota_auto}], attempts: [last 20
   consume attempts]}`. The `usage_*` fields, `allowed` and `limit_reached` come from the last 刷新额度

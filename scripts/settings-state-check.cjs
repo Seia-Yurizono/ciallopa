@@ -31,6 +31,7 @@ class Node {
   dispatchEvent(event) { return this.listeners[event.type]?.(event); }
   setAttribute(name, value) { this[name] = value; }
   querySelector() { return null; }
+  focus() {}
 }
 const nodes = new Map();
 const node = id => {
@@ -188,6 +189,53 @@ const watchdog = setTimeout(() => {
   await previousLoad;
   assert.equal(run('CFG.version'), 'v8');
 
+  // Refresh ranges (最短–最长): switching on fills 5–10 and writes both keys; min > max and
+  // values outside 1–60 are errors; off writes 0 to the shortest only; an old single value
+  // shows as a fixed interval and is not rewritten while untouched.
+  const RQ = '{key:"ui.quota_refresh_mins",kind:"int",desc:"额度自动刷新间隔（分钟）"},{key:"ui.quota_refresh_max_mins",kind:"int",desc:"额度自动刷新最长间隔（分钟）"}';
+  const mk = (v, vx) => run(`EDITS={};BAD.clear();BASE_STALE=false;rrow=h("div");rz=rinput(${RQ},${v},${vx},rrow);[rsw,ra,,rb,rst]=rz.el.children[0].children;rfe=rz.el.children[1]`);
+  const edits = () => JSON.parse(run('JSON.stringify(EDITS)'));
+  const set = (e, v) => run(`${e}.value="${v}";${e}.dispatchEvent(new Event("input"))`);
+  mk(0, 0);
+  assert.equal(run('rsw.checked||!ra.disabled||!rb.disabled'), false);
+  assert.equal(run('ra.value+"-"+rb.value+" "+rst.textContent'), '5-10 只手动刷新');
+  assert.deepEqual(edits(), {});
+  run('rsw.checked=true;rsw.dispatchEvent(new Event("change"))');
+  assert.deepEqual(edits(), {'ui.quota_refresh_mins': 5, 'ui.quota_refresh_max_mins': 10});
+  assert.equal(run('rst.textContent'), '分钟');
+  set('rb', 3);
+  assert.equal(run('BAD.has("ui.quota_refresh_mins")'), true);
+  assert.deepEqual(edits(), {});
+  assert.equal(run('rfe.textContent'), '最短不能大于最长');
+  set('rb', 61);
+  assert.match(run('rfe.textContent'), /1–60/);
+  set('rb', '');
+  assert.match(run('rfe.textContent'), /1–60/);
+  set('rb', 5);
+  assert.equal(run('BAD.size'), 0);
+  assert.deepEqual(edits(), {'ui.quota_refresh_mins': 5, 'ui.quota_refresh_max_mins': 5}, 'equal values = fixed interval');
+  run('rsw.checked=false;rsw.dispatchEvent(new Event("change"))');
+  assert.deepEqual(edits(), {}, 'back off: nothing to save');
+  // stored 5–10, switched off: only the shortest is written (0); the longest is kept
+  mk(5, 10);
+  assert.equal(run('rsw.checked&&ra.value+"-"+rb.value'), '5-10');
+  run('rsw.checked=false;rsw.dispatchEvent(new Event("change"))');
+  assert.deepEqual(edits(), {'ui.quota_refresh_mins': 0});
+  // v0.2.1 config: one value (15), no longest → shows 15–15, untouched = no edit
+  mk(15, 0);
+  assert.equal(run('rsw.checked&&ra.value+"-"+rb.value'), '15-15');
+  set('ra', 15);
+  assert.deepEqual(edits(), {});
+  set('ra', 10);
+  assert.deepEqual(edits(), {'ui.quota_refresh_mins': 10, 'ui.quota_refresh_max_mins': 15});
+  run('rz.set(0)');
+  assert.deepEqual(edits(), {'ui.quota_refresh_mins': 0}, '恢复 = default off');
+  // summaries / read-only text
+  assert.equal(run('rzText(rzRange("ui.quota_refresh_mins",k=>({"ui.quota_refresh_mins":5,"ui.quota_refresh_max_mins":10})[k]))'), '每 5–10 分钟');
+  assert.equal(run('rzText(rzRange("ui.quota_refresh_mins",k=>({"ui.quota_refresh_mins":15})[k]))'), '每 15 分钟');
+  assert.equal(run('rzText(rzRange("ui.reset_credits_refresh_mins",k=>({"ui.reset_credits_refresh_max_mins":10})[k]))'), '只手动刷新');
+  run('EDITS={};BAD.clear();upd()');
+
   // Logout clears the one-time secret, including a key creation that finishes afterwards.
   node('nkv').textContent = 'synthetic-generated-secret';
   node('newkey').classList.remove('hide');
@@ -202,5 +250,5 @@ const watchdog = setTimeout(() => {
   await c.busyJobs.at(-1);
   assert.equal(node('nkv').textContent, '');
   assert.equal(node('newkey').classList.contains('hide'), true);
-  console.log('PASS: raw drafts, conflict preview/version, saved-write refresh failure, in-flight edits, explicit discard, stale loads, logout secret');
+  console.log('PASS: raw drafts, conflict preview/version, saved-write refresh failure, in-flight edits, explicit discard, stale loads, refresh ranges, logout secret');
 })().catch(error => {console.error(error); process.exitCode = 1;}).finally(() => clearTimeout(watchdog));

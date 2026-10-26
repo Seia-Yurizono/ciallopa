@@ -329,9 +329,14 @@ function resetCardDisplay() {
   assert.equal(run('limitHit({limit_reached: false, usage_observed_ms: 1e6}, null)'), false);
   // 快到期时自动使用 + 自动刷新额度: switches per account; a failed listing keeps the last answer
   run('AUTO = {}; QAUTO = {}; AUTOTOP = null; readAuto({status: "fulfilled", value: {j: {auto_lead_mins: 15, auto_available: true, quota_refresh_mins: 5, accounts: [{account: "a", auto: true, auto_next_ms: 5, quota_auto: true}, {account: "b", quota_auto: false}]}}})');
-  assert.equal(run('JSON.stringify([AUTO, QAUTO, AUTOTOP])'), JSON.stringify([{a: {on: true, next: 5}, b: {on: false, next: null}}, {a: true, b: false}, {lead: 15, ok: true, qmins: 5}]));
+  assert.equal(run('JSON.stringify([AUTO, QAUTO, AUTOTOP])'), JSON.stringify([{a: {on: true, next: 5}, b: {on: false, next: null}}, {a: true, b: false}, {lead: 15, ok: true, qmins: 5, qmax: 5}]));
   run('readAuto({status: "rejected", reason: new Error("x")})');
   assert.equal(run('AUTO.a.on && QAUTO.a && AUTOTOP.lead === 15 && AUTOTOP.qmins'), 5);
+  // a refresh range (5–10 min); an old single value reads as fixed (max = min); off = 0
+  run('readAuto({status: "fulfilled", value: {j: {auto_lead_mins: 15, auto_available: true, quota_refresh_mins: 5, quota_refresh_max_mins: 10, accounts: [{account: "a", quota_auto: true}]}}})');
+  assert.equal(run('JSON.stringify([AUTOTOP.qmins, AUTOTOP.qmax])'), '[5,10]');
+  run('readAuto({status: "fulfilled", value: {j: {auto_lead_mins: 15, auto_available: true, quota_refresh_mins: 0, quota_refresh_max_mins: 10, accounts: []}}})');
+  assert.equal(run('JSON.stringify([AUTOTOP.qmins, AUTOTOP.qmax])'), '[0,0]');
 }
 
 // 24 h account usage follows the overview's 「含预热」 preference (business only by default).

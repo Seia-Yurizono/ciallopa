@@ -240,6 +240,7 @@ fieldset.sc{border:0;margin:0;padding:0;min-width:0;justify-self:end;display:fle
 .defs{font-size:var(--fs-xs);color:var(--mut);display:inline-flex;gap:var(--s2);flex-wrap:wrap}
 .defs:empty{display:none}
 .kd .defs{margin-left:var(--s2)}
+.kd code+code{margin-left:var(--s2)}
 .cdt .defs{display:flex;margin-top:var(--s1)}
 button.lnk{border:0;background:none;padding:0;height:auto;color:var(--focus);font-size:inherit;text-decoration:underline;cursor:pointer}
 /* pending (changed, not saved) switch: diagonal stripes in the new value's colour; restyle here only */
@@ -253,6 +254,7 @@ button.lnk{border:0;background:none;padding:0;height:auto;color:var(--focus);fon
 .zo{display:flex;align-items:center;gap:var(--s2);flex-wrap:wrap;justify-content:flex-end}
 .zo input[type=number]{width:120px}
 .zo input:disabled{opacity:.55}
+.srow fieldset.sc .zo.rz input[type=number]{width:76px}
 .unit{font-size:var(--fs-s);color:var(--mut)}
 details.adv{margin-top:var(--s3);border:1px solid var(--line);border-radius:var(--r2);background:var(--surface)}
 details.adv>summary{cursor:pointer;padding:var(--s2) var(--s4);font-size:var(--fs-s);color:var(--fg-2);font-weight:600;list-style-position:inside}
@@ -615,6 +617,34 @@ const ZO={"routing.quota_avoid_threshold":["关闭",0.9],"routing.cooldown_wait_
   "upstream_opts.transient_cooldown_secs":["不冷却",15],"upstream_opts.overload_streak":["不冷却",2],"upstream_opts.overload_retry_wait_secs":["不重试",3],
   "upstream_opts.deactivated_cooldown_secs":["不冷却",86400],"upstream_opts.payment_required_cooldown_secs":["不冷却",1800],"upstream_opts.not_found_cooldown_secs":["只换号不冷却",600],
   "usage.retention_days":["永久保留",90],"ui.reset_credits_refresh_mins":["只手动刷新",5],"ui.quota_refresh_mins":["只手动刷新",5]};
+// Background refresh ranges: the shortest key holds the switch (0 = off), the longest sits
+// next to it. A longest of 0 means the same as the shortest (a fixed interval, how a config
+// from before the range loads). Switching on fills 5–10; off writes 0 and keeps both values.
+const RZ={"ui.reset_credits_refresh_mins":"ui.reset_credits_refresh_max_mins","ui.quota_refresh_mins":"ui.quota_refresh_max_mins"},RZ_ON=[5,10];
+function rzRange(k,src){const mn=Number(src(k))||0,mx=Number(src(RZ[k]))||0;return mn>0?[mn,mx>0?mx:mn]:null}
+function rzText(r){return r?(r[0]===r[1]?"每 "+r[0]+" 分钟":"每 "+r[0]+"–"+r[1]+" 分钟"):"只手动刷新"}
+function rinput(f,fx,v,vx,tr){const offt=ZO[f.key][0],omin=Number(v)||0,oraw=Number(vx)||0,on0=omin>0,omax=on0?(oraw||omin):0;
+  const sw=h("input",{type:"checkbox",class:"sw","aria-label":f.desc+"：开启","data-fk":f.key+"|on"});sw.checked=on0;sw.addEventListener("animationend",()=>sw.classList.remove("anim"));
+  const num=(k,lbl)=>h("input",{type:"number",step:"1",min:"1",max:"60","aria-label":lbl,"data-fk":k});
+  const a=num(f.key,f.desc+"：最短"),b=num(fx.key,f.desc+"：最长");
+  a.value=String(on0?omin:RZ_ON[0]);b.value=String(on0?omax:oraw>=RZ_ON[0]?oraw:RZ_ON[1]);a.disabled=b.disabled=!on0;
+  const st=h("span","unit",on0?"分钟":offt),fe=h("div",{class:"xs c-err hide",id:"fe-"+f.key.replace(/\W/g,"_")});a.setAttribute("aria-describedby",fe.id);b.setAttribute("aria-describedby",fe.id);
+  const ed=(k,val,orig)=>{if(BASE_STALE||val!==orig)EDITS[k]=val;else delete EDITS[k]};
+  const apply=()=>{const on=sw.checked;a.disabled=b.disabled=!on;st.textContent=on?"分钟":offt;let msg="",mn=0,mx=0;
+    if(on){const ok=e=>!e.validity.badInput&&/^\d+$/.test(e.value.trim())&&+e.value>=1&&+e.value<=60;
+      if(!ok(a)||!ok(b))msg="最短和最长都填 1–60 的整数；要关闭请用左侧开关";else{mn=parseInt(a.value,10);mx=parseInt(b.value,10);if(mn>mx)msg="最短不能大于最长"}}
+    const bad=!!msg;fe.textContent=msg;fe.classList.toggle("hide",!bad);a.setAttribute("aria-invalid",String(bad));b.setAttribute("aria-invalid",String(bad));
+    if(bad)BAD.add(f.key);else BAD.delete(f.key);
+    const changed=BASE_STALE||on!==on0||(on&&(mn!==omin||mx!==omax));
+    if(bad||!changed){delete EDITS[f.key];delete EDITS[fx.key]}
+    else if(on){ed(f.key,mn,omin);ed(fx.key,mx,oraw)}
+    else{ed(f.key,0,omin);delete EDITS[fx.key]}
+    a.classList.toggle("chg",on&&(bad||BASE_STALE||mn!==omin));b.classList.toggle("chg",on&&(bad||BASE_STALE||mx!==omax));
+    const pn=BASE_STALE||on!==on0;if(pn!==sw.classList.contains("pending"))pend(sw,pn);rowChg(tr);upd()};
+  sw.addEventListener("change",()=>{if(sw.checked&&!(+a.value>=1&&+b.value>=+a.value&&+b.value<=60)){a.value=String(RZ_ON[0]);b.value=String(RZ_ON[1])}apply();if(sw.checked)a.focus()});
+  for(const e of [a,b]){e.addEventListener("input",apply);e.addEventListener("change",apply)}
+  const set=x=>{const n=Number(x)||0;sw.checked=n>0;if(n>0){a.value=String(n);if(+b.value<n)b.value=String(n)}apply()};
+  return {el:h("div",null,h("div","zo rz",sw,a,h("span","unit","–"),b,st),fe),set}}
 function zinput(f,v,tr){const [offt,fb0]=ZO[f.key],d=CFG&&CFG.defaults?Number(CFG.defaults[f.key]):0,fb=d>0?d:fb0,orig=Number(v)||0,on0=orig>0,u=unit(f);
   const sw=h("input",{type:"checkbox",class:"sw","aria-label":f.desc+"：开启","data-fk":f.key+"|on"});sw.checked=on0;sw.addEventListener("animationend",()=>sw.classList.remove("anim"));
   const e=h("input",{type:"number",step:f.kind==="int"?"1":"any",min:"0","aria-label":f.desc,"data-fk":f.key});e.value=String(on0?v:fb);e.disabled=!on0;
@@ -698,9 +728,10 @@ function reg(k,o){REG.set(k,o);if(CURP){PAGE_OF.set(k,CURP);CURP.keys.push(k)}}
 // One control (or read-only value) for a key, plus its notes; shared by rows and the cooldown table.
 function ctl(f,tr){const c=CFG,run=c.running[f.key],file=c.values?c.values[f.key]:run,b=h("div","cv");let set=null;
   if(IMM[f.key]&&c.write_enabled){const t=immToggle(f.key,f.key==="proxy_enabled"?file!==false:file===true);b.appendChild(t)}
+  else if(c.write_enabled&&f.editable&&RZ[f.key]&&fld(RZ[f.key])){const fx=fld(RZ[f.key]),z=rinput(f,fx,file,c.values?c.values[fx.key]:c.running[fx.key],tr);b.appendChild(z.el);set=z.set;if(CURP){PAGE_OF.set(fx.key,CURP);CURP.keys.push(fx.key)}}
   else if(c.write_enabled&&f.editable&&ZO[f.key]){const z=zinput(f,file,tr);b.appendChild(z.el);set=z.set}
   else if(c.write_enabled&&f.editable){b.appendChild(input(f,file,tr));set=v=>setCtl(b,f,v)}
-  else{let t=fmt(run);if(f.kind==="bool")t=run?"已开启":"已关闭";else if(ZO[f.key]&&Number(run)===0)t=ZO[f.key][0];else if(typeof run==="number"&&unit(f))t+=" "+unit(f);
+  else{let t=fmt(run);if(f.kind==="bool")t=run?"已开启":"已关闭";else if(RZ[f.key])t=rzText(rzRange(f.key,k=>c.running[k]));else if(ZO[f.key]&&Number(run)===0)t=ZO[f.key][0];else if(typeof run==="number"&&unit(f))t+=" "+unit(f);
     b.appendChild(h("span","mono",t));const ch=choiceOf(f,run);if(ch)b.appendChild(h("div","xs mut",ch.label+"："+ch.help))}
   if(f.key==="proxy_enabled"&&file!==false&&!(c.values||c.running).proxy_url)b.appendChild(h("div","xs mut","已启用，但还没有填写代理地址：当前直连"));
   if(f.key==="proxy_url")b.appendChild(proxyExtra(c));
@@ -717,8 +748,8 @@ function rowFor(sp){if(typeof sp==="string")sp={k:sp};if(sp.fn)return sp.fn();co
   if(f.kind==="enum"&&f.choices&&f.choices.length&&CFG.write_enabled&&f.editable||f.key==="proxy_url")r.classList.add("wide");
   const {b,set}=ctl(f,r),sc=h("fieldset","sc",b);
   r.append(h("div","sl",h("div","st",h("b",null,f.desc),f.effect==="restart"?eff(f):null,f.key==="ui.allow_reset_consume"?h("span",{class:"tag err",title:"重置卡用掉后不能撤销"},"不可逆"):null),
-    f.help?h("div","hp",f.help):null,h("div","kd",h("code",null,f.key),defs),why),sc);
-  r.dataset.q=(f.key+" "+f.desc+" "+(f.help||"")+" "+(f.choices||[]).map(c=>c.label).join(" ")).toLowerCase();
+    f.help?h("div","hp",f.help):null,h("div","kd",h("code",null,f.key),RZ[f.key]?h("code",null,RZ[f.key]):null,defs),why),sc);
+  r.dataset.q=(f.key+" "+(RZ[f.key]||"")+" "+f.desc+" "+(f.help||"")+" "+(f.choices||[]).map(c=>c.label).join(" ")).toLowerCase();
   reg(f.key,{row:r,set,defs,f,multi:false});
   if(sp.p)DEPS.push({row:r,fs:sc,why,p:sp.p});
   return r}
@@ -784,7 +815,7 @@ function summ(id){const yn=k=>on(k)?"开":"关";
     case"forward":{const m=Number(cur("max_inflight_requests"))||0;return "在途上限 "+(m?m:"不限")+" · 换号重试 "+cur("upstream_opts.max_attempts")+" 次"}
     case"images":return on("images.enabled")?"已开启 · "+(cur("images.main_model")||""):"已关闭";
     case"usage":{const r=Number(cur("usage.retention_days"))||0,u=PST&&(PST.unpriced||[]).length;return on("usage.enabled")?"保留 "+(r?r+" 天":"永久")+(u?" · "+u+" 个未定价":""):"已关闭"}
-    case"accounts":{const m=Number(cur("ui.reset_credits_refresh_mins"))||0,q=Number(cur("ui.quota_refresh_mins"))||0;return (ACCN===null?"":ACCN+" 个账号 · ")+"重置卡"+(m?"每 "+m+" 分钟刷新":"只手动刷新")+" · 额度"+(q?"每 "+q+" 分钟刷新":"只手动刷新")+" · 自动使用提前 "+(Number(cur("ui.reset_credits_auto_lead_mins"))||10)+" 分钟"}
+    case"accounts":{const m=rzRange("ui.reset_credits_refresh_mins",cur),q=rzRange("ui.quota_refresh_mins",cur);return (ACCN===null?"":ACCN+" 个账号 · ")+"重置卡"+(m?rzText(m)+"刷新":"只手动刷新")+" · 额度"+(q?rzText(q)+"刷新":"只手动刷新")+" · 自动使用提前 "+(Number(cur("ui.reset_credits_auto_lead_mins"))||10)+" 分钟"}
     case"general":return (cur("instance_id")||"未命名实例")+" · 日志 "+(cur("log.level")||"");
     case"keys":return ((CFG.running.api_keys||[]).length)+" 个密钥";
     case"audit":return AUD_LAST?"最近 "+fmtTime(AUD_LAST):"暂无记录";
@@ -843,6 +874,7 @@ function renderNow(){const c=CFG;for(const k in BOXES)$("stash").appendChild(BOX
   PK=new Set(pend.map(p=>p.key));
   const placed=new Set(["api_keys"]);for(const P of PAGES)for(const x of P.secs.flatMap(s=>s.rows||[]).concat(P.adv||[]))if(!x.fn)placed.add(typeof x==="string"?x:x.k);
   for(const r of COOL)for(const k of (r.tk?[r.tk]:[]).concat(r.ks))placed.add(k);
+  for(const k in RZ)placed.add(RZ[k]);
   const rest=c.schema.map(f=>f.key).filter(k=>!placed.has(k));
   const pages=$("pages"),navl=$("navl");let gname=null,gb=null;
   for(const P of PAGES){const o=buildPage(P,P.id==="general"?rest:null);pages.appendChild(o.el);if(P.up)continue;

@@ -166,8 +166,10 @@ pub const SCHEMA: &[Field] = &[
     f("ui.enabled", "bool", Restart, false, "管理页", "关闭后 /ui 的三个页面都不可用"),
     f("ui.allow_reset_consume", "bool", Hot, false, "允许手动使用重置卡", "关闭时页面不显示使用按钮，接口也会拒绝；不影响账号页按账号开启的自动使用"),
     f("ui.reset_credits_auto_lead_mins", "int", Hot, true, "自动使用提前量（分钟）", "账号页开启「快到期时自动使用」的账号，在重置卡到期前这么多分钟自动用掉它；取值 5–1440"),
-    f("ui.reset_credits_refresh_mins", "int", Hot, true, "重置卡后台刷新间隔（分钟）", "后台定期向上游只读查询各账号的重置卡；0 = 只手动刷新，开启时 1–60"),
-    f("ui.quota_refresh_mins", "int", Hot, true, "额度自动刷新间隔（分钟）", "后台对账号页开启「自动刷新额度」的账号做与手动刷新额度相同的查询；0 = 只手动刷新，开启时 1–60（默认落到 5；比 Codex 单账号界面更疏）"),
+    f("ui.reset_credits_refresh_mins", "int", Hot, true, "重置卡后台刷新间隔（分钟）", "后台定期向上游只读查询各账号的重置卡；每轮间隔在最短和最长之间随机，两个填一样就是固定间隔；0 = 只手动刷新，开启时 1–60"),
+    f("ui.reset_credits_refresh_max_mins", "int", Hot, true, "重置卡后台刷新最长间隔（分钟）", "0 = 与最短间隔相同（固定间隔）；否则不小于最短间隔，最大 60"),
+    f("ui.quota_refresh_mins", "int", Hot, true, "额度自动刷新间隔（分钟）", "后台对账号页开启「自动刷新额度」的账号做与手动刷新额度相同的查询；每个账号各自在最短和最长之间随机安排下一次，两个填一样就是固定间隔；0 = 只手动刷新，开启时 1–60"),
+    f("ui.quota_refresh_max_mins", "int", Hot, true, "额度自动刷新最长间隔（分钟）", "0 = 与最短间隔相同（固定间隔）；否则不小于最短间隔，最大 60"),
     f("ui.allow_config_write", "bool", Hot, false, "允许在管理页修改", "开启后可在管理页修改配置和账号"),
 ];
 

@@ -21,6 +21,7 @@ pub mod host;
 pub mod init;
 pub mod memory;
 pub mod prices;
+pub mod refresh_sched;
 pub mod reset_credits;
 pub mod settings;
 pub mod ui;
