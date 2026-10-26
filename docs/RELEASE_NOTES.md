@@ -1,77 +1,60 @@
-ciallopa v0.2.2
+ciallopa v0.2.3
 
-This release follows v0.2.1. Both background refresh timers (刷新额度 and the reset-card
-listing) take a minimum–maximum range in minutes instead of a fixed interval, and every
-opted-in account draws its own random next refresh, so accounts are no longer asked upstream in
-lockstep. The request list on the overview is reorganised around problems a user can act on:
-报错, 上游出错, 没答完 and 本地拒绝, each with a count, a cause breakdown and suggested next steps.
-The implemented upstream adapter is still the Codex backend.
+This release follows v0.2.2. The admin pages (概览, 账号, 设置) get a lighter, calmer layout: a
+sidebar shell, KPI cards, a line trend chart and a compact accounts table. It also fixes the 卡
+column on the overview quota card, which showed empty buttons in v0.2.2. Wording, switches,
+confirmations, the API, the configuration and the usage database are unchanged. The implemented
+upstream adapter is still the Codex backend.
 
-**Background refresh ranges**
+**Layout**
 
-- New `[ui] quota_refresh_max_mins` and `[ui] reset_credits_refresh_max_mins`. The existing
-  `quota_refresh_mins` / `reset_credits_refresh_mins` are now the shortest gap and the new keys
-  the longest; each next run is drawn uniformly in [min, max] minutes. `*_mins = 0` is still
-  off. `*_max_mins = 0` (the default) means the same as `*_mins`, so a config with only the old
-  single value loads unchanged as a fixed interval. `*_max_mins` must be `0` or 1–60 and not
-  below `*_mins`; otherwise the config is rejected with an error naming both keys.
-- 刷新额度 schedules every account whose 「自动刷新额度」 switch is on independently. The first
-  refresh after server start, after an account's switch is turned on, or after the range is
-  turned on also waits a random [min, max]. The reset-card listing draws one random gap per round
-  over all accounts. Next times are kept in memory only; a range change applies on the next look
-  at the config (within 30 s) and redraws pending times from the start of their gap.
-- The refresh path itself is unchanged: four accounts at a time, the 30 s per-account throttle,
-  disabled accounts included, accounts that need a new login skipped, and the usage-limit
-  cooldown cleared when upstream reports the quota restored. A manual 刷新额度 does not move an
-  account's next automatic refresh.
-- 设置 › 账号与重置卡 › 后台刷新 shows each timer as a switch plus 最短–最长 inputs, filled with
-  5–10 when switched on; equal values give a fixed interval and 最短 > 最长 is flagged.
-  `GET /usage/v1/reset-credits` also returns `refresh_max_mins` and `quota_refresh_max_mins`.
+- Light sidebar shell with a page title, softer colour tokens and card shadows. Every layout has
+  nav icons, and phones get an icon-over-label tab bar.
+- Between 1024 and 1359 px the sidebar collapses to an icon rail (links keep their titles) so
+  wide tables keep their room.
+- 设置: on wide desktops the group nav joins the app sidebar instead of a second left column.
+- Light theme colours: the orange warning and cooling states (冷却中, the cooling and price
+  banners, 未定价, 已拒绝, 满载, 未报告, stale-data marks, quota bars between 20% and 50% left)
+  become a neutral grey; errors (失败率, 次错误, 令牌失效, quota bars under 20%) use a true red;
+  the 额度用尽 failure class becomes a warm grey. Dark mode is unchanged.
 
-**Request list**
+**Overview**
 
-- The list opens with problem chips 全部 / 报错 / 上游出错 / 没答完 / 本地拒绝, each with its
-  count, and a cause row under the chosen chip:
-  - 报错: the client got an error (counted in 失败率), by 额度, 限流, 上游, 网络代理, 网关 and 流中断.
-  - 上游出错: the upstream side failed at least once, split into 未救回 and 已救回 (a transport
-    retry or an account switch rescued it). It can overlap 报错 and is not a second failure
-    rate; 上游失败率 keeps its definition.
-  - 没答完: 客户端断开, 上游截断 (`response.incomplete`) and 未确认结束 (formerly 结果未知); not
-    counted as failures. The former 未完成 label is replaced by these causes.
-  - 本地拒绝: refusals by a local limit, by reason; disabled while an account, model or another
-    request-only filter is set, because a refusal happens before those are known.
-- Account, model and key filters sit next to the chips. 结果, 失败原因, 错误来源, 档位, 错误码, 重试
-  and the new 含预热 are under 更多. 全部 excludes prewarm requests unless 含预热 is ticked. The old
-  URL and API parameters keep working, so old links still open.
-- Each problem row has up to two 下一步 buttons (one on a phone), and the detail panel opens with a
-  结论 block that says what happened and whether it counts as a failure, followed by the attempt
-  timeline. Next steps only navigate to existing views (account, cooldown, attempt chain, egress
-  and limit settings, 刷新额度 on the quota card); nothing is refreshed or spent automatically and
-  no reset card is used.
-- Classification is implemented once, in `crates/usage/src/problem.rs`, for rows, filters and
-  counts. `GET /usage/v1/records` accepts `problem=all|error|upstream|unfinished` and
-  `cause=<cause>` (`problem=refused`, an unknown value or a cause without a problem → 400), and
-  each row carries `problem`, `cause`, `upstream_fault`, `rescued` and `next`. New
-  `GET /usage/v1/records/counts` returns the per-chip and per-cause counts for the same filters,
-  with refusals from the refusals table.
-- A request that finally succeeded after an HTTP stream account switch or a WebSocket replay now
-  keeps its attempt chain in the error detail, so the detail shows the earlier failures. A
-  same-account overload wait and retry is recorded as `wait+retry` in the chain but is not marked
-  已救回, because `retries` counts transport retries only. Requests without a retry store nothing
-  extra. The chain goes through the existing batched writer; the usage schema stays at v11.
+- KPI cards of equal height with headline numbers, the top two failure classes under 失败率
+  and the outcome links under 请求. Sub lines wrap after a separator instead of being cut off on
+  phones.
+- The time range is a segmented control on desktop; phones keep the select.
+- The trend is a line chart with a fading area, a quieter dashed previous period, a peak label,
+  a solid 0 baseline and a count axis on round steps. A partial bucket (the first or current
+  hour) is a hollow dot joined by a faint dotted link; the line breaks at buckets without usage
+  reports, and flat runs of zero 失败/取消 are not drawn.
+
+**Accounts**
+
+- Status counts as pills; compact rows with a switches column, a one-line status and quiet text
+  actions (删除 keeps its colour).
+- From 761 to 1279 px the table fits without horizontal scroll: row actions in a 2×2 grid,
+  保存 under the priority input and tighter cells.
+
+**Fixes**
+
+- 卡 column on the overview quota card: the v0.2.2 problem chips reused the function name
+  `chip`, which replaced the reset-card chip builder, so the column rendered empty buttons and
+  the quota percentages picked up the pill style. A test now rejects a function declared twice
+  in one page script.
+- docs/USAGE.md: `reset_credits_auto_lead_mins` is back inside the `[ui]` reset-card table.
 
 **Validation**
 
-Checked with the workspace tests (431 passed), the UI, settings and account state checks,
-clippy with warnings denied and the container cleanup rule tests. No real model provider or
-account was used.
+Checked with the workspace tests (432 passed, twice), the UI, settings and account state
+checks, rustfmt and clippy with warnings denied. Screens were reviewed on the demo server with
+fake data only. No real model provider or account was used.
 
 **Upgrade**
 
-- Image tags: `ghcr.io/seia-yurizono/ciallopa:0.2.2`, `0.2` and `latest`, for `linux/amd64` and
-  `linux/arm64`. Change a pinned `0.2.1` Compose tag before pulling and recreating.
+- Image tags: `ghcr.io/seia-yurizono/ciallopa:0.2.3`, `0.2` and `latest`, for `linux/amd64` and
+  `linux/arm64`. Change a pinned `0.2.2` Compose tag before pulling and recreating.
 - No configuration change is required and the usage database is not migrated (still schema
   v11).
-- **Behavior change:** with a background refresh turned on, the first run after a start no longer
-  happens about 20 s after start; it waits a random [min, max] minutes (with only the old single
-  value, the full interval).
+- No behaviour change outside the admin pages' look; existing links and API parameters keep
+  working.
