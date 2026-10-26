@@ -30,7 +30,7 @@ const context = vm.createContext({
   h: (_tag, _attrs, text) => ({textContent: text}), document: {createTextNode: text => ({textContent: text})},
   inView: () => false, toast: text => context.toasts.push(text), toasts: [],
   get: async () => ({}), usageGet: async () => ({}), renderFp() {}, renderKpis() {}, renderRuntime() {}, renderTrend() {}, loadQuota: () => quota.promise,
-  loadTrend: async () => {}, egressTag: async () => ({}), loadMem: async () => {}, loadRecords: async () => {},
+  loadTrend: async () => {}, egressTag: async () => ({}), loadMem: async () => {}, loadScopeValues: async () => null, syncMini: () => {}, loadRecords: async () => {},
   recState: {rows: []}, recordWindow: null, scopeWindow: {fixed: true}, showScope() {}, rollWindow() {}, PAGE: 50, hms: () => 'now', Date, Promise,
   query: 'A', staleError, rendered: [],
 });
@@ -59,8 +59,8 @@ async function queryAndPaging() {
       if (url.startsWith('/usage/v1/records?') || url.startsWith('/usage/v1/refusals?')) {calls.push(new URL(url, 'http://local')); return reply();}
       return {};
     },
-    renderRecords() {}, renderRefusals() {}, renderKpis() {}, renderFp() {}, renderTrend() {}, renderRuntime() {}, showScope() {}, saveF() {}, fmtN: String, fail(error) {throw error;},
-    loadQuota: async () => {}, egressTag: async () => ({}), loadMem: async () => {}, hms: () => 'now',
+    renderRecords() {}, renderRefusals() {}, renderProblems() {}, loadCounts() {}, RF: ['fproblem', 'fcause', 'foutcome', 'fclass', 'ftier', 'fsrc', 'fcode', 'ferr', 'fretry'], renderKpis() {}, renderFp() {}, renderTrend() {}, renderRuntime() {}, showScope() {}, saveF() {}, fmtN: String, fail(error) {throw error;},
+    loadQuota: async () => {}, egressTag: async () => ({}), loadMem: async () => {}, loadScopeValues: async () => null, syncMini: () => {}, hms: () => 'now',
     rollWindow() {rolls++; c.scopeWindow = {...c.scopeWindow, from: c.scopeWindow.from + 1000, to: c.scopeWindow.to + 1000};},
   });
   vm.runInContext([
@@ -178,8 +178,20 @@ async function queryAndPaging() {
   c.recordWindow = {from: c.scopeWindow.from, to: c.scopeWindow.from + 1000};
   vm.runInContext('drillOutcome("failed")', c);
   assert.equal(c.recordWindow, null);
-  assert.equal(calls.at(-1).searchParams.get('outcome'), 'failed');
+  // KPI drills land on the problem chips, not the old 结果 select.
+  assert.equal(calls.at(-1).searchParams.get('problem'), 'error');
+  assert.equal(calls.at(-1).searchParams.has('outcome'), false);
   assert.equal(Number(calls.at(-1).searchParams.get('to')), c.scopeWindow.to);
+  for (const [outcome, cls, problem, cause] of [['failed', 'quota', 'error', 'quota'], ['failed', 'local', 'error', 'gateway'], ['failed', 'other', 'error', 'gateway'],
+    ['cancelled', '', 'unfinished', 'client_closed'], ['incomplete', '', 'unfinished', 'truncated'], ['unknown', '', 'unfinished', 'unconfirmed']]) {
+    vm.runInContext(`drillOutcome(${JSON.stringify(outcome)},${JSON.stringify(cls)})`, c);
+    const q = calls.at(-1).searchParams;
+    assert.deepEqual([q.get('problem'), q.get('cause'), q.has('outcome'), q.has('failure_class')], [problem, cause, false, false], `${outcome}/${cls}`);
+  }
+  vm.runInContext('drillOutcome("refused")', c);
+  assert.equal(input('fproblem').value, 'refused');
+  assert.equal(vm.runInContext('refusedMode()', c), true, '本地拒绝 drills into the refusal list');
+  input('fproblem').value = input('fcause').value = '';
   assert.equal(vm.runInContext('tokenValue({count:3,prewarm_count:0,usage_samples:0})', c), '–');
   assert.equal(vm.runInContext('tokenValue({count:0,prewarm_count:0,usage_samples:0})', c), '0');
   assert.equal(vm.runInContext('tokenValue({count:3,prewarm_count:0,usage_samples:1,input_tokens:20,output_tokens:5})', c), '25');
@@ -799,7 +811,7 @@ async function observationErrorDetails() {
     tierName: () => '', normTier: () => '', fmtTime: String,
     lookupSeq: 0, detailSeq: 0, activeRecord: null, authEpoch: 0, hideDetailRetry() {},
   });
-  vm.runInContext(section('const SRC=', 'function recRow(') + '\n' + section('async function openDetail(', 'async function lookupRecord('), c);
+  vm.runInContext(section('const PROB=', 'function fval(') + section('const SRC=', 'function recRow(') + '\n' + section('async function openDetail(', 'async function lookupRecord('), c);
   for (const [status, source, outcome] of [[200, 'local', 'unknown'], [400, 'upstream', 'failed'], [500, 'local', 'failed']]) {
     c.record = {request_id: '0000000000000001', status, err_source: source, error: 'observation_incomplete'};
     await vm.runInContext('openDetail(record)', c);
@@ -857,12 +869,13 @@ async function filterChipScopeAndFocus() {
     localStorage: {setItem() {}, getItem() {return null;}}, fmtTime: String, renderKpis() {}, renderTrend() {},
     fail(e) {throw e;}, loadSummary: async () => calls.push(['summary', vm.runInContext('scopeFilters()', c)]),
     loadRecords: async append => calls.push(['records', vm.runInContext('recordFilters()', c), append]),
+    syncMini() {}, MINI: {},
   });
   vm.runInContext([
     section('function scopeFilters()', 'async function usageGet('),
     section('function recordFilters()', 'async function loadRecords('),
     section('function changeScope()', '$("range").addEventListener'),
-    section('const SF=', 'loadF();renderKpis();'),
+    section('const SF=', 'loadF();showExtra('),
   ].join('\n'), c);
   for (const [id, v] of Object.entries({range: '24h', group: 'account', tmode: 'auto', tmetric: 'requests', facct: '', fmodel: '<model>', fkey: 'laptop', finstance: 'home', foutcome: 'failed', fsrc: 'network', ftier: 'dg', fcode: 'timeout'})) control(id).value = v;
   control('ferr').checked = control('fretry').checked = true;
@@ -888,7 +901,7 @@ async function filterChipScopeAndFocus() {
   while (chips('recordchips').length) {const b = chips('recordchips')[0];b.focus();b.events.click();}
   assert.ok(calls.every(call => call[0] === 'records'), 'request chips never reload the global summary');
   assert.equal(control('fkey').value, 'laptop');assert.equal(control('fretry').checked, false);assert.equal(control('ferr').checked, false);
-  assert.equal(dom.document.activeElement, control('foutcome'));
+  assert.equal(dom.document.activeElement, control('rextra'), 'the last chip hands focus to 「更多」');
   assert.equal(control('recordchips').classList.contains('hide'), true);
   params = new URLSearchParams(c.location.search);assert.equal(params.has('foutcome'), false);assert.equal(params.has('ferr'), false);
   while (chips('scopechips').length) {const b = chips('scopechips')[0];b.focus();b.events.click();}
@@ -917,7 +930,7 @@ async function inspectorRetryAndNavigation() {
   });
   vm.runInContext([
     section('async function req(', 'async function get('), section('async function usageGet(', 'const narrow='),
-    section('const MODALS=[];', '// ---- inline click-again:'), section('const SRC=', 'function recRow('),
+    section('const MODALS=[];', '// ---- inline click-again:'), section('const PROB=', 'function fval('), section('const SRC=', 'function recRow('),
     section('let dtext=', '// ---- active quota query'),
   ].join('\n'), c);
   vm.runInContext('recState.rows=records', c);
@@ -1064,7 +1077,7 @@ function recordRenderingAndInspectorFocus() {
   modal._opener = tb.children[0].button;
   c.recState.rows = [{request_id: '0000000000000002'}];
   vm.runInContext('renderRecords(); closeModal($("dp"))', c);
-  assert.equal(focused, control('foutcome'), 'a record that left the list returns to the request filter');
+  assert.equal(focused, control('rextra'), 'a record that left the list returns to the request filters');
 
   modal.classList.toggle('hide', false);
   modal._opener = control('recordid');
@@ -1206,6 +1219,133 @@ async function memoryPanel() {
   assert.equal(el('mem').hidden, true);
 }
 
+// Problem chips, cause sub-chips, hint bar, rescued rows, next-step buttons and the detail conclusion.
+async function problemChipsAndNextSteps() {
+  const dom = interactionDom(), control = dom.$, gets = [], visits = [];
+  let counts = {all: 40, error: 6, upstream: 5, unfinished: 3, refused: 2,
+    causes: {error: {quota: 2, rate_limit: 1, upstream: 1, network: 1, gateway: 1, stream: 0}, upstream: {unrescued: 2, rescued: 3},
+      unfinished: {client_closed: 1, truncated: 1, unconfirmed: 1}, refused: {inflight: 2, ws: 0, body: 0, ws_msg: 0}}};
+  const changes = [];
+  const c = vm.createContext({...dom, URLSearchParams, Date, Promise, ACCTS: [{id: 'alice'}, {id: 'bob'}], SV: {model: [{value: 'gpt-5'}], key: [{value: 'laptop'}]},
+    usageGet: async url => {gets.push(url); return counts;}, changeRecords() {changes.push(vm.runInContext('qs(recordFilters())', c));},
+    scopeFilters: () => ({from: 1, to: 2, account: control('facct').value}), withPrewarm: () => false, exact: String, fmtTime: String, hms: () => '12:00:00', isoLocal: String,
+    fmtMs: String, fmtN: String, exactUsd: String, modelCell: () => dom.h('span', {}), effortCell: () => dom.h('span', {}), getSelection: () => ({toString: () => ''}),
+    location: {assign(url) {visits.push(url);}}, closeModal() {}, fail(e) {throw e;}, detailRecord: null, opened: [],
+    openDetail: async r => {c.opened.push(r.request_id); c.detailRecord = r;}, recordWindow: null,
+  });
+  c.window = c;
+  for (const id of ['fprewarm', 'fretry', 'ferr', 'rprewarm']) control(id).type = 'checkbox';
+  control('dtll').scrollIntoView = () => {c.scrolled = 'dtll';};
+  dom.document.querySelectorAll = () => [];
+  c.document = dom.document;
+  vm.runInContext([
+    section('const PROB=', 'function fval('),
+    section('// ---- Problem chips above the request list.', '// ---- URL keeps'),
+    section('function refusedMode()', 'function scopedOut('),
+    section('function recordFilters()', 'async function loadRecords('),
+    section('function qs(o)', '$("rmore").addEventListener'),
+    section('const SRC=', 'const recordRows='),
+  ].join('\n'), c);
+  const flat = n => n === null || n === undefined || n === false ? '' : typeof n !== 'object' ? String(n) : Array.isArray(n) ? n.map(flat).join('') : (n.children || []).map(flat).join('');
+  // Counts use the list filters without problem/cause; 本地拒绝 never reaches the records counts API as an outcome.
+  control('fproblem').value = 'error';control('fcause').value = 'quota';control('foutcome').value = 'refused';
+  await vm.runInContext('loadCounts()', c);
+  const cq = new URL(gets.at(-1), 'http://local');
+  assert.equal(cq.pathname, '/usage/v1/records/counts');
+  assert.deepEqual([cq.searchParams.has('problem'), cq.searchParams.has('cause'), cq.searchParams.has('outcome')], [false, false, false]);
+  control('foutcome').value = '';
+  const rf = new URLSearchParams(vm.runInContext('qs(recordFilters())', c));
+  assert.deepEqual([rf.get('problem'), rf.get('cause'), rf.get('exclude_prewarm')], ['error', 'quota', '1'], '全部 and every chip exclude prewarm by default');
+  // Chips: counts, error colouring, pressed state and causes for the active bucket.
+  const chips = () => control('pbtns').children, causes = () => control('pcauses').children.filter(e => e.tagName === 'BUTTON');
+  assert.deepEqual(chips().map(flat), ['全部40', '报错6', '上游出错5', '没答完3', '本地拒绝2']);
+  assert.deepEqual(chips().map(b => b.getAttribute('aria-pressed')), ['false', 'true', 'false', 'false', 'false']);
+  assert.ok(chips()[1].classList.contains('e') && chips()[2].classList.contains('e') && !chips()[3].classList.contains('e'), '报错 and 上游出错 carry the error colour');
+  assert.deepEqual(causes().map(flat), ['全部', '额度2', '限流1', '上游1', '网络代理1', '网关1', '流中断0']);
+  assert.equal(causes()[1].getAttribute('aria-pressed'), 'true');
+  assert.match(flat(control('phint')), /报错计入失败率刷新额度 ›/);
+  // Picking a bucket resets its cause and the old 结果 / 失败原因 selects.
+  control('foutcome').value = 'failed';control('fclass').value = 'quota';
+  chips()[2].events.click();
+  assert.equal(new URLSearchParams(changes.at(-1)).get('problem'), 'upstream');
+  assert.deepEqual([control('fcause').value, control('foutcome').value, control('fclass').value], ['', '', '']);
+  vm.runInContext('renderProblems()', c);
+  assert.deepEqual(causes().map(flat), ['全部', '未救回2', '已救回3']);
+  assert.match(flat(control('phint')), /上游出过错的请求已救回 3 · 未救回 2/);
+  assert.doesNotMatch(flat(control('phint')), /率/, 'no new rate next to 上游出错');
+  causes()[2].events.click();
+  assert.equal(new URLSearchParams(changes.at(-1)).get('cause'), 'rescued');
+  control('fproblem').value = 'unfinished';control('fcause').value = '';
+  vm.runInContext('renderProblems()', c);
+  assert.deepEqual(causes().map(flat), ['全部', '客户端断开1', '上游截断1', '未确认结束1']);
+  assert.match(flat(control('phint')), /没答完不计入失败率/);
+  // An account / model / request-only filter has no refusal count: the chip is disabled, not zero.
+  counts = {...counts, refused: null};control('fproblem').value = '';
+  await vm.runInContext('loadCounts()', c);
+  assert.equal(flat(chips()[4]), '本地拒绝');assert.equal(chips()[4].disabled, true);
+  // 本地拒绝 + a cause filters the refusal list by reason.
+  control('fproblem').value = 'refused';control('fcause').value = 'ws';
+  assert.equal(vm.runInContext('refusedMode()', c), true);
+  assert.equal(vm.runInContext('refFilters().reason', c), 'ws');
+  // The compact selects mirror the 筛选范围 values (plus a free-typed one), never their own state.
+  control('fmodel').value = 'typed-model';
+  vm.runInContext('syncMini()', c);
+  assert.deepEqual(control('racct').children.map(o => o.getAttribute('value')), ['alice', 'bob']);
+  assert.deepEqual(control('rmodel').children.map(o => o.getAttribute('value')), ['gpt-5', 'typed-model']);
+  assert.equal(control('rmodel').value, 'typed-model');
+  // Rows: 已救回 tag, sub-reason tags, next-step buttons; the first one is primary.
+  control('fproblem').value = '';
+  const base = {request_id: '0000000000000001', ts_ms: 0, account: 'bob', endpoint: 'responses', transport: 'sse'};
+  const rescued = vm.runInContext('recRow', c)({...base, status: 200, retries: 0, switches: 1, first_account: 'alice', rescued: true, upstream_fault: true, problem: 'all', next: ['attempts']});
+  const ec = rescued.children.find(td => td.getAttribute('class') === 'err');
+  assert.match(flat(ec), /^已救回 换号 alice → bob 后成功尝试链 ›$/);
+  const nx = ec.children.filter(e => e.tagName === 'BUTTON');
+  assert.equal(nx[0].getAttribute('class'), 'nx p');
+  const click = {stopPropagation() {this.stopped = true;}};
+  await nx[0].events.click(click);
+  assert.ok(click.stopped, 'a next-step button does not also trigger the row');
+  assert.deepEqual(c.opened, ['0000000000000001'], '尝试链 opens the detail');
+  assert.equal(c.scrolled, 'dtll', '… and scrolls to the attempt chain');
+  const quota = vm.runInContext('recRow', c)({...base, status: 429, error: 'usage_limit_reached', err_source: 'upstream', problem: 'error', cause: 'quota', next: ['refresh_quota', 'account']});
+  const qbtn = quota.children.find(td => td.getAttribute('class') === 'err').children.filter(e => e.tagName === 'BUTTON');
+  assert.deepEqual(qbtn.map(flat), ['刷新额度 ›', '看账号 ›']);
+  // 刷新额度 only moves to the existing button: no API call, never a reset card.
+  const before = gets.length;
+  control('qall').focus = function () {this.focused = true;};control('sq').scrollIntoView = () => {};
+  await qbtn[0].events.click(click);
+  assert.equal(gets.length, before);assert.ok(control('qall').focused);assert.deepEqual(visits, []);
+  control('qall').classList.add('hide');
+  await qbtn[0].events.click(click);
+  assert.deepEqual(visits, ['/ui/accounts#acc=bob'], 'usage-only keys go to the account row instead');
+  await qbtn[1].events.click(click);
+  assert.equal(visits.at(-1), '/ui/accounts#acc=bob');
+  const egress = vm.runInContext('recRow', c)({...base, status: 502, error: 'proxy_connect', err_source: 'network', problem: 'error', cause: 'network', next: ['egress']});
+  await egress.children.find(td => td.getAttribute('class') === 'err').children.find(e => e.tagName === 'BUTTON').events.click(click);
+  assert.equal(visits.at(-1), '/ui/settings#network');
+  const truncated = vm.runInContext('recRow', c)({...base, status: 200, incomplete: 'max_output_tokens', problem: 'unfinished', cause: 'truncated', next: ['detail']});
+  assert.match(flat(truncated.children.find(td => td.getAttribute('class')?.startsWith('s'))), /上游截断/);
+  // The detail conclusion sits above the attempt chain and has no trailing punctuation.
+  const cases = [
+    [{rescued: true, retries: 2, switches: 0, problem: 'all', next: ['attempts']}, '已救回 · 重试 2 次 后成功', /不计入失败率/],
+    [{problem: 'error', cause: 'quota', next: ['refresh_quota', 'account']}, '报错 · 额度', /额度用尽/],
+    [{problem: 'error', cause: 'upstream', upstream_fault: true, next: ['new_session']}, '报错 · 上游', /新开会话/],
+    [{problem: 'unfinished', cause: 'client_closed', next: ['detail']}, '没答完 · 客户端断开', /不计入失败率/],
+    [{problem: 'unfinished', cause: 'unconfirmed', next: ['detail']}, '没答完 · 未确认结束', /结果未确认/],
+  ];
+  for (const [r, title, body] of cases) {
+    const [t, text] = vm.runInContext('conclusion', c)(r);
+    assert.equal(t, title);assert.match(text, body);
+    for (const line of [t, ...text.split('\n')]) assert.doesNotMatch(line, /[。.，,]$/, 'short copy without trailing punctuation');
+  }
+  assert.equal(vm.runInContext('conclusion', c)({problem: 'all', next: []}), null, 'a plain success has no conclusion');
+  vm.runInContext('renderConclusion', c)({problem: 'error', cause: 'quota', next: ['refresh_quota', 'account', 'detail']});
+  assert.deepEqual(control('dconcl').children.at(-1).children.map(flat), ['刷新额度 ›', '看账号 ›']);
+  assert.match(html, /<div class="mut" id="dmeta"><\/div><div class="concl hide" id="dconcl"/, '结论 sits above stats and the attempt chain');
+  // Phone: the chip rows scroll sideways instead of wrapping.
+  assert.match(html, /@media \(max-width:760px\)\{\.pf\{flex-wrap:nowrap;overflow-x:auto/);
+  assert.match(html, /#rec td\.err \.nx:not\(\.p\)\{display:none\}/);
+}
+
 (async () => {
   // A rejects while current; loadAll cannot present it until the slow quota job settles.
   const oldRound = vm.runInContext('loadAll()', context);
@@ -1280,8 +1420,9 @@ async function memoryPanel() {
   await observationErrorDetails();
   await filterChipScopeAndFocus();
   await inspectorRetryAndNavigation();
+  await problemChipsAndNextSteps();
   recordRenderingAndInspectorFocus();
   autoRefreshInterval();
   cloudflareEgressBanner();
-  console.log('PASS: status chip colours/contrast, auto-refresh interval, Cloudflare egress banner, query/auth races, Cloudflare Access expiry, shared scope and buckets, ID paging, history/drill-down, usage samples and unknown outcomes, overview snapshots, egress identity/order/logout, scoped filter chips/URL/focus, inspector retry/expiry/stale authorization/keyboard, keyed record updates and inspector focus, memory panel, scope suggestions, Token cache rate, failure classes/upstream rate/deltas/失败原因 filter');
+  console.log('PASS: status chip colours/contrast, auto-refresh interval, Cloudflare egress banner, query/auth races, Cloudflare Access expiry, shared scope and buckets, ID paging, history/drill-down, usage samples and unknown outcomes, overview snapshots, egress identity/order/logout, scoped filter chips/URL/focus, inspector retry/expiry/stale authorization/keyboard, keyed record updates and inspector focus, memory panel, scope suggestions, Token cache rate, failure classes/upstream rate/deltas/失败原因 filter, problem chips/causes/hint/next steps/conclusion');
 })().catch(error => {console.error(error); process.exitCode = 1;}).finally(() => clearTimeout(watchdog));

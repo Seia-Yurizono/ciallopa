@@ -74,6 +74,30 @@ reasoning token 已包含在输出中，不能重复相加。这里的缓存比�
 未知结果保留实际观测到的耗时与首输出样本，但不参与生成速度估算；未知 Token 仍为空。
 后续若在同一流中观察到正常的小终止事件，则使用其实际结果。网络/idle 故障与真实客户端取消优先于观察不足。
 
+### 请求列表的问题分组
+
+请求列表按用户能感知的问题分组，规则只在后端 `crates/usage/src/problem.rs` 实现一次，
+列表筛选、计数和每行字段共用，测试校验 Rust 与 SQL 两套判定一致。
+
+| 分组 | `problem` | 含义 | `cause` |
+|---|---|---|---|
+| 报错 | `error` | 客户端收到错误，即 `outcome=failed`；计入失败率 | `quota` 额度、`rate_limit` 限流、`upstream` 上游、`network` 网络代理、`gateway` 网关（`local`/`other`）、`stream` 流中断 |
+| 上游出错 | `upstream` | 上游侧（`err_source` 为 upstream/stream/network）至少失败过一次，含被重试或换号救回的请求 | `unrescued` 未救回（最终报错）、`rescued` 已救回（`retries>0` 或 `switches>0` 后正常完成） |
+| 没答完 | `unfinished` | 客户端断开、上游 `response.incomplete`、未确认结束；**不计入失败率** | `client_closed` 客户端断开（原“取消”）、`truncated` 上游截断（原 incomplete）、`unconfirmed` 未确认结束（原“结果未知”） |
+| 本地拒绝 | `refused` | 本地上限在生成请求记录前直接返回 503，数据来自拒绝表 | `inflight`、`ws`、`body`、`ws_msg` |
+
+“上游出错”与“报错”可以重叠（未救回的上游错误两边都算），不是第二个失败率。
+概况的“上游失败率”口径不变，没有新增比率；已救回的请求最终正常完成，不计入失败率。
+没有“慢”分组：慢的阈值因模型和推理强度差异太大，暂不界定。
+
+每行另有 `rescued`（被重试或换号救回）、`upstream_fault`（属于上游出错）和 `next`
+（建议的下一步，最有用的在前）：`refresh_quota`、`account`、`cooldown`、`attempts`、`egress`、
+`accounts`、`new_session`、`detail`。界面只用它们跳转或打开已有视图，不触发写操作；
+刷新额度走账号页的普通刷新按钮，从不使用重置卡。
+
+`retries` 只统计传输层重试。同一账号的过载等待后重试（WS `wait+retry`）会保存尝试链，
+但不改变 `retries/switches`，因此不标为“已救回”。
+
 ### 参考费用
 
 沿用现有价格计算：
@@ -111,6 +135,13 @@ HTTP/SSE 的 idle、缺终止事件 EOF 与 bootstrap idle 警告会附上现有
 - `before_id=<16位十六进制>`：排他游标，查询 `id < before_id`；与 offset 同时传时忽略 offset。
 - `next_before_id`：还有下一页时为本页最后一条记录 ID，否则为 `null`。
 - `outcome`：上述五种结果。旧 `errors=1` 仍含取消和错误预热记录，不等同于 `outcome=failed`。
+- `problem=all|error|upstream|unfinished` 与 `cause=<上表原因>`：问题分组筛选；`problem=refused`
+  返回400（拒绝记录在 `/usage/v1/refusals?reason=`）；未知值返回400；`cause` 需与 `problem` 同传。
+- `GET /usage/v1/records/counts`：与列表相同的筛选（忽略 `problem`、`cause` 和分页），返回
+  `{all, error, upstream, unfinished, refused, causes:{error:{…}, upstream:{unrescued, rescued},
+  unfinished:{client_closed, truncated, unconfirmed}, refused:{inflight, ws, body, ws_msg}}}`。
+  `refused` 按相同时间、密钥和实例统计；设置了账号、模型或其他仅请求有的条件时为 `null`，
+  因为拒绝发生在这些信息确定之前。
 - `exclude_prewarm=1`：排除 `endpoint=prewarm`，匹配概况 `count` 的业务请求范围；默认不排除。
   与其余请求条件取交集，因此与 `outcome=prewarm` 同传时返回空列表。分页与 `total` 沿用此条件。
 

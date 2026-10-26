@@ -266,10 +266,32 @@ select.ivl{height:24px;padding:0 var(--s1);font-size:var(--fs-xs)}
 .lookup{display:flex;gap:var(--s1)}
 .lookup input{width:164px;font-family:var(--mono)}
 #lookupresult{flex-basis:100%;font-size:var(--fs-s);color:var(--mut)}#lookupresult:empty{display:none}
-.request-extra{display:block}
-.request-extra summary{font-size:var(--fs-s);color:var(--mut);cursor:pointer;padding:var(--s1)}
-.request-extra[open]{flex-basis:100%}
-.request-extra>.row{padding-top:var(--s2)}
+/* Request problem chips (问题 / 原因), the hint bar and per-row next steps */
+.request-extra{background:var(--surface-2)}
+.pf{display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:8px 12px;border-bottom:1px solid var(--line)}
+.pf .pbtns{display:contents}
+.pf.sub{padding-top:6px;padding-bottom:6px;background:var(--surface-2)}
+.pf .lbl{font-size:var(--fs-xs);color:var(--mut);margin-right:2px;min-width:2.5em}
+.pc{height:28px;padding:0 10px;border-radius:14px;border:1px solid var(--line-2);background:var(--surface);font:inherit;font-size:var(--fs-s);font-weight:500;color:var(--fg-2);display:inline-flex;gap:6px;align-items:center;white-space:nowrap;cursor:pointer;flex:none}
+.pc b{font-weight:600;font-variant-numeric:tabular-nums;color:var(--mut)}
+.pc.on,.pc.on:hover{background:var(--fg);border-color:var(--fg);color:var(--surface)}.pc.on b{color:var(--surface);opacity:.75}
+.pc.e b{color:var(--err)}.pc.on.e b{color:var(--surface)}
+.pc.sm{height:24px;padding:0 8px;font-size:var(--fs-xs)}
+.pf .mini{height:28px;border:1px solid var(--line-2);border-radius:var(--r1);padding:0 0 0 8px;display:inline-flex;align-items:center;gap:4px;color:var(--fg-2);background:var(--surface);font-size:var(--fs-s);flex:none}
+.pf .mini i{font-style:normal;color:var(--mut)}
+.pf .mini select{height:26px;border:0;background:transparent;max-width:9em;font-size:var(--fs-s);padding-left:2px}
+.hb{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:8px 12px;border-bottom:1px solid var(--line);font-size:var(--fs-s);color:var(--fg-2)}
+.hb .k{color:var(--mut)}
+.hb button,.nx{height:24px;padding:0 8px;font-size:var(--fs-xs);font-weight:500;border-radius:var(--r1);border:1px solid var(--line-2);background:var(--surface);color:var(--fg);cursor:pointer;white-space:nowrap}
+.nx{margin-left:6px}
+.nx.p,.hb button.p{border-color:var(--focus);color:var(--focus)}
+.tag.save{background:var(--ok-bg);color:var(--ok)}
+.concl{border:1px solid var(--line);border-radius:var(--r2);padding:8px 12px;margin:8px 0;background:var(--surface-2)}
+.concl .t{font-weight:600;margin-bottom:4px}
+.concl .acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.concl .acts button{height:28px;padding:0 10px;font-size:var(--fs-s)}
+.concl .acts button.p{border-color:var(--focus);color:var(--focus)}
+@media (max-width:760px){.pf{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}.pf::-webkit-scrollbar{display:none}.pf .lbl{display:none}.pf>.sp{display:none}.hb{font-size:var(--fs-xs)}#rec td.err .nx:not(.p){display:none}}
 #rwindow{background:var(--surface-2)}
 #rec .rid{font-size:10px;color:var(--mut);display:block;font-family:var(--mono)}
 .detail-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--s3);padding:var(--s3);background:var(--surface-2);border-radius:var(--r1)}
@@ -500,17 +522,24 @@ select.ivl{height:24px;padding:0 var(--s1);font-size:var(--fs-xs)}
     <div class="sh"><h2>请求</h2><span class="mut sm" id="rcount"></span><span class="sp"></span><button id="lookupshow" class="ghost xs" type="button" aria-expanded="false" aria-controls="lookup">按 ID 查找</button><form class="lookup hide" id="lookup"><input id="recordid" type="text" placeholder="16 位记录 ID" aria-label="16 位记录 ID" maxlength="16" pattern="[0-9a-fA-F]{16}" required><button class="ghost xs" type="submit">查找</button></form><div id="lookupresult" role="status"></div></div>
     <div class="panel">
       <div class="scope-note hide" id="rwindow"><span id="rwindowtext"></span><button id="rwindowclear" class="ghost xs" type="button">返回整个范围</button></div>
-      <div class="filters" role="search" aria-label="仅筛选请求列表">
-        <span class="mut xs">请求筛选</span>
-        <select id="foutcome" aria-label="按请求结果筛选"><option value="">全部结果</option><option value="business">业务请求（不含预热）</option><option value="completed">完成</option><option value="failed">失败</option><option value="cancelled">客户端取消</option><option value="incomplete">未完成 · incomplete</option><option value="unknown">结果未知 · 观察不完整</option><option value="prewarm">预热</option><option value="refused">已拒绝</option></select>
+      <div class="pf" id="pchips" role="group" aria-label="按问题筛选请求"><span class="lbl">问题</span><span class="pbtns" id="pbtns"></span><span class="sp"></span>
+        <label class="mini" title="同「筛选范围」里的账号"><i>账号</i><select id="racct" aria-label="按账号筛选"><option value="">全部</option></select></label>
+        <label class="mini" title="同「筛选范围」里的模型"><i>模型</i><select id="rmodel" aria-label="按模型筛选"><option value="">全部</option></select></label>
+        <label class="mini" title="同「筛选范围」里的密钥"><i>密钥</i><select id="rkey" aria-label="按密钥筛选"><option value="">全部</option></select></label>
+        <button id="rextra" class="ghost xs" type="button" aria-expanded="false" aria-controls="recordextra">更多<span id="fsummary"></span></button>
+        <input type="hidden" id="fproblem"><input type="hidden" id="fcause">
+      </div>
+      <div class="pf sub hide" id="pcauses" role="group" aria-label="按原因筛选"></div>
+      <div class="hb hide" id="phint" role="status"></div>
+      <div class="filters request-extra hide" id="recordextra" role="search" aria-label="更多请求筛选">
+        <select id="foutcome" aria-label="按请求结果筛选"><option value="">全部结果</option><option value="business">业务请求（不含预热）</option><option value="completed">完成</option><option value="failed">失败</option><option value="cancelled">客户端断开</option><option value="incomplete">上游截断 · incomplete</option><option value="unknown">未确认结束</option><option value="prewarm">预热</option><option value="refused">本地拒绝</option></select>
         <select id="fclass" aria-label="按失败原因筛选"><option value="">全部失败原因</option><option value="quota">额度用尽</option><option value="rate_limit">限流</option><option value="upstream">上游错误</option><option value="network">网络</option><option value="stream">流中断</option><option value="local">本地</option><option value="other">其他</option></select>
-        <details class="request-extra" id="recordextra"><summary>更多筛选<span id="fsummary"></span></summary><div class="row">
         <select id="fsrc" aria-label="按错误来源筛选"><option value="">全部来源</option><option value="upstream">上游</option><option value="stream">流内</option><option value="network">网络</option><option value="local">ciallopa</option><option value="client">客户端</option><option value="upstream,stream,network,local">排除客户端</option></select>
         <select id="ftier" aria-label="按档位筛选"><option value="">全部档位</option><option value="priority">Fast</option><option value="flex">Flex</option><option value="standard">标准</option><option value="dg">仅降级</option></select>
         <input id="fcode" type="text" placeholder="错误码（回车）" aria-label="按错误码筛选，回车应用">
         <label class="chk" title="只看重试过或换过账号的请求"><input type="checkbox" class="sw" id="fretry"> 重试/换号</label>
+        <label class="chk" title="同「筛选范围」里的含预热，保存在本浏览器"><input type="checkbox" id="rprewarm"> 含预热</label>
         <label class="chk hide" id="legacyerror"><input type="checkbox" id="ferr"> 旧错误筛选（含取消）</label>
-        </div></details>
         <button id="fclear" class="ghost xs hide" type="button">清除请求筛选</button>
       </div>
       <div class="filterchips hide" id="recordchips" role="group" aria-label="已应用请求筛选，仅影响请求列表"></div>
@@ -545,7 +574,7 @@ select.ivl{height:24px;padding:0 var(--s1);font-size:var(--fs-xs)}
 <div id="dp" class="modal hide" role="dialog" aria-modal="true" aria-labelledby="dtitle"><div class="mbox wide">
   <h3><span id="dtitle">请求详情</span><button id="dlink" class="xs" type="button">复制链接</button><button id="dcopy" class="xs" type="button">复制 JSON</button><button id="dclose" class="xs" type="button">关闭</button></h3>
   <div class="row" role="group" aria-label="浏览当前列表"><button id="dprev" class="ghost xs" type="button" aria-keyshortcuts="Alt+ArrowUp" title="上一条（Alt + ↑）">↑ 上一条</button><button id="dnext" class="ghost xs" type="button" aria-keyshortcuts="Alt+ArrowDown" title="下一条（Alt + ↓）">下一条 ↓</button><span class="mut xs" id="dposition" role="status"></span><span class="mut xs d-only">Alt + ↑ / ↓</span></div>
-  <div class="mut" id="dmeta"></div><div class="detail-stats" id="dstats"></div><dl class="kv detail-meta" id="dfields"></dl><div id="dmsg"></div>
+  <div class="mut" id="dmeta"></div><div class="concl hide" id="dconcl" role="note"></div><div class="detail-stats" id="dstats"></div><dl class="kv detail-meta" id="dfields"></dl><div id="dmsg"></div>
   <div class="detail-load hide" id="dload"><span id="dstatus" role="status" aria-atomic="true"></span><button id="dretry" class="ghost xs hide" type="button">重试详情</button></div>
   <div class="lab" id="dtll">尝试过程</div><ol class="tl" id="dtl"></ol>
   <div class="lab" id="dhlab">响应头</div><pre id="dhdr"></pre>
@@ -721,7 +750,7 @@ function scopeFilters(){return {from:scopeWindow.from,to:scopeWindow.to,account:
 const PW="ciallopa_prewarm";function withPrewarm(){return $("fprewarm").checked}
 function pwText(){return withPrewarm()?"含预热":"不含预热"}
 function scopeLabel(){return fmtTime(scopeWindow.from,true)+" – "+fmtTime(scopeWindow.to,true)}
-function showScope(){const count=SF.filter(id=>fval(id).trim()).length;
+function showScope(){const count=SF.filter(id=>fval(id).trim()).length;$("rprewarm").checked=withPrewarm();syncMini();
   $("scopesummary").textContent=(count?" · "+count+" 项条件":" · 所有模型与账号")+(withPrewarm()?" · 含预热":"");$("scopeclear").classList.toggle("hide",!count);renderFilterChips($("scopechips"),SF,"范围",$("scopetoggle"));
   $("scopewhen").textContent=scopeWindow.fixed?scopeLabel():"截至 "+hms(new Date(scopeWindow.to));$("scopewhen").dataset.fixed=String(scopeWindow.fixed);$("scopewhen").title=scopeLabel();
   $("scopefreeze").textContent=scopeWindow.fixed?"返回最近":"固定时间";$("scopefreeze").title=scopeWindow.fixed?"恢复随刷新滚动的时间范围":scopeLabel();
@@ -783,7 +812,7 @@ function renderEgressBlock(){const b=Q&&Q.egress_block,e=$("egressblk"),on=!!(b&
   e.appendChild(document.createTextNode((b.cf_code?"错误 "+b.cf_code+" · ":"")+"最近 "+fmtTime(b.last_at_ms)+"（"+ago(b.last_at_ms)+"）· 共 "+exact(b.count)+" 次 · 请求直接失败，不换号、不冷却账号；检查出口 IP、代理或客户端指纹"));
   e.title="首次 "+fmtTime(b.first_at_ms)+" · 账号 "+b.account+" · 上游 HTTP "+b.upstream_status+(b.cf_ray?" · cf-ray "+b.cf_ray:"")+"\n下一次正常的上游响应后提示消失"}
 function renderQuota(){steady([$("quota").tBodies[0]],renderQuotaNow)}
-function renderQuotaNow(){queueMicrotask(refocus);ACCTS=mergeAccts();const tb=$("quota").tBodies[0];clear(tb);
+function renderQuotaNow(){queueMicrotask(refocus);ACCTS=mergeAccts();syncMini();const tb=$("quota").tBodies[0];clear(tb);
   const rows=ACCTS.slice().sort((x,y)=>minRem(x)-minRem(y)),hw=rows.map(a=>wslots(a.q));$("hq5").textContent=whead(hw.filter(o=>o.s).map(o=>o.s[0]),"5 小时");$("hqw").textContent=whead(hw.filter(o=>o.l).map(o=>o.l[0]),"周");for(const a of rows)tb.appendChild(quotaRow(a));
   if(!rows.length)emptyRow(tb,4,Q||AC?"没有账号":"暂无账号额度数据",Q||AC?"在「账号」页或用 ciallopa login 添加账号":"查看下方读取状态，或刷新重试");
   const conf=ACCTS.filter(a=>a.configured);setTabCount(conf.length);
@@ -806,9 +835,9 @@ function sep(){return h("span","sep","·")}
 function joinSep(xs){const o=[];xs.filter(Boolean).forEach((x,i)=>{if(i)o.push(sep());o.push(typeof x==="string"?h("span",null,x):x)});return o}
 function outcomeLinks(t){return [
   t.failures&&!t.failure_classes?statLink(exact(t.failures)+" 失败","failed"):null,
-  t.cancelled?statLink(exact(t.cancelled)+" 取消","cancelled"):null,
-  t.incomplete?statLink(exact(t.incomplete)+" 未完成","incomplete"):null,
-  t.unknown?h("span","w",statLink(exact(t.unknown)+" 未知","unknown")):null].filter(Boolean)}
+  t.cancelled?statLink(exact(t.cancelled)+" 客户端断开","cancelled"):null,
+  t.incomplete?statLink(exact(t.incomplete)+" 上游截断","incomplete"):null,
+  t.unknown?h("span","w",statLink(exact(t.unknown)+" 未确认结束","unknown")):null].filter(Boolean)}
 // Failure classes, in display order; the same labels and colours everywhere. first_quota_reset is quota.
 const FCLS=[["quota","额度用尽"],["rate_limit","限流"],["upstream","上游错误"],["network","网络"],["stream","流中断"],["local","本地"],["other","其他"]];
 const FCN=Object.fromEntries(FCLS);
@@ -878,10 +907,16 @@ function renderRefusals(){const tb=$("refrec").tBodies[0];clear(tb);
   if(!refState.rows.length)emptyRow(tb,7,scopedOut()?"按账号或模型筛选时不显示拒绝记录":"没有被拒绝的请求",scopedOut()?"拒绝发生在选号之前，清除账号和模型筛选后查看":"换个时间段试试");
   $("rcount").textContent=scopedOut()?"":"共 "+exact(refState.total)+" 次 · "+exact(refState.rows.length)+" 组";
   $("rmore").classList.toggle("hide",!refState.more);$("rpage").textContent=""}
-function drillOutcome(outcome,cls){if(!summaryCurrent())return;recordWindow=null;$("foutcome").value=outcome;$("fclass").value=cls||"";for(const id of ["fsrc","ftier","fcode"])$(id).value="";$("fretry").checked=false;$("ferr").checked=false;saveF();showScope();renderTrend();loadRecords(false).catch(fail);revealRecords()}
+function drillOutcome(outcome,cls){if(!summaryCurrent())return;recordWindow=null;clearRecordFilters();const p=DRILL[outcome];
+  if(p){$("fproblem").value=p;$("fcause").value=outcome==="failed"?errorCause(cls):DRILL_CAUSE[outcome]||""}else $("foutcome").value=outcome;
+  saveF();showScope();renderTrend();loadRecords(false).catch(fail);revealRecords()}
+// KPI and class links land on the problem chips: 失败 → 报错 + 原因, 取消/截断/未知 → 没答完 + 子原因.
+const DRILL={failed:"error",cancelled:"unfinished",incomplete:"unfinished",unknown:"unfinished",refused:"refused"},DRILL_CAUSE={cancelled:"client_closed",incomplete:"truncated",unknown:"unconfirmed"};
+function errorCause(c){return c?({quota:"quota",rate_limit:"rate_limit",upstream:"upstream",network:"network",stream:"stream"}[c]||"gateway"):""}
+function clearRecordFilters(){for(const k of RF){const e=$(k);if(e.type==="checkbox")e.checked=false;else e.value=""}}
 function revealRecords(){const bar=document.querySelector(".fbar"),section=$("sr");
   section.style.scrollMarginTop=(parseFloat(getComputedStyle(bar).top)+bar.offsetHeight+12)+"px";
-  section.scrollIntoView({block:"start"});$("foutcome").focus({preventScroll:true})}
+  section.scrollIntoView({block:"start"});const chipOn=document.querySelector('#pbtns .pc[aria-pressed="true"]');(chipOn&&chipOn.focus?chipOn:$("rextra")).focus({preventScroll:true})}
 
 // ---- reset-card popover: hover / keyboard focus = read-only preview after 150 ms;
 // click / tap / Enter = pinned non-modal dialog with the actions; phone = bottom sheet.
@@ -989,8 +1024,8 @@ const GN={account:"账号",key:"密钥",instance:"实例",model:"模型",respons
 // Scope groups filter the whole page; error, source and tier groups open the matching failed requests.
 const GSCOPE={account:"facct",model:"fmodel",key:"fkey",instance:"finstance"},GDRILL={error:"fcode",err_source:"fsrc",service_tier:"ftier"};
 function groupName(g,v){return g==="error"?ERR_LBL[v]||v:g==="err_source"?(SRC[v]?SRC[v][0]:v):g==="service_tier"?tierName(v):v}
-function drillGroup(id,v){if(!summaryCurrent())return;recordWindow=null;for(const k of RF){const e=$(k);if(e.type==="checkbox")e.checked=false;else e.value=""}
-  $("foutcome").value=id==="ftier"?"":"failed";$(id).value=v;saveF();showScope();renderTrend();loadRecords(false).catch(fail);revealRecords()}
+function drillGroup(id,v){if(!summaryCurrent())return;recordWindow=null;clearRecordFilters();
+  $("fproblem").value=id==="ftier"?"":"error";$(id).value=v;saveF();showScope();renderTrend();loadRecords(false).catch(fail);revealRecords()}
 function unkIcon(unk,tip){const i=h("span",{class:"wi",tabindex:"0",role:"img","aria-label":"部分未定价"},"⚠");i.dataset.tt="部分未定价：实际成本不低于此值\n"+unk+" 条请求缺少价格；已定价部分 "+tip;return i}
 function costCell(c,unk){if(unk&&c)return h("td",{class:"n"},"≥"+c.toFixed(2),unkIcon(unk,exactUsd(c)));if(unk)return h("td",{class:"n",title:unk+" 条请求缺少价格"},"未定价");return h("td",{class:"n",title:exactUsd(c)},c===null||c===undefined?"–":c.toFixed(2))}
 function renderSummary(){const s=SUM;if(!s)return;ttHide();const g=$("group").value;$("gh").textContent=GN[g];
@@ -1001,7 +1036,7 @@ function renderSummary(){const s=SUM;if(!s)return;ttHide();const g=$("group").va
       if(link&&GDRILL[g])label.addEventListener("click",()=>drillGroup(GDRILL[g],v));
       else if(link)label.addEventListener("click",()=>{const id=GSCOPE[g];if(id==="facct"&&!Array.from($(id).options).some(o=>o.value===x.group[g]))$(id).appendChild(h("option",{value:x.group[g]},x.group[g]));$(id).value=x.group[g];changeScope();$("main").scrollIntoView({block:"start"})});
       return h("tr",{class:tot?"tot":null,"data-ak":"sum|"+(tot?"=":"-")+name},h("td",{class:"l",title:g==="error"&&v?v:shown},label),h("td",{class:"n",title:exact(x.count)+" 条"},fmtN(x.count)),
-      h("td",{class:"n",title:exact(x.failures)+" 失败 · "+exact(x.cancelled)+" 取消 · "+exact(x.incomplete)+" 未完成 · "+exact(x.unknown||0)+" 结果未知"+(x.failure_classes?FCLS.filter(([c])=>x.failure_classes[c]).map(([c,l])=>"\n"+l+" "+exact(x.failure_classes[c])).join(""):"")},pct(x.failure_rate)),
+      h("td",{class:"n",title:exact(x.failures)+" 失败 · "+exact(x.cancelled)+" 客户端断开 · "+exact(x.incomplete)+" 上游截断 · "+exact(x.unknown||0)+" 未确认结束"+(x.failure_classes?FCLS.filter(([c])=>x.failure_classes[c]).map(([c,l])=>"\n"+l+" "+exact(x.failure_classes[c])).join(""):"")},pct(x.failure_rate)),
       h("td",{class:"n x",title:upTip()+" · "+exact(x.upstream_failures||0)+" 条"},pct(x.upstream_failure_rate)),
       h("td",{class:"n x",title:"p90 "+fmtMs(x.stream_ttft_p90_ms)+" · "+exact(x.stream_ttft_samples)+" 样本"},fmtMs(x.stream_ttft_p50_ms)),
       h("td",{class:"n x",title:"p90 "+fmtMs(x.duration_p90_ms)+" · "+exact(x.duration_samples)+" 终结请求"},fmtMs(x.duration_p50_ms)),
@@ -1131,7 +1166,7 @@ const ERR_TIP={cf_blocked:"上游前面的 Cloudflare 返回了拦截页（如 1
 function errorInfo(r){const known=r.error!=="observation_incomplete"||requestOutcome(r)==="unknown";return {label:known?ERR_LBL[r.error]:"",tip:known?ERR_TIP[r.error]:""}}
 function srcOf(r){return r.err_source==="network"&&PROXY_ERR[r.error]?"proxy":r.err_source}
 let recState={cursor:null,total:0,rows:[]};
-const OUTCOME={completed:"完成",failed:"失败",cancelled:"客户端取消",incomplete:"未完成",unknown:"结果未知",prewarm:"预热"};
+const OUTCOME={completed:"完成",failed:"失败",cancelled:"客户端断开",incomplete:"上游截断",unknown:"未确认结束",prewarm:"预热"};
 function requestOutcome(r){return r.endpoint==="prewarm"?"prewarm":r.error==="client_closed"||r.err_source==="client"?"cancelled":r.error==="observation_incomplete"&&r.err_source==="local"&&!(r.status>=400)?"unknown":r.error||r.status>=400?"failed":r.incomplete?"incomplete":"completed"}
 // Status chip colour by outcome; the code itself and the title carry the meaning, colour only
 // reinforces it. Cancelled, unknown and prewarm rows stay neutral.
@@ -1140,6 +1175,31 @@ function statusKind(outcome,s){if(!s)return null;
   if(outcome!=="failed")return null;
   return s===429?["s429","限流"]:s>=500?["s5","服务端错误"]:s>=400?["s4","请求或账号错误"]:null}
 function streamRecord(r){return r.transport==="sse"||r.transport==="ws"}
+// ---- request problems. Buckets, causes and next steps come from the backend (usage::problem); the UI only names them.
+// Next steps only open existing pages or panels; 刷新额度 points at the normal button and never refreshes or redeems by itself.
+const NEXT={refresh_quota:["刷新额度","到额度面板手动刷新"],account:["看账号","打开账号页"],cooldown:["看冷却","在账号页看冷却"],attempts:["尝试链","查看每次尝试"],
+  egress:["检查出口","打开网络与出口设置"],accounts:["账号状态","打开账号页"],new_session:["新开会话","为什么要新开会话"],detail:["详情","查看请求详情"]};
+function causeName(p,c){const x=(CAUSES[p]||[]).find(([k])=>k===c);return x?x[1]:""}
+function rescueText(r){return (r.switches&&r.first_account?"换号 "+r.first_account+" → "+(r.account||""):"重试 "+exact(r.retries)+" 次")+" 后成功"}
+function go(url){location.assign(url)}
+function accountUrl(a){return "/ui/accounts"+(a?"#acc="+encodeURIComponent(a):"")}
+function goQuota(a){const all=$("qall");if(all&&!all.classList.contains("hide")&&!$("sq").classList.contains("hide")){$("sq").scrollIntoView({block:"start"});all.focus({preventScroll:true})}else go(accountUrl(a))}
+async function nextAct(r,k,from){
+  if(["refresh_quota","account","cooldown","accounts","egress"].includes(k))closeModal($("dp"));
+  if(k==="refresh_quota")return goQuota(r.account);
+  if(k==="account"||k==="cooldown")return go(accountUrl(r.account));
+  if(k==="accounts")return go("/ui/accounts");
+  if(k==="egress")return go("/ui/settings#network");
+  if(detailRecord!==r||$("dp").classList.contains("hide"))await openDetail(r,from);
+  if(k==="attempts"&&!$("dtll").classList.contains("hide"))$("dtll").scrollIntoView({block:"nearest"})}
+function conclusion(r){const p=r.problem,c=r.cause,n=causeName(p,c);
+  if(r.rescued)return ["已救回 · "+rescueText(r),"中途上游出过错，客户端拿到了正常结果，计入上游出错，不计入失败率"];
+  if(p==="error")return ["报错"+(n?" · "+n:""),({quota:"账号额度用尽，客户端收到错误",rate_limit:"上游限流，账号会短暂冷却",upstream:"上游返回错误",network:"连不上上游或出口代理",gateway:"ciallopa 本地没能转发，多为没有可用账号",stream:"流里报错或连接中断"}[c]||"请求失败")+(r.upstream_fault?"，也计入上游出错":"")+(r.next&&r.next.includes("new_session")?"\n加密推理内容来自别的账号，换号无效，需要在客户端新开会话":"")];
+  if(p==="unfinished")return ["没答完"+(n?" · "+n:""),({client_closed:"客户端先断开了连接",truncated:"上游提前结束了回答"+(r.incomplete?"（"+r.incomplete+"）":""),unconfirmed:"没看到结束事件，结果未确认"}[c]||"")+"，不计入失败率"];
+  return null}
+function renderConclusion(r){const box=$("dconcl"),c=conclusion(r);clear(box);box.classList.toggle("hide",!c);if(!c)return;
+  box.append(h("div","t",c[0]),h("div","sm",c[1]));const acts=(r.next||[]).filter(k=>NEXT[k]&&k!=="detail"&&k!=="new_session");
+  if(acts.length){const row=h("div","acts");acts.forEach((k,i)=>{const b=h("button",{type:"button",class:i?"":"p","data-next":k,title:NEXT[k][1]},NEXT[k][0]+" ›");b.addEventListener("click",()=>nextAct(r,k,b).catch(fail));row.appendChild(b)});box.appendChild(row)}}
 function recRow(r){const outcome=requestOutcome(r),isErr=outcome==="failed",es=srcOf(r),s=r.status,pw=outcome==="prewarm",error=errorInfo(r);
   const tr=h("tr",{class:(isErr?"e":"")+(es==="proxy"?" px":"")+(s===429?" rl":"")+(pw?" dim":"")+" dt","data-ak":r.request_id?"rec|"+r.request_id:null});
   const hint="\n点击或按 Enter 查看详情";
@@ -1149,14 +1209,17 @@ function recRow(r){const outcome=requestOutcome(r),isErr=outcome==="failed",es=s
   tr.appendChild(h("td",{class:"t num sm",title:isoLocal(r.ts_ms)+hint},detail));
   const sk=statusKind(outcome,s);
   const sc=h("td",{class:"s",title:(s?"客户端收到 HTTP "+s+(sk?" · "+sk[1]:""):"未记录 HTTP 状态")+(r.upstream_status&&r.upstream_status!==s&&r.error?"；最后一次上游响应 HTTP "+r.upstream_status:"")+(r.incomplete?"；response.incomplete："+r.incomplete+"（token 已计入，不算错误）":"")},h("span","st"+(sk?" "+sk[0]:""),s||"–"));
-  if(r.incomplete)sc.appendChild(h("span","tag cool","未完成"));tr.appendChild(sc);
+  if(r.incomplete)sc.appendChild(h("span","tag cool","上游截断"));tr.appendChild(sc);
   const ec=h("td",{class:"err",title:(error.tip?error.tip+"："+r.error:es&&SRC[es]?SRC[es][2]+"："+(r.error||""):(r.error||""))+hint});
   if(pw){ec.appendChild(h("span","tag line","预热"));ec.title="Codex WS 预热（generate:false）：token 计入用量与费用，不计入请求数、错误率和延迟统计"}
-  else if(outcome==="unknown")ec.append(h("span","tag line","结果未知")," ",h("span","sm mut","观察不完整"));
+  else if(outcome==="unknown")ec.append(h("span","tag line","未确认结束")," ",h("span","sm mut","观察不完整"));
   else if(es&&SRC[es]){ec.append(h("span","tag "+SRC[es][1],SRC[es][0]+(es==="upstream"&&r.upstream_status?" "+r.upstream_status:""))," ",h("span","sm",error.label||r.error||"")," ");if(error.label)ec.appendChild(h("span","mono xs mut d-only",r.error))}
-  else if(r.switches&&r.first_account)ec.appendChild(h("span","sm mut","换号后成功 · "+r.first_account+" → "+(r.account||"")));
+  else if(r.rescued)ec.append(h("span","tag save","已救回")," ",h("span","sm mut",rescueText(r)));
   else ec.appendChild(h("span","sm mut",outcome==="incomplete"?r.incomplete:OUTCOME[outcome]));
-  ec.appendChild(h("span","more","详情 ›"));tr.appendChild(ec);
+  const nx=(r.next||[]).filter(k=>NEXT[k]).slice(0,2);
+  if(!nx.length||pw)ec.appendChild(h("span","more","详情 ›"));
+  else nx.forEach((k,i)=>{const b=h("button",{class:"nx"+(i?"":" p"),type:"button","data-next":k,title:NEXT[k][1]},NEXT[k][0]+" ›");b.addEventListener("click",e=>{e.stopPropagation();return nextAct(r,k,b).catch(fail)});ec.appendChild(b)});
+  tr.appendChild(ec);
   tr.appendChild(h("td",{class:"a",title:(r.account||"")+hint},r.account||"–"));
   tr.appendChild(h("td",{class:"key x sm mut",title:(r.key||"")+hint},h("span","trunc",r.key||"–")));
   const mc=modelCell(r);mc.appendChild(h("span","m-only"," · "+(r.reasoning_effort||r.response_effort||"–")+" · "+fmtN(r.output_tokens)+" 出"));tr.appendChild(h("td",{class:"m",title:mc.dataset.tip+hint},mc));
@@ -1184,14 +1247,14 @@ function renderRecords(){const tb=$("rec").tBodies[0],dp=$("dp"),opener=!dp.clas
       if(entry.node!==cursor)tb.insertBefore(entry.node,cursor);cursor=entry.node.nextElementSibling}
     if(!recState.rows.length)emptyRow(tb,12,"没有符合条件的请求",anyF()?"清除筛选或换个时间段试试":"换个时间段试试")}));
   // A refresh already in flight can replace the opener while its detail dialog is open.
-  if(anchor)dp._opener=tb.querySelector('[data-ak="'+CSS.escape(anchor)+'"] button')||$("foutcome");
+  if(anchor)dp._opener=tb.querySelector('[data-ak="'+CSS.escape(anchor)+'"] button')||$("rextra");
   $("rcount").textContent="共 "+exact(recState.total)+" 条";
   $("rmore").classList.toggle("hide",!recState.cursor);
   $("rpage").textContent=(recState.cursor?"已显示 "+exact(recState.rows.length)+" 条":"")+(recState.rows.length>PAGE?" · 已暂停滚动更新；刷新查看最新":"");renderDetailNav()}
 const PAGE=50;
-function refusedMode(){return $("foutcome").value==="refused"}
+function refusedMode(){return $("foutcome").value==="refused"||$("fproblem").value==="refused"}
 let refState={rows:[],offset:0,more:false,total:0,signature:""};
-function refFilters(){const f=scopeFilters();return Object.assign({from:f.from,to:f.to,key:f.key,instance:f.instance},recordWindow||{})}
+function refFilters(){const f=scopeFilters();return Object.assign({from:f.from,to:f.to,key:f.key,instance:f.instance,reason:$("fproblem").value==="refused"?$("fcause").value:""},recordWindow||{})}
 function scopedOut(){const f=scopeFilters();return !!(f.account||f.model)}
 async function loadRefusals(append){const f=refFilters(),signature=qs(f);
   const base=append&&refState.signature===signature?refState:{rows:[],offset:0,more:false,total:0,signature};
@@ -1199,9 +1262,9 @@ async function loadRefusals(append){const f=refFilters(),signature=qs(f);
   const q=qs(Object.assign({},f,{limit:PAGE,offset:base.offset}));
   await currentLoad("sr",()=>"refused|"+qs(refFilters()),(_q,current)=>usageGet("/usage/v1/refusals?"+q,current),d=>{
     const rows=base.rows.concat(d.rows);refState={rows,offset:base.offset+d.rows.length,more:d.rows.length===PAGE,total:d.totals.count,signature};renderRefusals()})}
-function showRefusedMode(){const on=refusedMode();$("rw").classList.toggle("hide",on);$("refw").classList.toggle("hide",!on);$("recordextra").classList.toggle("hide",on);$("fclass").classList.toggle("hide",on)}
-function recordFilters(){const t=$("ftier").value,o=$("foutcome").value;return Object.assign({},scopeFilters(),recordWindow||{},{outcome:o==="business"?"":o,exclude_prewarm:o==="business"||(o!=="prewarm"&&!withPrewarm())?1:"",errors:$("ferr").checked?1:"",source:$("fsrc").value,error:$("fcode").value.trim(),failure_class:$("fclass").value,retried:$("fretry").checked?1:"",tier:t==="dg"?"":t,downgraded:t==="dg"?1:""})}
-async function loadRecords(append){showRefusedMode();if(refusedMode())return loadRefusals(append);const filters=recordFilters(),signature=qs(filters);
+function showRefusedMode(){const on=refusedMode();$("rw").classList.toggle("hide",on);$("refw").classList.toggle("hide",!on);$("fclass").classList.toggle("hide",on);for(const id of ["fsrc","ftier","fcode"])$(id).classList.toggle("hide",on)}
+function recordFilters(){const t=$("ftier").value,o=$("foutcome").value;return Object.assign({},scopeFilters(),recordWindow||{},{problem:$("fproblem").value,cause:$("fproblem").value?$("fcause").value:"",outcome:o==="business"?"":o,exclude_prewarm:o==="business"||(o!=="prewarm"&&!withPrewarm())?1:"",errors:$("ferr").checked?1:"",source:$("fsrc").value,error:$("fcode").value.trim(),failure_class:$("fclass").value,retried:$("fretry").checked?1:"",tier:t==="dg"?"":t,downgraded:t==="dg"?1:""})}
+async function loadRecords(append){showRefusedMode();if(!append){renderProblems();loadCounts()}if(refusedMode())return loadRefusals(append);const filters=recordFilters(),signature=qs(filters);
   const base=append&&recState.signature===signature?recState:{cursor:null,total:0,rows:[]};
   if(append&&base.rows.length&&!base.cursor)return;
   const q=qs(Object.assign({},filters,{limit:PAGE,before_id:base.cursor}));
@@ -1223,10 +1286,10 @@ function hideDetailRetry(){if(document.activeElement===$("dretry"))$("dclose").f
 async function openDetail(r,from,retry=false){if(!/^[0-9a-f]{16}$/.test(r.request_id||""))return;
   lookupSeq++;const seq=++detailSeq,auth=key(),epoch=authEpoch,current=()=>detailSeq===seq&&key()===auth&&epoch===authEpoch&&activeRecord===r.request_id;activeRecord=r.request_id;detailRecord=r;
   const outcome=requestOutcome(r),es=srcOf(r),error=errorInfo(r);$("dtitle").textContent=OUTCOME[outcome]+" · "+(r.model||"请求");
-  $("dmeta").textContent=fmtTime(r.ts_ms,true)+" · "+(r.status?"HTTP "+r.status:"未记录 HTTP 状态")+" · "+(r.transport||"–").toUpperCase();detailStats(r);clear($("dfields"));
+  $("dmeta").textContent=fmtTime(r.ts_ms,true)+" · "+(r.status?"HTTP "+r.status:"未记录 HTTP 状态")+" · "+(r.transport||"–").toUpperCase();renderConclusion(r);detailStats(r);clear($("dfields"));
   for(const [name,value] of [["记录 ID",r.request_id],["账号",r.account],["密钥 / 实例",[r.key,r.instance].filter(Boolean).join(" / ")],["端点",r.endpoint],
     ["实际模型",r.response_model],["推理强度",r.reasoning_effort||r.response_effort],["请求 / 实际档位",tierName(normTier(r.requested_service_tier))+" / "+tierName(normTier(r.service_tier))],
-    ["最初账号",r.first_account],["会话 / 轮次",[r.thread_id,r.turn_id].filter(Boolean).join(" / ")],["未完成原因",r.incomplete]])field(name,value);
+    ["最初账号",r.first_account],["会话 / 轮次",[r.thread_id,r.turn_id].filter(Boolean).join(" / ")],["截断原因",r.incomplete]])field(name,value);
   $("dmsg").classList.toggle("error",outcome==="failed");
   const message=(es&&SRC[es]?SRC[es][0]+" · ":"")+(r.error?(error.label?error.label+" ":"")+r.error:"")+(error.tip?"\n"+error.tip:"");$("dmsg").textContent=message;
   for(const id of ["dhdr","dbody"])$(id).textContent="";clear($("dtl"));$("dtll").classList.add("hide");
@@ -1366,7 +1429,7 @@ async function loadAll(automatic=false){if(automatic&&allPending)return;allPendi
   const hold=automatic&&(recordWindow||recState.rows.length>PAGE||loading.sr);
   if(!hold&&!scopeWindow.fixed){rollWindow();renderTrend()}showScope();renderKpis();
   const jobs=[loadQuota(),egressTag().then(e=>{if(e!==undefined&&key()===auth){EG=e;renderRuntime()}return loadMem()})];
-  if(!hold)jobs.push(loadSummary(),loadRecords(false));
+  if(!hold)jobs.push(loadSummary(),loadRecords(false));loadScopeValues().then(syncMini);
   let ok=true;for(const r of await Promise.allSettled(jobs))if(r.status==="rejected"){ok=false;fail(r.reason)}
   if(ok&&key()===auth)$("upd").textContent="更新于 "+hms(new Date())}finally{allPending--}}
 function stopAuto(){if(timer){clearInterval(timer);timer=null}}
@@ -1391,25 +1454,67 @@ $("fprewarm").addEventListener("change",()=>{localStorage.setItem(PW,withPrewarm
 for(const id of ["ferr","ftier","fsrc","fretry","fcode"])$(id).addEventListener("change",changeRecords);
 // A failure class only matches failed requests: picking one moves the outcome to 失败, other outcomes clear it.
 // A failure class implies 结果 = 失败; clearing the class leaves 结果 as it is, another 结果 clears the class.
-$("fclass").addEventListener("change",()=>{if($("fclass").value)$("foutcome").value="failed";changeRecords()});
-$("foutcome").addEventListener("change",()=>{if($("foutcome").value!=="failed")$("fclass").value="";changeRecords()});
+// The old 结果 / 失败原因 selects (under 「更多」) and the problem chips are alternatives: setting one clears the other.
+$("fclass").addEventListener("change",()=>{if($("fclass").value){$("foutcome").value="failed";$("fproblem").value=$("fcause").value=""}changeRecords()});
+$("foutcome").addEventListener("change",()=>{if($("foutcome").value!=="failed")$("fclass").value="";if($("foutcome").value)$("fproblem").value=$("fcause").value="";changeRecords()});
 const CMP="ciallopa_compare";$("fcompare").checked=localStorage.getItem(CMP)!=="0";
 $("fcompare").addEventListener("change",()=>{localStorage.setItem(CMP,compareOn()?"1":"0");if(compareOn())loadSummary().catch(fail);else{SUM_PREV=null;if(TREND)TREND.prev=null;renderKpis();renderTrend()}});
 let kt;for(const id of ["fmodel","fkey","finstance"])$(id).addEventListener("input",()=>{saveF();showScope();clearTimeout(kt);kt=setTimeout(changeScope,400)});
 $("scopefreeze").addEventListener("click",()=>{if(scopeWindow.fixed){recordWindow=null;rollWindow();changeScope()}else{scopeWindow.fixed=true;saveF();showScope()}});
 $("rwindowclear").addEventListener("click",()=>{recordWindow=null;saveF();showScope();renderTrend();loadRecords(false).catch(fail)});
+// ---- Problem chips above the request list.
+// Chip counts use the same filters minus problem/cause; 本地拒绝 is null when a request-only filter is set.
+let PC=null,pcSeq=0;
+function countFilters(){const f=recordFilters();f.problem=f.cause="";if(f.outcome==="refused")f.outcome="";return f}
+async function loadCounts(){const seq=++pcSeq,q=qs(countFilters());
+  try{const d=await usageGet("/usage/v1/records/counts?"+q,()=>seq===pcSeq);if(seq!==pcSeq)return;PC=d}catch(e){if(seq!==pcSeq)return;PC=null}renderProblems()}
+function pickProblem(id){$("fproblem").value=id;$("fcause").value="";if(id){$("foutcome").value="";$("fclass").value=""}changeRecords()}
+function pickCause(id){$("fcause").value=id;changeRecords()}
+function chip(cls,label,n,on,click){const b=h("button",{class:cls+(on?" on":""),type:"button","aria-pressed":String(on)},label,n===null||n===undefined?null:h("b",null,exact(n)));b.addEventListener("click",click);return b}
+function renderProblems(){const p=$("fproblem").value,c=$("fcause").value,box=$("pbtns"),focused=document.activeElement,refocusChip=focused&&focused.closest&&focused.closest("#pchips,#pcauses")?focused.textContent:null;clear(box);
+  for(const [id,label,e] of PROB){const n=PC?(id?PC[id]:PC.all):undefined,b=chip("pc"+(e&&n?" e":""),label,n,id===p,()=>pickProblem(id));b.dataset.problem=id;
+    if(id==="refused"&&PC&&PC.refused===null){b.title="拒绝发生在选账号之前，按账号、模型或请求条件筛选时没有拒绝数";if(p!=="refused")b.disabled=true}
+    box.appendChild(b)}
+  const list=CAUSES[p],sub=$("pcauses");clear(sub);sub.classList.toggle("hide",!list);
+  if(list){const counts=(PC&&PC.causes&&PC.causes[p])||{};sub.appendChild(h("span","lbl","原因"));
+    for(const [id,label] of [["","全部"],...list]){const b=chip("pc sm",label,id?counts[id]:undefined,id===c,()=>pickCause(id));b.dataset.cause=id;sub.appendChild(b)}}
+  renderHint();
+  if(refocusChip)for(const b of document.querySelectorAll("#pchips .pc,#pcauses .pc"))if(b.textContent===refocusChip){b.focus({preventScroll:true});break}}
+function renderHint(){const p=$("fproblem").value,c=$("fcause").value,hb=$("phint"),C=(PC&&PC.causes)||{},parts=[],acts=[];clear(hb);
+  const u=C.upstream||{},f=C.unfinished||{};
+  if(!PC);else if(!p){if(PC.error||u.rescued){parts.push(exact(PC.error)+" 条报错");if(u.rescued)parts.push(exact(u.rescued)+" 条已救回");if(PC.error)acts.push(["只看报错",()=>pickProblem("error")])}}
+  else if(p==="error"){parts.push("报错计入失败率");if(c==="quota")acts.push(["刷新额度",()=>goQuota($("facct").value)],["账号页",()=>go("/ui/accounts")]);else if(c==="rate_limit")acts.push(["看冷却",()=>go("/ui/accounts")]);else if(c==="network")acts.push(["检查出口",()=>go("/ui/settings#network")]);else if(c==="gateway")acts.push(["账号状态",()=>go("/ui/accounts")])}
+  else if(p==="upstream"){parts.push("已救回 "+exact(u.rescued||0),"未救回 "+exact(u.unrescued||0));hb.appendChild(h("span","k","上游出过错的请求"));if(c!=="rescued"&&u.rescued)acts.push(["只看已救回",()=>pickCause("rescued")])}
+  else if(p==="unfinished"){hb.appendChild(h("span","k","没答完不计入失败率"));parts.push("客户端断开 "+exact(f.client_closed||0),"上游截断 "+exact(f.truncated||0),"未确认结束 "+exact(f.unconfirmed||0))}
+  else if(p==="refused"){hb.appendChild(h("span","k","本地上限直接返回 503"));acts.push(["限流与容错设置",()=>go("/ui/settings#forward")])}
+  if(parts.length)hb.appendChild(h("span",null,parts.join(" · ")));
+  acts.forEach(([l,fn],i)=>{const b=h("button",{type:"button",class:i?"":"p"},l+" ›");b.addEventListener("click",fn);hb.appendChild(b)});
+  hb.classList.toggle("hide",!hb.children.length)}
+// The compact account / model / key selects mirror the 筛选范围 controls; they never hold state of their own.
+const MINI={racct:"facct",rmodel:"fmodel",rkey:"fkey"};
+function syncMini(){for(const id in MINI){const sel=$(id),src=MINI[id],v=$(src).value.trim(),vals=id==="racct"?ACCTS.map(a=>a.id||a.name).filter(Boolean):(((typeof SV!=="undefined"&&SV)||{})[src.slice(1)]||[]).map(x=>x.value);
+  const want=[...new Set([...vals,...(v?[v]:[])])],sig=want.join("\n");
+  if(sel._sig!==sig){sel._sig=sig;while(sel.options.length>1)sel.remove(1);for(const x of want)sel.appendChild(h("option",{value:x},x))}sel.value=v}}
 // ---- URL keeps the query and inspector context; only display preferences use localStorage.
-const SF=["facct","fmodel","fkey","finstance"],RF=["foutcome","fclass","ftier","fsrc","fcode","ferr","fretry"],FIDS=["range","group","tmode","tmetric",...SF,...RF],FDEF={range:"24h",group:"account",tmode:"auto",tmetric:"requests"},FL="ciallopa_f_";
+const SF=["facct","fmodel","fkey","finstance"],RF=["fproblem","fcause","foutcome","fclass","ftier","fsrc","fcode","ferr","fretry"],FIDS=["range","group","tmode","tmetric",...SF,...RF],FDEF={range:"24h",group:"account",tmode:"auto",tmetric:"requests"},FL="ciallopa_f_";
+// Problem buckets and their causes, as the backend names them (usage::problem).
+const PROB=[["","全部"],["error","报错",1],["upstream","上游出错",1],["unfinished","没答完"],["refused","本地拒绝"]];
+const CAUSES={error:[["quota","额度"],["rate_limit","限流"],["upstream","上游"],["network","网络代理"],["gateway","网关"],["stream","流中断"]],
+  upstream:[["unrescued","未救回"],["rescued","已救回"]],unfinished:[["client_closed","客户端断开"],["truncated","上游截断"],["unconfirmed","未确认结束"]],
+  refused:[["inflight","转发上限"],["ws","WS 上限"],["body","请求体缓冲"],["ws_msg","WS 消息缓冲"]]};
 function fval(id){const e=$(id);return e.type==="checkbox"?(e.checked?"1":""):e.value}
 function anyF(){return RF.some(id=>fval(id))}
-const FILTER_NAMES={facct:"账号",fmodel:"模型",fkey:"密钥",finstance:"实例",foutcome:"结果",fclass:"失败原因",ftier:"档位",fsrc:"来源",fcode:"错误码",ferr:"旧错误筛选（含取消）",fretry:"重试/换号"};
+const FILTER_NAMES={fproblem:"问题",fcause:"原因",facct:"账号",fmodel:"模型",fkey:"密钥",finstance:"实例",foutcome:"结果",fclass:"失败原因",ftier:"档位",fsrc:"来源",fcode:"错误码",ferr:"旧错误筛选（含取消）",fretry:"重试/换号"};
 function renderFilterChips(box,ids,scope,fallback){const parts=ids.filter(id=>fval(id).trim()).map(id=>{const e=$(id),value=fval(id).trim();return {id,label:FILTER_NAMES[id]+(e.type==="checkbox"?"":"："+(e.tagName==="SELECT"?e.options[e.selectedIndex].textContent:value))}}),signature=JSON.stringify(parts);
   if(box._signature===signature)return;box._signature=signature;
   const buttons=Array.from(box.querySelectorAll("button")),focused=document.activeElement,index=buttons.indexOf(focused);box.classList.toggle("hide",!parts.length);clear(box);
   const next=parts.map(({id,label})=>{const b=h("button",{type:"button",class:"filterchip","data-clear-filter":id,"aria-label":"清除"+scope+"筛选："+label,title:"清除"+scope+"筛选："+label},h("span","filterlabel",label),h("span",{class:"filterremove","aria-hidden":"true"},"×"));b.addEventListener("click",()=>clearFilter(id));box.appendChild(b);return b});
   if(index>=0)(next.find(b=>b.dataset.clearFilter===focused.dataset.clearFilter)||next[Math.min(index,next.length-1)]||fallback).focus({preventScroll:true})}
 function clearFilter(id){const e=$(id);if(e.type==="checkbox")e.checked=false;else e.value="";if(SF.includes(id))changeScope();else changeRecords()}
-function showRecordFilters(){const count=RF.filter(id=>id!=="foutcome"&&id!=="fclass"&&fval(id).trim()).length;$("fsummary").textContent=count?" · "+count+" 项":"";renderFilterChips($("recordchips"),RF,"请求",$("foutcome"))}
+// 问题 / 原因 already show as pressed chips; the removable chips list only the 「更多」 filters.
+const MORE_F=["foutcome","fclass","ftier","fsrc","fcode","ferr","fretry"];
+function showRecordFilters(){const count=MORE_F.filter(id=>fval(id).trim()).length;$("fsummary").textContent=count?" · "+count:"";renderFilterChips($("recordchips"),MORE_F,"请求",$("rextra"))}
+function showExtra(open){$("recordextra").classList.toggle("hide",!open);$("rextra").setAttribute("aria-expanded",String(open));$("rextra").classList.toggle("on",open)}
 function saveF(){const u=new URLSearchParams();for(const id of FIDS){const v=fval(id);if(v&&v!==FDEF[id])u.set(id,v)}
   if(scopeWindow.fixed){u.set("from",scopeWindow.from);u.set("to",scopeWindow.to)}if(recordWindow){u.set("rfrom",recordWindow.from);u.set("rto",recordWindow.to)}if(activeRecord)u.set("record",activeRecord);
   history.replaceState(null,"",location.pathname+(u.toString()?"?"+u:""));for(const id in FDEF)localStorage.setItem(FL+id,$(id).value);
@@ -1422,10 +1527,14 @@ function loadF(){const u=new URLSearchParams(location.search);
   rollWindow();const from=Number(u.get("from")),to=Number(u.get("to"));if(u.has("from")&&u.has("to")&&Number.isSafeInteger(from)&&Number.isSafeInteger(to)&&from>=0&&to>from&&to-from<=31*864e5)scopeWindow={from,to,fixed:true};
   const rf=Number(u.get("rfrom")),rt=Number(u.get("rto"));if(scopeWindow.fixed&&u.has("rfrom")&&rf>=scopeWindow.from&&rt<=scopeWindow.to&&rt>=rf)recordWindow={from:rf,to:rt};
   const rid=u.get("record");if(/^[0-9a-f]{16}$/i.test(rid||""))activeRecord=rid.toLowerCase();
+  if(!PROB.some(([id])=>id===$("fproblem").value))$("fproblem").value="";if(!(CAUSES[$("fproblem").value]||[]).some(([id])=>id===$("fcause").value))$("fcause").value="";
   $("fclear").classList.toggle("hide",!anyF());$("legacyerror").classList.toggle("hide",!$("ferr").checked);showRecordFilters();showScope()}
-$("fclear").addEventListener("click",()=>{for(const id of RF){const e=$(id);if(e.type==="checkbox")e.checked=false;else e.value=""}changeRecords();$("foutcome").focus()});
+$("fclear").addEventListener("click",()=>{clearRecordFilters();changeRecords();$("rextra").focus()});
+$("rextra").addEventListener("click",()=>showExtra($("recordextra").classList.contains("hide")));
+for(const id in MINI)$(id).addEventListener("change",()=>{$(MINI[id]).value=$(id).value;changeScope()});
+$("rprewarm").addEventListener("change",()=>{$("fprewarm").checked=$("rprewarm").checked;localStorage.setItem(PW,withPrewarm()?"1":"0");changeScope()});
 $("scopeclear").addEventListener("click",()=>{for(const id of SF)$(id).value="";changeScope();$("scopetoggle").focus({preventScroll:true})});
-$("fprewarm").checked=localStorage.getItem(PW)==="1";loadF();renderKpis();
+$("fprewarm").checked=localStorage.getItem(PW)==="1";loadF();showExtra(MORE_F.some(id=>fval(id)));renderKpis();
 login(()=>usageGet("/usage/v1/summary?range=1m"),()=>{if(localStorage.getItem(AS)==="1"){$("auto").checked=$("mauto").checked=true;startAuto()}loadAll();if(activeRecord)lookupRecord(activeRecord,$("recordid"))});
 })();
 </script>

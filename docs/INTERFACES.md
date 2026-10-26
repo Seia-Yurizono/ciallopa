@@ -42,6 +42,10 @@ The source is authoritative; avoid maintaining a second copy of Rust signatures 
 - [`usage/src/lib.rs`](../crates/usage/src/lib.rs): `Record` is a completed HTTP request or WS
   turn; `Recorder::record` uses non-blocking `try_send`. This is operational telemetry, not
   a durable billing transaction.
+- [`usage/src/problem.rs`](../crates/usage/src/problem.rs): the single classification of a
+  stored request into the list's problem buckets (`error` / `upstream` / `unfinished`), its cause,
+  `rescued` and suggested `next` steps, in Rust per row and as SQL predicates for filters and
+  `/usage/v1/records/counts`. The UI renders these fields and does not reclassify.
 
 ## Request lifecycle
 
@@ -59,6 +63,9 @@ The source is authoritative; avoid maintaining a second copy of Rust signatures 
 6. The response body owns the lease and streaming lifecycle. Its channel producer is cancelled when
    the downstream body is dropped, including while waiting for a silent upstream. The
    tracker emits a record on completion, failure or cancellation without waiting for SQLite.
+   When a retry, account switch or WS replay happened, the record carries the attempt chain
+   (captured detail) even if the request finally succeeded; a request with no retry stores none.
+   It goes through the same batched writer, with no extra write per request and no schema change.
 
 WS uses HTTP/1.1 Upgrade, with optional `permessage-deflate`; HTTP/2 extended CONNECT is not
 implemented. Each established WS is pinned to an account. A pre-output full-input turn can
