@@ -552,10 +552,12 @@ See [METRICS.md](METRICS.md) for the current outcome, sampling, cursor and bucke
   `tz` aligns hour / day buckets to local time like the summary) → `{from, to, step_min,
   "rows":[{minute_ms, instance, samples, inflight_avg, inflight_peak, ws_avg, ws_peak,
   buffered_avg_bytes, buffered_peak_bytes, max_inflight_requests, ws_max_connections,
-  max_buffered_body_bytes}]}` oldest first, one row per bucket and instance. `step` is a whole
+  max_buffered_body_bytes, full_minutes}]}` oldest first, one row per bucket and instance. `step` is a whole
   number of minutes (`5m`, `1h`) and is widened so a range has at most 1440 buckets
   (`step_min` is the width used). In a bucket, averages are over all its samples, peaks are
-  the highest and limits the highest seen. Bad `range` / `step` → 400.
+  the highest and limits the highest seen. `full_minutes` counts the minutes in the bucket whose
+  peak reached a configured limit (`inflight_peak ≥ max_inflight_requests > 0` or
+  `ws_peak ≥ ws_max_connections > 0`). Bad `range` / `step` → 400.
 - `GET /usage/v1/summary` also returns `"refusals"`: the totals for the same range, key and
   instance, or `null` when an `account` or `model` filter is set.
 - `GET /usage/v1/quota` → `{"accounts":[{account, email, disabled, needs_relogin, quota:
@@ -761,8 +763,29 @@ Page behavior:
 - The 请求 tile shows 「已拒绝 N」 for the current range, key and instance (orange when N > 0;
   hidden under an account or model filter). Hover or tap opens the per-reason breakdown with
   「查看记录 ›」, which sets 结果 = 已拒绝: the request list then shows the per-minute refusal rows
-  (time, reason, key, route, UA, ×count, limit / occupancy). The 实时 row shows only the current
-  转发 / WS occupancy.
+  (time, reason, key, route, UA, ×count, limit / occupancy). The 实时 row shows the current
+  转发 / WS occupancy and, for the selected range, 「峰值 转发 a/b · WS c/d · 满载 n 分钟」 from
+  `/usage/v1/occupancy` (满载 is `full_minutes` summed over instances); clicking it switches the
+  trend to 占用与拒绝.
+- Failures are broken down in place, no separate panel. The 失败率 tile shows the failure rate
+  (all failures / business requests; refusals, cancellations, incomplete and unknown outcomes are
+  not counted), 「上游 x%」 (the upstream failure rate above), a thin bar by failure class and the
+  top three classes as links that open the matching records. Class colours are the same in the
+  bar, the trend and the 分布 table, in both themes.
+- 对比上一周期 (switch next to the trend metric, on by default, `localStorage`
+  `ciallopa_compare`) requests `compare=1`: KPI tiles show the change against the equal-length
+  previous window (green / red by direction for 失败率, 首输出 and 生成速度; neutral for volume,
+  Token and cost) and the trend draws the previous period as a dashed line. For a rolling range
+  the previous period is cached for 60 s, so auto-refresh does not rescan it every tick.
+- Trend metrics: 请求, Token, 费用, 失败原因 (bars stacked by class; the tooltip has the failure
+  and upstream rates and the bucket's refusals, marked as not counted), 延迟分位 (首输出 p50 / p90
+  / p99, tooltip adds 耗时 percentiles) and 占用与拒绝 (转发 / WS peak against their limits, with
+  refusals as bars on the right axis).
+- 分布 groups: 账号, 模型, 密钥, 实例, 接口, 推理, 传输, 档位, 错误码, 错误来源. Columns add
+  上游 (upstream failure rate), 重试 and 降级. Clicking an error code, source or tier row filters
+  the request list to it.
+- Request filter 失败原因 (`fclass`, `failure_class=` on `/usage/v1/records`) selects one class;
+  it implies failed rows, is kept in the URL and shows as a chip.
 - Quota cards show **remaining** percent (bar width = remaining). Color follows remaining:
   green when ≥ 50%, yellow when < 50%, red when < 20%. The card top strip is yellow when
   the account's max used percent is over 50%, and red when over 80%.

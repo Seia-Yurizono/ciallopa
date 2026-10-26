@@ -176,9 +176,33 @@ async fn main() {
             "laptop".into()
         });
         r.status = 200;
-        let fail = next() % 25 == 0 || i == n - 10 || i == n - 11;
-        if fail {
-            let limit = i == n - 11 || (next() % 2 == 0 && i != n - 10);
+        let fail = next() % 14 == 0 || i == n - 10 || i == n - 11;
+        // Retries and account switches on some requests (the 重试 column in 分布).
+        if next() % 9 == 0 {
+            r.retries = 1;
+        }
+        if next() % 13 == 0 {
+            r.switches = 1;
+            r.first_account = Some(if a == "alice" { "bob" } else { "alice" }.into());
+        }
+        // Every failure class: upstream quota / rate limit / 5xx, network, stream, local.
+        let kind = if fail { next() % 10 } else { 0 };
+        if fail && i != n - 10 && i != n - 11 && kind >= 5 {
+            let (code, src, status) = match kind {
+                5 => ("rate_limit_exceeded", "upstream", 429),
+                6 => ("connect_timeout", "network", 502),
+                7 => ("stream_truncated", "stream", 200),
+                8 => ("first_quota_reset", "local", 429),
+                _ => ("all_cooling", "local", 503),
+            };
+            r.error = Some(code.into());
+            r.err_source = Some(src);
+            r.status = status;
+            if src == "upstream" {
+                r.upstream_status = Some(status);
+            }
+        } else if fail {
+            let limit = i == n - 11 || (kind % 2 == 0 && i != n - 10);
             r.error = Some(if limit {
                 "usage_limit".into()
             } else {
@@ -294,6 +318,7 @@ async fn main() {
     }
     demo_special_rows(&rec, now);
     demo_refusals(&rec, now);
+    demo_occupancy(&rec, now, &mut next);
     rec.flush_blocking().unwrap();
     rec2.flush_blocking().unwrap();
     drop(rec2);
@@ -411,6 +436,45 @@ fn demo_refusals(rec: &Recorder, now: i64) {
     r.buffered = 251 << 20;
     r.bytes = Some(9 << 20);
     rec.refuse(r);
+}
+
+/// Occupancy history: every minute for the last 26 hours, every 10 minutes before that, with
+/// the refusal minutes at the inflight / WS cap (满载) and a few older full minutes.
+fn demo_occupancy(rec: &Recorder, now: i64, next: &mut impl FnMut() -> u64) {
+    let (li, lw) = (64u64, 24u64);
+    let mut added = 0;
+    for m in 0..14 * 1440i64 {
+        if m > 26 * 60 && m % 10 != 0 {
+            continue;
+        }
+        let ts = now - m * 60_000;
+        let hour = (ts / 3_600_000 + 8).rem_euclid(24) as u64;
+        let busy = if (9..23).contains(&hour) { 18 } else { 4 };
+        let mut peak = 1 + next() % busy;
+        let mut ws = next() % (busy / 2 + 1);
+        if [1, 2, 25, 40, 180].contains(&m) || next().is_multiple_of(400) {
+            peak = li;
+        }
+        if m == 70 {
+            ws = lw;
+        }
+        rec.occupancy(ciallopa_usage::OccupancySample {
+            ts_ms: ts,
+            inflight: peak / 2,
+            ws,
+            buffered: (next() % 8) << 20,
+            peak_inflight: peak,
+            peak_ws: ws,
+            peak_buffered: (next() % 16) << 20,
+            limit_inflight: li,
+            limit_ws: lw,
+            limit_buffered: 256 << 20,
+        });
+        added += 1;
+        if added % 1000 == 0 {
+            rec.flush_blocking().unwrap();
+        }
+    }
 }
 
 fn demo_special_rows(rec: &Recorder, now: i64) {

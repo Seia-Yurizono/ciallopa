@@ -2238,12 +2238,18 @@ mod tests {
     fn occupancy_buckets_align_to_the_requested_utc_offset() {
         let d = tempfile::tempdir().unwrap();
         let r = Recorder::open_as(&cfg(d.path()), "pod-a").unwrap();
-        let hour = 1_700_002_800_000; // a UTC hour boundary
-        for m in [0, 20, 40] {
+        // A UTC hour boundary. Minute 20 reaches the inflight limit and minute 40 the WebSocket
+        // limit; 0 = unlimited.
+        let hour = 1_700_002_800_000;
+        for (m, peak, ws) in [(0, 1, 0), (20, 2, 0), (40, 1, 3)] {
             r.occupancy(OccupancySample {
                 ts_ms: hour + m * 60_000 + 1_000,
                 inflight: 1,
-                peak_inflight: 1,
+                peak_inflight: peak,
+                ws,
+                peak_ws: ws,
+                limit_inflight: 2,
+                limit_ws: if m == 0 { 0 } else { 3 },
                 ..Default::default()
             });
         }
@@ -2258,10 +2264,16 @@ mod tests {
         };
         let utc = store::occupancy_rows(&c, &q(0)).unwrap();
         assert_eq!(utc.len(), 1, "{utc:?}");
+        assert_eq!(
+            utc[0].full_minutes, 2,
+            "minutes at the inflight or WS limit"
+        );
         // UTC+5:30: local hours start at :30 UTC, splitting 00/20 from 40.
         let ist = store::occupancy_rows(&c, &q(330)).unwrap();
         let starts: Vec<i64> = ist.iter().map(|x| x.minute_ms).collect();
         assert_eq!(starts, [hour - 1_800_000, hour + 1_800_000], "{ist:?}");
+        let full: Vec<u64> = ist.iter().map(|x| x.full_minutes).collect();
+        assert_eq!(full, [1, 1]);
     }
 
     #[test]

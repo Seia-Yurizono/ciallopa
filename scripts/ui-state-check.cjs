@@ -194,7 +194,7 @@ async function queryAndPaging() {
   c.clear = element => {element.children = [];};
   c.exact = c.fmtUsd = c.fmtMs = String;
   c.RECORDER = null;
-  c.REFS = null;
+  c.REFS = null;c.SUM_PREV = null;c.OCC = null;
   c.activeRecord = null;
   c.location = {pathname: '/', search: ''};
   c.history = {replaceState(_state, _title, url) {c.location.search = new URL(url, 'http://local').search;}};
@@ -250,6 +250,42 @@ async function queryAndPaging() {
     assert.equal(flat(refChip()), '已拒绝 3');
     assert.match(refChip().attrs.class, /\bw\b/);
     c.REFS = null;links.length = 0;
+    vm.runInContext('renderKpis()', c);
+    // 失败率 tile: the main rate is all failures; 上游 x% is the upstream-sourced share; the
+    // class links drill into records; deltas against the previous period colour by direction.
+    c.SUM.total = {...saved, count: 20, failures: 4, failure_rate: 0.2, upstream_failures: 2, upstream_failure_rate: 0.1,
+      failure_classes: {quota: 1, upstream: 1, network: 2}, stream_ttft_p50_ms: 900};
+    input('fcompare').checked = true;
+    c.SUM_PREV = {total: {count: 10, failures: 1, failure_rate: 0.1, stream_ttft_p50_ms: 1200}};
+    vm.runInContext('renderKpis()', c);
+    const label = name => input('strip').children.find(k => flat(k.children[0]).startsWith(name));
+    const fr = label('失败率');
+    assert.ok(fr, 'failure tile is labelled 失败率 with its delta beside it');
+    const all = n => n && typeof n === 'object' ? [n, ...(Array.isArray(n) ? n : n.children || []).flatMap(all)] : [];
+    const upFig = all(fr.children[1]).find(e => e.attrs && e.attrs.class === 'cr');
+    assert.equal(flat(upFig), '上游 10.0%');
+    assert.match(upFig.attrs.title, /不含本地、网络和流中断/);
+    const dl = name => all(label(name).children[0]).find(e => e.attrs && /\bdl\b/.test(e.attrs.class || ''));
+    assert.equal(flat(dl('失败率')), '+10pt');
+    assert.match(dl('失败率').attrs.class, /\bbad\b/, 'a higher failure rate is bad');
+    assert.match(dl('首输出').attrs.class, /\bgood\b/, 'a faster first output is good');
+    assert.equal(flat(dl('请求')), '+100%');
+    assert.doesNotMatch(dl('请求').attrs.class, /good|bad/, 'request volume is neutral');
+    const classBtns = all(label('失败率').children[2]).filter(e => e.tag === 'button' && /fcl/.test(e.attrs.class || ''));
+    assert.deepEqual(classBtns.map(flat), ['网络 2', '额度用尽 1', '上游错误 1'], 'top classes, largest first, consistent labels');
+    input('fcompare').checked = false;
+    vm.runInContext('renderKpis()', c);
+    assert.equal(dl('失败率'), undefined, 'compare off hides deltas');
+    c.SUM_PREV = null;c.SUM.total = saved;
+    // 失败原因 filter: query parameter, URL persistence and chip name.
+    input('fclass').value = 'rate_limit';
+    assert.equal(vm.runInContext('recordFilters().failure_class', c), 'rate_limit');
+    vm.runInContext('saveF()', c);
+    assert.equal(new URLSearchParams(c.location.search).get('fclass'), 'rate_limit');
+    assert.equal(vm.runInContext('FILTER_NAMES.fclass', c), '失败原因');
+    input('fclass').value = '';
+    vm.runInContext('saveF()', c);
+    links.length = 0;
     vm.runInContext('renderKpis()', c);
   }
   links[0].events.click();
@@ -697,6 +733,36 @@ function statusChipColours() {
   for (const [theme, v] of [['light', light], ['dark', dark]])
     for (const [fg, bg] of [['ok', 'ok-bg'], ['cool', 'cool-bg'], ['err', 'err-bg'], ['st5', 'st5-bg'], ['fg-2', 'off-bg']])
       assert.ok(ratio(v[fg], v[bg]) >= 4.5, `${theme} ${fg} on ${bg}: ${ratio(v[fg], v[bg]).toFixed(2)}`);
+}
+
+function failureClassesAndTrend() {
+  // Class colours: >= 3:1 against the card surface in both themes, all distinct, and the
+  // dark media block matches the explicit data-theme block.
+  const vars = block => Object.fromEntries([...block.matchAll(/--([\w-]+):#([0-9a-f]{6}|[0-9a-f]{3})\b/g)].map(m => [m[1], '#' + (m[2].length === 3 ? [...m[2]].map(x => x + x).join('') : m[2])]));
+  const lum = hex => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255).map(x => x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4).reduce((a, x, i) => a + x * [0.2126, 0.7152, 0.0722][i], 0);
+  const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+  const light = vars(section(':root{--fc-quota:', '}')), dark = vars(section(':root[data-theme=dark]{--fc-quota:', '}'));
+  assert.equal(section('@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--fc-quota:', '}').split('{--fc-quota:')[1], section(':root[data-theme=dark]{--fc-quota:', '}').split('{--fc-quota:')[1], 'dark class tokens agree');
+  const surf = {light: vars(section(':root{color-scheme:light;', '}')).surface, dark: vars(section(':root[data-theme=dark]{color-scheme:dark;', '}')).surface};
+  const classes = ['quota', 'rate_limit', 'upstream', 'network', 'stream', 'local', 'other'];
+  for (const [theme, v] of [['light', light], ['dark', dark]]) {
+    assert.equal(new Set(classes.map(k => v['fc-' + k])).size, 7, `${theme} class colours are distinct`);
+    for (const k of classes) assert.ok(ratio(v['fc-' + k], surf[theme]) >= 3, `${theme} ${k}: ${ratio(v['fc-' + k], surf[theme]).toFixed(2)}`);
+  }
+  // Labels: the same seven everywhere; first_quota_reset is just 额度用尽.
+  const c = vm.createContext({PROXY_ERR: {}});
+  vm.runInContext(section('const ERR_LBL=', '\n'), c);
+  for (const code of ['usage_limit', 'usage_limit_reached', 'all_quota_exhausted', 'first_quota_reset']) assert.equal(vm.runInContext(`ERR_LBL.${code}`, c), '额度用尽');
+  vm.runInContext(section('const FCLS=', '\n'), c);
+  assert.deepEqual(vm.runInContext('FCLS.map(x=>x.join(":")).join(",")', c), 'quota:额度用尽,rate_limit:限流,upstream:上游错误,network:网络,stream:流中断,local:本地,other:其他');
+  for (const [v, l] of [['quota', '额度用尽'], ['rate_limit', '限流'], ['upstream', '上游错误'], ['network', '网络'], ['stream', '流中断'], ['local', '本地'], ['other', '其他']])
+    assert.match(html, new RegExp(`<option value="${v}">${l}</option>`), `失败原因 filter offers ${l}`);
+  for (const [v, l] of [['fail', '失败原因'], ['lat', '延迟分位'], ['cap', '占用与拒绝']]) assert.match(html, new RegExp(`<option value="${v}">${l}</option>`));
+  // Latency axis ticks land on round values.
+  vm.runInContext(section('function niceMs(', '\n'), c);
+  assert.equal(vm.runInContext('niceMs(3300)', c), 4000);
+  assert.equal(vm.runInContext('niceMs(700)', c), 1000);
+  assert.equal(vm.runInContext('niceMs(9000)', c), 10000);
 }
 
 async function observationErrorDetails() {
@@ -1187,11 +1253,12 @@ async function memoryPanel() {
   await egressResponses();
   bucketSamplesAndUnknownOutcomes();
   statusChipColours();
+  failureClassesAndTrend();
   await observationErrorDetails();
   await filterChipScopeAndFocus();
   await inspectorRetryAndNavigation();
   recordRenderingAndInspectorFocus();
   autoRefreshInterval();
   cloudflareEgressBanner();
-  console.log('PASS: status chip colours/contrast, auto-refresh interval, Cloudflare egress banner, query/auth races, Cloudflare Access expiry, shared scope and buckets, ID paging, history/drill-down, usage samples and unknown outcomes, overview snapshots, egress identity/order/logout, scoped filter chips/URL/focus, inspector retry/expiry/stale authorization/keyboard, keyed record updates and inspector focus, memory panel, scope suggestions, Token cache rate');
+  console.log('PASS: status chip colours/contrast, auto-refresh interval, Cloudflare egress banner, query/auth races, Cloudflare Access expiry, shared scope and buckets, ID paging, history/drill-down, usage samples and unknown outcomes, overview snapshots, egress identity/order/logout, scoped filter chips/URL/focus, inspector retry/expiry/stale authorization/keyboard, keyed record updates and inspector focus, memory panel, scope suggestions, Token cache rate, failure classes/upstream rate/deltas/失败原因 filter');
 })().catch(error => {console.error(error); process.exitCode = 1;}).finally(() => clearTimeout(watchdog));
