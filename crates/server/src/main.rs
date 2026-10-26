@@ -272,6 +272,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         config: Arc::new(cfg.into()),
         egress: Default::default(),
     };
+    let _occupancy = ciallopa_forward::occupancy::spawn_sampler(state.clone());
     let known: std::collections::HashSet<String> = state
         .accounts
         .list()

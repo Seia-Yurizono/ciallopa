@@ -1,5 +1,5 @@
 //! Read-only usage API (behind the client key): records, record metadata/detail,
-//! summary, quota, local-limit refusals and scope-filter suggestions under `/usage/v1`.
+//! summary, quota, local-limit refusals, occupancy history and scope-filter suggestions under `/usage/v1`.
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -47,6 +47,7 @@ pub fn routes(
         .route("/usage/v1/summary", get(summary))
         .route("/usage/v1/quota", get(quota))
         .route("/usage/v1/refusals", get(refusals))
+        .route("/usage/v1/occupancy", get(occupancy))
         .route("/usage/v1/scope-values", get(scope_values))
         .with_state(St {
             rec,
@@ -423,6 +424,64 @@ async fn refusals(State(St { rec, .. }): State<St>, Query(q): Query<RefusalsQ>) 
     };
     match rec.refusal_rows(rq).await {
         Ok(rows) => Json(serde_json::json!({"totals": totals, "rows": rows})).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    }
+}
+
+#[derive(Deserialize)]
+struct OccupancyQ {
+    from: Option<i64>,
+    to: Option<i64>,
+    range: Option<String>,
+    /// Bucket width (`1m`, `5m`, `1h`); widened so a range has at most 1440 buckets.
+    step: Option<String>,
+    instance: Option<String>,
+}
+
+/// Process occupancy history (inflight, WebSocket connections, buffered body bytes and the
+/// limits in effect): `{from, to, step_min, rows}`, oldest bucket first, one row per bucket
+/// and instance.
+async fn occupancy(State(St { rec, .. }): State<St>, Query(q): Query<OccupancyQ>) -> Response {
+    let Some(rec) = rec else {
+        return err(StatusCode::NOT_FOUND, "usage log disabled");
+    };
+    let to = q.to.unwrap_or_else(now_ms);
+    let from = match (q.from, q.range.as_deref()) {
+        (Some(f), _) => f,
+        (None, r) => match parse_range(r.unwrap_or("24h")) {
+            Some(d) => to - d,
+            None => return err(StatusCode::BAD_REQUEST, "bad range (use e.g. 30m, 24h, 7d)"),
+        },
+    };
+    if from > to {
+        return err(StatusCode::BAD_REQUEST, "from > to");
+    }
+    let step_min = match q.step.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        None => 1,
+        Some(s) => match parse_range(s) {
+            Some(d) if d >= 60_000 && d % 60_000 == 0 => {
+                u32::try_from(d / 60_000).unwrap_or(u32::MAX)
+            }
+            _ => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "bad step (whole minutes, e.g. 1m, 5m, 1h)",
+                )
+            }
+        },
+    };
+    let oq = ciallopa_usage::OccupancyQuery {
+        from_ms: from,
+        to_ms: to,
+        instance: q.instance.filter(|v| !v.trim().is_empty()),
+        step_min,
+    };
+    let step = ciallopa_usage::occupancy_step(&oq);
+    match rec.occupancy_rows(oq).await {
+        Ok(rows) => {
+            Json(serde_json::json!({"from": from, "to": to, "step_min": step, "rows": rows}))
+                .into_response()
+        }
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     }
 }

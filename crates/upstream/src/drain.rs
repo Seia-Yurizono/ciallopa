@@ -39,6 +39,19 @@ pub struct Drain {
     ws: AtomicUsize,
     /// Part of `body_bytes` held by client WebSocket messages.
     ws_bytes: AtomicU64,
+    /// Highest `inflight` / `ws` / `body_bytes` since the last [`Drain::take_peaks`].
+    peak_inflight: AtomicUsize,
+    peak_ws: AtomicUsize,
+    peak_body: AtomicU64,
+}
+
+/// Highest occupancy since the previous [`Drain::take_peaks`] (exact: updated on every
+/// increment, so short bursts between samples are not missed).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Peaks {
+    pub inflight: usize,
+    pub ws: usize,
+    pub body_bytes: u64,
 }
 
 /// A share of the global buffered-request-body budget. Dropping it returns the bytes.
@@ -157,9 +170,14 @@ impl Drain {
                     .then(|| n.checked_add(1))
                     .flatten()
             });
-        if result.is_err() {
-            self.count(RefusalKind::Inflight);
-            return Err(Refused::Busy);
+        match result {
+            Ok(n) => {
+                self.peak_inflight.fetch_max(n + 1, Ordering::AcqRel);
+            }
+            Err(_) => {
+                self.count(RefusalKind::Inflight);
+                return Err(Refused::Busy);
+            }
         }
         let lease = Lease {
             _inner: Arc::new(LeaseInner {
@@ -224,9 +242,14 @@ impl Drain {
                     .then(|| n.checked_add(1))
                     .flatten()
             });
-        if r.is_err() {
-            self.count(RefusalKind::Ws);
-            return Err(Refused::Busy);
+        match r {
+            Ok(n) => {
+                self.peak_ws.fetch_max(n + 1, Ordering::AcqRel);
+            }
+            Err(_) => {
+                self.count(RefusalKind::Ws);
+                return Err(Refused::Busy);
+            }
         }
         Ok(WsSlot(self.clone()))
     }
@@ -267,11 +290,12 @@ impl Drain {
             let freed = self.body_freed.notified();
             tokio::pin!(freed);
             freed.as_mut().enable();
-            if self
-                .body_bytes
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, fits)
-                .is_ok()
+            if let Ok(prev) =
+                self.body_bytes
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, fits)
             {
+                self.peak_body
+                    .fetch_max(prev.saturating_add(n), Ordering::AcqRel);
                 permit.held += n;
                 if permit.ws {
                     self.ws_bytes.fetch_add(n, Ordering::AcqRel);
@@ -285,6 +309,24 @@ impl Drain {
         }
     }
 
+    /// Highest occupancy since the previous call, then restart each peak at the current
+    /// value (what is still held counts toward the next interval).
+    pub fn take_peaks(&self) -> Peaks {
+        Peaks {
+            inflight: self
+                .peak_inflight
+                .swap(self.inflight(), Ordering::AcqRel)
+                .max(self.inflight()),
+            ws: self
+                .peak_ws
+                .swap(self.ws_connections(), Ordering::AcqRel)
+                .max(self.ws_connections()),
+            body_bytes: self
+                .peak_body
+                .swap(self.body_bytes(), Ordering::AcqRel)
+                .max(self.body_bytes()),
+        }
+    }
     /// Buffered request body bytes currently reserved.
     pub fn body_bytes(&self) -> u64 {
         self.body_bytes.load(Ordering::Acquire)
@@ -378,6 +420,39 @@ impl Drain {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn peaks_catch_bursts_between_samples() {
+        let d = Arc::new(Drain::default());
+        let a = d.admit(0).unwrap();
+        let b = d.admit(0).unwrap();
+        let w = d.ws_slot(0).unwrap();
+        let mut p = d.body_permit();
+        d.reserve_body(&mut p, 500, 0, Duration::ZERO)
+            .await
+            .unwrap();
+        drop((b, p));
+        assert_eq!(
+            d.take_peaks(),
+            Peaks {
+                inflight: 2,
+                ws: 1,
+                body_bytes: 500
+            }
+        );
+        // Restarted at what is still held.
+        assert_eq!(
+            d.take_peaks(),
+            Peaks {
+                inflight: 1,
+                ws: 1,
+                body_bytes: 0
+            }
+        );
+        drop((a, w));
+        assert_eq!(d.take_peaks().inflight, 1, "held during the interval");
+        assert_eq!(d.take_peaks(), Peaks::default());
+    }
 
     #[tokio::test]
     async fn body_budget_reserves_waits_and_releases() {

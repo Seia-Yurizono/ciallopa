@@ -2,6 +2,7 @@
 //! `try_send` into a bounded queue (full ⇒ drop + count); one dedicated OS thread batch-writes
 //! to SQLite (WAL). Reads open their own read-only connections. Design: docs/USAGE.md.
 pub mod detail;
+pub mod occupancy;
 pub mod prices;
 pub mod refusals;
 pub mod reset;
@@ -9,9 +10,10 @@ mod store;
 mod writer;
 
 pub use detail::{DetailRow, ErrorDetail};
+pub use occupancy::{OccupancyRow, Sample as OccupancySample};
 pub use prices::{PriceTable, Tier};
 pub use refusals::{Reason as RefusalReason, Refusal, RefusalRow, RefusalTotals};
-pub use store::RefusalQuery;
+pub use store::{occupancy_step, OccupancyQuery, RefusalQuery};
 pub use store::{
     AccountQuota, DayBucket, Dim, Estimate, Filters, Outcome, RecentQuery, RecordRow, ScopeValue,
     Summary, SummaryGroup, SummaryQuery, WindowQuota, PREWARM_ENDPOINT,
@@ -256,6 +258,7 @@ pub struct Recorder {
     pub ids: RequestIds,
     counters: Arc<Counters>,
     refusals: Arc<refusals::Aggregator>,
+    occupancy: Arc<occupancy::Aggregator>,
     join: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
@@ -275,8 +278,10 @@ impl Recorder {
         let counters = Arc::new(Counters::default());
         let retention_days = Arc::new(std::sync::atomic::AtomicU32::new(cfg.retention_days));
         let refusals = Arc::new(refusals::Aggregator::default());
+        let occupancy = Arc::new(occupancy::Aggregator::default());
         let w = writer::Writer {
             refusals: refusals.clone(),
+            occupancy: occupancy.clone(),
             conn,
             rx,
             batch_size: cfg.batch_size.max(1),
@@ -297,6 +302,7 @@ impl Recorder {
             ids: RequestIds::default(),
             counters,
             refusals,
+            occupancy,
             join: Mutex::new(Some(join)),
         }))
     }
@@ -322,6 +328,20 @@ impl Recorder {
     /// writer upserts the groups every [`refusals::FLUSH_EVERY`] and on shutdown.
     pub fn refuse(&self, r: Refusal) {
         self.refusals.add(r);
+    }
+
+    /// Add one occupancy sample to its minute. Non-blocking (a short mutex); the writer
+    /// stores each minute once it is complete, and everything on shutdown or flush.
+    pub fn occupancy(&self, s: occupancy::Sample) {
+        self.occupancy.add(s);
+    }
+
+    /// Occupancy buckets for a range, oldest first, one per bucket and instance.
+    pub async fn occupancy_rows(&self, q: OccupancyQuery) -> Result<Vec<OccupancyRow>, UsageError> {
+        let p = self.path.clone();
+        tokio::task::spawn_blocking(move || Ok(store::occupancy_rows(&store::open_ro(&p)?, &q)?))
+            .await
+            .map_err(|_| UsageError::Gone)?
     }
 
     /// Refusal totals by reason for a range (key / instance filters only).
@@ -508,6 +528,7 @@ pub fn purge_db(path: &Path, cutoff_ms: i64, chunk: u64) -> Result<u64, UsageErr
         n += k;
         if k < chunk {
             while store::purge_refusals_before(&c, cutoff_ms)? {}
+            while store::purge_occupancy_before(&c, cutoff_ms)? {}
             return Ok(n);
         }
     }
@@ -2012,5 +2033,102 @@ mod tests {
         let rows = store::refusal_rows(&c, &q).unwrap();
         assert_eq!(rows.len(), 1, "older minute purged");
         assert_eq!(rows[0].key.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn occupancy_stores_minutes_merges_flushes_buckets_and_follows_retention() {
+        let d = tempfile::tempdir().unwrap();
+        let r = Recorder::open_as(&cfg(d.path()), "pod-a").unwrap();
+        let minute = 1_700_000_100_000; // a five-minute boundary
+        let mk = |ts_ms, inflight, peak, ws, buffered| OccupancySample {
+            ts_ms,
+            inflight,
+            peak_inflight: peak,
+            ws,
+            peak_ws: ws,
+            buffered,
+            peak_buffered: buffered,
+            limit_inflight: 8,
+            limit_ws: 4,
+            limit_buffered: 1 << 20,
+        };
+        r.occupancy(mk(minute + 1_000, 2, 6, 1, 100));
+        r.flush_blocking().unwrap();
+        r.occupancy(mk(minute + 2_000, 4, 4, 3, 300));
+        r.occupancy(mk(minute + 61_000, 1, 1, 0, 0));
+        r.occupancy(mk(minute + 3 * 60_000, 0, 0, 0, 0));
+        r.shutdown();
+        let c = store::open_ro(r.path()).unwrap();
+        let q = OccupancyQuery {
+            from_ms: minute,
+            to_ms: minute + 10 * 60_000,
+            ..Default::default()
+        };
+        let rows = store::occupancy_rows(&c, &q).unwrap();
+        assert_eq!(rows.len(), 3, "{rows:?}");
+        let m = &rows[0];
+        assert_eq!(m.minute_ms, minute);
+        assert_eq!(m.instance.as_deref(), Some("pod-a"));
+        assert_eq!(m.samples, 2, "merged across flushes");
+        assert_eq!(
+            (m.inflight_avg, m.inflight_peak),
+            (3.0, 6),
+            "exact peak kept"
+        );
+        assert_eq!((m.ws_avg, m.ws_peak), (2.0, 3));
+        assert_eq!((m.buffered_avg_bytes, m.buffered_peak_bytes), (200.0, 300));
+        assert_eq!(
+            (
+                m.max_inflight_requests,
+                m.ws_max_connections,
+                m.max_buffered_body_bytes
+            ),
+            (8, 4, 1 << 20)
+        );
+        // Five-minute buckets merge the first two minutes.
+        let b = store::occupancy_rows(
+            &c,
+            &OccupancyQuery {
+                step_min: 5,
+                ..q.clone()
+            },
+        )
+        .unwrap();
+        assert_eq!(b.len(), 1, "{b:?}");
+        assert_eq!(
+            (b[0].samples, b[0].inflight_peak, b[0].inflight_avg),
+            (4, 6, 1.75)
+        );
+        assert_eq!(b[0].minute_ms % 300_000, 0);
+        let other = OccupancyQuery {
+            instance: Some("pod-b".into()),
+            ..q.clone()
+        };
+        assert!(store::occupancy_rows(&c, &other).unwrap().is_empty());
+        let mine = OccupancyQuery {
+            instance: Some("pod-a".into()),
+            ..q.clone()
+        };
+        assert_eq!(store::occupancy_rows(&c, &mine).unwrap().len(), 3);
+        drop(c);
+        purge_db(r.path(), minute + 60_000, 100).unwrap();
+        let c = store::open_ro(r.path()).unwrap();
+        let rows = store::occupancy_rows(&c, &q).unwrap();
+        assert_eq!(rows.len(), 2, "older minute purged");
+        assert_eq!(rows[0].minute_ms, minute + 60_000);
+    }
+
+    #[test]
+    fn occupancy_step_caps_buckets() {
+        let q = |hours: i64, step_min| OccupancyQuery {
+            from_ms: 0,
+            to_ms: hours * 3_600_000,
+            step_min,
+            ..Default::default()
+        };
+        assert_eq!(occupancy_step(&q(1, 0)), 1);
+        assert_eq!(occupancy_step(&q(24, 0)), 1);
+        assert_eq!(occupancy_step(&q(24 * 7, 0)), 7);
+        assert_eq!(occupancy_step(&q(24 * 7, 60)), 60);
     }
 }

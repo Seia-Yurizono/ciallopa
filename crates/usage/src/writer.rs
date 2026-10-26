@@ -18,6 +18,7 @@ pub(crate) struct Writer {
     pub counters: Arc<Counters>,
     pub state: store::WriterState,
     pub refusals: Arc<crate::refusals::Aggregator>,
+    pub occupancy: Arc<crate::occupancy::Aggregator>,
 }
 
 impl Writer {
@@ -29,6 +30,7 @@ impl Writer {
         loop {
             if Instant::now() >= next_refusals {
                 self.flush_refusals();
+                self.flush_occupancy(false);
                 next_refusals = Instant::now() + crate::refusals::FLUSH_EVERY;
             }
             let days = self.retention_days.load(Ordering::Relaxed);
@@ -110,8 +112,9 @@ impl Writer {
                 }
             }
             if stop || !acks.is_empty() {
-                // Shutdown and explicit flushes include refusals counted so far.
+                // Shutdown and explicit flushes include refusals and occupancy so far.
                 self.flush_refusals();
+                self.flush_occupancy(true);
             }
             for a in acks.drain(..) {
                 let _ = a.send(());
@@ -135,6 +138,19 @@ impl Writer {
         }
     }
 
+    /// Complete minutes only (one write per minute), unless `all`.
+    fn flush_occupancy(&mut self, all: bool) {
+        let rows = self.occupancy.take((!all).then(crate::now_ms));
+        if rows.is_empty() {
+            return;
+        }
+        if let Err(e) = store::upsert_occupancy(&mut self.conn, &mut self.state, &rows) {
+            self.state.reset();
+            tracing::warn!(error = %e, minutes = rows.len(), "occupancy write failed; retrying later");
+            self.occupancy.restore(rows);
+        }
+    }
+
     /// Returns true when more rows may remain.
     fn purge(&mut self) -> bool {
         let cutoff =
@@ -146,7 +162,15 @@ impl Writer {
                 false
             }
         };
+        let more_occupancy = match store::purge_occupancy_before(&self.conn, cutoff) {
+            Ok(more) => more,
+            Err(e) => {
+                tracing::warn!(error = %e, "occupancy purge failed");
+                false
+            }
+        };
         more_refusals
+            | more_occupancy
             | match store::purge_before(&mut self.conn, cutoff, PURGE_CHUNK) {
                 Ok(n) => {
                     if n > 0 {
