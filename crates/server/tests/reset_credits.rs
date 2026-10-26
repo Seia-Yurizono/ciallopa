@@ -806,6 +806,8 @@ async fn quota_auto_switch_and_opted_in_refresh() {
     let list = e.get("/usage/v1/reset-credits").await;
     assert_eq!(list["quota_refresh_mins"], 0, "{list}");
     assert_eq!(list["refresh_mins"], 0, "{list}");
+    assert_eq!(list["quota_refresh_max_mins"], 0, "{list}");
+    assert_eq!(list["refresh_max_mins"], 0, "{list}");
     assert_eq!(list["accounts"][0]["quota_auto"], false);
     assert_eq!(list["accounts"][1]["quota_auto"], false);
 

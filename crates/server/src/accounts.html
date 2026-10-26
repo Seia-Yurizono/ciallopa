@@ -525,7 +525,7 @@ function cardCount(r){if(!r)return null;const L=r.available_count,U=r.usage_avai
 // limit_reached of the last 刷新额度, unless a newer quota observation replaced it
 function limitHit(r,qq){return !!(r&&r.limit_reached&&r.usage_observed_ms&&!(qq&&qq.observed_at_ms>r.usage_observed_ms+5e3))}
 // 快到期时自动使用: per-account switch and the next planned time, from the card listing
-function readAuto(r){if(r.status!=="fulfilled")return;const j=r.value.j,m={},qm={};for(const x of j.accounts){m[x.account]={on:!!x.auto,next:x.auto_next_ms||null};qm[x.account]=!!x.quota_auto}AUTO=m;QAUTO=qm;AUTOTOP={lead:j.auto_lead_mins,ok:!!j.auto_available,qmins:j.quota_refresh_mins||0}}
+function readAuto(r){if(r.status!=="fulfilled")return;const j=r.value.j,m={},qm={};for(const x of j.accounts){m[x.account]={on:!!x.auto,next:x.auto_next_ms||null};qm[x.account]=!!x.quota_auto}AUTO=m;QAUTO=qm;AUTOTOP={lead:j.auto_lead_mins,ok:!!j.auto_available,qmins:j.quota_refresh_mins||0,qmax:j.quota_refresh_mins?(j.quota_refresh_max_mins||j.quota_refresh_mins):0}}
 function hhmm(ms){const d=new Date(ms),n=new Date();return d.toDateString()===n.toDateString()?p2(d.getHours())+":"+p2(d.getMinutes()):fmtTime(ms,true)}
 function autoLine(a,cards){const au=AUTO[a.id],t=AUTOTOP;if(!t||!t.ok||!au||(!au.on&&(!W||cards===null)))return null;
   const tip="开启后，这个账号的重置卡在到期前 "+t.lead+" 分钟内自动用掉一张（最早到期的那张）；提前量在 设置 › 账号与重置卡 修改。账号停用或需要重新登录时跳过";
@@ -537,7 +537,7 @@ function autoLine(a,cards){const au=AUTO[a.id],t=AUTOTOP;if(!t||!t.ok||!au||(!au
     catch(e){sw.checked=!on;fail(e)}finally{sw.disabled=false}});
   return h("span","row aut",h("label",{class:"row nw xs",title:tip},sw,h("span",null,"快到期时自动使用")),next)}
 function quotaAutoLine(a){const on=QAUTO[a.id],t=AUTOTOP;if(!t||!t.ok||on===undefined||(!on&&!W))return null;
-  const tip=t.qmins?"开启后，每 "+t.qmins+" 分钟向上游查询这个账号的额度（与手动刷新额度相同，含解除额度冷却）；间隔在 设置 › 账号与重置卡 修改。需要重新登录时跳过":"开启后，按 设置 › 账号与重置卡 里的「额度自动刷新间隔」定期查询；当前间隔为 0（只手动刷新），开启开关也不会自动查。需要重新登录时跳过";
+  const tip=t.qmins?"开启后，每 "+(t.qmax>t.qmins?t.qmins+"–"+t.qmax:t.qmins)+" 分钟向上游查询这个账号的额度（与手动刷新额度相同，含解除额度冷却）"+(t.qmax>t.qmins?"；每个账号各自随机错开":"")+"；间隔在 设置 › 账号与重置卡 修改。需要重新登录时跳过":"开启后，按 设置 › 账号与重置卡 里的「额度自动刷新间隔」定期查询；当前间隔为 0（只手动刷新），开启开关也不会自动查。需要重新登录时跳过";
   if(!W)return on?h("span",{class:"xs mut",title:tip},"自动刷新额度 已开启"):null;
   const sw=h("input",{type:"checkbox",class:"sw","aria-label":"自动刷新额度："+nm(a),"data-fk":a.id+"|qauto"});sw.checked=!!on;
   sw.addEventListener("change",async()=>{const v=sw.checked;sw.disabled=true;

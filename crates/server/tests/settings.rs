@@ -1096,3 +1096,44 @@ async fn max_body_mb_is_hot_for_forwarding_and_management_routes() {
     let v: Value = r.json().await.unwrap();
     assert_eq!(v["error"]["message"], "Request body is too large.");
 }
+
+/// Refresh ranges: a v0.2.1 config (one value) loads as a fixed interval; a range is written
+/// through the API and applied hot; min > max is refused with a clear message.
+#[tokio::test]
+async fn refresh_range_old_value_and_write() {
+    let e = env("\n[ui]\nallow_config_write = true\nquota_refresh_mins = 15\nreset_credits_refresh_mins = 30\n").await;
+    let (c, etag) = e.config().await;
+    assert_eq!(c["running"]["ui.quota_refresh_mins"], 15, "{c}");
+    assert_eq!(c["running"]["ui.quota_refresh_max_mins"], 0, "{c}");
+    assert_eq!(c["running"]["ui.reset_credits_refresh_max_mins"], 0, "{c}");
+    let v: Value = e
+        .req(reqwest::Method::POST, "/admin/v1/config/validate")
+        .json(&json!({"changes": {"ui.quota_refresh_mins": 10, "ui.quota_refresh_max_mins": 5}}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(v["ok"], false, "{v}");
+    assert!(
+        v.to_string().contains(
+            "ui.quota_refresh_max_mins (5) must not be less than ui.quota_refresh_mins (10)"
+        ),
+        "{v}"
+    );
+    let r = e
+        .req(reqwest::Method::PUT, "/admin/v1/config")
+        .header("if-match", &etag)
+        .json(&json!({"changes": {"ui.quota_refresh_mins": 5, "ui.quota_refresh_max_mins": 10}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200, "{}", r.text().await.unwrap_or_default());
+    let (c, _) = e.config().await;
+    assert_eq!(c["running"]["ui.quota_refresh_mins"], 5, "{c}");
+    assert_eq!(c["running"]["ui.quota_refresh_max_mins"], 10, "{c}");
+    let text = std::fs::read_to_string(&e.path).unwrap();
+    assert!(text.contains("quota_refresh_max_mins = 10"), "{text}");
+    assert!(text.contains("reset_credits_refresh_mins = 30"), "{text}");
+}

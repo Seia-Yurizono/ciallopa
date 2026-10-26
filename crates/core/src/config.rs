@@ -177,13 +177,22 @@ pub struct UiConfig {
     /// Default `false`: the API answers 403 and the page shows no button. Only gates the
     /// manual action; automatic use is the per-account switch on the accounts page.
     pub allow_reset_consume: bool,
-    /// Background refresh of each account's reset-credit list (read-only GET), minutes.
-    /// `0` = only on demand; when on, `1..=60`.
+    /// Background refresh of the reset-credit lists (read-only GET): shortest gap between two
+    /// rounds, minutes. `0` = only on demand; when on, `1..=60`. Each next round is drawn at
+    /// random between this and [`Self::reset_credits_refresh_max_mins`].
     pub reset_credits_refresh_mins: u64,
-    /// Background 刷新额度 (`GET /wham/usage`) for accounts with the per-account switch on,
-    /// minutes. `0` = only on demand; when on, `1..=60`. Coarser than Codex TUI's adaptive
-    /// 60/30/15/5 s single-account poll — multi-account default when enabled is 5 min.
+    /// Longest gap for the reset-credit refresh, minutes. `0` = same as the shortest (a fixed
+    /// interval; what a config from before the range loads as); otherwise `min..=60`.
+    pub reset_credits_refresh_max_mins: u64,
+    /// Background 刷新额度 (`GET /wham/usage`) for accounts with the per-account switch on:
+    /// shortest gap between two refreshes of one account, minutes. `0` = only on demand; when
+    /// on, `1..=60`. Every account draws its own next time at random in the range, so accounts
+    /// do not refresh in lockstep. Codex TUI polls one account adaptively (60/30/15/5 s,
+    /// no jitter); the page fills 5–10 min when switched on.
     pub quota_refresh_mins: u64,
+    /// Longest gap for 刷新额度, minutes. `0` = same as the shortest (fixed interval);
+    /// otherwise `min..=60`.
+    pub quota_refresh_max_mins: u64,
     /// Automatic use (accounts with the per-account switch on): use a card this many minutes
     /// before it expires. `5..=1440`.
     pub reset_credits_auto_lead_mins: u64,
@@ -192,13 +201,35 @@ pub struct UiConfig {
     /// Like `allow_reset_consume`, it can only be turned on in the config file.
     pub allow_config_write: bool,
 }
+/// A background refresh range in minutes: `None` = off (`min == 0`), else `(min, max)` with
+/// `max == 0` read as `min` (fixed interval).
+pub fn refresh_range(min: u64, max: u64) -> Option<(u64, u64)> {
+    (min > 0).then_some((min, if max == 0 { min } else { max }))
+}
+
+impl UiConfig {
+    /// Reset-credit listing refresh range (minutes), `None` = only on demand.
+    pub fn reset_credits_refresh_range(&self) -> Option<(u64, u64)> {
+        refresh_range(
+            self.reset_credits_refresh_mins,
+            self.reset_credits_refresh_max_mins,
+        )
+    }
+    /// 刷新额度 background range (minutes), `None` = off.
+    pub fn quota_refresh_range(&self) -> Option<(u64, u64)> {
+        refresh_range(self.quota_refresh_mins, self.quota_refresh_max_mins)
+    }
+}
+
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
             enabled: true,
             allow_reset_consume: false,
             reset_credits_refresh_mins: 0,
+            reset_credits_refresh_max_mins: 0,
             quota_refresh_mins: 0,
+            quota_refresh_max_mins: 0,
             reset_credits_auto_lead_mins: 10,
             allow_config_write: false,
         }
@@ -463,16 +494,31 @@ impl Config {
                 "ui.reset_credits_auto_lead_mins must be in 5..=1440".into(),
             ));
         }
-        for (name, v) in [
+        for (name, min, max) in [
             (
-                "ui.reset_credits_refresh_mins",
+                "ui.reset_credits_refresh",
                 self.ui.reset_credits_refresh_mins,
+                self.ui.reset_credits_refresh_max_mins,
             ),
-            ("ui.quota_refresh_mins", self.ui.quota_refresh_mins),
+            (
+                "ui.quota_refresh",
+                self.ui.quota_refresh_mins,
+                self.ui.quota_refresh_max_mins,
+            ),
         ] {
-            if v != 0 && !(1..=60).contains(&v) {
+            if min != 0 && !(1..=60).contains(&min) {
                 return Err(ConfigError::Invalid(format!(
-                    "{name} must be 0 or in 1..=60"
+                    "{name}_mins must be 0 (off) or in 1..=60, got {min}"
+                )));
+            }
+            if max != 0 && !(1..=60).contains(&max) {
+                return Err(ConfigError::Invalid(format!(
+                    "{name}_max_mins must be 0 (= {name}_mins) or in 1..=60, got {max}"
+                )));
+            }
+            if min != 0 && max != 0 && max < min {
+                return Err(ConfigError::Invalid(format!(
+                    "{name}_max_mins ({max}) must not be less than {name}_mins ({min})"
                 )));
             }
         }
@@ -749,6 +795,59 @@ mod tests {
         );
         assert!(Config::parse("[ui]\nquota_refresh_mins = 61\n").is_err());
         assert!(Config::parse("[ui]\nreset_credits_refresh_mins = 61\n").is_err());
+    }
+
+    #[test]
+    fn refresh_old_single_value_loads_as_fixed_interval() {
+        // A config from v0.2.1 (one value per timer) loads unchanged: min == max.
+        let c = Config::parse("[ui]\nreset_credits_refresh_mins = 15\nquota_refresh_mins = 5\n")
+            .unwrap();
+        assert_eq!(c.ui.reset_credits_refresh_max_mins, 0);
+        assert_eq!(c.ui.quota_refresh_max_mins, 0);
+        assert_eq!(c.ui.reset_credits_refresh_range(), Some((15, 15)));
+        assert_eq!(c.ui.quota_refresh_range(), Some((5, 5)));
+        // defaults: both off
+        let d = Config::parse("").unwrap();
+        assert_eq!(d.ui.quota_refresh_range(), None);
+        assert_eq!(d.ui.reset_credits_refresh_range(), None);
+        // a range
+        let r =
+            Config::parse("[ui]\nquota_refresh_mins = 5\nquota_refresh_max_mins = 10\n").unwrap();
+        assert_eq!(r.ui.quota_refresh_range(), Some((5, 10)));
+        // min == max is a fixed interval; off keeps a typed max without using it
+        let f =
+            Config::parse("[ui]\nquota_refresh_mins = 7\nquota_refresh_max_mins = 7\n").unwrap();
+        assert_eq!(f.ui.quota_refresh_range(), Some((7, 7)));
+        let o =
+            Config::parse("[ui]\nquota_refresh_mins = 0\nquota_refresh_max_mins = 10\n").unwrap();
+        assert_eq!(o.ui.quota_refresh_range(), None);
+    }
+
+    #[test]
+    fn refresh_range_validation() {
+        let e = |s: &str| match Config::parse(s) {
+            Err(ConfigError::Invalid(m)) => m,
+            other => panic!("{s}: {other:?}"),
+        };
+        let m = e("[ui]\nquota_refresh_mins = 10\nquota_refresh_max_mins = 5\n");
+        assert!(
+            m.contains("ui.quota_refresh_max_mins (5)") && m.contains("ui.quota_refresh_mins (10)"),
+            "{m}"
+        );
+        let m = e("[ui]\nreset_credits_refresh_mins = 6\nreset_credits_refresh_max_mins = 3\n");
+        assert!(m.contains("ui.reset_credits_refresh_max_mins (3)"), "{m}");
+        let m = e("[ui]\nquota_refresh_mins = 5\nquota_refresh_max_mins = 61\n");
+        assert!(
+            m.contains("ui.quota_refresh_max_mins") && m.contains("61"),
+            "{m}"
+        );
+        let m = e("[ui]\nreset_credits_refresh_max_mins = 90\n");
+        assert!(m.contains("ui.reset_credits_refresh_max_mins"), "{m}");
+        let m = e("[ui]\nquota_refresh_mins = 61\nquota_refresh_max_mins = 61\n");
+        assert!(
+            m.contains("ui.quota_refresh_mins must be 0 (off) or in 1..=60"),
+            "{m}"
+        );
     }
 
     #[test]
