@@ -56,10 +56,10 @@ async function queryAndPaging() {
     scopeWindow: {from: 9000000, to: 95400000, fixed: false}, recordWindow: null,
     recState: {rows: [], cursor: null, total: 0},
     usageGet: async url => {
-      if (url.startsWith('/usage/v1/records?')) {calls.push(new URL(url, 'http://local')); return reply();}
+      if (url.startsWith('/usage/v1/records?') || url.startsWith('/usage/v1/refusals?')) {calls.push(new URL(url, 'http://local')); return reply();}
       return {};
     },
-    renderRecords() {}, renderKpis() {}, renderFp() {}, renderTrend() {}, renderRuntime() {}, showScope() {}, saveF() {}, fmtN: String, fail(error) {throw error;},
+    renderRecords() {}, renderRefusals() {}, renderKpis() {}, renderFp() {}, renderTrend() {}, renderRuntime() {}, showScope() {}, saveF() {}, fmtN: String, fail(error) {throw error;},
     loadQuota: async () => {}, egressTag: async () => ({}), loadMem: async () => {}, hms: () => 'now',
     rollWindow() {rolls++; c.scopeWindow = {...c.scopeWindow, from: c.scopeWindow.from + 1000, to: c.scopeWindow.to + 1000};},
   });
@@ -120,6 +120,28 @@ async function queryAndPaging() {
   assert.equal(c.recState.rows[0].request_id, '0000000000000008');
   assert.equal(c.recState.cursor, null);
 
+  // 已拒绝 switches the list to per-minute refusal groups: range, key and instance only; an
+  // account or model scope shows nothing (refusals happen before routing).
+  input('foutcome').value = 'refused';
+  const savedReply = reply;
+  reply = async () => ({totals: {count: 7}, rows: [{minute_ms: 1, count: 7}]});
+  const beforeRefused = calls.length;
+  await vm.runInContext('loadRecords(false)', c);
+  assert.equal(calls.length, beforeRefused, 'account/model scope: no refusal fetch');
+  assert.equal(vm.runInContext('refState.rows.length', c), 0);
+  const acct = input('facct').value, model = input('fmodel').value;
+  input('facct').value = ''; input('fmodel').value = '';
+  await vm.runInContext('loadRecords(false)', c);
+  const rq = calls.at(-1);
+  assert.equal(rq.pathname, '/usage/v1/refusals');
+  assert.equal(rq.searchParams.get('key'), 'laptop');
+  assert.equal(rq.searchParams.get('instance'), 'home');
+  assert.equal(rq.searchParams.has('account'), false);
+  assert.equal(rq.searchParams.has('outcome'), false);
+  assert.equal(vm.runInContext('refState.total', c), 7);
+  input('facct').value = acct; input('fmodel').value = model; input('foutcome').value = '';
+  reply = savedReply;
+
   const scopeCalls = [];
   c.loadSummary = async () => scopeCalls.push(new URLSearchParams(vm.runInContext('summaryQuery()', c)));
   c.loadTrend = async () => scopeCalls.push(new URLSearchParams(vm.runInContext('trendQuery()', c)));
@@ -172,6 +194,7 @@ async function queryAndPaging() {
   c.clear = element => {element.children = [];};
   c.exact = c.fmtUsd = c.fmtMs = String;
   c.RECORDER = null;
+  c.REFS = null;
   c.activeRecord = null;
   c.location = {pathname: '/', search: ''};
   c.history = {replaceState(_state, _title, url) {c.location.search = new URL(url, 'http://local').search;}};
@@ -212,7 +235,21 @@ async function queryAndPaging() {
     const sum = c.SUM;c.SUM = null;
     vm.runInContext('renderKpis()', c);
     assert.equal(flat(tile('Token').children[1]), '–', 'no summary yet: the card is a bare dash');
-    c.SUM = sum;c.SUM.total = saved;links.length = 0;
+    c.SUM = sum;c.SUM.total = saved;
+    // 已拒绝 sits under the request count: hidden when the summary sends no refusals (account /
+    // model scope), neutral at 0, orange only when something was refused.
+    const refChip = () => tile('请求').children[2].children.flat(3).find(e => e && e.attrs && /refchip/.test(e.attrs.class || ''));
+    vm.runInContext('renderKpis()', c);
+    assert.equal(refChip(), undefined, 'no refusal totals: no chip');
+    c.REFS = {count: 0, inflight: 0, ws: 0, body: 0, ws_msg: 0};
+    vm.runInContext('renderKpis()', c);
+    assert.equal(flat(refChip()), '已拒绝 0');
+    assert.doesNotMatch(refChip().attrs.class, /\bw\b/);
+    c.REFS = {count: 3, inflight: 2, ws: 1, body: 0, ws_msg: 0};
+    vm.runInContext('renderKpis()', c);
+    assert.equal(flat(refChip()), '已拒绝 3');
+    assert.match(refChip().attrs.class, /\bw\b/);
+    c.REFS = null;links.length = 0;
     vm.runInContext('renderKpis()', c);
   }
   links[0].events.click();

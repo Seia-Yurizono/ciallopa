@@ -3,12 +3,15 @@
 //! to SQLite (WAL). Reads open their own read-only connections. Design: docs/USAGE.md.
 pub mod detail;
 pub mod prices;
+pub mod refusals;
 pub mod reset;
 mod store;
 mod writer;
 
 pub use detail::{DetailRow, ErrorDetail};
 pub use prices::{PriceTable, Tier};
+pub use refusals::{Reason as RefusalReason, Refusal, RefusalRow, RefusalTotals};
+pub use store::RefusalQuery;
 pub use store::{
     AccountQuota, DayBucket, Dim, Estimate, Filters, Outcome, RecentQuery, RecordRow, ScopeValue,
     Summary, SummaryGroup, SummaryQuery, WindowQuota, PREWARM_ENDPOINT,
@@ -252,6 +255,7 @@ pub struct Recorder {
     prices: std::sync::RwLock<Arc<PriceTable>>,
     pub ids: RequestIds,
     counters: Arc<Counters>,
+    refusals: Arc<refusals::Aggregator>,
     join: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
@@ -270,7 +274,9 @@ impl Recorder {
         let (tx, rx) = sync_channel(cfg.queue_size.max(1));
         let counters = Arc::new(Counters::default());
         let retention_days = Arc::new(std::sync::atomic::AtomicU32::new(cfg.retention_days));
+        let refusals = Arc::new(refusals::Aggregator::default());
         let w = writer::Writer {
+            refusals: refusals.clone(),
             conn,
             rx,
             batch_size: cfg.batch_size.max(1),
@@ -290,6 +296,7 @@ impl Recorder {
             prices: Default::default(),
             ids: RequestIds::default(),
             counters,
+            refusals,
             join: Mutex::new(Some(join)),
         }))
     }
@@ -309,6 +316,28 @@ impl Recorder {
                 false
             }
         }
+    }
+
+    /// Count a refused request into its per-minute group. Non-blocking (a short mutex); the
+    /// writer upserts the groups every [`refusals::FLUSH_EVERY`] and on shutdown.
+    pub fn refuse(&self, r: Refusal) {
+        self.refusals.add(r);
+    }
+
+    /// Refusal totals by reason for a range (key / instance filters only).
+    pub async fn refusal_totals(&self, q: RefusalQuery) -> Result<RefusalTotals, UsageError> {
+        let p = self.path.clone();
+        tokio::task::spawn_blocking(move || Ok(store::refusal_totals(&store::open_ro(&p)?, &q)?))
+            .await
+            .map_err(|_| UsageError::Gone)?
+    }
+
+    /// Per-minute refusal groups, newest first.
+    pub async fn refusal_rows(&self, q: RefusalQuery) -> Result<Vec<RefusalRow>, UsageError> {
+        let p = self.path.clone();
+        tokio::task::spawn_blocking(move || Ok(store::refusal_rows(&store::open_ro(&p)?, &q)?))
+            .await
+            .map_err(|_| UsageError::Gone)?
     }
 
     /// Queue a quota snapshot fetched outside a proxied request (management page). Written
@@ -478,6 +507,7 @@ pub fn purge_db(path: &Path, cutoff_ms: i64, chunk: u64) -> Result<u64, UsageErr
         let k = store::purge_before(&mut c, cutoff_ms, chunk)?;
         n += k;
         if k < chunk {
+            while store::purge_refusals_before(&c, cutoff_ms)? {}
             return Ok(n);
         }
     }
@@ -1929,5 +1959,58 @@ mod tests {
             .unwrap();
         assert_eq!(n, 1);
         r.shutdown();
+    }
+
+    #[test]
+    fn refusals_merge_across_flushes_persist_on_shutdown_and_follow_retention() {
+        let d = tempfile::tempdir().unwrap();
+        let r = Recorder::open(&cfg(d.path())).unwrap();
+        let minute = 1_700_000_040_000; // a minute boundary
+        let mk = |ts_ms, inflight, key: &str| Refusal {
+            ts_ms,
+            reason: Some(refusals::Reason::Inflight),
+            key: Some(key.into()),
+            route: "/v1/responses".into(),
+            ua: Some("codex_cli_rs/1".into()),
+            limit: 2,
+            inflight,
+            ..Default::default()
+        };
+        r.refuse(mk(minute + 1_000, 2, "a"));
+        r.refuse(mk(minute + 2_000, 2, "a"));
+        r.flush_blocking().unwrap();
+        r.refuse(mk(minute + 30_000, 3, "a"));
+        r.refuse(mk(minute + 61_000, 2, "b"));
+        r.shutdown();
+        let c = store::open_ro(r.path()).unwrap();
+        let q = RefusalQuery {
+            from_ms: minute,
+            to_ms: minute + 120_000,
+            limit: 10,
+            ..Default::default()
+        };
+        let rows = store::refusal_rows(&c, &q).unwrap();
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        let a = rows.iter().find(|x| x.key.as_deref() == Some("a")).unwrap();
+        assert_eq!((a.minute_ms, a.count), (minute, 3), "merged across flushes");
+        assert_eq!((a.first_ms, a.last_ms), (minute + 1_000, minute + 30_000));
+        assert_eq!(a.max_inflight, 3);
+        let t = store::refusal_totals(&c, &q).unwrap();
+        assert_eq!((t.count, t.inflight), (4, 4));
+        let k = store::refusal_totals(
+            &c,
+            &RefusalQuery {
+                key: Some("b".into()),
+                ..q.clone()
+            },
+        )
+        .unwrap();
+        assert_eq!(k.count, 1);
+        drop(c);
+        purge_db(r.path(), minute + 60_000, 100).unwrap();
+        let c = store::open_ro(r.path()).unwrap();
+        let rows = store::refusal_rows(&c, &q).unwrap();
+        assert_eq!(rows.len(), 1, "older minute purged");
+        assert_eq!(rows[0].key.as_deref(), Some("b"));
     }
 }

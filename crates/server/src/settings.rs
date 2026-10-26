@@ -1264,6 +1264,10 @@ async fn get_config(State(s): State<S>) -> Response {
         Err(e) => (None, Some(e.to_string())),
     };
     let last = lock(&s.status).last.clone();
+    let rejected_by = {
+        let r = s.st.upstream.drain.rejected_by();
+        json!({"inflight": r[0], "ws": r[1], "body": r[2], "ws_msg": r[3]})
+    };
     let body = json!({
         "version": version,
         "path": s.path().map(|p| p.display().to_string()),
@@ -1281,6 +1285,7 @@ async fn get_config(State(s): State<S>) -> Response {
             "inflight": s.st.upstream.drain.inflight(),
             "limit": running.max_inflight_requests,
             "rejected": s.st.upstream.drain.rejected(),
+            "rejected_by": rejected_by,
             "buffered_body_bytes": s.st.upstream.drain.body_bytes(),
             "ws_connections": s.st.upstream.drain.active(),
             "draining": s.st.upstream.drain.phase() != ciallopa_upstream::drain::Phase::Running,

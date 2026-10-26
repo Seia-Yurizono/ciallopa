@@ -53,7 +53,20 @@ pub(crate) async fn handler(
     let slot = match st.upstream.drain.ws_slot(ws_limit) {
         Ok(s) => s,
         Err(r) => {
-            tracing::warn!(limit = ws_limit, "websocket connection cap reached");
+            crate::refusal::note(
+                &st,
+                crate::refusal::Refusal {
+                    kind: ciallopa_upstream::drain::RefusalKind::Ws,
+                    ws: true,
+                    key: crate::key_label(&key),
+                    path: uri.path(),
+                    headers: &headers,
+                    model: None,
+                    account: None,
+                    limit: ws_limit as u64,
+                    bytes: None,
+                },
+            );
             return crate::admission::refused(r);
         }
     };
@@ -635,7 +648,18 @@ async fn relay(
                         match crate::reqbody::reserve_message(&st, n).await {
                             Some(p) => msg_permit = Some(p),
                             None => {
-                                tracing::warn!(account = %account, bytes = n, "buffered body budget full; refusing websocket message");
+                                let budget = st.config.load().max_buffered_body_mb.saturating_mul(1 << 20);
+                                crate::refusal::note(&st, crate::refusal::Refusal {
+                                    kind: ciallopa_upstream::drain::RefusalKind::WsMsg,
+                                    ws: true,
+                                    key: ctx.key.as_deref(),
+                                    path: &ctx.path,
+                                    headers: &ctx.headers,
+                                    model: Some(route.model.as_str()).filter(|m| !m.is_empty()),
+                                    account: Some(&account.to_string()),
+                                    limit: budget,
+                                    bytes: Some(n as u64),
+                                });
                                 if dtx.send(busy_frame()).await.is_err() { break; }
                                 continue 'outer;
                             }

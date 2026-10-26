@@ -293,6 +293,7 @@ async fn main() {
         rec.record(r);
     }
     demo_special_rows(&rec, now);
+    demo_refusals(&rec, now);
     rec.flush_blocking().unwrap();
     rec2.flush_blocking().unwrap();
     drop(rec2);
@@ -342,6 +343,76 @@ async fn main() {
 }
 
 /// Newest rows covering every error source, an attempt timeline, retried-success and a WS prewarm.
+/// Local-limit refusals over the last hours: inflight bursts from Codex, a WS cap spike and one
+/// oversized body, so the 已拒绝 chip, its breakdown and the per-minute list have data.
+fn demo_refusals(rec: &Recorder, now: i64) {
+    use ciallopa_usage::{Refusal, RefusalReason as R};
+    let ua = "codex_cli_rs/0.130.0 (Mac OS 15.5.0; arm64) iTerm.app/3.5.14";
+    let base = |dt: i64, reason: R, key: &str, route: &str| Refusal {
+        ts_ms: now - dt,
+        reason: Some(reason),
+        key: Some(key.into()),
+        route: route.into(),
+        ua: Some(ua.into()),
+        limit: 64,
+        inflight: 64,
+        ws_conns: 24,
+        buffered: 12 << 20,
+        ..Default::default()
+    };
+    for (dt, n, key) in [
+        (90_000, 7, "laptop"),
+        (95_000, 4, "laptop"),
+        (25 * 60_000, 12, "ci"),
+        (3 * 3_600_000, 3, "laptop"),
+    ] {
+        for i in 0..n {
+            rec.refuse(base(
+                dt + i * 900,
+                R::Inflight,
+                key,
+                "/backend-api/codex/responses",
+            ));
+        }
+    }
+    rec.refuse(base(
+        40 * 60_000,
+        R::Inflight,
+        "laptop",
+        "/backend-api/codex/responses/compact",
+    ));
+    for i in 0..5 {
+        let mut r = base(
+            70 * 60_000 + i * 1_000,
+            R::Ws,
+            "laptop",
+            "/backend-api/codex/responses",
+        );
+        r.ws = true;
+        r.limit = 24;
+        r.inflight = 30;
+        rec.refuse(r);
+    }
+    let mut r = base(2 * 3_600_000, R::Body, "ci", "/v1/responses");
+    r.limit = 256 << 20;
+    r.buffered = 250 << 20;
+    r.bytes = Some(18 << 20);
+    rec.refuse(r);
+    let mut r = base(
+        110 * 60_000,
+        R::WsMsg,
+        "laptop",
+        "/backend-api/codex/responses",
+    );
+    r.ws = true;
+    r.model = Some("gpt-5.6-terra".into());
+    r.account = Some("alice".into());
+    r.limit = 256 << 20;
+    r.buffered = 251 << 20;
+    r.bytes = Some(9 << 20);
+    rec.refuse(r);
+}
+
 fn demo_special_rows(rec: &Recorder, now: i64) {
     use serde_json::json;
     let mk = |dt: i64, t: Transport, ep: &'static str| {

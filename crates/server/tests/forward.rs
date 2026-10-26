@@ -5943,3 +5943,147 @@ async fn ws_empty_added_before_overload_switches() {
         .iter()
         .any(|(a, o)| a == "a" && matches!(o, Outcome::Overloaded { .. })));
 }
+
+/// Idle Codex WebSockets each keep an inflight slot for their whole life. Once they fill
+/// `max_inflight_requests`, new turns are refused, but model lists and quota polls are exempt.
+#[tokio::test]
+async fn idle_websockets_fill_inflight_but_models_and_quota_polls_are_exempt() {
+    use tokio_tungstenite::tungstenite::Message as M;
+    use tower::ServiceExt;
+    let e = env(300).await;
+    let mut cfg = (*e.config.load()).clone();
+    cfg.max_inflight_requests = 2;
+    e.config.store(cfg);
+    let mut idle = Vec::new();
+    for _ in 0..2 {
+        let (mut ws, r) = tokio_tungstenite::connect_async(ws_req(&e)).await.unwrap();
+        assert_eq!(r.status(), 101);
+        ws.send(M::Ping(Bytes::from_static(b"ready")))
+            .await
+            .unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(2), ws.next()).await;
+        idle.push(ws);
+    }
+    assert_eq!(e.drain.inflight(), 2, "two idle sockets hold both slots");
+    assert_eq!(
+        held_response(&e).await.status(),
+        503,
+        "a new turn is refused"
+    );
+    let before = e.drain.rejected();
+    for path in [
+        "/v1/models",
+        "/backend-api/codex/models",
+        "/backend-api/wham/usage",
+        "/api/codex/usage",
+    ] {
+        let r = e
+            .app
+            .clone()
+            .oneshot(
+                http::Request::get(path)
+                    .header("authorization", format!("Bearer {KEY}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200, "{path} is exempt from the inflight cap");
+        let _ = axum::body::to_bytes(r.into_body(), 1 << 20).await;
+    }
+    assert_eq!(e.drain.rejected(), before, "exempt polls are never refused");
+    assert_eq!(e.drain.inflight(), 2, "exempt polls take no slot");
+    drop(idle);
+}
+
+#[tokio::test]
+async fn refusals_are_stored_per_minute_and_served_by_the_usage_api() {
+    use tower::ServiceExt;
+    let d = tempfile::tempdir().unwrap();
+    let rec = usage_recorder(d.path());
+    let e = env_usage(300, Some(rec.clone())).await;
+    let mut cfg = (*e.config.load()).clone();
+    cfg.max_inflight_requests = 1;
+    e.config.store(cfg);
+    let held = held_response(&e).await;
+    assert_eq!(held.status(), 200, "the first turn holds the only slot");
+    for _ in 0..3 {
+        let r = e
+            .app
+            .clone()
+            .oneshot(
+                http::Request::post("/v1/responses?trace=abc")
+                    .header("authorization", format!("Bearer {KEY}"))
+                    .header("user-agent", "codex_cli_rs/0.99 test")
+                    .body(Body::from(r#"{"stream":true,"input":[]}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 503);
+    }
+    assert_eq!(e.drain.rejected_by(), [3, 0, 0, 0]);
+    let r2 = rec.clone();
+    tokio::task::spawn_blocking(move || r2.flush_blocking())
+        .await
+        .unwrap()
+        .unwrap();
+    let get = |path: String| {
+        let h = e.http.clone();
+        async move {
+            h.get(path)
+                .bearer_auth(KEY)
+                .send()
+                .await
+                .unwrap()
+                .json::<serde_json::Value>()
+                .await
+                .unwrap()
+        }
+    };
+    let v = get(format!("http://{}/usage/v1/refusals?range=1h", e.proxy)).await;
+    assert_eq!(v["totals"]["count"], 3, "{v}");
+    assert_eq!(v["totals"]["inflight"], 3);
+    let rows = v["rows"].as_array().unwrap();
+    // One group per minute (two if the requests straddle a minute boundary).
+    assert!(matches!(rows.len(), 1 | 2), "{v}");
+    let n: u64 = rows.iter().map(|r| r["count"].as_u64().unwrap()).sum();
+    assert_eq!(n, 3);
+    let row = &rows[0];
+    assert_eq!(row["reason"], "inflight");
+    assert_eq!(row["transport"], "http");
+    assert_eq!(row["route"], "/v1/responses", "query stripped");
+    assert_eq!(row["ua"], "codex_cli_rs/0.99 test");
+    assert_eq!(row["limit"], 1);
+    assert_eq!(row["max_inflight"], 1);
+    assert!(row["key"].is_string());
+    let label = row["key"].as_str().unwrap().to_string();
+    let none = get(format!(
+        "http://{}/usage/v1/refusals?range=1h&reason=ws",
+        e.proxy
+    ))
+    .await;
+    assert_eq!(none["totals"]["count"], 0);
+    let other = get(format!(
+        "http://{}/usage/v1/refusals?range=1h&key=nobody",
+        e.proxy
+    ))
+    .await;
+    assert_eq!(other["rows"].as_array().unwrap().len(), 0);
+    let s = get(format!(
+        "http://{}/usage/v1/summary?range=1h&key={label}",
+        e.proxy
+    ))
+    .await;
+    assert_eq!(s["refusals"]["count"], 3, "{s}");
+    let s = get(format!(
+        "http://{}/usage/v1/summary?range=1h&account=x",
+        e.proxy
+    ))
+    .await;
+    assert!(
+        s["refusals"].is_null(),
+        "no refusal count under an account filter"
+    );
+    drop(held);
+}
