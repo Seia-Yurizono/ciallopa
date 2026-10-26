@@ -133,12 +133,14 @@ pub(crate) async fn handler(
     let compression = st.config.load().ws_compression;
     let drain = st.upstream.drain.clone();
     let mut resp = ws.on_upgrade(compression, max_message, move |socket| async move {
-        let _lease = lease;
         let _slot = slot;
+        let handoff = lease.map(|axum::Extension(l)| l);
         finish_on_shutdown(
             drain,
             Duration::from_secs(2),
-            relay(st2, ctx, route, account, socket, up, gen, idle, hs_headers),
+            relay(
+                st2, ctx, route, account, socket, up, gen, idle, hs_headers, handoff,
+            ),
         )
         .await;
     });
@@ -591,6 +593,7 @@ async fn relay(
     mut gen: u64,
     idle: Duration,
     handshake: HeaderMap,
+    handoff: Option<ciallopa_upstream::drain::Lease>,
 ) {
     // Egress proxy switch: the upstream WebSocket keeps the proxy it was dialed with, so once
     // the egress generation moves past `gen`, the session is closed (normal close, both legs)
@@ -601,6 +604,10 @@ async fn relay(
     // Graceful shutdown: same rule (close between turns, after the running one), and after
     // the drain bound a 1001 close. A session opened during the drain sees it at once.
     let _session = st.upstream.drain.enter();
+    // The handshake's (exempt) admission ends once the session is counted. An idle
+    // connection holds no inflight slot; each turn takes one (`turn_slot`).
+    drop(handoff);
+    let mut turn_slot: Option<ciallopa_upstream::drain::Lease> = None;
     let mut drain = st.upstream.drain.watch();
     drain.mark_changed();
     let mut drain_live = true;
@@ -666,6 +673,39 @@ async fn relay(
                         }
                     }
                     let is_close = matches!(m, Message::Close(_));
+                    if matches!(m, Message::Text(_) | Message::Binary(_)) && !awaiting {
+                        // A turn holds one `max_inflight_requests` slot from its client
+                        // request to its terminal event (or cancel / close).
+                        let limit = st.config.load().max_inflight_requests;
+                        match st.upstream.drain.admit(limit) {
+                            Ok(l) => turn_slot = Some(l),
+                            Err(ciallopa_upstream::drain::Refused::Busy) => {
+                                let model = match &m {
+                                    Message::Text(t) => Head::parse(t.as_str()).and_then(|h| h.model.and_then(|v| v.as_str().map(str::to_string))),
+                                    _ => None,
+                                };
+                                crate::refusal::note(&st, crate::refusal::Refusal {
+                                    kind: ciallopa_upstream::drain::RefusalKind::Inflight,
+                                    ws: true,
+                                    key: ctx.key.as_deref(),
+                                    path: &ctx.path,
+                                    headers: &ctx.headers,
+                                    model: model.as_deref().filter(|m| !m.is_empty()),
+                                    account: Some(&account.to_string()),
+                                    limit: limit as u64,
+                                    bytes: None,
+                                });
+                                drop(msg_permit.take());
+                                if dtx.send(busy_frame()).await.is_err() { break; }
+                                continue 'outer;
+                            }
+                            Err(ciallopa_upstream::drain::Refused::Draining) => {
+                                drop(msg_permit.take());
+                                close_for_shutdown(&account, 1000, &mut dtx, &mut utx).await;
+                                break;
+                            }
+                        }
+                    }
                     if matches!(m, Message::Text(_) | Message::Binary(_)) {
                         if !awaiting {
                             progress = StreamObservation::new();
@@ -1003,6 +1043,7 @@ async fn relay(
                         }
                         if done {
                             awaiting = false;
+                            drop(turn_slot.take());
                             pending = None;
                             drop(msg_permit.take());
                             if let (Some(mut t), WsMessage::Text(txt)) = (turn.take(), &m) {

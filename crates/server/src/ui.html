@@ -1215,7 +1215,7 @@ function renderRuntime(){const st=$("strip"),r=EG&&EG.runtime;let row=$("liverow
   if(r.draining){e.className="tag dot err";e.textContent="正在关闭"}
   else{e.className="tag dot "+(near?"cool":r.inflight||r.ws_connections?"ok":"off");
     e.textContent="转发 "+exact(r.inflight)+(near?" / "+exact(r.limit):"")+" · WS "+exact(r.ws_connections)}
-  row.title="进程状态，读取于 "+hms(new Date())+"，不受时间范围影响。上限 "+(r.limit?exact(r.limit):"不限")+"；HTTP 占用到响应结束，WS 含空闲连接；达到上限立即返回 503，不排队"}
+  row.title="进程状态，读取于 "+hms(new Date())+"，不受时间范围影响。上限 "+(r.limit?exact(r.limit):"不限")+"；HTTP 占用到响应结束，WS 只在 turn 进行中占用，空闲连接不占；达到上限立即返回 503，不排队"}
 // ---- memory panel (admin keys only): /admin/v1/memory is an in-memory 10 s sampler, no disk
 // ---- Scope suggestions: model / key / instance comboboxes. Values come from recent usage rows
 // plus configured keys and this instance (cached 60 s on the server and here); free text stays allowed.

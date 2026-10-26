@@ -399,14 +399,14 @@ CREATE TABLE refusals(minute INTEGER NOT NULL, reason INTEGER NOT NULL, transpor
 ## Refusals (local limits)
 Requests refused by ciallopa itself never reach an account, so they have no `requests` row.
 They are counted in memory and merged into `refusals`, one row per minute and group:
-- `reason`: `inflight` (`max_inflight_requests`, 503 `gateway_busy`), `ws` (WebSocket connection
+- `reason`: `inflight` (`max_inflight_requests`, 503 `gateway_busy`; over `ws` a refused turn, not a handshake), `ws` (WebSocket connection
   cap), `body` (buffered request body budget), `ws_msg` (buffered WebSocket message budget).
 - Group: reason, transport (`http`/`ws`), client key, route (client path without query, ids
-  collapsed), User-Agent, instance, limit in effect, and model/account (known only for `ws_msg`).
+  collapsed), User-Agent, instance, limit in effect, and model/account (known only for WebSocket turns: `ws_msg`, and `inflight` over `ws`).
 - Per row: `count`, `first_ms`/`last_ms`, and the highest occupancy seen at a refusal
   (`max_inflight`, `max_ws`, `max_buffered`), plus `max_bytes`/`sum_bytes` for body kinds. This is
-  the context needed to tune a limit: a refusal at `64 / 64` with `max_ws = 24` means idle
-  WebSockets held a third of the slots.
+  the context needed to tune a limit: a refusal at `64 / 64` means 64 HTTP requests and running
+  WS turns at once (idle WebSockets hold no inflight slot; they count only in `max_ws`).
 - The usage writer flushes the counters every 5 s, at shutdown and on an explicit flush; a
   failed write keeps the counters for the next flush. Rows follow `retention_days` like requests.
   With `[usage] enabled = false` nothing is stored; the process-lifetime counters in
@@ -414,7 +414,7 @@ They are counted in memory and merged into `refusals`, one row per minute and gr
 - Refusals while draining (shutdown) are not counted: the client is told to retry elsewhere.
 - Exempt from the inflight cap (GET only): `/v1/models`, `/backend-api/codex/models`,
   `/backend-api/wham/usage`, `/api/codex/usage`. They are cheap and Codex polls them; refusing
-  them made the client look broken while the cap was only full of idle WebSockets.
+  them made the client look broken while the cap was full.
 - Logs: at most one WARN per reason per minute, carrying `refused=<n>` (refusals since the
   previous line). Counting log lines (`grep -c`) therefore undercounts; sum `refused` or use the API.
 

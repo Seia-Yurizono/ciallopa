@@ -322,7 +322,7 @@ proxy_enabled = true                    # false = keep proxy_url but connect dir
 ipv6 = false                            # IPv4 only (direct and to the proxy host); true = IPv6 too, Happy Eyeballs
 max_body_mb = 64                        # incoming HTTP body limit in MiB
 max_buffered_body_mb = 256              # buffered HTTP bodies + WS messages; full: wait 1 s, then 503
-max_inflight_requests = 64              # HTTP response / whole WS connection; 0 disables rejection
+max_inflight_requests = 64              # HTTP response / running WS turn; 0 disables rejection
                                         # at capacity: 503 + Retry-After: 1, no queue; hot-reloadable
 ws_compression = true                   # permessage-deflate on the client WebSocket when the client
                                         # offers it (Codex always does); applies to new connections

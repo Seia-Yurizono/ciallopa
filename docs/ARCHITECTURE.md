@@ -87,8 +87,9 @@ HTTP 租约跟随响应 Body，WS 升级将同一个租约移交给连接任务�
 ### 进程准入
 
 `max_inflight_requests` 是可热更新的转发操作上限，默认64，是保守的产品护栏，未由一次压测推导。
-HTTP 请求占一个槽直到 Body EOF、错误或丢弃；WS 从握手到整条连接关闭占一个槽，空闲WS也计数。
-它不是活跃 turn 上限，也没有每客户端 key、每账号公平调度或等待队列。
+HTTP 请求占一个槽直到 Body EOF、错误或丢弃；WS 每个 turn 从客户端请求到终止事件、取消或关闭占一个槽，
+空闲 WS 不占槽（连接数只由 `ws_max_connections` 限制），握手本身不占槽。满额时该 turn 收到 503 `gateway_busy`
+错误帧、不转发，连接保持，并记为 ws 的 `inflight` 拒绝。没有每客户端 key、每账号公平调度或等待队列。
 
 超额立即返回503、`gateway_busy` 和 `Retry-After: 1`。停机时拒绝新转发为 `shutdown`。
 准入只包住 Responses、compact、models、images 及已有透传路由；health、UI、admin和usage查询不占槽。

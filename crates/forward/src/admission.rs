@@ -1,4 +1,6 @@
-//! One slot from before body extraction through HTTP EOF/drop or WebSocket close.
+//! One slot from before body extraction through HTTP EOF/drop. A WebSocket handshake is
+//! admitted outside the inflight cap (`ws_max_connections` bounds connections); each WS turn
+//! takes its own slot in the relay.
 use crate::{errors, AppState};
 use axum::{
     body::{Body, Bytes},
@@ -39,7 +41,7 @@ pub(crate) async fn admit(
     next: Next,
 ) -> Response {
     let drain = st.upstream.drain.clone();
-    let admitted = if exempt(&req) {
+    let admitted = if exempt(&req) || is_ws_upgrade(&req) {
         drain.admit_exempt()
     } else {
         let limit = st.config.load().max_inflight_requests;
@@ -53,8 +55,8 @@ pub(crate) async fn admit(
         Ok(lease) => lease,
         Err(reason) => return refused(reason),
     };
-    // The WS handler retains this clone in its detached upgrade task. For HTTP it is
-    // dropped with the extracted request, while this middleware retains the slot.
+    // The WS handler hands this clone to the relay until its session is counted. For HTTP
+    // it is dropped with the extracted request, while this middleware retains the slot.
     req.extensions_mut().insert(lease.clone());
     let response = tokio::select! {
         biased;
@@ -85,12 +87,15 @@ fn exempt(req: &Request<Body>) -> bool {
         )
 }
 
-fn note_inflight(st: &AppState, req: &Request<Body>, limit: usize) {
-    let ws = req
-        .headers()
+fn is_ws_upgrade(req: &Request<Body>) -> bool {
+    req.headers()
         .get(http::header::UPGRADE)
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.eq_ignore_ascii_case("websocket"));
+        .is_some_and(|v| v.eq_ignore_ascii_case("websocket"))
+}
+
+fn note_inflight(st: &AppState, req: &Request<Body>, limit: usize) {
+    let ws = is_ws_upgrade(req);
     let key = req
         .extensions()
         .get::<crate::ClientKey>()
