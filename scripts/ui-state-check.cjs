@@ -758,6 +758,29 @@ function failureClassesAndTrend() {
   for (const [v, l] of [['quota', '额度用尽'], ['rate_limit', '限流'], ['upstream', '上游错误'], ['network', '网络'], ['stream', '流中断'], ['local', '本地'], ['other', '其他']])
     assert.match(html, new RegExp(`<option value="${v}">${l}</option>`), `失败原因 filter offers ${l}`);
   for (const [v, l] of [['fail', '失败原因'], ['lat', '延迟分位'], ['cap', '占用与拒绝']]) assert.match(html, new RegExp(`<option value="${v}">${l}</option>`));
+  // Choosing a 失败原因 switches 结果 to 失败; clearing it leaves 结果 alone; another 结果 clears it.
+  {
+    const els = {}, el = id => els[id] || (els[id] = {value: '', ev: {}, addEventListener(t, f) {this.ev[t] = f;}});
+    const k = vm.createContext({$: el, changes: 0});
+    k.changeRecords = () => {k.changes++;};
+    vm.runInContext(section('$("fclass").addEventListener("change"', '\n') + '\n' + section('$("foutcome").addEventListener("change"', '\n'), k);
+    for (const start of ['', 'business', 'completed', 'cancelled']) {
+      el('foutcome').value = start;el('fclass').value = 'quota';el('fclass').ev.change();
+      assert.equal(el('foutcome').value, 'failed', `class from ${start || 'all'} selects 失败`);
+    }
+    el('fclass').value = '';el('fclass').ev.change();
+    assert.equal(el('foutcome').value, 'failed', 'clearing the class keeps 结果');
+    el('fclass').value = 'network';el('foutcome').value = 'completed';el('foutcome').ev.change();
+    assert.equal(el('fclass').value, '', 'a non-failed 结果 clears the class');
+  }
+  // 错误码 rows show the Chinese label; the raw code stays in the hover title.
+  vm.runInContext('SRC={upstream:["上游"]};tierName=v=>v;' + section('function groupName(', '\n'), c);
+  assert.equal(vm.runInContext('groupName("error","first_quota_reset")', c), '额度用尽');
+  assert.equal(vm.runInContext('groupName("error","weird_code")', c), 'weird_code');
+  assert.match(html, /title:g==="error"&&v\?v:shown/);
+  // 占用与拒绝: limit lines carry their series colour; no 右轴 text in the legend.
+  assert.match(html, /class:"ln lim "\+k/);
+  assert.doesNotMatch(section('else if(cap)lg.append(', '\n'), /右轴/);
   // Latency axis ticks land on round values.
   vm.runInContext(section('function niceMs(', '\n'), c);
   assert.equal(vm.runInContext('niceMs(3300)', c), 4000);
