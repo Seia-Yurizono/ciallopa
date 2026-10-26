@@ -3216,6 +3216,33 @@ async fn usage_sse_rows() {
     assert_eq!(late["error"], "usage_limit");
     assert_eq!(limit["account"], "b");
     assert_eq!(limit["switches"], 1);
+    // Rescued requests carry their attempt chain; a clean one stores no detail.
+    assert_eq!(u["has_detail"], false, "{u}");
+    assert_eq!(u["rescued"], false);
+    assert!(u["problem"].is_null(), "{u}");
+    assert_eq!(mid["rescued"], true, "{mid}");
+    assert_eq!(mid["upstream_fault"], true);
+    assert_eq!(mid["next"], serde_json::json!(["attempts"]));
+    assert_eq!(mid["has_detail"], true, "{mid}");
+    let v: serde_json::Value = detail_of(&e, mid["request_id"].as_str().unwrap(), true)
+        .await
+        .json()
+        .await
+        .unwrap();
+    let at = v["attempts"].as_array().unwrap();
+    assert_eq!(at.len(), 3, "{v}");
+    assert_eq!(at[1]["account"], "a");
+    assert_eq!(at[1]["kind"], "stream");
+    assert_eq!(at[1]["code"], "usage_limit");
+    assert!(at[1]["action"].as_str().unwrap().ends_with("switch"), "{v}");
+    assert_eq!(at[2]["account"], "b");
+    assert_eq!(at[2]["action"], "ok");
+    assert_eq!(late["problem"], "error");
+    assert_eq!(late["cause"], "quota");
+    assert_eq!(
+        late["next"],
+        serde_json::json!(["refresh_quota", "account"])
+    );
 
     let s: serde_json::Value = e
         .http
@@ -3238,6 +3265,64 @@ async fn usage_sse_rows() {
         .await
         .unwrap();
     assert_eq!(r.status(), 401);
+}
+
+#[tokio::test]
+async fn usage_problem_filters_and_counts_api() {
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    sse_text(&e, "usage").await; // clean
+    sse_text(&e, "midlimit").await; // quota before output → rescued on b
+    sse_text(&e, "latelimit").await; // quota after output → 报错 / 额度
+    assert_eq!(wait_rows(&e, 3).await.len(), 3);
+    let get = |q: &str| {
+        let (h, url) = (
+            e.http.clone(),
+            format!("http://{}/usage/v1/records{q}", e.proxy),
+        );
+        async move {
+            let r = h.get(url).bearer_auth(KEY).send().await.unwrap();
+            let st = r.status().as_u16();
+            (st, r.json::<serde_json::Value>().await.unwrap_or_default())
+        }
+    };
+    let (st, v) = get("?problem=error&cause=quota").await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["total"], 1, "{v}");
+    assert_eq!(v["records"][0]["error"], "usage_limit");
+    let (_, v) = get("?problem=upstream&cause=rescued").await;
+    assert_eq!(v["total"], 1, "{v}");
+    assert_eq!(v["records"][0]["account"], "b");
+    let (_, v) = get("?problem=upstream").await;
+    assert_eq!(
+        v["total"], 2,
+        "rescued plus the in-stream quota failure: {v}"
+    );
+    let (_, v) = get("?problem=all").await;
+    assert_eq!(v["total"], 3, "{v}");
+    let (_, c) = get("/counts?range=1h").await;
+    assert_eq!(c["all"], 3, "{c}");
+    assert_eq!(c["error"], 1);
+    assert_eq!(c["upstream"], 2);
+    assert_eq!(c["unfinished"], 0);
+    assert_eq!(c["refused"], 0);
+    assert_eq!(c["causes"]["error"]["quota"], 1);
+    assert_eq!(c["causes"]["upstream"]["rescued"], 1);
+    assert_eq!(c["causes"]["upstream"]["unrescued"], 1);
+    assert_eq!(c["causes"]["unfinished"]["client_closed"], 0);
+    let (_, c) = get("/counts?range=1h&account=b&problem=error").await;
+    assert_eq!(c["all"], 1, "problem is ignored, account applies: {c}");
+    assert!(c["refused"].is_null(), "{c}");
+    for bad in [
+        "?problem=slow",
+        "?problem=error&cause=rescued",
+        "?cause=quota",
+        "?problem=refused",
+        "/counts?problem=nope",
+    ] {
+        let (st, v) = get(bad).await;
+        assert_eq!(st, 400, "{bad}: {v}");
+    }
 }
 
 #[tokio::test]
@@ -3265,6 +3350,20 @@ async fn usage_does_not_recount_retries_after_sse_replay() {
     assert_eq!(rows[0]["account"], "b", "{rows:?}");
     assert_eq!(rows[0]["first_account"], "a", "{rows:?}");
     assert!(rows[0]["error"].is_null(), "{rows:?}");
+    assert_eq!(rows[0]["rescued"], true, "{rows:?}");
+    let v: serde_json::Value = detail_of(&e, rows[0]["request_id"].as_str().unwrap(), true)
+        .await
+        .json()
+        .await
+        .unwrap();
+    let actions: Vec<_> = v["attempts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["action"].as_str().unwrap().to_string())
+        .collect();
+    assert!(actions.iter().any(|a| a.ends_with("wait+retry")), "{v}");
+    assert_eq!(actions.last().unwrap(), "ok", "{v}");
 }
 
 #[tokio::test]
@@ -3321,6 +3420,23 @@ async fn usage_ws_turn_rows() {
     assert!(t2["error"].is_null(), "{t2}");
     assert!(t2["ttft_ms"].is_u64());
     assert_eq!(t3["error"], "usage_limit");
+    // A WS turn replayed on another account records its chain; a plain turn records none.
+    assert_eq!(t1["has_detail"], false, "{t1}");
+    assert_eq!(t2["rescued"], true, "{t2}");
+    assert_eq!(t2["has_detail"], true, "{t2}");
+    let v: serde_json::Value = detail_of(&e, t2["request_id"].as_str().unwrap(), true)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        v["attempts"],
+        serde_json::json!([
+            {"account": "a", "t_ms": v["attempts"][0]["t_ms"], "kind": "stream", "code": "usage_limit", "action": "switch"},
+            {"account": "b", "t_ms": v["attempts"][1]["t_ms"], "kind": "stream", "action": "ok"},
+        ]),
+        "{v}"
+    );
 }
 
 #[tokio::test]
@@ -5672,6 +5788,56 @@ async fn ws_metadata_before_overload_still_switches() {
         .any(|(a, o)| a == "a" && matches!(o, Outcome::Overloaded { .. })));
 }
 
+/// WS: an overload replayed on another account is recorded as rescued with its chain.
+#[tokio::test]
+async fn ws_overload_switch_records_attempt_chain() {
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as M};
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    let mut req = format!("ws://{}/backend-api/codex/responses", e.proxy)
+        .into_client_request()
+        .unwrap();
+    req.headers_mut()
+        .insert("authorization", format!("Bearer {KEY}").parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    ws.send(M::text(
+        r#"{"type":"response.create","model":"gpt-5.5","tag":"metaover"}"#,
+    ))
+    .await
+    .unwrap();
+    loop {
+        let t = ws
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .to_text()
+            .unwrap()
+            .to_string();
+        if t.contains("response.completed") {
+            break;
+        }
+    }
+    drop(ws);
+    let rows = wait_rows(&e, 1).await;
+    let row = &rows[0];
+    assert!(row["error"].is_null(), "{row}");
+    assert_eq!(row["rescued"], true, "{row}");
+    assert_eq!(row["upstream_fault"], true, "{row}");
+    let v: serde_json::Value = detail_of(&e, row["request_id"].as_str().unwrap(), true)
+        .await
+        .json()
+        .await
+        .unwrap();
+    let at = v["attempts"].as_array().unwrap();
+    assert_eq!(at.len(), 2, "{v}");
+    assert_eq!(at[0]["account"], "a");
+    assert_eq!(at[0]["code"], "server_is_overloaded");
+    assert_eq!(at[0]["action"], "switch");
+    assert_eq!(at[1]["account"], row["account"]);
+    assert_eq!(at[1]["action"], "ok");
+}
+
 /// WS: metadata then encrypted rejection keeps the clear error frame (status 400).
 #[tokio::test]
 async fn ws_metadata_before_encrypted_clear_message() {
@@ -6095,6 +6261,22 @@ async fn refusals_are_stored_per_minute_and_served_by_the_usage_api() {
         s["refusals"].is_null(),
         "no refusal count under an account filter"
     );
+    // The request list's chip counts carry the same refusals (本地拒绝) and their reasons.
+    let c = get(format!(
+        "http://{}/usage/v1/records/counts?range=1h&key={label}",
+        e.proxy
+    ))
+    .await;
+    assert_eq!(c["refused"], 3, "{c}");
+    assert_eq!(c["causes"]["refused"]["inflight"], 3, "{c}");
+    assert_eq!(c["causes"]["refused"]["ws"], 0, "{c}");
+    let c = get(format!(
+        "http://{}/usage/v1/records/counts?range=1h&account=x",
+        e.proxy
+    ))
+    .await;
+    assert!(c["refused"].is_null(), "{c}");
+    assert!(c["causes"].get("refused").is_none(), "{c}");
     drop(held);
 }
 

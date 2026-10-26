@@ -4,6 +4,7 @@
 pub mod detail;
 pub mod occupancy;
 pub mod prices;
+pub mod problem;
 pub mod refusals;
 pub mod reset;
 mod store;
@@ -12,11 +13,12 @@ mod writer;
 pub use detail::{DetailRow, ErrorDetail};
 pub use occupancy::{OccupancyRow, Sample as OccupancySample};
 pub use prices::{PriceTable, Tier};
+pub use problem::{Outcome, Problem, ProblemCounts};
 pub use refusals::{Reason as RefusalReason, Refusal, RefusalRow, RefusalTotals};
 pub use store::{
-    failure_class, row_failure_class, AccountQuota, DayBucket, Dim, Estimate, Filters, Outcome,
-    RecentQuery, RecordRow, ScopeValue, Summary, SummaryGroup, SummaryQuery, WindowQuota,
-    FAILURE_CLASSES, PREWARM_ENDPOINT, QUOTA_ERRORS,
+    failure_class, row_failure_class, AccountQuota, DayBucket, Dim, Estimate, Filters, RecentQuery,
+    RecordRow, ScopeValue, Summary, SummaryGroup, SummaryQuery, WindowQuota, FAILURE_CLASSES,
+    PREWARM_ENDPOINT, QUOTA_ERRORS,
 };
 pub use store::{occupancy_step, OccupancyQuery, RefusalQuery};
 
@@ -475,6 +477,14 @@ impl Recorder {
     }
 
     /// Number of rows matching `q` (ignores limit/offset).
+    /// Request counts per problem chip and cause ([`problem`]); `refused` left null.
+    pub async fn problem_counts(&self, q: RecentQuery) -> Result<ProblemCounts, UsageError> {
+        let p = self.path.clone();
+        tokio::task::spawn_blocking(move || store::problem_counts(&store::open_ro(&p)?, &q))
+            .await
+            .map_err(|_| UsageError::Gone)?
+    }
+
     pub async fn recent_count(&self, q: RecentQuery) -> Result<u64, UsageError> {
         let p = self.path.clone();
         tokio::task::spawn_blocking(move || store::recent_count(&store::open_ro(&p)?, &q))
@@ -1731,6 +1741,190 @@ mod tests {
                 "outcome={value} records"
             );
         }
+        r.shutdown();
+    }
+
+    /// Every recorded outcome combination: the SQL behind `problem`/`cause`, the chip counts
+    /// and each row's classification agree with [`problem::classify`] / [`problem::matches`].
+    #[tokio::test]
+    async fn problem_filters_counts_and_rows_agree_with_classify() {
+        use problem::{classify, matches, Facts};
+        let d = tempfile::tempdir().unwrap();
+        let r = Recorder::open_as(&cfg(d.path()), "h").unwrap();
+        // Before any label exists: everything zero, nothing matches.
+        let empty = r.problem_counts(RecentQuery::default()).await.unwrap();
+        assert_eq!(empty, ProblemCounts::zero());
+        assert_eq!(empty.causes["error"]["gateway"], 0);
+        let base = now_ms();
+        let errors: [(Option<&str>, Option<&'static str>, Option<u16>); 17] = [
+            (None, None, None),
+            (Some("usage_limit_reached"), Some("upstream"), Some(429)),
+            (Some("all_quota_exhausted"), Some("local"), None),
+            (Some("rate_limited"), Some("upstream"), Some(429)),
+            (Some("upstream_status"), Some("upstream"), Some(500)),
+            (Some("upstream_status"), Some("upstream"), Some(401)),
+            (
+                Some("invalid_encrypted_content"),
+                Some("upstream"),
+                Some(400),
+            ),
+            (Some("connect"), Some("network"), None),
+            (Some("proxy_connect"), Some("network"), None),
+            (Some("upstream_error_event"), Some("stream"), None),
+            (Some("all_cooling"), Some("local"), None),
+            (Some("bad_request"), Some("local"), None),
+            (Some("mystery"), None, None),
+            (Some("client_closed"), Some("client"), None),
+            (Some("idle_timeout"), Some("client"), None),
+            (Some("observation_incomplete"), Some("local"), None),
+            (Some("observation_incomplete"), Some("upstream"), None),
+        ];
+        let mut facts = vec![];
+        for endpoint in ["responses", PREWARM_ENDPOINT] {
+            for &(error, source, up) in &errors {
+                for status in [200u16, 429, 502] {
+                    for incomplete in [false, true] {
+                        for (retries, switches) in [(0u32, 0u32), (1, 0), (0, 1)] {
+                            facts.push((
+                                endpoint, status, error, source, up, incomplete, retries, switches,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        let mut ids = std::collections::HashMap::new();
+        for &(endpoint, status, error, source, up, incomplete, retries, switches) in &facts {
+            let mut row = Record::new(r.ids.next_at(base), Transport::Sse, endpoint);
+            row.status = status;
+            row.error = error.map(str::to_owned);
+            row.err_source = source;
+            row.upstream_status = up;
+            row.incomplete = incomplete.then(|| "max_output_tokens".to_owned());
+            row.retries = retries;
+            row.switches = switches;
+            let f = Facts {
+                status,
+                error,
+                source,
+                upstream_status: up,
+                endpoint: Some(endpoint),
+                incomplete,
+                retries,
+                switches,
+            };
+            ids.insert(format!("{:016x}", row.id), classify(&f));
+            assert!(r.record(row));
+        }
+        r.flush_blocking().unwrap();
+        let all = r
+            .recent(RecentQuery {
+                limit: 10_000,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(all.len(), facts.len());
+        for row in &all {
+            let c = &ids[&row.request_id];
+            assert_eq!(
+                (
+                    row.problem,
+                    row.cause,
+                    row.upstream_fault,
+                    row.rescued,
+                    &row.next
+                ),
+                (c.problem, c.cause, c.upstream_fault, c.rescued, &c.next),
+                "row {row:?}"
+            );
+        }
+        let mut pairs: Vec<(Problem, Option<&str>)> = vec![];
+        for p in Problem::ALL {
+            pairs.push((p, None));
+            for c in p.causes() {
+                pairs.push((p, Some(*c)));
+            }
+        }
+        let counts = r.problem_counts(RecentQuery::default()).await.unwrap();
+        assert_eq!(counts.all, facts.len() as u64);
+        assert_eq!(counts.refused, None, "refusals are filled by the API");
+        for (p, cause) in pairs {
+            let want: std::collections::BTreeSet<_> = ids
+                .iter()
+                .filter(|(_, c)| matches(c, p, cause))
+                .map(|(id, _)| id.clone())
+                .collect();
+            let q = RecentQuery {
+                problem: Some(p),
+                cause: cause.map(str::to_owned),
+                limit: 10_000,
+                ..Default::default()
+            };
+            let got: std::collections::BTreeSet<_> = r
+                .recent(q.clone())
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|x| x.request_id)
+                .collect();
+            assert_eq!(got, want, "problem={} cause={cause:?}", p.name());
+            assert_eq!(r.recent_count(q).await.unwrap(), want.len() as u64);
+            let n = want.len() as u64;
+            match (p, cause) {
+                (Problem::Refused, _) => assert_eq!(n, 0),
+                (Problem::All, None) => assert_eq!(counts.all, n),
+                (Problem::Error, None) => assert_eq!(counts.error, n),
+                (Problem::Upstream, None) => assert_eq!(counts.upstream, n),
+                (Problem::Unfinished, None) => assert_eq!(counts.unfinished, n),
+                (_, Some(c)) => assert_eq!(counts.causes[p.name()][c], n, "{} {c}", p.name()),
+            }
+            if p != Problem::Refused && p != Problem::All {
+                assert!(n > 0, "problem={} cause={cause:?} has no sample", p.name());
+            }
+        }
+        // The chips partition as the design says.
+        let causes = |p: &str| counts.causes[p].values().sum::<u64>();
+        assert_eq!(causes("error"), counts.error);
+        assert_eq!(causes("upstream"), counts.upstream);
+        assert_eq!(causes("unfinished"), counts.unfinished);
+        // Counts follow the other filters; prewarm is excluded on request.
+        let no_prewarm = r
+            .problem_counts(RecentQuery {
+                exclude_prewarm: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(no_prewarm.all, facts.len() as u64 / 2);
+        assert_eq!(no_prewarm.error, counts.error);
+        let only_retried = r
+            .problem_counts(RecentQuery {
+                retried: true,
+                problem: Some(Problem::Error),
+                cause: Some("quota".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            only_retried.all,
+            facts.iter().filter(|f| f.6 > 0 || f.7 > 0).count() as u64,
+            "problem/cause are ignored by the counts"
+        );
+        // Combined with the legacy failure_class, both apply.
+        assert_eq!(
+            r.recent_count(RecentQuery {
+                failure_class: Some("quota".into()),
+                problem: Some(Problem::Upstream),
+                ..Default::default()
+            })
+            .await
+            .unwrap(),
+            ids.values()
+                .filter(|c| c.cause == Some("quota") && c.upstream_fault)
+                .count() as u64
+        );
         r.shutdown();
     }
 

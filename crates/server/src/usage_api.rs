@@ -8,7 +8,7 @@ use axum::{Json, Router};
 use ciallopa_core::settings::SharedConfig;
 use ciallopa_core::AccountStore;
 use ciallopa_forward::EgressStatus;
-use ciallopa_usage::{now_ms, Dim, Filters, Outcome, RecentQuery, Recorder, SummaryQuery};
+use ciallopa_usage::{now_ms, Dim, Filters, Outcome, Problem, RecentQuery, Recorder, SummaryQuery};
 use serde::Deserialize;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -42,6 +42,7 @@ pub fn routes(
 ) -> Router {
     Router::new()
         .route("/usage/v1/records", get(records))
+        .route("/usage/v1/records/counts", get(record_counts))
         .route("/usage/v1/records/{id}", get(record))
         .route("/usage/v1/records/{id}/detail", get(detail))
         .route("/usage/v1/summary", get(summary))
@@ -111,20 +112,30 @@ struct RecordsQ {
     retried: Option<u8>,
     /// Failure class (`quota,rate_limit,upstream,network,stream,local,other`); implies failed.
     failure_class: Option<String>,
+    /// Problem chip: `all`, `error` (报错), `upstream` (上游出错, rescued included) or
+    /// `unfinished` (没答完). `refused` lives in `/usage/v1/refusals`.
+    problem: Option<String>,
+    /// Cause within `problem` (`quota`, `rescued`, `client_closed`, …).
+    cause: Option<String>,
     #[serde(flatten)]
     f: FiltersQ,
 }
 
-async fn records(State(St { rec, .. }): State<St>, Query(q): Query<RecordsQ>) -> Response {
-    let Some(rec) = rec else {
-        return err(StatusCode::NOT_FOUND, "usage log disabled");
-    };
+/// A parsed request-list query, shared by the list and its counts.
+struct RecordsReq {
+    rq: RecentQuery,
+    limit: usize,
+    offset: usize,
+    before_id: Option<i64>,
+}
+
+fn records_query(q: RecordsQ) -> Result<RecordsReq, String> {
     let since = match (q.since.or(q.from), q.range.as_deref()) {
         (Some(s), _) => Some(s),
         (None, None) => None,
         (None, Some(r)) => match parse_range(r) {
             Some(d) => Some(q.to.unwrap_or_else(now_ms) - d),
-            None => return err(StatusCode::BAD_REQUEST, "bad range (use e.g. 30m, 24h, 7d)"),
+            None => return Err("bad range (use e.g. 30m, 24h, 7d)".to_string()),
         },
     };
     let before = match (q.before, q.to) {
@@ -133,7 +144,7 @@ async fn records(State(St { rec, .. }): State<St>, Query(q): Query<RecordsQ>) ->
     };
     let before_id = match q.before_id.as_deref().map(parse_id) {
         Some(Some(id)) => Some(id),
-        Some(None) => return err(StatusCode::BAD_REQUEST, "invalid before_id"),
+        Some(None) => return Err("invalid before_id".to_string()),
         None => None,
     };
     let outcome = match q
@@ -144,9 +155,9 @@ async fn records(State(St { rec, .. }): State<St>, Query(q): Query<RecordsQ>) ->
     {
         Some(Some(outcome)) => Some(outcome),
         Some(None) => {
-            return err(
-                StatusCode::BAD_REQUEST,
-                "bad outcome (completed, failed, cancelled, incomplete, unknown, prewarm)",
+            return Err(
+                "bad outcome (completed, failed, cancelled, incomplete, unknown, prewarm)"
+                    .to_string(),
             )
         }
         None => None,
@@ -155,10 +166,28 @@ async fn records(State(St { rec, .. }): State<St>, Query(q): Query<RecordsQ>) ->
         None | Some("") => None,
         Some(c) if ciallopa_usage::FAILURE_CLASSES.contains(&c) => Some(c.to_string()),
         Some(_) => {
-            return err(
-                StatusCode::BAD_REQUEST,
-                "bad failure_class (quota,rate_limit,upstream,network,stream,local,other)",
+            return Err(
+                "bad failure_class (quota,rate_limit,upstream,network,stream,local,other)"
+                    .to_string(),
             )
+        }
+    };
+    let problem = match q.problem.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(p) => match Problem::parse(p) {
+            Some(p) => Some(p),
+            None => {
+                return Err("bad problem (all, error, upstream, unfinished, refused)".to_string())
+            }
+        },
+    };
+    let cause = match (problem, q.cause.as_deref().map(str::trim)) {
+        (_, None | Some("")) => None,
+        (None, Some(_)) => return Err("cause needs a problem".to_string()),
+        (Some(p), Some(c)) if p.causes().contains(&c) => Some(c.to_string()),
+        (Some(p), Some(_)) => {
+            let msg = format!("bad cause for {} ({})", p.name(), p.causes().join(", "));
+            return Err(msg);
         }
     };
     let limit = q.limit.unwrap_or(100).clamp(1, 1000);
@@ -191,7 +220,36 @@ async fn records(State(St { rec, .. }): State<St>, Query(q): Query<RecordsQ>) ->
         outcome,
         exclude_prewarm: q.exclude_prewarm.unwrap_or(0) != 0,
         failure_class,
+        problem,
+        cause,
     };
+    Ok(RecordsReq {
+        rq,
+        limit,
+        offset,
+        before_id,
+    })
+}
+
+async fn records(State(St { rec, .. }): State<St>, Query(q): Query<RecordsQ>) -> Response {
+    let Some(rec) = rec else {
+        return err(StatusCode::NOT_FOUND, "usage log disabled");
+    };
+    let RecordsReq {
+        rq,
+        limit,
+        offset,
+        before_id,
+    } = match records_query(q) {
+        Ok(r) => r,
+        Err(m) => return err(StatusCode::BAD_REQUEST, &m),
+    };
+    if rq.problem == Some(Problem::Refused) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "refused requests have no record rows; use /usage/v1/refusals",
+        );
+    }
     let total = match rec
         .recent_count(RecentQuery {
             before_id: None,
@@ -223,6 +281,66 @@ async fn records(State(St { rec, .. }): State<St>, Query(q): Query<RecordsQ>) ->
         }
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     }
+}
+
+/// Request counts per problem chip and cause, under the same filters as `/usage/v1/records`
+/// (its `problem`, `cause` and paging ignored). `refused` and its reasons come from the
+/// refusals table over the same range, key and instance; null when an account, model or
+/// another request-only filter is set, because a refusal happens before any of those is known.
+async fn record_counts(State(St { rec, .. }): State<St>, Query(q): Query<RecordsQ>) -> Response {
+    let Some(rec) = rec else {
+        return err(StatusCode::NOT_FOUND, "usage log disabled");
+    };
+    let rq = match records_query(q) {
+        Ok(r) => r.rq,
+        Err(m) => return err(StatusCode::BAD_REQUEST, &m),
+    };
+    let mut counts = match rec.problem_counts(rq.clone()).await {
+        Ok(c) => c,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    };
+    let f = &rq.filters;
+    let request_only = f.account.is_some()
+        || f.model.is_some()
+        || rq.errors_only
+        || rq.tier.as_deref().is_some_and(|t| !t.trim().is_empty())
+        || rq.downgraded
+        || !rq.sources.is_empty()
+        || rq.error.is_some()
+        || rq.retried
+        || rq.outcome.is_some()
+        || rq.failure_class.is_some();
+    if !request_only {
+        let to = rq.before_ms.map(|b| b - 1).unwrap_or_else(now_ms);
+        let t = match rec
+            .refusal_totals(ciallopa_usage::RefusalQuery {
+                from_ms: rq.since_ms.unwrap_or(0),
+                to_ms: to,
+                key: f.key.clone(),
+                instance: f.instance.clone(),
+                reason: None,
+                limit: 0,
+                offset: 0,
+            })
+            .await
+        {
+            Ok(t) => t,
+            Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+        };
+        counts.refused = Some(t.count);
+        counts.causes.insert(
+            "refused",
+            [
+                ("inflight", t.inflight),
+                ("ws", t.ws),
+                ("body", t.body),
+                ("ws_msg", t.ws_msg),
+            ]
+            .into_iter()
+            .collect(),
+        );
+    }
+    Json(counts).into_response()
 }
 
 fn parse_id(id: &str) -> Option<i64> {

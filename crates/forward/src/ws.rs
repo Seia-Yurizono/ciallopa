@@ -766,7 +766,10 @@ async fn relay(
                                                 quota_h = h;
                                                 gen = g;
                                                 tracing::info!(from = %account, to = %id, model = %route.model, "ws turn model cooling on this account; redialed");
-                                                if let Some(tr) = turn.as_mut() { tr.switch_to(&id); tr.quota(&quota_h); }
+                                                if let Some(tr) = turn.as_mut() {
+                                                    if id != account { tr.replay(&account, "model_cooldown", "switch"); tr.switch_to(&id); }
+                                                    tr.quota(&quota_h);
+                                                }
                                                 account = id;
                                                 let (tx, rx) = ws.split();
                                                 let old_tx = std::mem::replace(&mut utx, tx);
@@ -910,7 +913,15 @@ async fn relay(
                                         quota_h = h;
                                         gen = g;
                                         tracing::info!(from = %account, to = %id, code = %code, "ws overloaded before output; replayed");
-                                        if let Some(t) = turn.as_mut() { t.switch_to(&id); t.quota(&quota_h); }
+                                        if let Some(t) = turn.as_mut() {
+                                            if id == account {
+                                                t.replay(&account, code, "wait+retry");
+                                            } else {
+                                                t.replay(&account, code, "switch");
+                                                t.switch_to(&id);
+                                            }
+                                            t.quota(&quota_h);
+                                        }
                                         account = id;
                                         let (t, r) = ws.split();
                                         let old_tx = std::mem::replace(&mut utx, t);
@@ -962,7 +973,7 @@ async fn relay(
                                             quota_h = h;
                                             gen = g;
                                             tracing::info!(from = %account, to = %id, "ws quota error before output; replayed on another account");
-                                            if let Some(t) = turn.as_mut() { t.switch_to(&id); t.quota(&quota_h); }
+                                            if let Some(t) = turn.as_mut() { t.replay(&account, "usage_limit", "switch"); t.switch_to(&id); t.quota(&quota_h); }
                                             account = id;
                                             let (t, r) = ws.split();
                                             // Finish the old socket's close handshake in the

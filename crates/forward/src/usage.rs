@@ -22,6 +22,9 @@ pub(crate) struct Tracker {
     tier_final: bool,
     drain: Arc<ciallopa_upstream::drain::Drain>,
     emit: bool,
+    /// WS turn replays (switch / wait+retry); allocated on the first replay only, so a turn
+    /// without one stores no attempt chain.
+    replays: Option<crate::errors::Attempts>,
 }
 
 /// Capture the record ID and monotonic start together.
@@ -185,6 +188,7 @@ impl Tracker {
             tier_final: false,
             drain: st.upstream.drain.clone(),
             emit: true,
+            replays: None,
         })
     }
 
@@ -263,6 +267,21 @@ impl Tracker {
         if first != self.rec.account.as_ref() {
             self.rec.first_account = first.cloned();
         }
+    }
+
+    /// A WS turn left `account` before any output (`code`; `action` is `switch` or
+    /// `wait+retry`) and is replayed. Builds this turn's attempt chain, stored when the turn
+    /// ends (see `Drop`); retry / switch counters are kept by the caller as before.
+    pub(crate) fn replay(&mut self, account: &str, code: &str, action: impl Into<String>) {
+        let action = action.into();
+        let chain = self.replays.get_or_insert_with(|| crate::errors::Attempts {
+            start: self.start,
+            ..Default::default()
+        });
+        let mut a = crate::errors::attempt(account, "stream");
+        a.code = Some(code.to_string());
+        a.action = action;
+        chain.push(a);
     }
 
     pub(crate) fn switch_to(&mut self, acct: &AccountId) {
@@ -695,6 +714,22 @@ impl Drop for Tracker {
         }
         if self.rec.error.is_none() {
             self.rec.upstream_status = None;
+        }
+        if let Some(mut chain) = self.replays.take() {
+            // The final attempt of a replayed WS turn: how it ended on the last account.
+            let mut a = crate::errors::attempt(self.rec.account.as_deref().unwrap_or(""), "stream");
+            a.code = self.rec.error.clone();
+            a.action = if self.rec.error.is_none() {
+                "ok"
+            } else {
+                "stop"
+            }
+            .into();
+            chain.push(a);
+            let d = self.detail();
+            if d.attempts.is_none() {
+                d.attempts = Some(chain.to_json());
+            }
         }
         match self.rec.error.as_deref() {
             None => {
