@@ -110,12 +110,42 @@ async fn main() {
     };
     let models = ["gpt-5.5", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-luna"];
     let accts = ["alice", "bob"];
+    // UI_DEMO_BUSY=1: chart stress — the last 26 hours get a diurnal curve with bursts, failure
+    // spikes next to quiet hours and scattered client cancels (fake data only). Recorded in time
+    // order alongside the base traffic.
+    let mut busy: Vec<(i64, u8)> = Vec::new();
+    if std::env::var("UI_DEMO_BUSY").is_ok_and(|v| v == "1") {
+        for hr in 0..26i64 {
+            let hour = ((now - hr * 3_600_000) / 3_600_000 + 8).rem_euclid(24);
+            let cnt = if (9..23).contains(&hour) { 30 } else { 6 }
+                + (next() % 12) as i64
+                + if hr % 7 == 3 { 60 } else { 0 };
+            for _ in 0..cnt {
+                let at = now - 20 * 60_000 - hr * 3_600_000 - (next() % 3_600_000) as i64;
+                let roll = next() % 100;
+                let kind = if hr % 5 == 1 && roll < 30 || roll < 2 {
+                    1
+                } else if hr % 4 == 2 && roll < 12 {
+                    2
+                } else {
+                    0
+                };
+                busy.push((at, kind));
+            }
+        }
+        busy.sort();
+    }
+    let mut bj = 0;
     let n = 1500;
     let mut stale = [false; 2];
     for i in 0..n {
         let ts = now - 14 * 86_400_000
             + (i as i64) * (14 * 86_400_000 / n as i64)
             + (next() % 60_000) as i64;
+        while bj < busy.len() && busy[bj].0 <= ts {
+            busy_record(&rec, busy[bj].0, busy[bj].1);
+            bj += 1;
+        }
         // dave / erin were last seen hours ago by the other instance: stale quota rows
         for (k, (who, dt, p, w)) in [("dave", 3, 12.0, 41.0), ("erin", 26, 100.0, 64.0)]
             .into_iter()
@@ -296,6 +326,9 @@ async fn main() {
             });
         }
         rr.record(r);
+    }
+    for &(at, kind) in &busy[bj..] {
+        busy_record(&rec, at, kind);
     }
     {
         let at = now - 10 * 60_000;
@@ -579,6 +612,34 @@ fn demo_special_rows(rec: &Recorder, now: i64) {
     let mut r = mk(210_000, Transport::Sse, "responses");
     ok_tokens(&mut r);
     r.incomplete = Some("max_output_tokens".into());
+    rec.record(r);
+}
+
+/// One UI_DEMO_BUSY record: 0 = ok, 1 = upstream 502, 2 = client cancel.
+fn busy_record(rec: &Recorder, at: i64, kind: u8) {
+    let mut r = Record::new(rec.ids.next_at(at), Transport::Sse, "responses");
+    r.status = 200;
+    r.model = Some("gpt-5.6-terra".into());
+    r.key = Some("laptop".into());
+    r.account = Some(if at % 2 == 0 { "alice" } else { "bob" }.into());
+    match kind {
+        1 => {
+            r.error = Some("upstream_5xx".into());
+            r.status = 502;
+            r.err_source = Some("upstream");
+            r.upstream_status = Some(502);
+        }
+        2 => {
+            r.error = Some("client_closed".into());
+            r.err_source = Some("client");
+        }
+        _ => {
+            r.input_tokens = Some(2_000 + at.rem_euclid(60_000));
+            r.output_tokens = Some(100 + at.rem_euclid(3_000));
+            r.ttft_ms = Some(300 + at.rem_euclid(2_500) as u32);
+        }
+    }
+    r.duration_ms = r.ttft_ms.unwrap_or(500) + at.rem_euclid(20_000) as u32;
     rec.record(r);
 }
 
