@@ -879,11 +879,11 @@ Config (`[ui]`):
 | `reset_credits_refresh_max_mins` | `0` | longest gap; each round is drawn at random in [min, max]; `0` = same as min (fixed); else min–60 |
 | `quota_refresh_mins` | `0` | background 刷新额度 for accounts with 「自动刷新额度」 on, shortest gap per account; `0` = off; 1–60 when on |
 | `quota_refresh_max_mins` | `0` | longest gap; each account draws its own next time in [min, max]; `0` = same as min (fixed); else min–60 |
+| `reset_credits_auto_lead_mins` | `10` | 快到期时自动使用: minutes before expiry (5–1440) |
 
 A config with only `*_mins` (v0.2.1 and earlier) loads as a fixed interval. `*_max_mins` below
 `*_mins`, or either outside 1–60, is a configuration error. The settings page shows each range
 as a switch plus 最短–最长 and fills 5–10 when switched on.
-| `reset_credits_auto_lead_mins` | `10` | 快到期时自动使用: minutes before expiry (5–1440) |
 
 API (client key):
 - `GET /usage/v1/reset-credits` → `{consume_enabled, can_consume, is_admin, refresh_mins, refresh_max_mins, quota_refresh_mins, quota_refresh_max_mins, accounts: [{account, email,
