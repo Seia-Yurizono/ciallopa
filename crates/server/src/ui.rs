@@ -173,6 +173,25 @@ mod tests {
         assert!(PAGE.contains("navigator.clipboard.writeText"));
     }
 
+    /// A second `function x(` in the same page script silently replaces the first (sloppy
+    /// hoisting), as happened when the problem chips reused the reset-card chip's name.
+    #[test]
+    fn no_duplicate_function_names() {
+        for page in PAGES {
+            let script = inline_blocks(page, "script")[0];
+            let mut seen = std::collections::HashSet::new();
+            for part in script.split("function ").skip(1) {
+                let name: String = part
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+                    .collect();
+                if !name.is_empty() && part[name.len()..].starts_with('(') {
+                    assert!(seen.insert(name.clone()), "function {name} declared twice");
+                }
+            }
+        }
+    }
+
     /// The shell (tokens, header, login, toasts, dialogs, click-again) is copied into each
     /// page between shared markers; the copies must not drift apart.
     #[test]

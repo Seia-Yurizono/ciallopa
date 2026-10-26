@@ -284,7 +284,7 @@ async function queryAndPaging() {
     assert.equal(flat(dl('请求')), '+100%');
     assert.doesNotMatch(dl('请求').attrs.class, /good|bad/, 'request volume is neutral');
     const classBtns = all(label('失败率').children[2]).filter(e => e.tag === 'button' && /fcl/.test(e.attrs.class || ''));
-    assert.deepEqual(classBtns.map(flat), ['网络 2', '额度用尽 1', '上游错误 1'], 'top classes, largest first, consistent labels');
+    assert.deepEqual(classBtns.map(flat), ['网络 2', '额度用尽 1'], 'top two classes, largest first, consistent labels (full breakdown in the bar title)');
     input('fcompare').checked = false;
     vm.runInContext('renderKpis()', c);
     assert.equal(dl('失败率'), undefined, 'compare off hides deltas');
@@ -688,7 +688,7 @@ function bucketSamplesAndUnknownOutcomes() {
   Object.assign(c, {
     $: control, TREND: {summary: c.summary, hourly: true, tz: 0}, recordWindow: null,
     narrow: () => false, summaryCurrent: () => true, clear: e => {e.children = [];},
-    sv: (tag, attrs, text) => ({tag, attrs, text, style: {}, addEventListener() {}}),
+    sv: (tag, attrs, text) => ({tag, attrs, text, style: {}, kids: [], appendChild(x) {this.kids.push(x);}, addEventListener() {}}),
     h: (tag, attrs, ...kids) => ({tag, attrs, kids}),
     p2: String, fmtN: String, fmtTime: String, exact: String, fmtUsd: String, pwText: () => '含预热', // these buckets were fetched with 「含预热」 on
   });
@@ -701,6 +701,12 @@ function bucketSamplesAndUnknownOutcomes() {
   assert.match(labels[3], /Token 25（2 \/ 3 条已报告，含预热）/);
   assert.match(labels[4], /Token 未报告/);
   assert.equal(control('svg').children.filter(e => e.tag === 'text' && e.text === '–').length, 2, 'unreported buckets get an unknown marker, not a zero bar');
+  const kids = control('svg').children, cls = k => kids.filter(e => e.attrs?.class === k);
+  assert.equal(cls('ln main').length, 1, 'recorded buckets draw one solid line');
+  assert.equal(cls('ln main')[0].attrs.d.split('M').length - 1, 1, 'the line breaks at unreported buckets, it does not bridge them');
+  assert.equal(cls('area main').length, 1);
+  assert.equal(cls('pt main').length, 1, 'an isolated reported bucket gets a dot');
+  assert.equal(kids.filter(e => e.tag === 'rect' && e.attrs?.class !== 'hit').length, 0, 'no bars for token totals');
   for (const [record, expected] of [
     [{status: 200}, 'completed'], [{status: 200, error: 'upstream_error_event'}, 'failed'],
     [{error: 'client_closed'}, 'cancelled'], [{incomplete: 'max_output_tokens'}, 'incomplete'],
@@ -797,6 +803,9 @@ function failureClassesAndTrend() {
   vm.runInContext(section('function niceMs(', '\n'), c);
   assert.equal(vm.runInContext('niceMs(3300)', c), 4000);
   assert.equal(vm.runInContext('niceMs(700)', c), 1000);
+  vm.runInContext(section('function niceMax(', '\n'), c);
+  for (const [v, top] of [[0, 4], [5, 8], [9, 12], [92, 100], [130, 200], [1300, 2000]])
+    assert.equal(vm.runInContext(`niceMax(${v})`, c), top, `count axis top for ${v}`);
   assert.equal(vm.runInContext('niceMs(9000)', c), 10000);
 }
 
@@ -879,8 +888,12 @@ async function filterChipScopeAndFocus() {
   ].join('\n'), c);
   for (const [id, v] of Object.entries({range: '24h', group: 'account', tmode: 'auto', tmetric: 'requests', facct: '', fmodel: '<model>', fkey: 'laptop', finstance: 'home', foutcome: 'failed', fsrc: 'network', ftier: 'dg', fcode: 'timeout'})) control(id).value = v;
   control('ferr').checked = control('fretry').checked = true;
+  const seg = ['1h', '24h', '7d', '30d'].map(v => ({dataset: {v}, attrs: {}, setAttribute(k, x) {this.attrs[k] = x;}}));
+  control('rangeseg').children = seg;control('range').value = '7d';
   vm.runInContext('saveF();showScope()', c);
   const chips = box => control(box).children;
+  assert.deepEqual(seg.map(b => b.attrs['aria-pressed']), ['false', 'false', 'true', 'false'], 'the range segments mirror the select');
+  control('range').value = '24h';
   assert.equal(chips('scopechips').length, 3);
   assert.equal(chips('recordchips').length, 6, 'includes the visible outcome and legacy URL checkbox');
   const model = chips('scopechips')[0];model.focus();
