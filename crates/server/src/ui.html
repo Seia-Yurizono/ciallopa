@@ -964,8 +964,8 @@ function renderRefusals(){const tb=$("refrec").tBodies[0];clear(tb);
 function drillOutcome(outcome,cls){if(!summaryCurrent())return;recordWindow=null;clearRecordFilters();const p=DRILL[outcome];
   if(p){$("fproblem").value=p;$("fcause").value=outcome==="failed"?errorCause(cls):DRILL_CAUSE[outcome]||""}else $("foutcome").value=outcome;
   saveF();showScope();renderTrend();loadRecords(false).catch(fail);revealRecords()}
-// KPI and class links land on the problem chips: 失败 → 报错 + 原因, 取消/截断/未知 → 没答完 + 子原因.
-const DRILL={failed:"error",cancelled:"unfinished",incomplete:"unfinished",unknown:"unfinished",refused:"refused"},DRILL_CAUSE={cancelled:"client_closed",incomplete:"truncated",unknown:"unconfirmed"};
+// KPI and class links land on the problem chips: 失败 → 报错 + 原因, 取消/未知 → 没答完 + 子原因; 截断 (truncated and content_filter) → the incomplete outcome.
+const DRILL={failed:"error",cancelled:"unfinished",unknown:"unfinished",refused:"refused"},DRILL_CAUSE={cancelled:"client_closed",unknown:"unconfirmed"};
 function errorCause(c){return c?({quota:"quota",rate_limit:"rate_limit",upstream:"upstream",network:"network",stream:"stream"}[c]||"gateway"):""}
 function clearRecordFilters(){for(const k of RF){const e=$(k);if(e.type==="checkbox")e.checked=false;else e.value=""}}
 function revealRecords(){const bar=document.querySelector(".fbar"),section=$("sr");
@@ -1239,7 +1239,11 @@ function errorInfo(r){const known=r.error!=="observation_incomplete"||requestOut
 function srcOf(r){return r.err_source==="network"&&PROXY_ERR[r.error]?"proxy":r.err_source}
 let recState={cursor:null,total:0,rows:[]};
 const OUTCOME={completed:"完成",failed:"失败",cancelled:"客户端断开",incomplete:"上游截断",unknown:"未确认结束",prewarm:"预热"};
-function requestOutcome(r){return r.endpoint==="prewarm"?"prewarm":r.error==="client_closed"||r.err_source==="client"?"cancelled":r.error==="observation_incomplete"&&r.err_source==="local"&&!(r.status>=400)?"unknown":r.error||r.status>=400?"failed":r.incomplete?"incomplete":"completed"}
+// response.incomplete reasons: interrupted is a normal end for Codex; the others did not finish.
+const INC_TIP={interrupted:"上游以 interrupted 结束，Codex 视为正常结束：算完成，token 已计入",content_filter:"上游内容过滤提前结束了回答：token 已计入，不算失败"};
+function incompleteCode(r){const x=r.incomplete;return !x?"":x==="interrupted"||x==="content_filter"?x:"incomplete_"+x}
+function incompleteTip(r){return INC_TIP[r.incomplete]||"上游提前结束了回答（"+r.incomplete+"）：token 已计入，不算失败"}
+function requestOutcome(r){if(r.outcome)return r.outcome;return r.endpoint==="prewarm"?"prewarm":r.error==="client_closed"||r.err_source==="client"?"cancelled":r.error==="observation_incomplete"&&r.err_source==="local"&&!(r.status>=400)?"unknown":r.error||r.status>=400?"failed":r.incomplete&&r.incomplete!=="interrupted"?"incomplete":"completed"}
 // Status chip colour by outcome; the code itself and the title carry the meaning, colour only
 // reinforces it. Cancelled, unknown and prewarm rows stay neutral.
 function statusKind(outcome,s){if(!s)return null;
@@ -1267,7 +1271,7 @@ async function nextAct(r,k,from){
 function conclusion(r){const p=r.problem,c=r.cause,n=causeName(p,c);
   if(r.rescued)return ["已救回 · "+rescueText(r),"中途上游出过错，客户端拿到了正常结果，计入上游出错，不计入失败率"];
   if(p==="error")return ["报错"+(n?" · "+n:""),({quota:"账号额度用尽，客户端收到错误",rate_limit:"上游限流，账号会短暂冷却",upstream:"上游返回错误",network:"连不上上游或出口代理",gateway:"ciallopa 本地没能转发，多为没有可用账号",stream:"流里报错或连接中断"}[c]||"请求失败")+(r.upstream_fault?"，也计入上游出错":"")+(r.next&&r.next.includes("new_session")?"\n加密推理内容来自别的账号，换号无效，需要在客户端新开会话":"")];
-  if(p==="unfinished")return ["没答完"+(n?" · "+n:""),({client_closed:"客户端先断开了连接",truncated:"上游提前结束了回答"+(r.incomplete?"（"+r.incomplete+"）":""),unconfirmed:"没看到结束事件，结果未确认"}[c]||"")+"，不计入失败率"];
+  if(p==="unfinished")return ["没答完"+(n?" · "+n:""),({client_closed:"客户端先断开了连接",truncated:"上游提前结束了回答"+(r.incomplete?"（"+incompleteCode(r)+"）":""),content_filter:"上游内容过滤提前结束了回答（content_filter）",unconfirmed:"没看到结束事件，结果未确认"}[c]||"")+"，不计入失败率"];
   return null}
 function renderConclusion(r){const box=$("dconcl"),c=conclusion(r);clear(box);box.classList.toggle("hide",!c);if(!c)return;
   box.append(h("div","t",c[0]),h("div","sm",c[1]));const acts=(r.next||[]).filter(k=>NEXT[k]&&k!=="detail"&&k!=="new_session");
@@ -1280,14 +1284,15 @@ function recRow(r){const outcome=requestOutcome(r),isErr=outcome==="failed",es=s
   const detail=h("button",{class:"statlink",type:"button","aria-label":"查看请求："+fmtTime(r.ts_ms)+" "+(r.account||"")+" "+OUTCOME[outcome]},today?hms(new Date(r.ts_ms)):fmtTime(r.ts_ms,true));
   tr.appendChild(h("td",{class:"t num sm",title:isoLocal(r.ts_ms)+hint},detail));
   const sk=statusKind(outcome,s);
-  const sc=h("td",{class:"s",title:(s?"客户端收到 HTTP "+s+(sk?" · "+sk[1]:""):"未记录 HTTP 状态")+(r.upstream_status&&r.upstream_status!==s&&r.error?"；最后一次上游响应 HTTP "+r.upstream_status:"")+(r.incomplete?"；response.incomplete："+r.incomplete+"（token 已计入，不算错误）":"")},h("span","st"+(sk?" "+sk[0]:""),s||"–"));
-  if(r.incomplete)sc.appendChild(h("span","tag cool","上游截断"));tr.appendChild(sc);
+  const sc=h("td",{class:"s",title:(s?"客户端收到 HTTP "+s+(sk?" · "+sk[1]:""):"未记录 HTTP 状态")+(r.upstream_status&&r.upstream_status!==s&&r.error?"；最后一次上游响应 HTTP "+r.upstream_status:"")+(r.incomplete?"；"+incompleteCode(r)+"："+incompleteTip(r):"")},h("span","st"+(sk?" "+sk[0]:""),s||"–"));
+  if(outcome==="incomplete")sc.appendChild(h("span","tag cool",r.incomplete==="content_filter"?"内容过滤":"上游截断"));tr.appendChild(sc);
   const ec=h("td",{class:"err",title:(error.tip?error.tip+"："+r.error:es&&SRC[es]?SRC[es][2]+"："+(r.error||""):(r.error||""))+hint});
   if(pw){ec.appendChild(h("span","tag line","预热"));ec.title="Codex WS 预热（generate:false）：token 计入用量与费用，不计入请求数、错误率和延迟统计"}
   else if(outcome==="unknown")ec.append(h("span","tag line","未确认结束")," ",h("span","sm mut","观察不完整"));
   else if(es&&SRC[es]){ec.append(h("span","tag "+SRC[es][1],SRC[es][0]+(es==="upstream"&&r.upstream_status?" "+r.upstream_status:""))," ",h("span","sm",error.label||r.error||"")," ");if(error.label)ec.appendChild(h("span","mono xs mut d-only",r.error))}
   else if(r.rescued)ec.append(h("span","tag save","已救回")," ",h("span","sm mut",rescueText(r)));
-  else ec.appendChild(h("span","sm mut",outcome==="incomplete"?r.incomplete:OUTCOME[outcome]));
+  else if(r.incomplete&&!r.error){ec.append(h("span","mono sm",incompleteCode(r)));ec.title=incompleteTip(r)+hint}
+  else ec.appendChild(h("span","sm mut",OUTCOME[outcome]));
   const nx=(r.next||[]).filter(k=>NEXT[k]).slice(0,2);
   if(!nx.length||pw)ec.appendChild(h("span","more","详情 ›"));
   else nx.forEach((k,i)=>{const b=h("button",{class:"nx"+(i?"":" p"),type:"button","data-next":k,title:NEXT[k][1]},NEXT[k][0]+" ›");b.addEventListener("click",e=>{e.stopPropagation();return nextAct(r,k,b).catch(fail)});ec.appendChild(b)});
@@ -1376,7 +1381,7 @@ async function openDetail(r,from,retry=false){if(!/^[0-9a-f]{16}$/.test(r.reques
   $("dmeta").textContent=fmtTime(r.ts_ms,true)+" · "+(r.status?"HTTP "+r.status:"未记录 HTTP 状态")+" · "+(r.transport||"–").toUpperCase();renderConclusion(r);detailStats(r);clear($("dfields"));
   for(const [name,value] of [["记录 ID",r.request_id],["账号",r.account],["密钥 / 实例",[r.key,r.instance].filter(Boolean).join(" / ")],["端点",r.endpoint],
     ["实际模型",r.response_model],["推理强度",r.reasoning_effort||r.response_effort],["请求 / 实际档位",tierName(normTier(r.requested_service_tier))+" / "+tierName(normTier(r.service_tier))],
-    ["最初账号",r.first_account]])field(name,value);threadField(r);field("轮次",r.turn_id);field("截断原因",r.incomplete);
+    ["最初账号",r.first_account]])field(name,value);threadField(r);field("轮次",r.turn_id);field("结束原因",r.incomplete&&incompleteCode(r));
   $("dmsg").classList.toggle("error",outcome==="failed");
   const message=(es&&SRC[es]?SRC[es][0]+" · ":"")+(r.error?(error.label?error.label+" ":"")+r.error:"")+(error.tip?"\n"+error.tip:"");$("dmsg").textContent=message;
   for(const id of ["dhdr","dbody"])$(id).textContent="";clear($("dtl"));$("dtll").classList.add("hide");
@@ -1576,7 +1581,7 @@ function renderHint(){const p=$("fproblem").value,c=$("fcause").value,hb=$("phin
   if(!PC);else if(!p){if(PC.error||u.rescued){parts.push(exact(PC.error)+" 条报错");if(u.rescued)parts.push(exact(u.rescued)+" 条已救回");if(PC.error)acts.push(["只看报错",()=>pickProblem("error")])}}
   else if(p==="error"){parts.push("报错计入失败率");if(c==="quota")acts.push(["刷新额度",()=>goQuota($("facct").value)],["账号页",()=>go("/ui/accounts")]);else if(c==="rate_limit")acts.push(["看冷却",()=>go("/ui/accounts")]);else if(c==="network")acts.push(["检查出口",()=>go("/ui/settings#network")]);else if(c==="gateway")acts.push(["账号状态",()=>go("/ui/accounts")])}
   else if(p==="upstream"){parts.push("已救回 "+exact(u.rescued||0),"未救回 "+exact(u.unrescued||0));hb.appendChild(h("span","k","上游出过错的请求"));if(c!=="rescued"&&u.rescued)acts.push(["只看已救回",()=>pickCause("rescued")])}
-  else if(p==="unfinished"){hb.appendChild(h("span","k","没答完不计入失败率"));parts.push("客户端断开 "+exact(f.client_closed||0),"上游截断 "+exact(f.truncated||0),"未确认结束 "+exact(f.unconfirmed||0))}
+  else if(p==="unfinished"){hb.appendChild(h("span","k","没答完不计入失败率"));parts.push("客户端断开 "+exact(f.client_closed||0),"上游截断 "+exact(f.truncated||0),"内容过滤 "+exact(f.content_filter||0),"未确认结束 "+exact(f.unconfirmed||0))}
   else if(p==="refused"){hb.appendChild(h("span","k","本地上限直接返回 503"));acts.push(["限流与容错设置",()=>go("/ui/settings#forward")])}
   if(parts.length)hb.appendChild(h("span",null,parts.join(" · ")));
   acts.forEach(([l,fn],i)=>{const b=h("button",{type:"button",class:i?"":"p"},l+" ›");b.addEventListener("click",fn);hb.appendChild(b)});
@@ -1591,7 +1596,7 @@ const SF=["facct","fmodel","fkey","finstance"],RF=["fproblem","fcause","foutcome
 // Problem buckets and their causes, as the backend names them (usage::problem).
 const PROB=[["","全部"],["error","报错",1],["upstream","上游出错",1],["unfinished","没答完"],["refused","本地拒绝"]];
 const CAUSES={error:[["quota","额度"],["rate_limit","限流"],["upstream","上游"],["network","网络代理"],["gateway","网关"],["stream","流中断"]],
-  upstream:[["unrescued","未救回"],["rescued","已救回"]],unfinished:[["client_closed","客户端断开"],["truncated","上游截断"],["unconfirmed","未确认结束"]],
+  upstream:[["unrescued","未救回"],["rescued","已救回"]],unfinished:[["client_closed","客户端断开"],["truncated","上游截断"],["content_filter","内容过滤"],["unconfirmed","未确认结束"]],
   refused:[["inflight","转发上限"],["ws","WS 上限"],["body","请求体缓冲"],["ws_msg","WS 消息缓冲"]]};
 function fval(id){const e=$(id);return e.type==="checkbox"?(e.checked?"1":""):e.value}
 function anyF(){return RF.some(id=>fval(id))}

@@ -101,7 +101,7 @@ previously finalized at headers.
 | `tier` | `service_tier` actually served: terminal event's `response.service_tier` (wins), else `response.created`'s, else the request body's; `auto` from a response is ignored (`priority` = Fast mode, `flex`, `default`/`auto` = standard). Pricing uses this. |
 | `req_tier` | v5: request body's `service_tier` (`fast` stored as `priority`), kept even when downgraded |
 | `resp_model`, `resp_effort` | v5: `response.model` / `response.reasoning.effort` (terminal event wins over `response.created`; SSE and WS) |
-| `incomplete` | `response.incomplete` reason (`incomplete_details.reason`, else `unknown`). Passed through untouched, tokens recorded, **not** an error and never a cooldown (Codex treats it as a terminal turn and still counts its tokens) |
+| `incomplete` | `response.incomplete` reason (`incomplete_details.reason`, else `unknown`). Passed through untouched, tokens recorded, **not** an error and never a cooldown (Codex treats it as a terminal turn and still counts its tokens). `interrupted` is a normal end (outcome `completed`, shown as `interrupted`); `content_filter` is its own 没答完 cause; any other reason is 上游截断, shown as `incomplete_<reason>`. On the images wrapper an incomplete response without an image is a failure (`content_filter` or `incomplete_<reason>`, 502) |
 | `thread`, `turn` | Codex thread / turn id from the `thread-id` header, `x-codex-turn-metadata` (JSON `thread_id`, `turn_id`) or body `client_metadata` (WS `response.create`). Stored for a future authoritative cost lookup; nothing queries upstream yet. Values > 128 chars are ignored. |
 | `key` | **label** of the client key that made the request (`[[api_keys]] label`, or `key-<sha256[..8]>` for plain keys). The raw key is never stored. |
 | `instance` | `instance_id` of the ciallopa that wrote the row (default: hostname) |
@@ -531,7 +531,7 @@ See [METRICS.md](METRICS.md) for the current outcome, sampling, cursor and bucke
   leading chars, so prefer the tail.
 - `GET /usage/v1/records/counts?<same filters>` → `{all, error, upstream, unfinished, refused,
   causes:{error:{quota, rate_limit, upstream, network, gateway, stream}, upstream:{unrescued,
-  rescued}, unfinished:{client_closed, truncated, unconfirmed}, refused:{inflight, ws, body,
+  rescued}, unfinished:{client_closed, truncated, content_filter, unconfirmed}, refused:{inflight, ws, body,
   ws_msg}}}`. `problem`, `cause` and paging are ignored. `refused` (and `causes.refused`)
   covers the same range, key and instance from the refusals table, and is null when an
   account, model, `thread` or another request-only filter is set.
@@ -827,7 +827,7 @@ Page behavior:
   - 上游出错 = the upstream side (upstream / stream / network source) failed at least once,
     including requests a retry or account switch rescued. Causes 未救回 and 已救回; the hint
     shows both counts. 上游失败率 on the dashboard keeps its definition and no new rate is added.
-  - 没答完 = 客户端断开 (`client_closed`), 上游截断 (`response.incomplete`) and 未确认结束
+  - 没答完 = 客户端断开 (`client_closed`), 上游截断 (`response.incomplete` other than `interrupted` / `content_filter`), 内容过滤 (`content_filter`) and 未确认结束
     (the former 结果未知); not counted as failures.
   - 本地拒绝 = refusals by a local limit (503 before a row exists), by reason; disabled while an
     account, model or request-only filter is set.

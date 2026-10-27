@@ -1963,7 +1963,18 @@ mod tests {
         for endpoint in ["responses", PREWARM_ENDPOINT] {
             for &(error, source, up) in &errors {
                 for status in [200u16, 429, 502] {
-                    for incomplete in [false, true] {
+                    // Every reason on business rows; prewarm keeps the list under one page.
+                    let reasons: &[Option<&str>] = if endpoint == PREWARM_ENDPOINT {
+                        &[None, Some("max_output_tokens")]
+                    } else {
+                        &[
+                            None,
+                            Some("max_output_tokens"),
+                            Some("interrupted"),
+                            Some("content_filter"),
+                        ]
+                    };
+                    for &incomplete in reasons {
                         for (retries, switches) in [(0u32, 0u32), (1, 0), (0, 1)] {
                             facts.push((
                                 endpoint, status, error, source, up, incomplete, retries, switches,
@@ -1980,7 +1991,7 @@ mod tests {
             row.error = error.map(str::to_owned);
             row.err_source = source;
             row.upstream_status = up;
-            row.incomplete = incomplete.then(|| "max_output_tokens".to_owned());
+            row.incomplete = incomplete.map(str::to_owned);
             row.retries = retries;
             row.switches = switches;
             let f = Facts {
@@ -2076,7 +2087,8 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(no_prewarm.all, facts.len() as u64 / 2);
+        let business = facts.iter().filter(|f| f.0 != PREWARM_ENDPOINT).count();
+        assert_eq!(no_prewarm.all, business as u64);
         assert_eq!(no_prewarm.error, counts.error);
         let only_retried = r
             .problem_counts(RecentQuery {
@@ -3021,5 +3033,88 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].account.as_deref(), Some("acct_deadbeef"));
         assert_eq!(rows[0].model.as_deref(), Some("gpt-5.5"));
+    }
+
+    #[tokio::test]
+    async fn incomplete_reasons_split_interrupted_content_filter_and_truncated() {
+        let d = tempfile::tempdir().unwrap();
+        let r = Recorder::open_as(&cfg(d.path()), "h").unwrap();
+        let base = now_ms();
+        for reason in ["interrupted", "content_filter", "max_output_tokens"] {
+            let mut row = Record::new(r.ids.next_at(base), Transport::Sse, "responses");
+            row.status = 200;
+            row.ttft_ms = Some(100);
+            row.duration_ms = 1100;
+            row.input_tokens = Some(10);
+            row.output_tokens = Some(100);
+            row.incomplete = Some(reason.into());
+            assert!(r.record(row));
+        }
+        r.flush_blocking().unwrap();
+        let rows = r
+            .recent(RecentQuery {
+                limit: 10,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let by = |reason: &str| {
+            rows.iter()
+                .find(|x| x.incomplete.as_deref() == Some(reason))
+                .unwrap()
+        };
+        // Codex treats `interrupted` as a normal end: completed, not 没答完.
+        let x = by("interrupted");
+        assert_eq!(
+            (x.outcome, x.problem, x.cause),
+            (Outcome::Completed, None, None)
+        );
+        let x = by("content_filter");
+        assert_eq!(
+            (x.outcome, x.problem, x.cause),
+            (
+                Outcome::Incomplete,
+                Some("unfinished"),
+                Some("content_filter")
+            )
+        );
+        let x = by("max_output_tokens");
+        assert_eq!(
+            (x.outcome, x.problem, x.cause),
+            (Outcome::Incomplete, Some("unfinished"), Some("truncated"))
+        );
+        for (outcome, n) in [(Outcome::Completed, 1), (Outcome::Incomplete, 2)] {
+            let got = r
+                .recent(RecentQuery {
+                    outcome: Some(outcome),
+                    limit: 10,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(got.len(), n, "{outcome:?}");
+        }
+        let counts = r.problem_counts(RecentQuery::default()).await.unwrap();
+        assert_eq!(counts.unfinished, 2);
+        assert_eq!(counts.causes["unfinished"]["content_filter"], 1);
+        assert_eq!(counts.causes["unfinished"]["truncated"], 1);
+        let summary = r
+            .summary(SummaryQuery {
+                from_ms: base,
+                to_ms: base,
+                bucket_day: Some(0),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let json = serde_json::to_value(&summary).unwrap();
+        for stats in [&json["total"], &json["groups"][0], &json["buckets"][0]] {
+            assert_eq!(stats["incomplete"], 2, "{stats}");
+            assert_eq!(stats["failures"], 0, "{stats}");
+        }
+        assert_eq!(
+            summary.total.tps_samples, 1,
+            "only the interrupted row is a clean sample"
+        );
     }
 }

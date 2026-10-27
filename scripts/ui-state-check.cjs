@@ -183,11 +183,14 @@ async function queryAndPaging() {
   assert.equal(calls.at(-1).searchParams.has('outcome'), false);
   assert.equal(Number(calls.at(-1).searchParams.get('to')), c.scopeWindow.to);
   for (const [outcome, cls, problem, cause] of [['failed', 'quota', 'error', 'quota'], ['failed', 'local', 'error', 'gateway'], ['failed', 'other', 'error', 'gateway'],
-    ['cancelled', '', 'unfinished', 'client_closed'], ['incomplete', '', 'unfinished', 'truncated'], ['unknown', '', 'unfinished', 'unconfirmed']]) {
+    ['cancelled', '', 'unfinished', 'client_closed'], ['unknown', '', 'unfinished', 'unconfirmed']]) {
     vm.runInContext(`drillOutcome(${JSON.stringify(outcome)},${JSON.stringify(cls)})`, c);
     const q = calls.at(-1).searchParams;
     assert.deepEqual([q.get('problem'), q.get('cause'), q.has('outcome'), q.has('failure_class')], [problem, cause, false, false], `${outcome}/${cls}`);
   }
+  // 上游截断 covers truncated and content_filter, so it drills into the incomplete outcome.
+  vm.runInContext('drillOutcome("incomplete")', c);
+  assert.deepEqual([calls.at(-1).searchParams.get('outcome'), calls.at(-1).searchParams.has('problem')], ['incomplete', false]);
   vm.runInContext('drillOutcome("refused")', c);
   assert.equal(input('fproblem').value, 'refused');
   assert.equal(vm.runInContext('refusedMode()', c), true, '本地拒绝 drills into the refusal list');
@@ -710,6 +713,8 @@ function bucketSamplesAndUnknownOutcomes() {
   for (const [record, expected] of [
     [{status: 200}, 'completed'], [{status: 200, error: 'upstream_error_event'}, 'failed'],
     [{error: 'client_closed'}, 'cancelled'], [{incomplete: 'max_output_tokens'}, 'incomplete'],
+    [{status: 200, incomplete: 'interrupted'}, 'completed'], [{status: 200, incomplete: 'content_filter'}, 'incomplete'],
+    [{status: 200, incomplete: 'max_output_tokens', outcome: 'completed'}, 'completed'],
     [{status: 200, error: 'observation_incomplete', err_source: 'local'}, 'unknown'],
     [{error: 'observation_incomplete', err_source: 'local'}, 'unknown'],
     [{status: 400, error: 'observation_incomplete', err_source: 'upstream'}, 'failed'],
@@ -1363,7 +1368,7 @@ async function problemChipsAndNextSteps() {
   const dom = interactionDom(), control = dom.$, gets = [], visits = [];
   let counts = {all: 40, error: 6, upstream: 5, unfinished: 3, refused: 2,
     causes: {error: {quota: 2, rate_limit: 1, upstream: 1, network: 1, gateway: 1, stream: 0}, upstream: {unrescued: 2, rescued: 3},
-      unfinished: {client_closed: 1, truncated: 1, unconfirmed: 1}, refused: {inflight: 2, ws: 0, body: 0, ws_msg: 0}}};
+      unfinished: {client_closed: 1, truncated: 1, content_filter: 0, unconfirmed: 1}, refused: {inflight: 2, ws: 0, body: 0, ws_msg: 0}}};
   const changes = [];
   const c = vm.createContext({...dom, URLSearchParams, Date, Promise, ACCTS: [{id: 'alice'}, {id: 'bob'}], SV: {model: [{value: 'gpt-5'}], key: [{value: 'laptop'}]},
     usageGet: async url => {gets.push(url); return counts;}, changeRecords() {changes.push(vm.runInContext('qs(recordFilters())', c));},
@@ -1416,7 +1421,7 @@ async function problemChipsAndNextSteps() {
   assert.equal(new URLSearchParams(changes.at(-1)).get('cause'), 'rescued');
   control('fproblem').value = 'unfinished';control('fcause').value = '';
   vm.runInContext('renderProblems()', c);
-  assert.deepEqual(causes().map(flat), ['全部', '客户端断开1', '上游截断1', '未确认结束1']);
+  assert.deepEqual(causes().map(flat), ['全部', '客户端断开1', '上游截断1', '内容过滤0', '未确认结束1']);
   assert.match(flat(control('phint')), /没答完不计入失败率/);
   // An account / model / request-only filter has no refusal count: the chip is disabled, not zero.
   counts = {...counts, refused: null};control('fproblem').value = '';
@@ -1463,6 +1468,14 @@ async function problemChipsAndNextSteps() {
   assert.equal(visits.at(-1), '/ui/settings#network');
   const truncated = vm.runInContext('recRow', c)({...base, status: 200, incomplete: 'max_output_tokens', problem: 'unfinished', cause: 'truncated', next: ['detail']});
   assert.match(flat(truncated.children.find(td => td.getAttribute('class')?.startsWith('s'))), /上游截断/);
+  assert.match(flat(truncated.children.find(td => td.getAttribute('class') === 'err')), /incomplete_max_output_tokens/);
+  // interrupted is a normal end: completed, no 上游截断 chip, the English code as the marker.
+  const interrupted = vm.runInContext('recRow', c)({...base, status: 200, incomplete: 'interrupted', outcome: 'completed', next: []});
+  assert.doesNotMatch(flat(interrupted.children.find(td => td.getAttribute('class')?.startsWith('s'))), /截断/);
+  assert.match(flat(interrupted.children.find(td => td.getAttribute('class') === 'err')), /^interrupted/);
+  const filtered = vm.runInContext('recRow', c)({...base, status: 200, incomplete: 'content_filter', outcome: 'incomplete', problem: 'unfinished', cause: 'content_filter', next: ['detail']});
+  assert.match(flat(filtered.children.find(td => td.getAttribute('class')?.startsWith('s'))), /内容过滤/);
+  assert.match(flat(filtered.children.find(td => td.getAttribute('class') === 'err')), /^content_filter/);
   // The detail conclusion sits above the attempt chain and has no trailing punctuation.
   const cases = [
     [{rescued: true, retries: 2, switches: 0, problem: 'all', next: ['attempts']}, '已救回 · 重试 2 次 后成功', /不计入失败率/],
