@@ -311,6 +311,21 @@ async fn main() {
             }
             _ => {}
         }
+        // Fake Codex sessions: about a dozen consecutive requests share one UUIDv7-like
+        // thread id (same-minute ids share their head); some clients send none.
+        if i % 17 != 5 {
+            let s = (i / 12) as u64;
+            let ms = 0x019a_2b3c_0000u64 + s * 977;
+            r.thread_id = Some(format!(
+                "{:08x}-{:04x}-7{:03x}-8{:03x}-{:012x}",
+                ms >> 16,
+                ms & 0xffff,
+                s % 0xfff,
+                (s * 7) % 0xfff,
+                s.wrapping_mul(0x9e37_79b9_7f4a) & 0xffff_ffff_ffff
+            ));
+            r.turn_id = Some(format!("turn-{:04}", i % 12 + 1));
+        }
         let prog = i as f64 / n as f64;
         if a != "evil" {
             r.quota = Some(QuotaObs {
