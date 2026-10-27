@@ -7,6 +7,7 @@ pub mod prices;
 pub mod problem;
 pub mod refusals;
 pub mod reset;
+mod migrate_v12;
 mod store;
 mod writer;
 
@@ -1116,7 +1117,11 @@ mod tests {
         let (new, old) = (&rows[0], &rows[1]);
         assert_eq!(new.incomplete.as_deref(), Some("max_output_tokens"));
         assert_eq!(old.incomplete, None);
-        assert_eq!(old.account.as_deref(), Some("old-acct"));
+        assert!(
+            ciallopa_core::Aliaser::looks_like_alias(old.account.as_deref().unwrap_or("")),
+            "v12 renames account labels: {:?}",
+            old.account
+        );
         assert_eq!(old.service_tier.as_deref(), Some("default"));
         assert_eq!(old.requested_service_tier, None);
         assert_eq!(old.response_model, None);
@@ -1146,7 +1151,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(page.len(), 1);
-        assert_eq!(page[0].account.as_deref(), Some("old-acct"));
+        assert!(ciallopa_core::Aliaser::looks_like_alias(
+            page[0].account.as_deref().unwrap_or("")
+        ));
     }
 
     #[test]
@@ -1198,7 +1205,9 @@ mod tests {
             &PriceTable::default(),
         )
         .unwrap();
-        assert_eq!(rows[1].account.as_deref(), Some("old-acct"));
+        assert!(ciallopa_core::Aliaser::looks_like_alias(
+            rows[1].account.as_deref().unwrap_or("")
+        ));
         assert_eq!(rows[1].key, None);
         r.shutdown();
     }
@@ -2662,5 +2671,192 @@ mod tests {
             .unwrap();
         assert_eq!(n, 0);
         r2.shutdown();
+    }
+
+    /// Build a v11-shaped DB with email-bearing account labels and a juicy error body,
+    /// migrate to v12, then assert no `@` remains anywhere in the DB file bytes.
+    #[test]
+    fn migrate_v11_db_has_no_emails() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("u.db");
+        let rid = (now_ms() - 5_000) << SEQ_BITS;
+        {
+            let mut c = rusqlite::Connection::open(&p).unwrap();
+            // Create current schema then pin user_version back to 11 with raw labels.
+            store::migrate(&mut c).unwrap();
+            // Force v11 marker and inject sensitive rows as a pre-v12 DB would look.
+            c.execute_batch(&format!(
+                "DELETE FROM requests; DELETE FROM error_detail; DELETE FROM reset_consume;
+                 DELETE FROM quota_obs; DELETE FROM refusals; DELETE FROM labels;
+                 INSERT INTO labels(id, name) VALUES
+                   (1, 'codex-x-alice@example.com-plus'),
+                   (2, 'gpt-5.5'),
+                   (3, 'Mozilla/5.0 very-long-user-agent-string-that-should-be-clipped-beyond-sixty-chars-ABCDEF');
+                 INSERT INTO requests(id, account, model, transport, status, error, retries, switches, duration_ms)
+                   VALUES({rid}, 1, 2, 1, 500, 2, 0, 0, 10);
+                 INSERT INTO error_detail(id, message, body, body_len, truncated, headers, attempts)
+                   VALUES({rid},
+                     'upstream failed for alice@example.com',
+                     '{{ \"type\":\"response.failed\", \"response\": {{ \"id\":\"resp_1\", \"status\":\"failed\", \"error\": {{ \"message\":\"boom\", \"code\":\"x\" }}, \"instructions\":\"SECRET PROMPT\", \"output\":[{{ \"content\":\"hi\" }}], \"model\":\"gpt-5.5\" }} }}',
+                     200, 0, '{{}}',
+                     '[{{ \"account\": \"codex-x-alice@example.com-plus\", \"status\": 500, \"body_snippet\": \"{{\\\"instructions\\\":\\\"SECRET\\\",\\\"error\\\":{{\\\"message\\\":\\\"x\\\"}}}}\" }}]');
+                 INSERT INTO reset_consume(account, redeem_request_id, started_ms, status)
+                   VALUES('codex-x-alice@example.com-plus', 'rr-1', 1, 'done');
+                 INSERT INTO refusals(minute, reason, transport, key, route, ua, model, account, instance, lim,
+                                      count, first_ms, last_ms, max_inflight, max_ws, max_buffered)
+                   VALUES(1, 1, 3, 0, 0, 3, 0, 1, 0, 0, 1, 1, 1, 0, 0, 0);
+                 DELETE FROM kv WHERE k = 'alias_key';
+                 PRAGMA user_version = 11;"
+            ))
+            .unwrap();
+        }
+        // Migrate via open_rw.
+        {
+            let _c = store::open_rw(&p).unwrap();
+        }
+        // Column-level check (raw `@` also appears in SQLite page headers as 0x40).
+        {
+            let c = rusqlite::Connection::open(&p).unwrap();
+            let mut dirty = Vec::new();
+            for (sql,) in [
+                ("SELECT name FROM labels",),
+                ("SELECT account, COALESCE(error,''), COALESCE(credit_id,'') FROM reset_consume",),
+                ("SELECT COALESCE(message,''), COALESCE(body,''), COALESCE(attempts,''), COALESCE(headers,'') FROM error_detail",),
+            ] {
+                let mut st = c.prepare(sql).unwrap();
+                let cols = st.column_count();
+                for row in st
+                    .query_map([], |r| {
+                        let mut s = String::new();
+                        for i in 0..cols {
+                            let v: String = r.get::<_, Option<String>>(i).ok().flatten().unwrap_or_default();
+                            s.push_str(&v);
+                            s.push(' ');
+                        }
+                        Ok(s)
+                    })
+                    .unwrap()
+                {
+                    let s = row.unwrap();
+                    if s.contains('@') || s.contains("SECRET") {
+                        dirty.push(s);
+                    }
+                }
+            }
+            assert!(dirty.is_empty(), "sensitive text still in columns: {dirty:?}");
+        }
+        let bytes = std::fs::read(&p).unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            !text.contains("example.com") && !text.contains("SECRET PROMPT"),
+            "fixture secrets still in db file bytes"
+        );
+        // Labels are aliases; UA was clipped.
+        let c = rusqlite::Connection::open(&p).unwrap();
+        let v: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 12);
+        let names: Vec<String> = {
+            let mut st = c.prepare("SELECT name FROM labels ORDER BY id").unwrap();
+            st.query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        let acct = names
+            .iter()
+            .find(|n| ciallopa_core::Aliaser::looks_like_alias(n))
+            .expect("aliased account label");
+        assert!(acct.starts_with("acct_"));
+        let ua = names
+            .iter()
+            .find(|n| n.starts_with("Mozilla"))
+            .expect("ua label");
+        assert!(ua.chars().count() <= 60, "ua len {}", ua.chars().count());
+        let rc_acct: String = c
+            .query_row("SELECT account FROM reset_consume LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert!(ciallopa_core::Aliaser::looks_like_alias(&rc_acct));
+    }
+
+    #[test]
+    fn migrate_v12_is_idempotent() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("u.db");
+        {
+            let mut c = rusqlite::Connection::open(&p).unwrap();
+            store::migrate(&mut c).unwrap();
+            c.execute_batch(
+                "INSERT INTO labels(id, name) VALUES (1, 'codex-x-bob@example.com-plus');
+                 INSERT INTO requests(id, account, transport, status, retries, switches, duration_ms)
+                   VALUES(1, 1, 1, 200, 0, 0, 1);
+                 DELETE FROM kv WHERE k = 'alias_key';
+                 PRAGMA user_version = 11;",
+            )
+            .unwrap();
+        }
+        {
+            let mut c = rusqlite::Connection::open(&p).unwrap();
+            store::migrate(&mut c).unwrap();
+        }
+        let name1: String = {
+            let c = rusqlite::Connection::open(&p).unwrap();
+            c.query_row("SELECT name FROM labels WHERE id = 1", [], |r| r.get(0))
+                .unwrap()
+        };
+        let key1: String = {
+            let c = rusqlite::Connection::open(&p).unwrap();
+            c.query_row("SELECT v FROM kv WHERE k = 'alias_key'", [], |r| r.get(0))
+                .unwrap()
+        };
+        // Run migrate again (v already 12 → early return; also exercise rewrite idempotency
+        // by forcing rewrite path).
+        {
+            let mut c = rusqlite::Connection::open(&p).unwrap();
+            // Force rewrite path again.
+            c.execute_batch("PRAGMA user_version = 11;").unwrap();
+            store::migrate(&mut c).unwrap();
+        }
+        let c = rusqlite::Connection::open(&p).unwrap();
+        let name2: String = c
+            .query_row("SELECT name FROM labels WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        let key2: String = c
+            .query_row("SELECT v FROM kv WHERE k = 'alias_key'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(name1, name2);
+        assert_eq!(key1, key2);
+        assert!(ciallopa_core::Aliaser::looks_like_alias(&name1));
+    }
+
+    /// A v12 DB with only aliases still opens and queries without error (stands in for
+    /// "old binary reading v12": labels look like unknown accounts, no crash).
+    #[test]
+    fn v12_db_with_aliases_queries_cleanly() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("u.db");
+        let rid = (now_ms() - 1_000) << SEQ_BITS;
+        {
+            let mut c = rusqlite::Connection::open(&p).unwrap();
+            store::migrate(&mut c).unwrap();
+            c.execute_batch(&format!(
+                "INSERT INTO labels(id, name) VALUES (1, 'acct_deadbeef'), (2, 'gpt-5.5');
+                 INSERT INTO requests(id, account, model, transport, status, retries, switches, duration_ms)
+                   VALUES({rid}, 1, 2, 1, 200, 0, 0, 5);"
+            ))
+            .unwrap();
+        }
+        let c = store::open_ro(&p).unwrap();
+        let rows = store::recent(
+            &c,
+            &RecentQuery {
+                limit: 5,
+                ..Default::default()
+            },
+            &PriceTable::default(),
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].account.as_deref(), Some("acct_deadbeef"));
+        assert_eq!(rows[0].model.as_deref(), Some("gpt-5.5"));
     }
 }

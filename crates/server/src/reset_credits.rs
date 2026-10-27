@@ -538,6 +538,25 @@ fn err(status: StatusCode, msg: &str) -> Response {
     (status, Json(json!({"error": {"message": msg}}))).into_response()
 }
 
+
+/// Non-admin callers get counts and the earliest expiry only — not the card list.
+fn credits_public(e: &Entry, admin: bool) -> Value {
+    if admin {
+        return json!(e);
+    }
+    json!({
+        "fetched_ms": e.fetched_ms,
+        "available_count": e.available_count,
+        "nearest_expires_at": e.nearest_expires_at,
+        "error": e.error,
+        "error_ms": e.error_ms,
+        "usage_available_count": e.usage_available_count,
+        "allowed": e.allowed,
+        "limit_reached": e.limit_reached,
+        "usage_observed_ms": e.usage_observed_ms,
+    })
+}
+
 async fn list_body(s: &S, admin: bool) -> Value {
     let cfg = s.st.config.load();
     let snap = s.rc.snapshot();
@@ -557,17 +576,25 @@ async fn list_body(s: &S, admin: bool) -> Value {
             let hist = s.rc.auto.history(&attempts, &a.id);
             crate::auto_reset::next_due(&e.credits, &hist, lead_ms, now)
         });
-        out.push(json!({
-            "account": a.id,
-            "email": a.email,
+        let alias = ciallopa_core::a(&a.id);
+        let mut row = json!({
+            "account": if admin { a.id.clone() } else { alias },
             "disabled": a.disabled,
-            "reset_credits": snap.get(&a.id),
+            "reset_credits": snap.get(&a.id).map(|e| credits_public(e, admin)),
             "auto": auto,
             "auto_next_ms": next,
             "quota_auto": s.rc.quota_auto.is_on(&a.id),
-        }));
+        });
+        if admin {
+            row["email"] = json!(a.email);
+        }
+        out.push(row);
     }
-    attempts.truncate(20);
+    if admin {
+        attempts.truncate(20);
+    } else {
+        attempts.clear();
+    }
     let consume_enabled = cfg.ui.allow_reset_consume && s.st.usage.is_some();
     json!({
         "consume_enabled": consume_enabled,

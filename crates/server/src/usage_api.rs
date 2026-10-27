@@ -7,7 +7,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use ciallopa_core::settings::SharedConfig;
 use ciallopa_core::AccountStore;
-use ciallopa_forward::EgressStatus;
+use ciallopa_forward::{ClientKey, EgressStatus};
 use ciallopa_usage::{now_ms, Dim, Filters, Outcome, Problem, RecentQuery, Recorder, SummaryQuery};
 use serde::Deserialize;
 use std::sync::{Arc, Mutex};
@@ -767,6 +767,7 @@ async fn scope_values(State(st): State<St>) -> Response {
 }
 
 /// Per account: latest upstream used %, reset times, capacity estimate, relogin flags.
+/// Email is admin-only; non-admin callers see the account alias instead of the raw id.
 async fn quota(
     State(St {
         rec,
@@ -774,10 +775,12 @@ async fn quota(
         egress,
         ..
     }): State<St>,
+    key: Option<axum::Extension<ClientKey>>,
 ) -> Response {
     let Some(rec) = rec else {
         return err(StatusCode::NOT_FOUND, "usage log disabled");
     };
+    let admin = key.as_ref().is_some_and(|k| k.0.admin);
     let obs = match rec.quota().await {
         Ok(o) => o,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
@@ -786,21 +789,43 @@ async fn quota(
     let mut out: Vec<serde_json::Value> = vec![];
     let known = accounts.list().await;
     for a in &known {
-        let q = obs.iter().find(|q| q.account == a.id);
-        out.push(serde_json::json!({
-            "account": a.id,
-            "email": a.email,
+        let alias = ciallopa_core::a(&a.id);
+        // DB labels store aliases (v12+); also accept a legacy raw id during rolling upgrades.
+        let q = obs
+            .iter()
+            .find(|q| q.account == alias || q.account == a.id);
+        let mut row = serde_json::json!({
+            "account": if admin { a.id.clone() } else { alias.clone() },
             "disabled": a.disabled,
             "needs_relogin": relogin.contains(&a.id),
             "quota": q,
-        }));
+        });
+        if admin {
+            row["email"] = serde_json::json!(a.email);
+        }
+        out.push(row);
     }
     // Observed in the log but no longer configured.
-    for q in obs
-        .iter()
-        .filter(|q| !known.iter().any(|a| a.id == q.account))
-    {
-        out.push(serde_json::json!({"account": q.account, "configured": false, "quota": q}));
+    for q in obs.iter().filter(|q| {
+        !known.iter().any(|a| {
+            let alias = ciallopa_core::a(&a.id);
+            q.account == a.id || q.account == alias
+        })
+    }) {
+        let mut row = serde_json::json!({
+            "account": q.account,
+            "configured": false,
+            "quota": q,
+        });
+        if admin {
+            // Best-effort reveal for orphaned rows when the process still knows the id.
+            let mut acc = Some(q.account.clone());
+            reveal(&mut acc);
+            if let Some(id) = acc {
+                row["account"] = serde_json::json!(id);
+            }
+        }
+        out.push(row);
     }
     Json(serde_json::json!({
         "accounts": out,

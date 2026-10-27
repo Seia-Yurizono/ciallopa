@@ -10,7 +10,7 @@ use std::path::Path;
 /// Endpoint label of a Codex WS prewarm turn (`response.create` with `generate:false`).
 pub const PREWARM_ENDPOINT: &str = "prewarm";
 
-pub(crate) const SCHEMA_VERSION: i64 = 11;
+pub(crate) const SCHEMA_VERSION: i64 = 12;
 
 const CREATE_V3: &str = r#"
 CREATE TABLE IF NOT EXISTS labels(
@@ -226,8 +226,19 @@ pub(crate) fn migrate(c: &mut Connection) -> rusqlite::Result<()> {
         tx.execute_batch(MIGRATE_8_TO_9_DETAIL)?;
     }
     tx.execute_batch(CREATE_V3)?;
+    // v12: rewrite account labels to aliases and scrub historical error payloads.
+    // Runs for every upgrade into 12 (including fresh DBs, where it only seeds alias_key).
+    if v < 12 {
+        tx.execute_batch("PRAGMA secure_delete = ON;")?;
+        crate::migrate_v12::rewrite(&tx)?;
+    }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
-    tx.commit()
+    tx.commit()?;
+    if v < 12 {
+        // Drop free pages that still held pre-rewrite bytes; no VACUUM (disk doubling).
+        let _ = c.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    }
+    Ok(())
 }
 
 pub(crate) fn open_rw(p: &Path) -> Result<Connection, UsageError> {

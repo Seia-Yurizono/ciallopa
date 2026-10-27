@@ -365,6 +365,64 @@ impl Settings {
         self.audit(actor, action, "admin", &[c]);
     }
 
+    /// One-shot rewrite of historical `account:<raw-id>` keys to aliases. Idempotent:
+    /// skips when every `account:` key already looks like an alias (or file is absent).
+    pub fn rewrite_audit_aliases(&self) {
+        let Some(p) = &self.audit_path else {
+            return;
+        };
+        let Ok(s) = std::fs::read_to_string(p) else {
+            return;
+        };
+        if s.is_empty() {
+            return;
+        }
+        let mut changed = false;
+        let mut out = String::with_capacity(s.len());
+        for (i, line) in s.lines().enumerate() {
+            if i > 0 {
+                out.push('\n');
+            }
+            let Ok(mut v) = serde_json::from_str::<Value>(line) else {
+                out.push_str(line);
+                continue;
+            };
+            let Some(arr) = v.get_mut("changes").and_then(|c| c.as_array_mut()) else {
+                out.push_str(line);
+                continue;
+            };
+            for c in arr.iter_mut() {
+                let Some(key) = c.get("key").and_then(|k| k.as_str()) else {
+                    continue;
+                };
+                let Some(rest) = key.strip_prefix("account:") else {
+                    continue;
+                };
+                if ciallopa_core::Aliaser::looks_like_alias(rest) {
+                    continue;
+                }
+                let alias = ciallopa_core::a(rest);
+                if alias != rest {
+                    c["key"] = Value::String(format!("account:{alias}"));
+                    changed = true;
+                }
+            }
+            out.push_str(&v.to_string());
+        }
+        if !changed {
+            return;
+        }
+        out.push('\n');
+        let tmp = p.with_extension("jsonl.tmp");
+        match std::fs::write(&tmp, &out).and_then(|_| std::fs::rename(&tmp, p)) {
+            Ok(()) => tracing::info!(path = %p.display(), "audit log rewritten with account aliases"),
+            Err(e) => {
+                tracing::warn!(error = %e, path = %p.display(), "audit alias rewrite failed");
+                let _ = std::fs::remove_file(&tmp);
+            }
+        }
+    }
+
     pub fn audit_tail(&self, limit: usize) -> Vec<Value> {
         let Some(p) = &self.audit_path else {
             return vec![];
