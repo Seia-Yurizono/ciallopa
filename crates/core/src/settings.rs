@@ -151,6 +151,7 @@ pub const SCHEMA: &[Field] = &[
     f("images.default_originator", "string", Hot, true, "默认 originator", "只用于没有发送 originator 的非 Codex 客户端"),
     f("images.default_user_agent", "string", Hot, true, "默认 User-Agent", "客户端 User-Agent 不以 codex 开头时使用"),
     Field { options: &["error", "warn", "info", "debug", "trace"], ..f("log.level", "enum", Hot, true, "日志级别", "设置了环境变量 RUST_LOG 时以它为准") },
+    f("log.redact_emails", "bool", Hot, true, "日志隐藏邮箱", "关闭后 stderr 保留邮箱原文；默认开启"),
     f("usage.enabled", "bool", Restart, true, "用量日志", "记录每个请求的账号、模型、token 和状态，概览页的数据都来自这里"),
     f("usage.path", "path", Restart, false, "用量数据库文件", "SQLite 文件，旁边还有 -wal 和 -shm 文件"),
     f("usage.retention_days", "int", Hot, true, "明细保留天数", "更早的请求明细自动清除；0 = 永久保留"),
@@ -222,17 +223,13 @@ pub fn mask(key: &str, v: &Value, c: Option<&Config>) -> Value {
     }
 }
 
-/// `socks5h://user:pass@host:1080` → `socks5h://user:***@host:1080`.
+/// `socks5h://user:pass@host:1080` → `socks5h://***@host:1080` (username hidden too).
 pub fn mask_proxy(u: &str) -> String {
     let Some((scheme, rest)) = u.split_once("://") else {
         return u.to_string();
     };
     match rest.rsplit_once('@') {
-        Some((cred, host)) => {
-            let user = cred.split(':').next().unwrap_or_default();
-            let pw = if cred.contains(':') { ":***" } else { "" };
-            format!("{scheme}://{user}{pw}@{host}")
-        }
+        Some((_cred, host)) => format!("{scheme}://***@{host}"),
         None => u.to_string(),
     }
 }
@@ -346,6 +343,17 @@ mod tests {
     }
 
     #[test]
+    fn mask_proxy_hides_username() {
+        assert_eq!(
+            mask_proxy("socks5h://user:secretpw@host:1080"),
+            "socks5h://***@host:1080"
+        );
+        assert_eq!(mask_proxy("http://onlyuser@h:1"), "http://***@h:1");
+        assert_eq!(mask_proxy("socks5h://127.0.0.1:1080"), "socks5h://127.0.0.1:1080");
+        assert_eq!(mask_proxy(""), "");
+    }
+
+    #[test]
     fn diff_masks_and_classifies() {
         let a = Config::parse("api_keys = [\"sk-cpa-0123456789abcdef\"]").unwrap();
         let mut b = a.clone();
@@ -354,7 +362,7 @@ mod tests {
         let d = diff(&a, &b);
         assert_eq!(d.len(), 2);
         let s = serde_json::to_string(&d).unwrap();
-        assert!(!s.contains("secretpw") && s.contains("u:***@h"));
+        assert!(!s.contains("secretpw") && !s.contains("://u:") && s.contains("***@h"));
         assert_eq!(
             d.iter().find(|c| c.key == "listen").unwrap().effect,
             Effect::Restart

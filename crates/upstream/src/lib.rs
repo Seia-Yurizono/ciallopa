@@ -406,6 +406,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn proxy_build_error_hides_credentials() {
+        let secret = "SuperSecretPass";
+        let e = build_reqwest(&ClientOptions {
+            proxy_url: format!("http://user:{secret}@[::1"),
+            ..Default::default()
+        })
+        .unwrap_err();
+        let s = e.to_string();
+        assert!(
+            !s.contains(secret) && !s.contains("user:"),
+            "proxy build error echoed credentials: {s}"
+        );
+    }
+
+    #[test]
     fn builds_with_and_without_proxy() {
         build_reqwest(&ClientOptions::default()).unwrap();
         build_reqwest(&ClientOptions {

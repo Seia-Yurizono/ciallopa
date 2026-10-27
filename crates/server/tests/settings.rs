@@ -423,6 +423,30 @@ async fn rejected_reload_leaves_running_config_unchanged() {
     assert!(!e.settings.st_config_write_enabled());
 }
 
+
+#[tokio::test]
+async fn broken_toml_file_error_hides_source_line() {
+    let e = env("").await;
+    let secret = "sk-cpa-SECRETVALUE1234567890abcd";
+    // Unterminated string so toml Display would normally echo the source line.
+    std::fs::write(
+        &e.path,
+        format!("proxy_url = \"socks5h://user:{secret}@host:1080\n"),
+    )
+    .unwrap();
+    assert_eq!(e.reload().await.status(), 422);
+    let (after, _) = e.config().await;
+    let fe = after["file_error"].as_str().unwrap();
+    let lr = after["last_reload"]["error"].as_str().unwrap();
+    for (label, s) in [("file_error", fe), ("last_reload.error", lr)] {
+        assert!(
+            !s.contains(secret) && !s.contains("user:") && !s.contains("host:1080"),
+            "{label} leaked config text: {s}"
+        );
+        assert!(s.contains("line") && s.contains("column"), "{label} lost location: {s}");
+    }
+}
+
 #[tokio::test]
 async fn reload_rejects_the_example_key() {
     let e = env("").await;
