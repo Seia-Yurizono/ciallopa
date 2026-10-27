@@ -306,6 +306,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let drain = state.upstream.drain.clone();
     // Live settings: file watch (debounced) + SIGHUP + admin API share one apply pipeline.
     let settings = ciallopa::settings::Settings::new(state, Some(config_path), oauth_pools);
+    // Historical audit rows may still say account:<raw-id>; rewrite once (no-op if clean).
+    settings.rewrite_audit_aliases();
     settings.init_known_accounts().await;
     let _watcher = ciallopa::settings::spawn_watcher(settings.clone());
     ciallopa::settings::spawn_sighup(settings.clone());

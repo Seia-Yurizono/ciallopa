@@ -118,6 +118,11 @@ fn clip_ua(s: &str) -> String {
     clip(&crate::detail::redact_text(s), MAX_UA)
 }
 
+/// Same clip used at write time; exposed for the v12 history rewrite.
+pub(crate) fn clip_ua_for_migrate(s: &str) -> String {
+    clip_ua(s)
+}
+
 /// Route label for a client path: no query, id-like segments replaced by `:id`, so
 /// passthrough paths with task or file ids do not create unbounded groups.
 pub fn route_of(path_and_query: &str) -> String {
