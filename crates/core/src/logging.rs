@@ -2,8 +2,11 @@
 //! `redact()` before hitting stderr, so tokens can't leak even via Debug output.
 use regex::Regex;
 use std::io::{self, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use tracing_subscriber::{fmt::MakeWriter, EnvFilter};
+
+static REDACT_EMAILS: AtomicBool = AtomicBool::new(true);
 
 fn patterns() -> &'static [(Regex, &'static str)] {
     static P: OnceLock<Vec<(Regex, &'static str)>> = OnceLock::new();
@@ -33,12 +36,27 @@ fn patterns() -> &'static [(Regex, &'static str)] {
     })
 }
 
+fn email_re() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| {
+        Regex::new(r"(?i)\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b").expect("email regex")
+    })
+}
+
 pub fn redact(s: &str) -> String {
     let mut out = s.to_string();
     for (re, rep) in patterns() {
         out = re.replace_all(&out, *rep).into_owned();
     }
+    if REDACT_EMAILS.load(Ordering::Relaxed) {
+        out = email_re().replace_all(&out, "[email]").into_owned();
+    }
     out
+}
+
+/// Hot-reload `[log] redact_emails` (default on).
+pub fn set_redact_emails(on: bool) {
+    REDACT_EMAILS.store(on, Ordering::Relaxed);
 }
 
 pub struct RedactingWriter<W: Write> {
@@ -118,7 +136,7 @@ pub fn set_level(level: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::redact;
+    use super::{redact, set_redact_emails};
 
     #[test]
     fn redacts_secrets() {
@@ -148,5 +166,18 @@ mod tests {
             "/auth/callback?code={oauth}&state=x {{\"code\": \"{oauth}\"}}"
         ));
         assert!(!r.contains(oauth), "{r}");
+    }
+
+
+    #[test]
+    fn redacts_emails_when_enabled() {
+        set_redact_emails(true);
+        let r = redact("account=codex-deadbeef-alice@example.com-plus user=bob.carol+tag@x.io");
+        assert!(!r.contains("alice@example.com") && !r.contains("bob.carol+tag@x.io"), "{r}");
+        assert!(r.contains("[email]"), "{r}");
+        set_redact_emails(false);
+        let r = redact("alice@example.com");
+        assert!(r.contains("alice@example.com"), "{r}");
+        set_redact_emails(true); // restore default for other tests
     }
 }

@@ -212,7 +212,7 @@ impl Settings {
         &self,
         text: &str,
     ) -> Result<(Config, Option<ciallopa_usage::PriceTable>), ApplyError> {
-        let c = Config::parse(text).map_err(|e| ApplyError::invalid(e.to_string()))?;
+        let c = Config::parse(text).map_err(|e| ApplyError::invalid(ciallopa_core::config::config_error_view(&e)))?;
         ciallopa_upstream::build_reqwest(&ciallopa_upstream::ClientOptions::from(&c))
             .map_err(|e| ApplyError::invalid(format!("proxy_url: {e}")))?;
         let prices = if self.st.usage.is_some() {
@@ -275,6 +275,7 @@ impl Settings {
         if let Err(e) = ciallopa_core::logging::set_level(&eff.log.level) {
             tracing::warn!(error = %e, "log level not applied");
         }
+        ciallopa_core::logging::set_redact_emails(eff.log.redact_emails);
         let prices_hash = hash(&std::fs::read(&eff.usage.prices).unwrap_or_default());
         if let (Some(u), Some(p)) = (&self.st.usage, prices) {
             u.set_weights(eff.usage.quota_weights.clone());
@@ -1261,7 +1262,7 @@ async fn get_config(State(s): State<S>) -> Response {
     let running = s.st.config.load();
     let (file_cfg, file_error) = match Config::parse(&text) {
         Ok(c) => (Some(c), None),
-        Err(e) => (None, Some(e.to_string())),
+        Err(e) => (None, Some(ciallopa_core::config::config_error_view(&e))),
     };
     let last = lock(&s.status).last.clone();
     let rejected_by = {
@@ -1443,7 +1444,7 @@ async fn validate(
     };
     let cur = match Config::parse(&text) {
         Ok(c) => c,
-        Err(e) => return ApplyError::invalid(format!("current config file: {e}")).into_response(),
+        Err(e) => return ApplyError::invalid(format!("current config file: {}", ciallopa_core::config::config_error_view(&e))).into_response(),
     };
     let out = patch_document(&text, &req.changes).and_then(|t| s.check(&t).map(|(c, _)| c));
     match out {

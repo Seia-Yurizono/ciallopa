@@ -8,10 +8,22 @@ use std::time::Duration;
 pub enum ConfigError {
     #[error("read {0}: {1}")]
     Read(PathBuf, std::io::Error),
-    #[error("parse: {0}")]
+    /// Source line is dropped so secrets in the broken TOML never reach logs or the admin API.
+    #[error("{}", format_parse(.0))]
     Parse(#[from] toml::de::Error),
     #[error("invalid: {0}")]
     Invalid(String),
+}
+
+fn format_parse(e: &toml::de::Error) -> String {
+    let head = e.to_string();
+    let loc = head.lines().next().unwrap_or("TOML parse error");
+    format!("{loc}: {}", e.message())
+}
+
+/// Operator-facing form of a config error: no raw config line (and thus no secrets).
+pub fn config_error_view(e: &ConfigError) -> String {
+    e.to_string()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
@@ -240,11 +252,14 @@ impl Default for UiConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct LogConfig {
     pub level: String,
+    /// Replace email addresses with `[email]` in stderr (docker logs). Default on.
+    pub redact_emails: bool,
 }
 impl Default for LogConfig {
     fn default() -> Self {
         Self {
             level: "info".into(),
+            redact_emails: true,
         }
     }
 }
@@ -913,4 +928,34 @@ api_keys = ["sk-plain-0123456789abcdef", { label = "laptop", key = "sk-laptop-01
         assert!(Config::parse("[routing]\nsession_affinity_ttl = \"1d\"").is_err());
         assert!(Config::parse("admin_port = 1").is_err());
     }
+
+    #[test]
+    fn config_error_view_hides_source_line() {
+        let secret = "sk-cpa-SECRETVALUE1234567890";
+        let bad = format!("proxy_url = \"socks5h://user:{secret}@host:1080\n");
+        let e = Config::parse(&bad).unwrap_err();
+        let raw = match &e {
+            ConfigError::Parse(pe) => pe.to_string(),
+            other => panic!("expected parse error, got {other}"),
+        };
+        assert!(
+            raw.contains(secret),
+            "precondition: toml Display still embeds the source line: {raw}"
+        );
+        let view = config_error_view(&e);
+        assert!(
+            !view.contains(secret) && !view.contains("user:") && !view.contains("host:1080"),
+            "view leaked config text: {view}"
+        );
+        assert!(
+            view.contains("line") && view.contains("column"),
+            "view should keep location: {view}"
+        );
+        // Invalid (non-parse) errors stay readable
+        let e = Config::parse("proxy_url = \"ftp://x\"").unwrap_err();
+        let v = config_error_view(&e);
+        assert!(v.contains("proxy_url"), "{v}");
+        assert!(!v.contains("ftp://x") || v.contains("proxy_url")); // value may or may not appear in Invalid
+    }
+
 }

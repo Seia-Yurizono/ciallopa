@@ -143,6 +143,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(if ok { 0 } else { 1 });
     }
     logging::init(&cfg.log.level);
+    logging::set_redact_emails(cfg.log.redact_emails);
     if cli.config.is_none() && matches!(env_cfg, Some((_, true))) {
         tracing::warn!("CPA_LITE_CONFIG is deprecated; rename it to CIALLOPA_CONFIG");
     }
