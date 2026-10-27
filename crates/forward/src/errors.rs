@@ -97,7 +97,7 @@ impl Attempts {
 
 pub(crate) fn attempt(account: &str, kind: &'static str) -> Attempt {
     Attempt {
-        account: account.to_string(),
+        account: ciallopa_core::a(account),
         t_ms: 0,
         kind,
         status: None,

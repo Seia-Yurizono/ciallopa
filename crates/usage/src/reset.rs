@@ -76,7 +76,7 @@ impl Recorder {
     /// Latest recent `pending` attempt of `account` (any credit): while one exists, every
     /// consume on the account must retry exactly that attempt (same id and credit).
     pub async fn reset_pending(&self, account: &str) -> Result<Option<ConsumeAttempt>, UsageError> {
-        let (p, a) = (self.path.clone(), account.to_string());
+        let (p, a) = (self.path.clone(), self.alias_account(account));
         tokio::task::spawn_blocking(move || {
             let conn = store::open_rw(&p)?;
             Ok(conn
@@ -105,7 +105,7 @@ impl Recorder {
     ) -> Result<i64, UsageError> {
         let p = self.path.clone();
         let v = (
-            account.to_string(),
+            self.alias_account(account),
             credit_id.map(str::to_string),
             redeem_request_id.to_string(),
             key.map(str::to_string),

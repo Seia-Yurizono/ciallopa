@@ -380,7 +380,7 @@ async fn send_inner(
         let mut creds = match st.accounts.credentials(&id).await {
             Ok(c) => c,
             Err(e) => {
-                tracing::warn!(account = %id, error = %e, "credentials unavailable");
+                tracing::warn!(account = %ciallopa_core::a(&id), error = %e, "credentials unavailable");
                 let mut a = errors::attempt(&id, "refresh");
                 a.code = Some(
                     if cools_on_credentials_error(&e) {
@@ -444,9 +444,9 @@ async fn send_inner(
                 Ok(r) => r,
                 Err((code, cause)) => {
                     if errors::is_proxy_code(code) {
-                        tracing::warn!(account = %id, error = %cause, code, "egress proxy error");
+                        tracing::warn!(account = %ciallopa_core::a(&id), error = %cause, code, "egress proxy error");
                     } else {
-                        tracing::warn!(account = %id, error = %cause, code, "upstream transport error");
+                        tracing::warn!(account = %ciallopa_core::a(&id), error = %cause, code, "upstream transport error");
                     }
                     last_net = Some(code);
                     let mut a = errors::attempt(&id, "transport");
@@ -490,7 +490,7 @@ async fn send_inner(
                 let b = match read_body(r, ERROR_BODY_LIMIT, BODY_TIMEOUT).await {
                     Ok(b) => b,
                     Err(failure) => {
-                        tracing::warn!(account = %id, status, code = failure.code(false), "upstream error body incomplete; stopping request");
+                        tracing::warn!(account = %ciallopa_core::a(&id), status, code = failure.code(false), "upstream error body incomplete; stopping request");
                         a.code = Some(failure.code(false).into());
                         a.body = errors::body_snippet(&failure.prefix);
                         a.action = "stop".into();
@@ -512,7 +512,7 @@ async fn send_inner(
                         if let Some(w) = overload_retry_wait(st, info.overload_waited, &h) {
                             info.overload_waited = true;
                             info.attempts.act(format!("{tag}wait+retry"));
-                            tracing::info!(account = %id, wait_ms = w.as_millis() as u64, "overloaded on last usable account; waiting to retry once");
+                            tracing::info!(account = %ciallopa_core::a(&id), wait_ms = w.as_millis() as u64, "overloaded on last usable account; waiting to retry once");
                             tokio::time::sleep(w).await;
                             continue;
                         }
@@ -553,7 +553,7 @@ async fn send_inner(
                             continue;
                         }
                         Err(e) => {
-                            tracing::warn!(account = %id, error = %e, "force refresh failed");
+                            tracing::warn!(account = %ciallopa_core::a(&id), error = %e, "force refresh failed");
                         }
                     }
                     let h = r.headers().clone();
@@ -932,7 +932,7 @@ fn stream_body(
                             trk.as_ref(),
                         );
                     } else {
-                        tracing::warn!(account = %account, record_id = trk.as_ref().map(Tracker::record_id), upstream_request_id = upstream_request_id.as_deref(), "upstream stream idle timeout");
+                        tracing::warn!(account = %ciallopa_core::a(&account), record_id = trk.as_ref().map(Tracker::record_id), upstream_request_id = upstream_request_id.as_deref(), "upstream stream idle timeout");
                     }
                     router.report(&route, &account, &Outcome::Transient { status: None });
                     if let Some(t) = trk.as_mut() {
@@ -1627,7 +1627,7 @@ pub(crate) async fn send_streaming(
                 let b = c.resp.bytes().await.unwrap_or_default();
                 let v = serde_json::from_slice::<serde_json::Value>(&b).ok();
                 if let Some(msg) = v.as_ref().and_then(crate::encrypted::rejection) {
-                    tracing::info!(account = %c.account, "upstream rejected the encrypted content in the request history (HTTP 400)");
+                    tracing::info!(account = %ciallopa_core::a(&c.account), "upstream rejected the encrypted content in the request history (HTTP 400)");
                     if let Some(t) = trk.as_mut() {
                         t.status(400);
                         t.http_response();
@@ -1757,7 +1757,7 @@ pub(crate) async fn send_streaming(
             // of retrying the stream). No account outcome: the request content is at fault.
             drop(up);
             let v = serde_json::from_str::<serde_json::Value>(&ev).ok();
-            tracing::info!(account = %account, "upstream rejected the encrypted content in the request history");
+            tracing::info!(account = %ciallopa_core::a(&account), "upstream rejected the encrypted content in the request history");
             let mut a = errors::attempt(&account, "stream");
             a.status = Some(status.as_u16());
             a.code = Some(crate::encrypted::CODE.into());
@@ -1800,7 +1800,7 @@ pub(crate) async fn send_streaming(
                 t.attempts(&chain);
             }
             if others {
-                tracing::info!(account = %account, code = %code, "overloaded before first output; switching account");
+                tracing::info!(account = %ciallopa_core::a(&account), code = %code, "overloaded before first output; switching account");
                 ob.route = route;
                 ob.route.exclude.push(account);
                 // Exhaustion is handled at the next send_info before it polls an attempt.
@@ -1810,7 +1810,7 @@ pub(crate) async fn send_streaming(
             if let Some(w) = wait {
                 // Only usable account left: nothing reached the client, so wait once and replay
                 // on the same account (Codex does not retry an in-stream overload itself).
-                tracing::info!(account = %account, code = %code, wait_ms = w.as_millis() as u64, "overloaded before first output on last usable account; waiting to retry once");
+                tracing::info!(account = %ciallopa_core::a(&account), code = %code, wait_ms = w.as_millis() as u64, "overloaded before first output on last usable account; waiting to retry once");
                 info.overload_waited = true;
                 drop(up);
                 ob.route = route;
@@ -1863,7 +1863,7 @@ pub(crate) async fn send_streaming(
                 t.attempts(&chain);
             }
             if switches < max_switches {
-                tracing::info!(account = %account, "quota error before first output; switching account");
+                tracing::info!(account = %ciallopa_core::a(&account), "quota error before first output; switching account");
                 ob.route = route;
                 ob.route.exclude.push(account);
                 continue;

@@ -257,12 +257,27 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
+    // Write-time account aliases: key lives in usage kv when usage is on; otherwise ephemeral.
+    let aliaser = match &usage {
+        Some(u) => match u.load_or_create_aliaser() {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::warn!(error = %e, "alias_key unavailable; using ephemeral aliases");
+                ciallopa_core::Aliaser::ephemeral()
+            }
+        },
+        None => ciallopa_core::Aliaser::ephemeral(),
+    };
+    ciallopa_core::set_current(aliaser.clone());
     ciallopa::client_fp::install(&cfg, usage.clone());
     let oauth = oauth_client(&cfg)?;
     let oauth_pools = oauth.pools.clone();
     let router = Arc::new(ciallopa_routing::CpaRouter::new(cfg.routing.clone()));
-    let affinity =
-        ciallopa::affinity_store::Store::new(router.clone(), ciallopa::affinity_store::path(&cfg));
+    let affinity = ciallopa::affinity_store::Store::new(
+        router.clone(),
+        ciallopa::affinity_store::path(&cfg),
+        aliaser.clone(),
+    );
     let state = AppState {
         usage: usage.clone(),
         accounts: Arc::new(
@@ -281,6 +296,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .into_iter()
         .map(|a| a.id)
         .collect();
+    aliaser.register_many(&known);
     affinity.load(&|id| known.contains(id));
     let _affinity_writer = affinity.spawn();
     if known.is_empty() {

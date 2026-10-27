@@ -342,7 +342,9 @@ version = "0.2.3"
 dependencies = [
  "arc-swap",
  "async-trait",
+ "base64",
  "http",
+ "rand 0.9.3",
  "regex",
  "serde",
  "serde_json",

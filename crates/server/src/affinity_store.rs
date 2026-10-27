@@ -38,15 +38,21 @@ pub struct Store {
     /// Router generation last written (u64::MAX: nothing yet).
     written: AtomicU64,
     write: Mutex<()>,
+    aliaser: Arc<ciallopa_core::Aliaser>,
 }
 
 impl Store {
-    pub fn new(router: Arc<CpaRouter>, path: PathBuf) -> Arc<Self> {
+    pub fn new(
+        router: Arc<CpaRouter>,
+        path: PathBuf,
+        aliaser: Arc<ciallopa_core::Aliaser>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             router,
             path,
             written: AtomicU64::new(u64::MAX),
             write: Mutex::new(()),
+            aliaser,
         })
     }
 
@@ -75,7 +81,7 @@ impl Store {
             .bindings
             .into_iter()
             .map(|b| AffinityBinding {
-                account: b.account,
+                account: self.aliaser.resolve_binding(&b.account),
                 expires: b.expires,
                 aliases: b.aliases,
             })
@@ -103,7 +109,7 @@ impl Store {
                 .affinity_export()
                 .into_iter()
                 .map(|b| Binding {
-                    account: b.account,
+                    account: self.aliaser.alias(&b.account),
                     expires: b.expires,
                     aliases: b.aliases,
                 })
@@ -192,9 +198,13 @@ mod tests {
             ],
             &|_| true,
         );
-        let st = Store::new(r.clone(), p.clone());
+        let al = ciallopa_core::Aliaser::from_key([1u8; 32]);
+        al.register_many(["a", "b"]);
+        let st = Store::new(r.clone(), p.clone(), al.clone());
         st.flush();
         assert!(p.exists());
+        let body = std::fs::read_to_string(&p).unwrap();
+        assert!(!body.contains("\"account\":\"a\""), "raw id must not be written: {body}");
         std::fs::remove_file(&p).unwrap();
         st.flush();
         assert!(!p.exists(), "unchanged bindings are not rewritten");
@@ -212,7 +222,9 @@ mod tests {
         assert!(!dir.path().join("session_affinity.json.tmp").exists());
 
         let r2 = router();
-        let st2 = Store::new(r2.clone(), p.clone());
+        let al2 = ciallopa_core::Aliaser::from_key([1u8; 32]);
+        al2.register_many(["a", "b"]);
+        let st2 = Store::new(r2.clone(), p.clone(), al2);
         assert_eq!(st2.load(&|id| id == "a"), 2);
         let saved = r2.affinity_export();
         assert!(saved.iter().all(|b| b.account == "a"));
@@ -223,7 +235,7 @@ mod tests {
     fn expired_missing_or_corrupt_files_restore_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("session_affinity.json");
-        let st = Store::new(router(), p.clone());
+        let st = Store::new(router(), p.clone(), ciallopa_core::Aliaser::ephemeral());
         assert_eq!(st.load(&|_| true), 0);
         std::fs::write(&p, b"{not json").unwrap();
         assert_eq!(st.load(&|_| true), 0);
@@ -236,5 +248,39 @@ mod tests {
         )
         .unwrap();
         assert_eq!(st.load(&|_| true), 0);
+    }
+
+    #[test]
+    fn loads_raw_and_aliased_account_bindings() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("session_affinity.json");
+        let al = ciallopa_core::Aliaser::from_key([5u8; 32]);
+        let id = "codex-xx-user@ex.com-plus";
+        let alias = al.alias(id);
+        // Old format: raw id on disk.
+        std::fs::write(
+            &p,
+            format!(
+                r#"{{"version":1,"bindings":[{{"account":"{id}","expires":{},"aliases":["s-old"]}}]}}"#,
+                now() + 3600
+            ),
+        )
+        .unwrap();
+        let r = router();
+        let st = Store::new(r.clone(), p.clone(), al.clone());
+        assert_eq!(st.load(&|x| x == id), 1);
+        assert_eq!(r.affinity_export()[0].account, id);
+        // Rewrite as alias.
+        st.flush();
+        let body = std::fs::read_to_string(&p).unwrap();
+        assert!(body.contains(&alias), "{body}");
+        assert!(!body.contains('@'), "{body}");
+        // New process with same key restores via resolve.
+        let r2 = router();
+        let al2 = ciallopa_core::Aliaser::from_key([5u8; 32]);
+        al2.register(id);
+        let st2 = Store::new(r2.clone(), p, al2);
+        assert_eq!(st2.load(&|x| x == id), 1);
+        assert_eq!(r2.affinity_export()[0].account, id);
     }
 }

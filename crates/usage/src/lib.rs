@@ -24,6 +24,7 @@ pub use store::{occupancy_step, OccupancyQuery, RefusalQuery};
 
 use ciallopa_core::config::{QuotaWeights, UsageConfig};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
@@ -263,6 +264,8 @@ pub struct Recorder {
     refusals: Arc<refusals::Aggregator>,
     occupancy: Arc<occupancy::Aggregator>,
     join: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// Installed after open via [`Self::install_aliaser`]; write paths map account ids through it.
+    aliaser: Arc<OnceLock<Arc<ciallopa_core::Aliaser>>>,
 }
 
 impl Recorder {
@@ -307,11 +310,13 @@ impl Recorder {
             refusals,
             occupancy,
             join: Mutex::new(Some(join)),
+            aliaser: Arc::new(OnceLock::new()),
         }))
     }
 
     /// Non-blocking. Returns false if the record was dropped (queue full / writer gone).
-    pub fn record(&self, r: Record) -> bool {
+    pub fn record(&self, mut r: Record) -> bool {
+        self.alias_record(&mut r);
         match self.fast.try_send(Msg::Rec(Box::new(r))) {
             Ok(()) => {
                 self.counters.accepted.fetch_add(1, Ordering::Relaxed);
@@ -329,7 +334,10 @@ impl Recorder {
 
     /// Count a refused request into its per-minute group. Non-blocking (a short mutex); the
     /// writer upserts the groups every [`refusals::FLUSH_EVERY`] and on shutdown.
-    pub fn refuse(&self, r: Refusal) {
+    pub fn refuse(&self, mut r: Refusal) {
+        if let Some(ref mut a) = r.account {
+            *a = self.alias_account(a);
+        }
         self.refusals.add(r);
     }
 
@@ -371,7 +379,7 @@ impl Recorder {
         self.fast
             .try_send(Msg::Quota(Box::new((
                 id,
-                account.to_string(),
+                self.alias_account(account),
                 by.to_string(),
                 q,
             ))))
@@ -379,7 +387,8 @@ impl Recorder {
     }
 
     /// Blocking send (bulk import / benchmarks only — never call from the proxy path).
-    pub fn record_blocking(&self, r: Record) -> bool {
+    pub fn record_blocking(&self, mut r: Record) -> bool {
+        self.alias_record(&mut r);
         let ok = self.fast.send(Msg::Rec(Box::new(r))).is_ok();
         if ok {
             self.counters.accepted.fetch_add(1, Ordering::Relaxed);
@@ -400,6 +409,48 @@ impl Recorder {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Persist / reuse the HMAC key in kv and return the shared aliaser (also installs it).
+    pub fn load_or_create_aliaser(&self) -> Result<Arc<ciallopa_core::Aliaser>, UsageError> {
+        const K: &str = "alias_key";
+        let al = match self.kv_get(K)? {
+            Some(s) => ciallopa_core::Aliaser::from_b64(&s).map_err(|e| {
+                UsageError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+            })?,
+            None => {
+                let al = ciallopa_core::Aliaser::ephemeral();
+                self.kv_set(K, &al.key_b64())?;
+                al
+            }
+        };
+        self.install_aliaser(al.clone());
+        Ok(al)
+    }
+
+    /// Attach an aliaser so subsequent writes store `acct_…` instead of raw account ids.
+    pub fn install_aliaser(&self, aliaser: Arc<ciallopa_core::Aliaser>) {
+        let _ = self.aliaser.set(aliaser);
+    }
+
+    pub fn aliaser(&self) -> Option<Arc<ciallopa_core::Aliaser>> {
+        self.aliaser.get().cloned()
+    }
+
+    pub fn alias_account(&self, id: &str) -> String {
+        match self.aliaser.get() {
+            Some(a) => a.alias(id),
+            None => id.to_string(),
+        }
+    }
+
+    fn alias_record(&self, r: &mut Record) {
+        if let Some(ref mut a) = r.account {
+            *a = self.alias_account(a);
+        }
+        if let Some(ref mut a) = r.first_account {
+            *a = self.alias_account(a);
+        }
     }
 
     /// Block until everything queued before this call is committed (tests / shutdown).
@@ -2565,5 +2616,51 @@ mod tests {
         assert_eq!(occupancy_step(&q(24, 0)), 1);
         assert_eq!(occupancy_step(&q(24 * 7, 0)), 7);
         assert_eq!(occupancy_step(&q(24 * 7, 60)), 60);
+    }
+
+    #[tokio::test]
+    async fn alias_key_stable_across_reopen_and_labels_store_aliases() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("u.db");
+        let cfg = ciallopa_core::config::UsageConfig {
+            path: path.clone(),
+            ..Default::default()
+        };
+        let id = "codex-dead-user@example.com-plus";
+        let r1 = Recorder::open_as(&cfg, "i1").unwrap();
+        let al1 = r1.load_or_create_aliaser().unwrap();
+        let alias = al1.alias(id);
+        assert!(alias.starts_with("acct_"));
+        assert!(!alias.contains('@'));
+        let mut rec = Record::new(r1.ids.next(), Transport::Sse, "responses");
+        rec.account = Some(id.into());
+        rec.model = Some("m".into());
+        rec.status = 200;
+        rec.duration_ms = 1;
+        // record() aliases before enqueue
+        assert!(r1.record(rec));
+        r1.flush_blocking().unwrap();
+        let key1 = r1.kv_get("alias_key").unwrap().unwrap();
+        r1.shutdown();
+
+        let r2 = Recorder::open_as(&cfg, "i1").unwrap();
+        let al2 = r2.load_or_create_aliaser().unwrap();
+        assert_eq!(al2.alias(id), alias);
+        assert_eq!(r2.kv_get("alias_key").unwrap().unwrap(), key1);
+        let c = store::open_ro(&path).unwrap();
+        let name: String = c
+            .query_row("SELECT name FROM labels WHERE name LIKE 'acct_%' LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(name, alias);
+        // Raw email must not appear in labels.
+        let n: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM labels WHERE name LIKE '%@%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0);
+        r2.shutdown();
     }
 }

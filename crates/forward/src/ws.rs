@@ -244,7 +244,7 @@ async fn connect(
         let mut creds = match st.accounts.credentials(&id).await {
             Ok(c) => c,
             Err(e) => {
-                tracing::warn!(account = %id, error = %e, "credentials unavailable");
+                tracing::warn!(account = %ciallopa_core::a(&id), error = %e, "credentials unavailable");
                 // IO / transient refresh failures are not a revoked token: skip without cooldown.
                 if proxy::cools_on_credentials_error(&e) {
                     st.router.report(route, &id, &Outcome::AuthFailed);
@@ -289,10 +289,10 @@ async fn connect(
                             .report(route, &id, &Outcome::Transient { status: None });
                         if let Some(code) = proxy_code {
                             // Shared by every account: no switching, no retry here.
-                            tracing::warn!(account = %id, error = %cause, code, "egress proxy error (ws)");
+                            tracing::warn!(account = %ciallopa_core::a(&id), error = %cause, code, "egress proxy error (ws)");
                             return Err(crate::errors::network(code));
                         }
-                        tracing::warn!(account = %id, error = %cause, "upstream ws connect failed");
+                        tracing::warn!(account = %ciallopa_core::a(&id), error = %cause, "upstream ws connect failed");
                         if transient >= retries {
                             return Err(crate::errors::network("connect"));
                         }
@@ -322,7 +322,7 @@ async fn connect(
                         let others = proxy::others_usable(st, &accounts, route, &id);
                         st.router
                             .report(route, &id, &proxy::overload_outcome(st, others));
-                        tracing::info!(account = %id, code = %code, "ws handshake overloaded");
+                        tracing::info!(account = %ciallopa_core::a(&id), code = %code, "ws handshake overloaded");
                         let mut resp = resp;
                         if let Some(m) = resp.extensions_mut().get_mut::<crate::errors::ErrMeta>() {
                             m.code = code;
@@ -330,7 +330,7 @@ async fn connect(
                         if !others {
                             if let Some(w) = proxy::overload_retry_wait(st, overload_waited, &h) {
                                 overload_waited = true;
-                                tracing::info!(account = %id, wait_ms = w.as_millis() as u64, "ws handshake overloaded on last usable account; waiting to retry once");
+                                tracing::info!(account = %ciallopa_core::a(&id), wait_ms = w.as_millis() as u64, "ws handshake overloaded on last usable account; waiting to retry once");
                                 tokio::time::sleep(w).await;
                                 continue;
                             }
@@ -750,7 +750,7 @@ async fn relay(
                                         // out a short cooldown, before anything is sent upstream.
                                         if !replayable(t.as_str()) {
                                             // Its `previous_response_id` lives on this connection only.
-                                            tracing::info!(account = %account, model = %route.model, "ws turn model cooling on this account; closing for client replay");
+                                            tracing::info!(account = %ciallopa_core::a(&account), model = %route.model, "ws turn model cooling on this account; closing for client replay");
                                             if let Some(tr) = turn.as_mut() { tr.fail_msg("model_cooldown", "account cooling down for this model; closed for client replay"); tr.source(crate::errors::SRC_LOCAL); }
                                             let _ = dtx.send(close(CLOSE_REPLAY, CLOSE_REPLAY_REASON)).await;
                                             break;
@@ -834,7 +834,7 @@ async fn relay(
                     if let Some(Err(tokio_tungstenite::tungstenite::Error::Capacity(e))) = &other {
                         // Over `ws_max_message_mb` (checked while reading and inflating, so it
                         // never grows past the limit). 1009 = message too big.
-                        tracing::warn!(account = %account, error = %e, "websocket message over ws_max_message_mb; closing 1009");
+                        tracing::warn!(account = %ciallopa_core::a(&account), error = %e, "websocket message over ws_max_message_mb; closing 1009");
                         let _ = dtx.send(close(CLOSE_TOO_BIG, "message too big")).await;
                     }
                     if let Some(t) = turn.as_mut() { t.client_gone(); }
@@ -898,7 +898,7 @@ async fn relay(
                             if let (true, Some(req)) = (can_replay, pending.clone()) {
                                 if let Some(w) = wait {
                                     overload_waited = true;
-                                    tracing::info!(account = %account, code = %code, wait_ms = w.as_millis() as u64, "ws overloaded before output on last usable account; waiting to retry once");
+                                    tracing::info!(account = %ciallopa_core::a(&account), code = %code, wait_ms = w.as_millis() as u64, "ws overloaded before output on last usable account; waiting to retry once");
                                 } else {
                                     switches += 1;
                                     route.exclude.push(account.clone());
@@ -1003,7 +1003,7 @@ async fn relay(
                                     }
                                 }
                             }
-                            tracing::info!(account = %account, "ws quota error mid-turn; closing for client replay");
+                            tracing::info!(account = %ciallopa_core::a(&account), "ws quota error mid-turn; closing for client replay");
                             if let Some(t) = turn.as_mut() { t.fail_msg("usage_limit", "usage limit reached mid-turn; closed for client replay"); t.source(crate::errors::SRC_STREAM); }
                             let _ = dtx.send(close(CLOSE_REPLAY, CLOSE_REPLAY_REASON)).await;
                             break;
@@ -1072,7 +1072,7 @@ async fn relay(
                         // with the upstream one). No account outcome: the request is at fault.
                         let m = match (&kind, m) {
                             (proxy::EventKind::Encrypted(_), WsMessage::Text(txt)) => {
-                                tracing::info!(account = %account, "upstream rejected the encrypted content in the request history");
+                                tracing::info!(account = %ciallopa_core::a(&account), "upstream rejected the encrypted content in the request history");
                                 match serde_json::from_str::<serde_json::Value>(txt.as_str()) {
                                     Ok(v) => WsMessage::text(crate::encrypted::ws_frame(&v)),
                                     Err(_) => WsMessage::Text(txt),
@@ -1103,7 +1103,7 @@ async fn relay(
                         if awaiting {
                             progress.warn("ws", if other.is_some() { "read_error" } else { "eof" }, &account, upstream_request_id.as_deref(), turn.as_ref());
                         } else {
-                            tracing::info!(account = %account, error_class = if other.is_some() { "read_error" } else { "eof" }, "upstream websocket transport error between turns");
+                            tracing::info!(account = %ciallopa_core::a(&account), error_class = if other.is_some() { "read_error" } else { "eof" }, "upstream websocket transport error between turns");
                         }
                         if let Some(t) = turn.as_mut() { t.fail_msg("upstream_closed", format!("upstream websocket disconnected (transport error: {cause})")); t.source(crate::errors::SRC_NETWORK); }
                         st.router.report(&route, &account, &Outcome::Transient { status: None });
@@ -1247,7 +1247,7 @@ where
     D: futures::Sink<Message> + Unpin,
     U: futures::Sink<WsMessage> + Unpin,
 {
-    tracing::info!(account = %account, "egress proxy changed; closing the idle websocket session so the client reconnects through the new egress");
+    tracing::info!(account = %ciallopa_core::a(&account), "egress proxy changed; closing the idle websocket session so the client reconnects through the new egress");
     let _ = dtx.send(close(1000, "")).await;
     let _ = utx.send(WsMessage::Close(None)).await;
 }
@@ -1260,9 +1260,9 @@ where
     U: futures::Sink<WsMessage> + Unpin,
 {
     if code == 1000 {
-        tracing::info!(account = %account, "shutting down; closing the websocket session between turns");
+        tracing::info!(account = %ciallopa_core::a(&account), "shutting down; closing the websocket session between turns");
     } else {
-        tracing::warn!(account = %account, "shutting down; drain bound reached, closing the websocket session mid-turn");
+        tracing::warn!(account = %ciallopa_core::a(&account), "shutting down; drain bound reached, closing the websocket session mid-turn");
     }
     let _ = dtx.send(close(code, "")).await;
     let _ = utx.send(WsMessage::Close(None)).await;
