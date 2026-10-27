@@ -21,7 +21,7 @@ pub use store::{
     RecordRow, ScopeValue, Summary, SummaryGroup, SummaryQuery, WindowQuota, FAILURE_CLASSES,
     PREWARM_ENDPOINT, QUOTA_ERRORS,
 };
-pub use store::{occupancy_step, OccupancyQuery, RefusalQuery};
+pub use store::{occupancy_step, OccupancyQuery, RefusalQuery, ThreadMatch, THREAD_FRAGMENT_MIN};
 
 use ciallopa_core::config::{QuotaWeights, UsageConfig};
 use std::path::{Path, PathBuf};
@@ -535,6 +535,16 @@ impl Recorder {
         tokio::task::spawn_blocking(move || store::problem_counts(&store::open_ro(&p)?, &q))
             .await
             .map_err(|_| UsageError::Gone)?
+    }
+
+    /// Resolve a pasted session id or unique fragment ([`store::resolve_thread`]).
+    pub async fn resolve_thread(&self, input: String) -> Result<ThreadMatch, UsageError> {
+        let p = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            Ok(store::resolve_thread(&store::open_ro(&p)?, &input)?)
+        })
+        .await
+        .map_err(|_| UsageError::Gone)?
     }
 
     pub async fn recent_count(&self, q: RecentQuery) -> Result<u64, UsageError> {
@@ -1359,6 +1369,116 @@ mod tests {
         r.flush_blocking().unwrap();
         assert_eq!(r.models_since(0).await.unwrap(), vec!["gpt-a", "gpt-b"]);
         assert!(r.models_since(now_ms() + 1000).await.unwrap().is_empty());
+        r.shutdown();
+    }
+
+    #[tokio::test]
+    async fn thread_filter_resolves_fragments_counts_and_uses_index() {
+        let d = tempfile::tempdir().unwrap();
+        let r = Recorder::open_as(&cfg(d.path()), "h").unwrap();
+        let t0 = now_ms() - 10_000;
+        // UUIDv7-like: the two sessions share their leading (timestamp) chars.
+        let a = "019a2b3c-4d5e-7f00-8a1b-aaaa11112222";
+        let b = "019a2b3c-4d5e-7f00-8a1b-bbbb33334444";
+        let mk = |thread: Option<&str>, status: u16, dt: i64| {
+            let mut x = Record::new(r.ids.next_at(t0 + dt), Transport::Sse, "responses");
+            x.status = status;
+            x.account = Some("alice".into());
+            x.thread_id = thread.map(str::to_string);
+            x.turn_id = thread.map(|_| format!("turn-{dt}"));
+            x
+        };
+        for (i, (t, st)) in [
+            (Some(a), 200),
+            (Some(a), 502),
+            (Some(a), 200),
+            (Some(b), 200),
+            (None, 200),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert!(r.record(mk(t, st, i as i64)));
+        }
+        r.flush_blocking().unwrap();
+        // Exact id, unique fragment (any position, case-insensitive, pasted short form).
+        assert_eq!(
+            r.resolve_thread(a.into()).await.unwrap(),
+            ThreadMatch::Exact(a.into())
+        );
+        assert_eq!(
+            r.resolve_thread("aaaa1111".into()).await.unwrap(),
+            ThreadMatch::Exact(a.into())
+        );
+        assert_eq!(
+            r.resolve_thread(" …BBBB3333 ".into()).await.unwrap(),
+            ThreadMatch::Exact(b.into())
+        );
+        // Shared prefix is ambiguous; short, unknown or odd input matches nothing.
+        assert_eq!(
+            r.resolve_thread("019a2b3c".into()).await.unwrap(),
+            ThreadMatch::Ambiguous
+        );
+        assert_eq!(
+            r.resolve_thread("aaaa111".into()).await.unwrap(),
+            ThreadMatch::None
+        );
+        assert_eq!(
+            r.resolve_thread("cccc9999".into()).await.unwrap(),
+            ThreadMatch::None
+        );
+        assert_eq!(
+            r.resolve_thread("aaaa%111".into()).await.unwrap(),
+            ThreadMatch::None
+        );
+        // A label that is not a thread (an account alias) is not a session.
+        let acct = r
+            .recent(RecentQuery {
+                limit: 1,
+                ..Default::default()
+            })
+            .await
+            .unwrap()[0]
+            .account
+            .clone()
+            .unwrap();
+        assert_eq!(r.resolve_thread(acct).await.unwrap(), ThreadMatch::None);
+        let q = |t: &str| RecentQuery {
+            thread: Some(t.into()),
+            limit: 10,
+            ..Default::default()
+        };
+        let rows = r.recent(q(a)).await.unwrap();
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().all(|x| x.thread_id.as_deref() == Some(a)));
+        assert!(rows.windows(2).all(|w| w[0].request_id > w[1].request_id));
+        assert_eq!(r.recent_count(q(a)).await.unwrap(), 3);
+        assert_eq!(r.recent_count(q("nope")).await.unwrap(), 0);
+        // Composes with the problem counts and other filters.
+        let c = r.problem_counts(q(a)).await.unwrap();
+        assert_eq!((c.all, c.error), (3, 1));
+        let ok = RecentQuery {
+            outcome: Some(Outcome::Completed),
+            ..q(a)
+        };
+        assert_eq!(r.recent_count(ok).await.unwrap(), 2);
+        // The plan uses the partial index rather than scanning the id range.
+        let c = store::open_ro(&d.path().join("u.db")).unwrap();
+        let tid = store::label_id(&c, a).unwrap().unwrap();
+        let plan: Vec<String> = c
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT id FROM requests \
+                 WHERE id BETWEEN 0 AND 9223372036854775807 AND thread = ?1 ORDER BY id DESC",
+            )
+            .unwrap()
+            .query_map([tid], |x| x.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            plan.iter().any(|p| p.contains("requests_thread")),
+            "{plan:?}"
+        );
         r.shutdown();
     }
 
@@ -2754,7 +2874,7 @@ mod tests {
         // Labels are aliases; UA was clipped.
         let c = rusqlite::Connection::open(&p).unwrap();
         let v: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 12);
+        assert_eq!(v, store::SCHEMA_VERSION);
         let names: Vec<String> = {
             let mut st = c.prepare("SELECT name FROM labels ORDER BY id").unwrap();
             st.query_map([], |r| r.get(0))
@@ -2773,9 +2893,43 @@ mod tests {
             .expect("ua label");
         assert!(ua.chars().count() <= 60, "ua len {}", ua.chars().count());
         let rc_acct: String = c
-            .query_row("SELECT account FROM reset_consume LIMIT 1", [], |r| r.get(0))
+            .query_row("SELECT account FROM reset_consume LIMIT 1", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert!(ciallopa_core::Aliaser::looks_like_alias(&rc_acct));
+    }
+
+    #[test]
+    fn migrate_v12_to_v13_only_adds_thread_index() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("u.db");
+        let mut c = rusqlite::Connection::open(&p).unwrap();
+        store::migrate(&mut c).unwrap();
+        // A v12 DB: no thread index; a raw label shows the v12 rewrite does not run again.
+        c.execute_batch(
+            "DROP INDEX requests_thread;
+             INSERT INTO labels(id, name) VALUES (1, 'codex-x-bob@example.com-plus');
+             PRAGMA user_version = 12;",
+        )
+        .unwrap();
+        store::migrate(&mut c).unwrap();
+        let v: i64 = c
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 13);
+        let idx: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='requests_thread'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx, 1);
+        let name: String = c
+            .query_row("SELECT name FROM labels WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(name, "codex-x-bob@example.com-plus");
     }
 
     #[test]

@@ -10,7 +10,7 @@ use std::path::Path;
 /// Endpoint label of a Codex WS prewarm turn (`response.create` with `generate:false`).
 pub const PREWARM_ENDPOINT: &str = "prewarm";
 
-pub(crate) const SCHEMA_VERSION: i64 = 12;
+pub(crate) const SCHEMA_VERSION: i64 = 13;
 
 const CREATE_V3: &str = r#"
 CREATE TABLE IF NOT EXISTS labels(
@@ -58,6 +58,8 @@ CREATE TABLE IF NOT EXISTS requests(
   err_source    INTEGER,               -- labels.id: client | local | network | upstream | stream
   up_status     INTEGER                -- last upstream HTTP status (may differ from status)
 );
+-- v13: session view (`thread` filter); partial, so rows without a thread cost nothing.
+CREATE INDEX IF NOT EXISTS requests_thread ON requests(thread) WHERE thread IS NOT NULL;
 -- Quota snapshots, one row only when an account's values change. id = observing request id.
 CREATE TABLE IF NOT EXISTS quota_obs(
   id       INTEGER PRIMARY KEY,
@@ -628,6 +630,8 @@ pub struct RecentQuery {
     pub problem: Option<Problem>,
     /// Cause within `problem`; a cause that `problem` does not have matches nothing.
     pub cause: Option<String>,
+    /// Exact Codex thread (session) id; resolve a fragment first with [`resolve_thread`].
+    pub thread: Option<String>,
 }
 
 /// WHERE clause (without ORDER/LIMIT) + params for [`recent`] / [`recent_count`].
@@ -641,6 +645,16 @@ fn recent_where(c: &Connection, q: &RecentQuery) -> rusqlite::Result<Option<(Str
     let mut s = format!("id BETWEEN ? AND ?{fsql}");
     let mut ps: Vec<i64> = vec![lo, hi];
     ps.extend(fparams);
+    if let Some(t) = q.thread.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        // Served by the partial `requests_thread` index.
+        match label_id(c, t)? {
+            Some(id) => {
+                s.push_str(" AND thread = ?");
+                ps.push(id);
+            }
+            None => return Ok(None),
+        }
+    }
     if let Some(id) = q.before_id {
         s.push_str(" AND id < ?");
         ps.push(id);
@@ -717,6 +731,67 @@ fn recent_where(c: &Connection, q: &RecentQuery) -> rusqlite::Result<Option<(Str
         }
     }
     Ok(Some((s, ps)))
+}
+
+/// Result of [`resolve_thread`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ThreadMatch {
+    /// The full thread id (input was the id itself or a unique fragment of it).
+    Exact(String),
+    /// No recorded request carries such a thread.
+    None,
+    /// The fragment fits more than one recorded thread.
+    Ambiguous,
+}
+
+/// Shortest fragment accepted in place of a full thread id.
+pub const THREAD_FRAGMENT_MIN: usize = 8;
+
+/// Resolve a pasted session id: the full id, or a fragment of at least
+/// [`THREAD_FRAGMENT_MIN`] chars (`[A-Za-z0-9-]`, ASCII case-insensitive, anywhere in the id,
+/// since UUIDv7 ids of one minute share their leading chars). A leading `…` is ignored, so
+/// the short form the UI shows can be pasted back.
+pub(crate) fn resolve_thread(c: &Connection, input: &str) -> rusqlite::Result<ThreadMatch> {
+    let t = input.trim();
+    let t = t
+        .strip_prefix('…')
+        .or_else(|| t.strip_prefix("..."))
+        .unwrap_or(t)
+        .trim();
+    if t.is_empty() || t.len() > 128 {
+        return Ok(ThreadMatch::None);
+    }
+    let used = |id: i64| -> rusqlite::Result<bool> {
+        c.query_row(
+            "SELECT 1 FROM requests WHERE thread = ?1 LIMIT 1",
+            [id],
+            |_| Ok(true),
+        )
+        .optional()
+        .map(|x| x.unwrap_or(false))
+    };
+    if let Some(id) = label_id(c, t)? {
+        if used(id)? {
+            return Ok(ThreadMatch::Exact(t.to_string()));
+        }
+    }
+    if t.len() < THREAD_FRAGMENT_MIN || !t.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+        return Ok(ThreadMatch::None);
+    }
+    // One scan of `labels` (one row per distinct name); the EXISTS probe uses the thread index.
+    let mut st = c.prepare_cached(
+        "SELECT l.name FROM labels l WHERE l.name LIKE '%' || ?1 || '%' \
+         AND EXISTS(SELECT 1 FROM requests r WHERE r.thread = l.id) LIMIT 2",
+    )?;
+    let names: Vec<String> = st
+        .query_map([t], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut names = names.into_iter();
+    Ok(match (names.next(), names.next()) {
+        (None, _) => ThreadMatch::None,
+        (Some(n), None) => ThreadMatch::Exact(n),
+        (Some(_), Some(_)) => ThreadMatch::Ambiguous,
+    })
 }
 
 /// Total rows matching `q` (ignores `limit`/`offset`).
