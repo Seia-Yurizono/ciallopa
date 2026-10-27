@@ -323,7 +323,11 @@ mod tests {
         let m = a.take();
         let (g, _) = m.iter().next().unwrap();
         let ua = g.ua.as_deref().unwrap();
-        assert!(ua.chars().count() <= MAX_UA, "ua len {}", ua.chars().count());
+        assert!(
+            ua.chars().count() <= MAX_UA,
+            "ua len {}",
+            ua.chars().count()
+        );
         assert!(!ua.contains("sk-proj-ABCDEF"), "token leaked: {ua}");
     }
 

@@ -538,7 +538,6 @@ fn err(status: StatusCode, msg: &str) -> Response {
     (status, Json(json!({"error": {"message": msg}}))).into_response()
 }
 
-
 /// Non-admin callers get counts and the earliest expiry only — not the card list.
 fn credits_public(e: &Entry, admin: bool) -> Value {
     if admin {

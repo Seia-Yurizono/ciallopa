@@ -168,12 +168,14 @@ mod tests {
         assert!(!r.contains(oauth), "{r}");
     }
 
-
     #[test]
     fn redacts_emails_when_enabled() {
         set_redact_emails(true);
         let r = redact("account=codex-deadbeef-alice@example.com-plus user=bob.carol+tag@x.io");
-        assert!(!r.contains("alice@example.com") && !r.contains("bob.carol+tag@x.io"), "{r}");
+        assert!(
+            !r.contains("alice@example.com") && !r.contains("bob.carol+tag@x.io"),
+            "{r}"
+        );
         assert!(r.contains("[email]"), "{r}");
         set_redact_emails(false);
         let r = redact("alice@example.com");

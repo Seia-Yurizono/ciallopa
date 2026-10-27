@@ -204,7 +204,10 @@ mod tests {
         st.flush();
         assert!(p.exists());
         let body = std::fs::read_to_string(&p).unwrap();
-        assert!(!body.contains("\"account\":\"a\""), "raw id must not be written: {body}");
+        assert!(
+            !body.contains("\"account\":\"a\""),
+            "raw id must not be written: {body}"
+        );
         std::fs::remove_file(&p).unwrap();
         st.flush();
         assert!(!p.exists(), "unchanged bindings are not rewritten");

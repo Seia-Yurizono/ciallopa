@@ -9,7 +9,7 @@ pub mod settings;
 pub mod traits;
 pub mod types;
 
-pub use alias::{a, current, set_current, Aliaser, AccountAlias};
+pub use alias::{a, current, set_current, AccountAlias, Aliaser};
 pub use config::Config;
 pub use error::{AuthError, RouteError};
 pub use traits::{AccountStore, Router};

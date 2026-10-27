@@ -82,11 +82,9 @@ fn rename_account_labels(c: &Connection, al: &Aliaser) -> rusqlite::Result<()> {
             continue;
         }
         let existing: Option<i64> = c
-            .query_row(
-                "SELECT id FROM labels WHERE name = ?1",
-                [&alias],
-                |r| r.get(0),
-            )
+            .query_row("SELECT id FROM labels WHERE name = ?1", [&alias], |r| {
+                r.get(0)
+            })
             .optional()?;
         match existing {
             None => {
@@ -148,13 +146,16 @@ fn rewrite_reset_consume(c: &Connection, al: &Aliaser) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// One `error_detail` row: id, message, body, attempts.
+type DetailRow = (i64, Option<String>, Option<String>, Option<String>);
+
 fn rewrite_error_detail(c: &Connection, al: &Aliaser) -> rusqlite::Result<()> {
     let mut last_id: i64 = -1;
     loop {
         let mut st = c.prepare(
             "SELECT id, message, body, attempts FROM error_detail WHERE id > ?1 ORDER BY id LIMIT ?2",
         )?;
-        let batch: Vec<(i64, Option<String>, Option<String>, Option<String>)> = st
+        let batch: Vec<DetailRow> = st
             .query_map(params![last_id, DETAIL_BATCH], |r| {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
             })?
@@ -218,11 +219,9 @@ fn truncate_refusal_uas(c: &Connection) -> rusqlite::Result<()> {
             continue;
         }
         let existing: Option<i64> = c
-            .query_row(
-                "SELECT id FROM labels WHERE name = ?1",
-                [&clipped],
-                |r| r.get(0),
-            )
+            .query_row("SELECT id FROM labels WHERE name = ?1", [&clipped], |r| {
+                r.get(0)
+            })
             .optional()?;
         match existing {
             None => {

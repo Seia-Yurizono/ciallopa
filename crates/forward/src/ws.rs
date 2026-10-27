@@ -1247,7 +1247,7 @@ where
     D: futures::Sink<Message> + Unpin,
     U: futures::Sink<WsMessage> + Unpin,
 {
-    tracing::info!(account = %ciallopa_core::a(&account), "egress proxy changed; closing the idle websocket session so the client reconnects through the new egress");
+    tracing::info!(account = %ciallopa_core::a(account), "egress proxy changed; closing the idle websocket session so the client reconnects through the new egress");
     let _ = dtx.send(close(1000, "")).await;
     let _ = utx.send(WsMessage::Close(None)).await;
 }
@@ -1260,9 +1260,9 @@ where
     U: futures::Sink<WsMessage> + Unpin,
 {
     if code == 1000 {
-        tracing::info!(account = %ciallopa_core::a(&account), "shutting down; closing the websocket session between turns");
+        tracing::info!(account = %ciallopa_core::a(account), "shutting down; closing the websocket session between turns");
     } else {
-        tracing::warn!(account = %ciallopa_core::a(&account), "shutting down; drain bound reached, closing the websocket session mid-turn");
+        tracing::warn!(account = %ciallopa_core::a(account), "shutting down; drain bound reached, closing the websocket session mid-turn");
     }
     let _ = dtx.send(close(code, "")).await;
     let _ = utx.send(WsMessage::Close(None)).await;

@@ -423,7 +423,6 @@ async fn rejected_reload_leaves_running_config_unchanged() {
     assert!(!e.settings.st_config_write_enabled());
 }
 
-
 #[tokio::test]
 async fn broken_toml_file_error_hides_source_line() {
     let e = env("").await;
@@ -443,7 +442,10 @@ async fn broken_toml_file_error_hides_source_line() {
             !s.contains(secret) && !s.contains("user:") && !s.contains("host:1080"),
             "{label} leaked config text: {s}"
         );
-        assert!(s.contains("line") && s.contains("column"), "{label} lost location: {s}");
+        assert!(
+            s.contains("line") && s.contains("column"),
+            "{label} lost location: {s}"
+        );
     }
 }
 

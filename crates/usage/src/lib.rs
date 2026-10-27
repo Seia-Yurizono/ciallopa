@@ -2,12 +2,12 @@
 //! `try_send` into a bounded queue (full ⇒ drop + count); one dedicated OS thread batch-writes
 //! to SQLite (WAL). Reads open their own read-only connections. Design: docs/USAGE.md.
 pub mod detail;
+mod migrate_v12;
 pub mod occupancy;
 pub mod prices;
 pub mod problem;
 pub mod refusals;
 pub mod reset;
-mod migrate_v12;
 mod store;
 mod writer;
 
@@ -25,9 +25,9 @@ pub use store::{occupancy_step, OccupancyQuery, RefusalQuery, ThreadMatch, THREA
 
 use ciallopa_core::config::{QuotaWeights, UsageConfig};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
+use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -2778,7 +2778,11 @@ mod tests {
         assert_eq!(r2.kv_get("alias_key").unwrap().unwrap(), key1);
         let c = store::open_ro(&path).unwrap();
         let name: String = c
-            .query_row("SELECT name FROM labels WHERE name LIKE 'acct_%' LIMIT 1", [], |r| r.get(0))
+            .query_row(
+                "SELECT name FROM labels WHERE name LIKE 'acct_%' LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(name, alias);
         // Raw email must not appear in labels.
@@ -2863,7 +2867,10 @@ mod tests {
                     }
                 }
             }
-            assert!(dirty.is_empty(), "sensitive text still in columns: {dirty:?}");
+            assert!(
+                dirty.is_empty(),
+                "sensitive text still in columns: {dirty:?}"
+            );
         }
         let bytes = std::fs::read(&p).unwrap();
         let text = String::from_utf8_lossy(&bytes);
@@ -2873,7 +2880,9 @@ mod tests {
         );
         // Labels are aliases; UA was clipped.
         let c = rusqlite::Connection::open(&p).unwrap();
-        let v: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        let v: i64 = c
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(v, store::SCHEMA_VERSION);
         let names: Vec<String> = {
             let mut st = c.prepare("SELECT name FROM labels ORDER BY id").unwrap();

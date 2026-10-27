@@ -349,7 +349,10 @@ mod tests {
             "socks5h://***@host:1080"
         );
         assert_eq!(mask_proxy("http://onlyuser@h:1"), "http://***@h:1");
-        assert_eq!(mask_proxy("socks5h://127.0.0.1:1080"), "socks5h://127.0.0.1:1080");
+        assert_eq!(
+            mask_proxy("socks5h://127.0.0.1:1080"),
+            "socks5h://127.0.0.1:1080"
+        );
         assert_eq!(mask_proxy(""), "");
     }
 

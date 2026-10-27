@@ -430,7 +430,7 @@ async fn attempt(
     let t0 = now_ms();
     let entry = refresh_account(st, rc, id).await;
     if entry.error_ms.is_some_and(|m| m >= t0) {
-        tracing::warn!(account = %ciallopa_core::a(&id), error = ?entry.error, "auto reset-card: listing failed; not sending");
+        tracing::warn!(account = %ciallopa_core::a(id), error = ?entry.error, "auto reset-card: listing failed; not sending");
         return Event::Skipped("list_failed");
     }
     // Everything that may have changed while waiting for the lock or the listing.
@@ -497,15 +497,17 @@ async fn attempt(
     let code = out.get("code").and_then(Value::as_str).map(str::to_string);
     match (status.as_str(), code.as_deref()) {
         ("done", Some("reset")) => {
-            tracing::info!(account = %ciallopa_core::a(&id), %credit, "auto reset-card used before expiry")
+            tracing::info!(account = %ciallopa_core::a(id), %credit, "auto reset-card used before expiry")
         }
         // gives up on this card without a warning
         ("done", Some("nothing_to_reset")) => {
-            tracing::debug!(account = %ciallopa_core::a(&id), %credit, "auto reset-card: nothing to reset; giving up on this card")
+            tracing::debug!(account = %ciallopa_core::a(id), %credit, "auto reset-card: nothing to reset; giving up on this card")
         }
-        ("done", _) => tracing::info!(account = %ciallopa_core::a(&id), %credit, ?code, "auto reset-card: card ended"),
+        ("done", _) => {
+            tracing::info!(account = %ciallopa_core::a(id), %credit, ?code, "auto reset-card: card ended")
+        }
         _ => {
-            tracing::warn!(account = %ciallopa_core::a(&id), %credit, %status, error = ?out.get("error"), "auto reset-card attempt not done; will retry")
+            tracing::warn!(account = %ciallopa_core::a(id), %credit, %status, error = ?out.get("error"), "auto reset-card attempt not done; will retry")
         }
     }
     Event::Sent {
