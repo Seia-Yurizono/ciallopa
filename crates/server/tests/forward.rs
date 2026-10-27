@@ -602,6 +602,18 @@ async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: Bytes) -> Re
             });
             Response::builder().header("content-type", "text/event-stream").body(Body::from_stream(s)).unwrap()
         }
+        "late_request_error" => sse_resp(concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"x\"}\n\n",
+            "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"context_length_exceeded\",\"message\":\"too long\"}}}\n\n"
+        )),
+        "late_rate_limit" => sse_resp(concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"x\"}\n\n",
+            "event: error\ndata: {\"type\":\"error\",\"status\":429,\"error\":{\"type\":\"rate_limit_error\",\"code\":\"rate_limit_exceeded\",\"message\":\"slow down\"}}\n\n"
+        )),
+        "late_429_nocode" => sse_resp(concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"x\"}\n\n",
+            "event: error\ndata: {\"type\":\"error\",\"status\":429,\"error\":{\"message\":\"slow down\"}}\n\n"
+        )),
         "completed_then_reset" => {
             let s = futures::stream::unfold(0, |i| async move {
                 match i {
@@ -879,6 +891,16 @@ async fn up_ws(State(m): State<Mock>, h: HeaderMap, ws: WebSocketUpgrade) -> Res
                         r#"{"type":"error","error":{"code":"server_is_overloaded"}}"#
                     } else {
                         r#"{"type":"error","status":429,"error":{"type":"usage_limit_reached","resets_in_seconds":45}}"#
+                    };
+                    let _ = s.send(Message::Text(event.into())).await;
+                    continue;
+                }
+                if t.as_str().contains("\"late_ratelimit_ws\"") || t.as_str().contains("\"lifecycle_ws\"") {
+                    let _ = s.send(Message::Text(r#"{"type":"response.output_text.delta","delta":"ok"}"#.into())).await;
+                    let event = if t.as_str().contains("\"lifecycle_ws\"") {
+                        r#"{"type":"error","status":400,"error":{"type":"invalid_request_error","code":"websocket_connection_limit_reached","message":"limit"}}"#
+                    } else {
+                        r#"{"type":"error","status":429,"error":{"type":"rate_limit_error","code":"rate_limit_exceeded","message":"slow down"}}"#
                     };
                     let _ = s.send(Message::Text(event.into())).await;
                     continue;
@@ -2782,9 +2804,7 @@ async fn image_wrapped_results_record_success_failure_and_truncated_eof() {
         .unwrap();
     assert_eq!(rows.iter().filter(|r| r["error"].is_null()).count(), 2);
     assert_eq!(
-        rows.iter()
-            .filter(|r| r["error"] == "upstream_error_event")
-            .count(),
+        rows.iter().filter(|r| r["error"] == "image_failed").count(),
         2
     );
     assert_eq!(
@@ -2805,7 +2825,7 @@ async fn image_wrapped_results_record_success_failure_and_truncated_eof() {
         if !r["error"].is_null() {
             assert_eq!(r["err_source"], "stream");
         }
-        if r["error"] == "upstream_error_event" {
+        if r["error"] == "image_failed" {
             let detail: serde_json::Value = detail_of(&e, r["request_id"].as_str().unwrap(), true)
                 .await
                 .json()
@@ -3155,7 +3175,8 @@ async fn sse_observation_uses_event_type_not_payload_strings() {
         ("event_literal_truncated", Some("stream_truncated"), None),
         ("event_metadata_only", None, Some(0)),
         ("event_done", None, Some(0)),
-        ("event_spaced_error", Some("upstream_error_event"), None),
+        // The upstream code is kept, like an HTTP error body.
+        ("event_spaced_error", Some("bad_request"), None),
     ] {
         let d = tempfile::tempdir().unwrap();
         let rec = usage_recorder(d.path());
@@ -6778,4 +6799,107 @@ async fn image_response_incomplete_is_recorded_not_truncated() {
         assert_eq!(row["err_source"], "stream", "{row}");
         assert_eq!(row["incomplete"], "content_filter", "{row}");
     }
+}
+
+async fn ws_turn(e: &Env, tag: &str) {
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as M};
+    let mut req = format!("ws://{}/v1/responses", e.proxy)
+        .into_client_request()
+        .unwrap();
+    req.headers_mut()
+        .insert("authorization", format!("Bearer {KEY}").parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    ws.send(M::text(format!(
+        r#"{{"type":"response.create","model":"gpt-5.5","tag":"{tag}"}}"#
+    )))
+    .await
+    .unwrap();
+    while let Ok(Some(Ok(m))) = tokio::time::timeout(Duration::from_secs(2), ws.next()).await {
+        if m.is_close() || m.to_text().is_ok_and(|t| t.contains("\"error\"")) {
+            break;
+        }
+    }
+    let _ = ws.close(None).await;
+}
+
+fn no_account_penalty(e: &Env) {
+    assert!(
+        e.outcomes().iter().all(|(_, o)| matches!(
+            o,
+            Outcome::Success { .. } | Outcome::Transient { status: None }
+        )),
+        "{:?}",
+        e.outcomes()
+    );
+}
+
+#[tokio::test]
+async fn stream_request_error_records_its_code_without_account_penalty() {
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    read_all(&e, "late_request_error").await;
+    let rows = wait_rows(&e, 1).await;
+    assert_eq!(rows[0]["error"], "context_length_exceeded", "{}", rows[0]);
+    assert_eq!(rows[0]["err_source"], "stream", "{}", rows[0]);
+    assert_eq!(rows[0]["cause"], "request", "{}", rows[0]);
+    assert_eq!(rows[0]["upstream_fault"], false, "{}", rows[0]);
+    no_account_penalty(&e);
+}
+
+#[tokio::test]
+async fn stream_rate_limit_without_quota_code_is_not_usage_limit() {
+    for (mode, code) in [
+        ("late_rate_limit", "rate_limit_exceeded"),
+        ("late_429_nocode", "rate_limit_exceeded"),
+    ] {
+        let d = tempfile::tempdir().unwrap();
+        let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+        read_all(&e, mode).await;
+        let rows = wait_rows(&e, 1).await;
+        assert_eq!(rows[0]["error"], code, "{mode}: {}", rows[0]);
+        assert_eq!(
+            rows[0]["failure_class"], "rate_limit",
+            "{mode}: {}",
+            rows[0]
+        );
+        assert!(
+            e.outcomes().iter().all(|(_, o)| !matches!(
+                o,
+                Outcome::RateLimited {
+                    usage_limit: true,
+                    ..
+                }
+            )),
+            "{mode}: {:?}",
+            e.outcomes()
+        );
+    }
+}
+
+#[tokio::test]
+async fn ws_rate_limit_and_lifecycle_errors_keep_their_codes() {
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    ws_turn(&e, "late_ratelimit_ws").await;
+    let rows = wait_rows(&e, 1).await;
+    assert_eq!(rows[0]["error"], "rate_limit_exceeded", "{}", rows[0]);
+    assert!(
+        e.outcomes().iter().all(|(_, o)| !matches!(
+            o,
+            Outcome::RateLimited {
+                usage_limit: true,
+                ..
+            }
+        )),
+        "{:?}",
+        e.outcomes()
+    );
+    ws_turn(&e, "lifecycle_ws").await;
+    let rows = wait_rows(&e, 2).await;
+    assert_eq!(
+        rows[0]["error"], "websocket_connection_limit_reached",
+        "{}",
+        rows[0]
+    );
+    assert_eq!(rows[0]["outcome"], "cancelled", "{}", rows[0]);
 }

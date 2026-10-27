@@ -5,7 +5,7 @@
 //! row ([`classify`]) and as SQL predicates for many ([`Preds`]); a test checks they agree.
 //!
 //! Refusals (本地拒绝) are not request rows; their counts come from the refusals table.
-use crate::store::{label_id, QUOTA_ERRORS};
+use crate::store::{label_id, LIFECYCLE_ERRORS, QUOTA_ERRORS, RATE_LIMIT_ERRORS, REQUEST_ERRORS};
 use crate::PREWARM_ENDPOINT;
 use rusqlite::Connection;
 use serde::Serialize;
@@ -85,10 +85,11 @@ impl Problem {
     }
 }
 
-/// 报错 causes: 额度 / 限流 / 上游 / 网络代理 / 网关 / 流中断.
+/// 报错 causes: 额度 / 限流 / 请求 / 上游 / 网络代理 / 网关 / 流中断.
 pub const ERROR_CAUSES: &[&str] = &[
     "quota",
     "rate_limit",
+    "request",
     "upstream",
     "network",
     "gateway",
@@ -96,9 +97,10 @@ pub const ERROR_CAUSES: &[&str] = &[
 ];
 /// 上游出错 split: 未救回 / 已救回.
 pub const UPSTREAM_CAUSES: &[&str] = &["unrescued", "rescued"];
-/// 没答完 reasons: 客户端断开 / 上游截断 / 未确认结束.
+/// 没答完 reasons: 客户端断开 / 需重连 / 上游截断 / 内容过滤 / 未确认结束.
 pub const UNFINISHED_CAUSES: &[&str] = &[
     "client_closed",
+    "reconnect",
     "truncated",
     "content_filter",
     "unconfirmed",
@@ -152,7 +154,10 @@ pub fn outcome(f: &Facts) -> Outcome {
     if f.endpoint == Some(PREWARM_ENDPOINT) {
         return Outcome::Prewarm;
     }
-    if f.source == Some("client") || f.error == Some("client_closed") {
+    if f.source == Some("client")
+        || f.error == Some("client_closed")
+        || f.error.is_some_and(|e| LIFECYCLE_ERRORS.contains(&e))
+    {
         return Outcome::Cancelled;
     }
     if f.error == Some("observation_incomplete") && f.source == Some("local") && f.status < 400 {
@@ -172,6 +177,7 @@ pub fn error_cause(failure_class: &str) -> &'static str {
     match failure_class {
         "quota" => "quota",
         "rate_limit" => "rate_limit",
+        "request" => "request",
         "upstream" => "upstream",
         "network" => "network",
         "stream" => "stream",
@@ -186,6 +192,9 @@ pub fn classify(f: &Facts) -> Class {
             let class = crate::failure_class(f.status, f.error, f.source, f.upstream_status);
             (Some("error"), Some(error_cause(class)))
         }
+        Outcome::Cancelled if f.error.is_some_and(|e| LIFECYCLE_ERRORS.contains(&e)) => {
+            (Some("unfinished"), Some("reconnect"))
+        }
         Outcome::Cancelled => (Some("unfinished"), Some("client_closed")),
         Outcome::Incomplete if f.incomplete == Some(INCOMPLETE_CONTENT_FILTER) => {
             (Some("unfinished"), Some("content_filter"))
@@ -196,7 +205,9 @@ pub fn classify(f: &Facts) -> Class {
     };
     let rescued = outcome == Outcome::Completed && (f.retries > 0 || f.switches > 0);
     let upstream_fault = rescued
-        || (outcome == Outcome::Failed && f.source.is_some_and(|s| UPSTREAM_SOURCES.contains(&s)));
+        || (outcome == Outcome::Failed
+            && cause != Some("request")
+            && f.source.is_some_and(|s| UPSTREAM_SOURCES.contains(&s)));
     let code = f.error.unwrap_or("");
     let auth = |s: Option<u16>| matches!(s, Some(401 | 403));
     let next: Vec<&'static str> = if EGRESS_ERRORS.contains(&code) {
@@ -212,6 +223,7 @@ pub fn classify(f: &Facts) -> Class {
                 vec!["account"]
             }
             Some("upstream" | "stream") => vec!["attempts"],
+            Some("request") => vec!["detail"],
             Some("network") => vec!["egress", "attempts"],
             Some("gateway") if ACCOUNT_ERRORS.contains(&code) => vec!["accounts"],
             Some("gateway" | "unconfirmed") => vec!["detail"],
@@ -261,15 +273,21 @@ pub(crate) struct Preds {
     network: i64,
     stream: i64,
     quota: String,
+    rate_limit: String,
+    request: String,
+    lifecycle: String,
 }
 
 impl Preds {
     pub(crate) fn new(c: &Connection) -> rusqlite::Result<Self> {
         let id = |n: &str| label_id(c, n).map(|x| x.unwrap_or(-1));
-        let mut quota = vec![];
-        for e in QUOTA_ERRORS {
-            quota.push(id(e)?.to_string());
-        }
+        let ids = |list: &[&str]| -> rusqlite::Result<String> {
+            let mut v = vec![];
+            for e in list {
+                v.push(id(e)?.to_string());
+            }
+            Ok(v.join(","))
+        };
         Ok(Self {
             prewarm: id(PREWARM_ENDPOINT)?,
             client: id("client")?,
@@ -281,7 +299,10 @@ impl Preds {
             upstream: id("upstream")?,
             network: id("network")?,
             stream: id("stream")?,
-            quota: quota.join(","),
+            quota: ids(QUOTA_ERRORS)?,
+            rate_limit: ids(RATE_LIMIT_ERRORS)?,
+            request: ids(REQUEST_ERRORS)?,
+            lifecycle: ids(LIFECYCLE_ERRORS)?,
         })
     }
     fn not_prewarm(&self) -> String {
@@ -289,9 +310,17 @@ impl Preds {
     }
     fn cancelled(&self) -> String {
         format!(
-            "(coalesce(err_source = {}, 0) OR coalesce(error = {}, 0))",
-            self.client, self.closed
+            "(coalesce(err_source = {}, 0) OR coalesce(error = {}, 0) OR {})",
+            self.client,
+            self.closed,
+            self.is_lifecycle()
         )
+    }
+    fn is_lifecycle(&self) -> String {
+        format!("coalesce(error IN ({}), 0)", self.lifecycle)
+    }
+    fn is_request(&self) -> String {
+        format!("coalesce(error IN ({}), 0)", self.request)
     }
     fn unknown(&self) -> String {
         format!(
@@ -333,15 +362,15 @@ impl Preds {
     }
     fn is_rate_limit(&self) -> String {
         format!(
-            "(status = 429 OR coalesce(err_source = {} AND up_status = 429, 0))",
-            self.upstream
+            "(status = 429 OR coalesce(err_source = {} AND up_status = 429, 0) OR coalesce(error IN ({}), 0))",
+            self.upstream, self.rate_limit
         )
     }
     /// Failed rows of one [`crate::failure_class`]; mirrors that function.
     pub(crate) fn failure_class(&self, class: &str) -> Option<String> {
         let failed = self.outcome(Outcome::Failed);
-        let (q, rl) = (self.is_quota(), self.is_rate_limit());
-        let rest = format!("{failed} AND NOT {q} AND NOT {rl}");
+        let (q, rl, rq) = (self.is_quota(), self.is_rate_limit(), self.is_request());
+        let rest = format!("{failed} AND NOT {q} AND NOT {rl} AND NOT {rq}");
         let srcs = format!(
             "{},{},{},{}",
             self.upstream, self.network, self.stream, self.local
@@ -349,6 +378,7 @@ impl Preds {
         Some(match class {
             "quota" => format!("({failed} AND {q})"),
             "rate_limit" => format!("({failed} AND NOT {q} AND {rl})"),
+            "request" => format!("({failed} AND NOT {q} AND NOT {rl} AND {rq})"),
             "upstream" => format!("({rest} AND err_source = {})", self.upstream),
             "network" => format!("({rest} AND err_source = {})", self.network),
             "stream" => format!("({rest} AND err_source = {})", self.stream),
@@ -365,11 +395,12 @@ impl Preds {
     }
     fn unrescued(&self) -> String {
         format!(
-            "({} AND coalesce(err_source IN ({},{},{}), 0))",
+            "({} AND coalesce(err_source IN ({},{},{}), 0) AND NOT {})",
             self.outcome(Outcome::Failed),
             self.upstream,
             self.stream,
-            self.network
+            self.network,
+            self.failure_class("request").expect("known class")
         )
     }
     /// Rows in `problem` (and `cause`); mirrors [`matches`]. `None`: the pair is invalid or
@@ -394,7 +425,16 @@ impl Preds {
                 self.outcome(Outcome::Incomplete),
                 self.outcome(Outcome::Unknown)
             ),
-            (Problem::Unfinished, Some("client_closed")) => self.outcome(Outcome::Cancelled),
+            (Problem::Unfinished, Some("client_closed")) => format!(
+                "({} AND NOT {})",
+                self.outcome(Outcome::Cancelled),
+                self.is_lifecycle()
+            ),
+            (Problem::Unfinished, Some("reconnect")) => format!(
+                "({} AND {})",
+                self.outcome(Outcome::Cancelled),
+                self.is_lifecycle()
+            ),
             (Problem::Unfinished, Some("truncated")) => format!(
                 "({} AND incomplete != {})",
                 self.outcome(Outcome::Incomplete),

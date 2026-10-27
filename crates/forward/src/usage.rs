@@ -585,14 +585,14 @@ impl Tracker {
                     d.message = msg.or_else(|| Some(format!("upstream event {ty}")));
                 }
                 self.source(crate::errors::SRC_STREAM);
-                if crate::proxy::quota_event(v).0 {
+                // Same split as the router outcome: quota code or usage-limit text cools
+                // the account (`usage_limit`); any other 429 is a rate limit.
+                if crate::proxy::quota_event(v).0
+                    && ciallopa_routing::is_usage_limit(text.as_bytes())
+                {
                     self.fail("usage_limit");
-                } else if let Some(c) = crate::proxy::overload_code(v) {
-                    self.fail(&c);
-                } else if ty == "error" {
-                    self.fail("upstream_error_event");
                 } else {
-                    self.fail("response_failed");
+                    self.fail(&crate::errors::event_code(v));
                 }
             }
         }

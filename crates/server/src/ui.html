@@ -429,8 +429,8 @@ button.pc.sm{height:24px;padding:0 8px;font-size:var(--fs-xs)}
 .st.s2{background:var(--ok-bg);color:var(--ok)}.st.s4{background:var(--err-bg);color:var(--err)}.st.s429{background:var(--cool-bg);color:var(--cool)}.st.s5{background:var(--st5-bg);color:var(--st5);box-shadow:inset 0 0 0 1px currentColor}
 :root{--st5:#b91c1c;--st5-bg:#fdecec}@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--st5:#fca5a5;--st5-bg:#2c1414}}:root[data-theme=dark]{--st5:#fca5a5;--st5-bg:#2c1414}
 /* Failure classes: one colour per class, used by the 失败率 bar, the 失败原因 trend and 分布. */
-:root{--fc-quota:#78716c;--fc-rate_limit:#0e7490;--fc-upstream:#be123c;--fc-network:#6d28d9;--fc-stream:#1d4ed8;--fc-local:#4b5563;--fc-other:#8b8f96}@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--fc-quota:#f59e0b;--fc-rate_limit:#22d3ee;--fc-upstream:#fb7185;--fc-network:#a78bfa;--fc-stream:#60a5fa;--fc-local:#9ca3af;--fc-other:#6b7280}}:root[data-theme=dark]{--fc-quota:#f59e0b;--fc-rate_limit:#22d3ee;--fc-upstream:#fb7185;--fc-network:#a78bfa;--fc-stream:#60a5fa;--fc-local:#9ca3af;--fc-other:#6b7280}
-.fc.quota{background:var(--fc-quota);fill:var(--fc-quota)}.fc.rate_limit{background:var(--fc-rate_limit);fill:var(--fc-rate_limit)}.fc.upstream{background:var(--fc-upstream);fill:var(--fc-upstream)}.fc.network{background:var(--fc-network);fill:var(--fc-network)}.fc.stream{background:var(--fc-stream);fill:var(--fc-stream)}.fc.local{background:var(--fc-local);fill:var(--fc-local)}.fc.other{background:var(--fc-other);fill:var(--fc-other)}
+:root{--fc-quota:#78716c;--fc-rate_limit:#0e7490;--fc-request:#4d7c0f;--fc-upstream:#be123c;--fc-network:#6d28d9;--fc-stream:#1d4ed8;--fc-local:#4b5563;--fc-other:#8b8f96}@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--fc-quota:#f59e0b;--fc-rate_limit:#22d3ee;--fc-request:#a3e635;--fc-upstream:#fb7185;--fc-network:#a78bfa;--fc-stream:#60a5fa;--fc-local:#9ca3af;--fc-other:#6b7280}}:root[data-theme=dark]{--fc-quota:#f59e0b;--fc-rate_limit:#22d3ee;--fc-request:#a3e635;--fc-upstream:#fb7185;--fc-network:#a78bfa;--fc-stream:#60a5fa;--fc-local:#9ca3af;--fc-other:#6b7280}
+.fc.quota{background:var(--fc-quota);fill:var(--fc-quota)}.fc.rate_limit{background:var(--fc-rate_limit);fill:var(--fc-rate_limit)}.fc.request{background:var(--fc-request);fill:var(--fc-request)}.fc.upstream{background:var(--fc-upstream);fill:var(--fc-upstream)}.fc.network{background:var(--fc-network);fill:var(--fc-network)}.fc.stream{background:var(--fc-stream);fill:var(--fc-stream)}.fc.local{background:var(--fc-local);fill:var(--fc-local)}.fc.other{background:var(--fc-other);fill:var(--fc-other)}
 .fcbar{display:flex;gap:1px;height:5px;border-radius:3px;overflow:hidden;margin:1px 0 4px;background:var(--bar)}
 .fcbar i{display:block;min-width:3px;flex-basis:0}
 .fcl i,.legend i.fc{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:3px}
@@ -587,7 +587,7 @@ button.pc.sm{height:24px;padding:0 8px;font-size:var(--fs-xs)}
       <div class="hb hide" id="phint" role="status"></div>
       <div class="filters request-extra hide" id="recordextra" role="search" aria-label="更多请求筛选">
         <select id="foutcome" aria-label="按请求结果筛选"><option value="">全部结果</option><option value="business">业务请求（不含预热）</option><option value="completed">完成</option><option value="failed">失败</option><option value="cancelled">客户端断开</option><option value="incomplete">上游截断 · incomplete</option><option value="unknown">未确认结束</option><option value="prewarm">预热</option><option value="refused">本地拒绝</option></select>
-        <select id="fclass" aria-label="按失败原因筛选"><option value="">全部失败原因</option><option value="quota">额度用尽</option><option value="rate_limit">限流</option><option value="upstream">上游错误</option><option value="network">网络</option><option value="stream">流中断</option><option value="local">本地</option><option value="other">其他</option></select>
+        <select id="fclass" aria-label="按失败原因筛选"><option value="">全部失败原因</option><option value="quota">额度用尽</option><option value="rate_limit">限流</option><option value="request">请求内容</option><option value="upstream">上游错误</option><option value="network">网络</option><option value="stream">流中断</option><option value="local">本地</option><option value="other">其他</option></select>
         <select id="fsrc" aria-label="按错误来源筛选"><option value="">全部来源</option><option value="upstream">上游</option><option value="stream">流内</option><option value="network">网络</option><option value="local">ciallopa</option><option value="client">客户端</option><option value="upstream,stream,network,local">排除客户端</option></select>
         <select id="ftier" aria-label="按档位筛选"><option value="">全部档位</option><option value="priority">Fast</option><option value="flex">Flex</option><option value="standard">标准</option><option value="dg">仅降级</option></select>
         <input id="fcode" type="text" placeholder="错误码（回车）" aria-label="按错误码筛选，回车应用">
@@ -893,7 +893,7 @@ function outcomeLinks(t){return [
   t.incomplete?statLink(exact(t.incomplete)+" 上游截断","incomplete"):null,
   t.unknown?h("span","w",statLink(exact(t.unknown)+" 未确认结束","unknown")):null].filter(Boolean)}
 // Failure classes, in display order; the same labels and colours everywhere. first_quota_reset is quota.
-const FCLS=[["quota","额度用尽"],["rate_limit","限流"],["upstream","上游错误"],["network","网络"],["stream","流中断"],["local","本地"],["other","其他"]];
+const FCLS=[["quota","额度用尽"],["rate_limit","限流"],["request","请求内容"],["upstream","上游错误"],["network","网络"],["stream","流中断"],["local","本地"],["other","其他"]];
 const FCN=Object.fromEntries(FCLS);
 function compareOn(){return !!$("fcompare").checked}
 // Change against the previous period. better: "up" / "down" colours the direction, null stays neutral.
@@ -966,7 +966,7 @@ function drillOutcome(outcome,cls){if(!summaryCurrent())return;recordWindow=null
   saveF();showScope();renderTrend();loadRecords(false).catch(fail);revealRecords()}
 // KPI and class links land on the problem chips: 失败 → 报错 + 原因, 取消/未知 → 没答完 + 子原因; 截断 (truncated and content_filter) → the incomplete outcome.
 const DRILL={failed:"error",cancelled:"unfinished",unknown:"unfinished",refused:"refused"},DRILL_CAUSE={cancelled:"client_closed",unknown:"unconfirmed"};
-function errorCause(c){return c?({quota:"quota",rate_limit:"rate_limit",upstream:"upstream",network:"network",stream:"stream"}[c]||"gateway"):""}
+function errorCause(c){return c?({quota:"quota",rate_limit:"rate_limit",request:"request",upstream:"upstream",network:"network",stream:"stream"}[c]||"gateway"):""}
 function clearRecordFilters(){for(const k of RF){const e=$(k);if(e.type==="checkbox")e.checked=false;else e.value=""}}
 function revealRecords(){const bar=document.querySelector(".fbar"),section=$("sr");
   section.style.scrollMarginTop=(parseFloat(getComputedStyle(bar).top)+bar.offsetHeight+12)+"px";
@@ -1233,7 +1233,7 @@ function effortCell(r){const box=h("span"),q=r.reasoning_effort,a=r.response_eff
   box.dataset.tip=tip;return box}
 const SRC={client:["客户端","off","客户端断开或请求本身的问题"],local:["ciallopa","off","ciallopa 本地产生（没有可用账号、全部冷却等）"],network:["网络","err","连不上上游、超时或流空闲超时"],proxy:["代理","proxy","出口代理连不上、拒绝隧道或超时（不计入账号冷却）"],upstream:["上游","err","上游 HTTP 返回的错误，原样转给客户端"],stream:["流内","err","上游流里的错误事件或流被截断"]};
 const PROXY_ERR={proxy_connect:"出口代理连接失败",proxy_timeout:"经出口代理连接超时"};
-const ERR_LBL=Object.assign({invalid_encrypted_content:"加密推理被拒",usage_limit:"额度用尽",usage_limit_reached:"额度用尽",rate_limit_exceeded:"限流",server_is_overloaded:"上游过载",client_closed:"客户端断开",no_account:"没有账号",no_usable_account:"没有可用账号",all_cooling:"全部账号冷却中",all_quota_exhausted:"额度用尽",first_quota_reset:"额度用尽",stream_truncated:"流被截断",observation_incomplete:"观察不完整",connect_timeout:"连接超时",header_timeout:"等待响应头超时",preparation_timeout:"准备等待超时",error_body_timeout:"读取错误响应超时",error_body_too_large:"错误响应过大",error_body_read:"错误响应中断",upstream_5xx:"上游 5xx",cf_blocked:"Cloudflare 拦截出口",challenge:"Cloudflare 质询"},PROXY_ERR);
+const ERR_LBL=Object.assign({invalid_encrypted_content:"加密推理被拒",usage_limit:"额度用尽",usage_limit_reached:"额度用尽",rate_limit_exceeded:"限流",context_length_exceeded:"上下文过长",invalid_request_error:"请求无效",websocket_connection_limit_reached:"WS 连接到期",previous_response_not_found:"上一轮响应失效",server_is_overloaded:"上游过载",client_closed:"客户端断开",no_account:"没有账号",no_usable_account:"没有可用账号",all_cooling:"全部账号冷却中",all_quota_exhausted:"额度用尽",first_quota_reset:"额度用尽",stream_truncated:"流被截断",observation_incomplete:"观察不完整",connect_timeout:"连接超时",header_timeout:"等待响应头超时",preparation_timeout:"准备等待超时",error_body_timeout:"读取错误响应超时",error_body_too_large:"错误响应过大",error_body_read:"错误响应中断",upstream_5xx:"上游 5xx",cf_blocked:"Cloudflare 拦截出口",challenge:"Cloudflare 质询"},PROXY_ERR);
 const ERR_TIP={cf_blocked:"上游前面的 Cloudflare 返回了拦截页（如 1010 浏览器签名被封），拦的是本机出口（IP、TLS 或 HTTP 指纹），不是账号：不换号、不冷却账号，客户端收到中性的 502",challenge:"上游前面的 Cloudflare 返回了质询页，拦的是本机出口，不是账号：不换号、不冷却账号，客户端收到中性的 502",invalid_encrypted_content:"上游拒绝了对话历史里的加密推理内容（多为在另一个账号/组织下生成，原因见详情）。属于请求内容问题：不换号、不冷却、不重试；客户端收到明确提示，需新开会话",observation_incomplete:"响应已透传，但事件超过网关的有界观察范围，无法确认最终业务结果。未报告的用量不是零，未知结果不计为失败或客户端取消。"};
 function errorInfo(r){const known=r.error!=="observation_incomplete"||requestOutcome(r)==="unknown";return {label:known?ERR_LBL[r.error]:"",tip:known?ERR_TIP[r.error]:""}}
 function srcOf(r){return r.err_source==="network"&&PROXY_ERR[r.error]?"proxy":r.err_source}
@@ -1270,8 +1270,8 @@ async function nextAct(r,k,from){
   if(k==="attempts"&&!$("dtll").classList.contains("hide"))$("dtll").scrollIntoView({block:"nearest"})}
 function conclusion(r){const p=r.problem,c=r.cause,n=causeName(p,c);
   if(r.rescued)return ["已救回 · "+rescueText(r),"中途上游出过错，客户端拿到了正常结果，计入上游出错，不计入失败率"];
-  if(p==="error")return ["报错"+(n?" · "+n:""),({quota:"账号额度用尽，客户端收到错误",rate_limit:"上游限流，账号会短暂冷却",upstream:"上游返回错误",network:"连不上上游或出口代理",gateway:"ciallopa 本地没能转发，多为没有可用账号",stream:"流里报错或连接中断"}[c]||"请求失败")+(r.upstream_fault?"，也计入上游出错":"")+(r.next&&r.next.includes("new_session")?"\n加密推理内容来自别的账号，换号无效，需要在客户端新开会话":"")];
-  if(p==="unfinished")return ["没答完"+(n?" · "+n:""),({client_closed:"客户端先断开了连接",truncated:"上游提前结束了回答"+(r.incomplete?"（"+incompleteCode(r)+"）":""),content_filter:"上游内容过滤提前结束了回答（content_filter）",unconfirmed:"没看到结束事件，结果未确认"}[c]||"")+"，不计入失败率"];
+  if(p==="error")return ["报错"+(n?" · "+n:""),({quota:"账号额度用尽，客户端收到错误",rate_limit:"上游限流，该模型会短暂冷却",request:"上游拒绝了请求内容，换号无效，不计入上游出错",upstream:"上游返回错误",network:"连不上上游或出口代理",gateway:"ciallopa 本地没能转发，多为没有可用账号",stream:"流里报错或连接中断"}[c]||"请求失败")+(r.upstream_fault?"，也计入上游出错":"")+(r.next&&r.next.includes("new_session")?"\n加密推理内容来自别的账号，换号无效，需要在客户端新开会话":"")];
+  if(p==="unfinished")return ["没答完"+(n?" · "+n:""),({client_closed:"客户端先断开了连接",reconnect:"WS 连接到期或上一轮响应失效，客户端会重连重发",truncated:"上游提前结束了回答"+(r.incomplete?"（"+incompleteCode(r)+"）":""),content_filter:"上游内容过滤提前结束了回答（content_filter）",unconfirmed:"没看到结束事件，结果未确认"}[c]||"")+"，不计入失败率"];
   return null}
 function renderConclusion(r){const box=$("dconcl"),c=conclusion(r);clear(box);box.classList.toggle("hide",!c);if(!c)return;
   box.append(h("div","t",c[0]),h("div","sm",c[1]));const acts=(r.next||[]).filter(k=>NEXT[k]&&k!=="detail"&&k!=="new_session");
@@ -1581,7 +1581,7 @@ function renderHint(){const p=$("fproblem").value,c=$("fcause").value,hb=$("phin
   if(!PC);else if(!p){if(PC.error||u.rescued){parts.push(exact(PC.error)+" 条报错");if(u.rescued)parts.push(exact(u.rescued)+" 条已救回");if(PC.error)acts.push(["只看报错",()=>pickProblem("error")])}}
   else if(p==="error"){parts.push("报错计入失败率");if(c==="quota")acts.push(["刷新额度",()=>goQuota($("facct").value)],["账号页",()=>go("/ui/accounts")]);else if(c==="rate_limit")acts.push(["看冷却",()=>go("/ui/accounts")]);else if(c==="network")acts.push(["检查出口",()=>go("/ui/settings#network")]);else if(c==="gateway")acts.push(["账号状态",()=>go("/ui/accounts")])}
   else if(p==="upstream"){parts.push("已救回 "+exact(u.rescued||0),"未救回 "+exact(u.unrescued||0));hb.appendChild(h("span","k","上游出过错的请求"));if(c!=="rescued"&&u.rescued)acts.push(["只看已救回",()=>pickCause("rescued")])}
-  else if(p==="unfinished"){hb.appendChild(h("span","k","没答完不计入失败率"));parts.push("客户端断开 "+exact(f.client_closed||0),"上游截断 "+exact(f.truncated||0),"内容过滤 "+exact(f.content_filter||0),"未确认结束 "+exact(f.unconfirmed||0))}
+  else if(p==="unfinished"){hb.appendChild(h("span","k","没答完不计入失败率"));parts.push("客户端断开 "+exact(f.client_closed||0),"需重连 "+exact(f.reconnect||0),"上游截断 "+exact(f.truncated||0),"内容过滤 "+exact(f.content_filter||0),"未确认结束 "+exact(f.unconfirmed||0))}
   else if(p==="refused"){hb.appendChild(h("span","k","本地上限直接返回 503"));acts.push(["限流与容错设置",()=>go("/ui/settings#forward")])}
   if(parts.length)hb.appendChild(h("span",null,parts.join(" · ")));
   acts.forEach(([l,fn],i)=>{const b=h("button",{type:"button",class:i?"":"p"},l+" ›");b.addEventListener("click",fn);hb.appendChild(b)});
@@ -1595,8 +1595,8 @@ function syncMini(){for(const id in MINI){const sel=$(id),src=MINI[id],v=$(src).
 const SF=["facct","fmodel","fkey","finstance"],RF=["fproblem","fcause","foutcome","fclass","ftier","fsrc","fcode","fthread","ferr","fretry"],FIDS=["range","group","tmode","tmetric",...SF,...RF],FDEF={range:"24h",group:"account",tmode:"auto",tmetric:"requests"},FL="ciallopa_f_";
 // Problem buckets and their causes, as the backend names them (usage::problem).
 const PROB=[["","全部"],["error","报错",1],["upstream","上游出错",1],["unfinished","没答完"],["refused","本地拒绝"]];
-const CAUSES={error:[["quota","额度"],["rate_limit","限流"],["upstream","上游"],["network","网络代理"],["gateway","网关"],["stream","流中断"]],
-  upstream:[["unrescued","未救回"],["rescued","已救回"]],unfinished:[["client_closed","客户端断开"],["truncated","上游截断"],["content_filter","内容过滤"],["unconfirmed","未确认结束"]],
+const CAUSES={error:[["quota","额度"],["rate_limit","限流"],["request","请求内容"],["upstream","上游"],["network","网络代理"],["gateway","网关"],["stream","流中断"]],
+  upstream:[["unrescued","未救回"],["rescued","已救回"]],unfinished:[["client_closed","客户端断开"],["reconnect","需重连"],["truncated","上游截断"],["content_filter","内容过滤"],["unconfirmed","未确认结束"]],
   refused:[["inflight","转发上限"],["ws","WS 上限"],["body","请求体缓冲"],["ws_msg","WS 消息缓冲"]]};
 function fval(id){const e=$(id);return e.type==="checkbox"?(e.checked?"1":""):e.value}
 function anyF(){return RF.some(id=>fval(id))}

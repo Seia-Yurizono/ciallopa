@@ -767,18 +767,18 @@ function failureClassesAndTrend() {
   const light = vars(section(':root{--fc-quota:', '}')), dark = vars(section(':root[data-theme=dark]{--fc-quota:', '}'));
   assert.equal(section('@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--fc-quota:', '}').split('{--fc-quota:')[1], section(':root[data-theme=dark]{--fc-quota:', '}').split('{--fc-quota:')[1], 'dark class tokens agree');
   const surf = {light: vars(section(':root{color-scheme:light;', '}')).surface, dark: vars(section(':root[data-theme=dark]{color-scheme:dark;', '}')).surface};
-  const classes = ['quota', 'rate_limit', 'upstream', 'network', 'stream', 'local', 'other'];
+  const classes = ['quota', 'rate_limit', 'request', 'upstream', 'network', 'stream', 'local', 'other'];
   for (const [theme, v] of [['light', light], ['dark', dark]]) {
-    assert.equal(new Set(classes.map(k => v['fc-' + k])).size, 7, `${theme} class colours are distinct`);
+    assert.equal(new Set(classes.map(k => v['fc-' + k])).size, 8, `${theme} class colours are distinct`);
     for (const k of classes) assert.ok(ratio(v['fc-' + k], surf[theme]) >= 3, `${theme} ${k}: ${ratio(v['fc-' + k], surf[theme]).toFixed(2)}`);
   }
-  // Labels: the same seven everywhere; first_quota_reset is just 额度用尽.
+  // Labels: the same eight everywhere; first_quota_reset is just 额度用尽.
   const c = vm.createContext({PROXY_ERR: {}});
   vm.runInContext(section('const ERR_LBL=', '\n'), c);
   for (const code of ['usage_limit', 'usage_limit_reached', 'all_quota_exhausted', 'first_quota_reset']) assert.equal(vm.runInContext(`ERR_LBL.${code}`, c), '额度用尽');
   vm.runInContext(section('const FCLS=', '\n'), c);
-  assert.deepEqual(vm.runInContext('FCLS.map(x=>x.join(":")).join(",")', c), 'quota:额度用尽,rate_limit:限流,upstream:上游错误,network:网络,stream:流中断,local:本地,other:其他');
-  for (const [v, l] of [['quota', '额度用尽'], ['rate_limit', '限流'], ['upstream', '上游错误'], ['network', '网络'], ['stream', '流中断'], ['local', '本地'], ['other', '其他']])
+  assert.deepEqual(vm.runInContext('FCLS.map(x=>x.join(":")).join(",")', c), 'quota:额度用尽,rate_limit:限流,request:请求内容,upstream:上游错误,network:网络,stream:流中断,local:本地,other:其他');
+  for (const [v, l] of [['quota', '额度用尽'], ['rate_limit', '限流'], ['request', '请求内容'], ['upstream', '上游错误'], ['network', '网络'], ['stream', '流中断'], ['local', '本地'], ['other', '其他']])
     assert.match(html, new RegExp(`<option value="${v}">${l}</option>`), `失败原因 filter offers ${l}`);
   for (const [v, l] of [['fail', '失败原因'], ['lat', '延迟分位'], ['cap', '占用与拒绝']]) assert.match(html, new RegExp(`<option value="${v}">${l}</option>`));
   // Choosing a 失败原因 switches 结果 to 失败; clearing it leaves 结果 alone; another 结果 clears it.
@@ -1367,8 +1367,8 @@ async function memoryPanel() {
 async function problemChipsAndNextSteps() {
   const dom = interactionDom(), control = dom.$, gets = [], visits = [];
   let counts = {all: 40, error: 6, upstream: 5, unfinished: 3, refused: 2,
-    causes: {error: {quota: 2, rate_limit: 1, upstream: 1, network: 1, gateway: 1, stream: 0}, upstream: {unrescued: 2, rescued: 3},
-      unfinished: {client_closed: 1, truncated: 1, content_filter: 0, unconfirmed: 1}, refused: {inflight: 2, ws: 0, body: 0, ws_msg: 0}}};
+    causes: {error: {quota: 2, rate_limit: 1, request: 0, upstream: 1, network: 1, gateway: 1, stream: 0}, upstream: {unrescued: 2, rescued: 3},
+      unfinished: {client_closed: 1, reconnect: 0, truncated: 1, content_filter: 0, unconfirmed: 1}, refused: {inflight: 2, ws: 0, body: 0, ws_msg: 0}}};
   const changes = [];
   const c = vm.createContext({...dom, URLSearchParams, Date, Promise, ACCTS: [{id: 'alice'}, {id: 'bob'}], SV: {model: [{value: 'gpt-5'}], key: [{value: 'laptop'}]},
     usageGet: async url => {gets.push(url); return counts;}, changeRecords() {changes.push(vm.runInContext('qs(recordFilters())', c));},
@@ -1405,7 +1405,7 @@ async function problemChipsAndNextSteps() {
   assert.deepEqual(chips().map(flat), ['全部40', '报错6', '上游出错5', '没答完3', '本地拒绝2']);
   assert.deepEqual(chips().map(b => b.getAttribute('aria-pressed')), ['false', 'true', 'false', 'false', 'false']);
   assert.ok(chips()[1].classList.contains('e') && chips()[2].classList.contains('e') && !chips()[3].classList.contains('e'), '报错 and 上游出错 carry the error colour');
-  assert.deepEqual(causes().map(flat), ['全部', '额度2', '限流1', '上游1', '网络代理1', '网关1', '流中断0']);
+  assert.deepEqual(causes().map(flat), ['全部', '额度2', '限流1', '请求内容0', '上游1', '网络代理1', '网关1', '流中断0']);
   assert.equal(causes()[1].getAttribute('aria-pressed'), 'true');
   assert.match(flat(control('phint')), /报错计入失败率刷新额度 ›/);
   // Picking a bucket resets its cause and the old 结果 / 失败原因 selects.
@@ -1421,7 +1421,7 @@ async function problemChipsAndNextSteps() {
   assert.equal(new URLSearchParams(changes.at(-1)).get('cause'), 'rescued');
   control('fproblem').value = 'unfinished';control('fcause').value = '';
   vm.runInContext('renderProblems()', c);
-  assert.deepEqual(causes().map(flat), ['全部', '客户端断开1', '上游截断1', '内容过滤0', '未确认结束1']);
+  assert.deepEqual(causes().map(flat), ['全部', '客户端断开1', '需重连0', '上游截断1', '内容过滤0', '未确认结束1']);
   assert.match(flat(control('phint')), /没答完不计入失败率/);
   // An account / model / request-only filter has no refusal count: the chip is disabled, not zero.
   counts = {...counts, refused: null};control('fproblem').value = '';
