@@ -940,7 +940,7 @@ async function threadFilter() {
       scopeWindow: {from: 1000, to: 9000, fixed: false}, recordWindow: {from: 2000, to: 3000}, activeRecord: null,
       location: {pathname: '/ui', search: ''}, history: {replaceState(_state, _title, url) {c.location.search = new URL(url, 'http://local').search;}},
       localStorage: {setItem() {}, getItem() {return null;}}, fmtTime: String, renderKpis() {}, renderTrend() {}, showScope() {}, rollWindow() {},
-      fail(e) {throw e;}, loadSummary: async () => {}, loadRecords: async () => loads.push(vm.runInContext('recordFilters()', c)),
+      fail(e) {throw e;}, summaries: 0, loadSummary: async () => {c.summaries++;}, loadRecords: async () => loads.push(vm.runInContext('recordFilters()', c)),
       syncMini() {}, MINI: {}, closed: 0, closeModal() {c.closed++;}, revealed: 0, revealRecords() {c.revealed++;},
       withPrewarm: () => false, hms: () => 'now', Date,
     });
@@ -971,14 +971,21 @@ async function threadFilter() {
     vm.runInContext('loadF()', c);
     assert.equal(control('fthread').value, FULL);
     assert.equal(control('fproblem').value, 'error');
-    // 只看这个会话: clears the request filters and the chart period, keeps 筛选范围, reloads and scrolls to the list.
-    control('fmodel').value = 'gpt-demo';control('fcode').value = '429';
+    // A pasted id keeps 筛选范围.
+    control('fmodel').value = 'gpt-demo';control('fthread').value = FULL;
+    vm.runInContext('changeRecords()', c);
+    assert.deepEqual([loads.at(-1).thread, loads.at(-1).model], [FULL, 'gpt-demo'], 'pasting a session id keeps the scope');
+    // 只看这个会话: clears the request filters, the chart period and the account / model / key / instance scope.
+    control('fkey').value = 'laptop';control('finstance').value = 'home';control('fcode').value = '429';
     c.recordWindow = {from: 2000, to: 3000};
     const other = '019a2b3c-4d5e-7f60-8a71-0000bbbb3333';
     vm.runInContext('viewThread(' + JSON.stringify(other) + ')', c);
     assert.equal(c.recordWindow, null);
-    assert.deepEqual([control('fthread').value, control('fproblem').value, control('fcode').value, control('fmodel').value], [other, '', '', 'gpt-demo']);
+    assert.deepEqual([control('fthread').value, control('fproblem').value, control('fcode').value], [other, '', '']);
+    assert.deepEqual(['facct', 'fmodel', 'fkey', 'finstance'].map(id => control(id).value), ['', '', '', ''], 'a session that switched accounts shows in full');
     assert.equal(loads.at(-1).thread, other);
+    assert.deepEqual([loads.at(-1).account, loads.at(-1).model, loads.at(-1).key, loads.at(-1).instance], ['', '', '', '']);
+    assert.ok(c.summaries > 0, 'the cards follow the cleared scope');
     assert.equal(loads.at(-1).from, '', 'whole retention window');
     assert.equal(c.revealed, 1);
     assert.equal(new URLSearchParams(c.location.search).get('fthread'), other);
