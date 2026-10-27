@@ -95,10 +95,7 @@ impl Aliaser {
             .decode(s.trim())
             .map_err(|e| format!("alias_key base64: {e}"))?;
         if bytes.len() != KEY_LEN {
-            return Err(format!(
-                "alias_key length {} (want {KEY_LEN})",
-                bytes.len()
-            ));
+            return Err(format!("alias_key length {} (want {KEY_LEN})", bytes.len()));
         }
         let mut key = [0u8; KEY_LEN];
         key.copy_from_slice(&bytes);
@@ -163,10 +160,7 @@ impl Aliaser {
         }
         let base = self.base_alias(account_id);
         let assigned = {
-            let mut cols = self
-                .collisions
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let mut cols = self.collisions.lock().unwrap_or_else(|e| e.into_inner());
             let list = cols.entry(base.clone()).or_default();
             if let Some(pos) = list.iter().position(|id| id == account_id) {
                 if pos == 0 {
@@ -194,10 +188,7 @@ impl Aliaser {
 
     /// Reverse lookup among **currently registered** accounts only.
     pub fn resolve(&self, alias: &str) -> Option<String> {
-        self.reverse
-            .read()
-            .ok()
-            .and_then(|m| m.get(alias).cloned())
+        self.reverse.read().ok().and_then(|m| m.get(alias).cloned())
     }
 
     /// For affinity load: resolve an alias, or keep a raw (pre-migration) id as-is.

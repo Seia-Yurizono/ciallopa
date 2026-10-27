@@ -73,9 +73,10 @@ impl ErrorDetail {
             .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
             .collect();
         Stored {
-            message: self.message.as_deref().map(|m| {
-                redact_text(m).chars().take(MSG_CAP).collect()
-            }),
+            message: self
+                .message
+                .as_deref()
+                .map(|m| redact_text(m).chars().take(MSG_CAP).collect()),
             body: (!body.is_empty()).then_some(body),
             body_len: self.body_len as i64,
             truncated,
@@ -533,14 +534,16 @@ mod tests {
     #[test]
     fn attempt_body_strips_content_keys() {
         let raw = response_failed_fixture();
-        let mut d = ErrorDetail::default();
-        d.attempts = Some(serde_json::json!([{
-            "account": "acct_demo",
-            "t_ms": 10,
-            "kind": "stream",
-            "action": "switch",
-            "body": raw,
-        }]));
+        let d = ErrorDetail {
+            attempts: Some(serde_json::json!([{
+                "account": "acct_demo",
+                "t_ms": 10,
+                "kind": "stream",
+                "action": "switch",
+                "body": raw,
+            }])),
+            ..Default::default()
+        };
         let s = d.finish();
         let attempts: serde_json::Value =
             serde_json::from_str(s.attempts.as_deref().unwrap()).unwrap();

@@ -99,7 +99,10 @@ fn reveal_row(r: &mut ciallopa_usage::RecordRow) {
 fn reveal_attempts(v: &mut serde_json::Value) {
     let Some(list) = v.as_array_mut() else { return };
     for x in list {
-        if let Some(a) = x.get_mut("account").and_then(|x| x.as_str().map(str::to_string)) {
+        if let Some(a) = x
+            .get_mut("account")
+            .and_then(|x| x.as_str().map(str::to_string))
+        {
             let mut opt = Some(a);
             reveal(&mut opt);
             if let Some(id) = opt {
@@ -828,9 +831,7 @@ async fn quota(
     for a in &known {
         let alias = ciallopa_core::a(&a.id);
         // DB labels store aliases (v12+); also accept a legacy raw id during rolling upgrades.
-        let q = obs
-            .iter()
-            .find(|q| q.account == alias || q.account == a.id);
+        let q = obs.iter().find(|q| q.account == alias || q.account == a.id);
         let mut row = serde_json::json!({
             "account": if admin { a.id.clone() } else { alias.clone() },
             "disabled": a.disabled,

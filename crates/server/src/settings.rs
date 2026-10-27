@@ -212,7 +212,8 @@ impl Settings {
         &self,
         text: &str,
     ) -> Result<(Config, Option<ciallopa_usage::PriceTable>), ApplyError> {
-        let c = Config::parse(text).map_err(|e| ApplyError::invalid(ciallopa_core::config::config_error_view(&e)))?;
+        let c = Config::parse(text)
+            .map_err(|e| ApplyError::invalid(ciallopa_core::config::config_error_view(&e)))?;
         ciallopa_upstream::build_reqwest(&ciallopa_upstream::ClientOptions::from(&c))
             .map_err(|e| ApplyError::invalid(format!("proxy_url: {e}")))?;
         let prices = if self.st.usage.is_some() {
@@ -415,7 +416,9 @@ impl Settings {
         out.push('\n');
         let tmp = p.with_extension("jsonl.tmp");
         match std::fs::write(&tmp, &out).and_then(|_| std::fs::rename(&tmp, p)) {
-            Ok(()) => tracing::info!(path = %p.display(), "audit log rewritten with account aliases"),
+            Ok(()) => {
+                tracing::info!(path = %p.display(), "audit log rewritten with account aliases")
+            }
             Err(e) => {
                 tracing::warn!(error = %e, path = %p.display(), "audit alias rewrite failed");
                 let _ = std::fs::remove_file(&tmp);
@@ -495,7 +498,14 @@ impl Settings {
     }
 
     pub async fn init_known_accounts(&self) {
-        let ids: Vec<String> = self.st.accounts.list().await.into_iter().map(|a| a.id).collect();
+        let ids: Vec<String> = self
+            .st
+            .accounts
+            .list()
+            .await
+            .into_iter()
+            .map(|a| a.id)
+            .collect();
         if let Some(al) = ciallopa_core::current() {
             al.register_many(&ids);
         }
@@ -1508,7 +1518,13 @@ async fn validate(
     };
     let cur = match Config::parse(&text) {
         Ok(c) => c,
-        Err(e) => return ApplyError::invalid(format!("current config file: {}", ciallopa_core::config::config_error_view(&e))).into_response(),
+        Err(e) => {
+            return ApplyError::invalid(format!(
+                "current config file: {}",
+                ciallopa_core::config::config_error_view(&e)
+            ))
+            .into_response()
+        }
     };
     let out = patch_document(&text, &req.changes).and_then(|t| s.check(&t).map(|(c, _)| c));
     match out {

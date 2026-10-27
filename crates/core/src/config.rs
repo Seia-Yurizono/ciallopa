@@ -957,5 +957,4 @@ api_keys = ["sk-plain-0123456789abcdef", { label = "laptop", key = "sk-laptop-01
         assert!(v.contains("proxy_url"), "{v}");
         assert!(!v.contains("ftp://x") || v.contains("proxy_url")); // value may or may not appear in Invalid
     }
-
 }
