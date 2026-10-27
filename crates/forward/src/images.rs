@@ -144,6 +144,30 @@ impl HttpBody for RecordedBody {
     }
 }
 
+/// A terminal event without an image: `image_output_missing`, or the incomplete reason's code.
+fn fail_no_image(trk: &mut Option<Tracker>, ty: &str, ev: &Value) {
+    if ty == "response.incomplete" {
+        let reason = crate::usage::incomplete_reason(ev);
+        let code = crate::usage::incomplete_code(&reason);
+        fail(
+            trk,
+            &code,
+            errors::SRC_STREAM,
+            format!("response.incomplete: {reason}"),
+        );
+        if let Some(t) = trk.as_mut() {
+            t.incomplete(ev);
+        }
+    } else {
+        fail(
+            trk,
+            "image_output_missing",
+            errors::SRC_STREAM,
+            "upstream completed without image output",
+        );
+    }
+}
+
 fn fail(trk: &mut Option<Tracker>, code: &str, source: &'static str, message: impl Into<String>) {
     if let Some(t) = trk.as_mut() {
         t.fail_msg(code, message);
@@ -648,15 +672,10 @@ async fn run(
                         }
                     }
                     "response.output_item.done" => col.item_done(&ev),
-                    "response.completed" => {
+                    ty @ ("response.completed" | "response.incomplete") => {
                         let (results, _, usage) = col.extract(&ev);
                         if results.is_empty() {
-                            fail(
-                                &mut trk,
-                                "image_output_missing",
-                                errors::SRC_STREAM,
-                                "upstream completed without image output",
-                            );
+                            fail_no_image(&mut trk, ty, &ev);
                             let _ = tx.send(Ok(sse("error", &json!({"error": {"message": "upstream did not return image output"}})))).await;
                             return;
                         }
@@ -672,6 +691,9 @@ async fn run(
                             }
                         }
                         if let Some(t) = trk.as_mut() {
+                            if ty == "response.incomplete" {
+                                t.incomplete(&ev);
+                            }
                             t.finish_response();
                         }
                         return;
@@ -733,20 +755,18 @@ async fn run(
         };
         match ev.get("type").and_then(|t| t.as_str()).unwrap_or("") {
             "response.output_item.done" => col.item_done(&ev),
-            "response.completed" => {
+            ty @ ("response.completed" | "response.incomplete") => {
                 let (results, created, usage) = col.extract(&ev);
                 if results.is_empty() {
-                    fail(
-                        trk,
-                        "image_output_missing",
-                        errors::SRC_STREAM,
-                        "upstream completed without image output",
-                    );
+                    fail_no_image(trk, ty, &ev);
                     return json_error(
                         StatusCode::BAD_GATEWAY,
                         "upstream_error",
                         "upstream did not return image output",
                     );
+                }
+                if let Some(t) = trk.as_mut().filter(|_| ty == "response.incomplete") {
+                    t.incomplete(&ev);
                 }
                 let first = &results[0];
                 let mut out = json!({"created": created, "data": []});

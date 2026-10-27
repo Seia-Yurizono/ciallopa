@@ -524,6 +524,14 @@ impl Tracker {
         }
     }
 
+    /// Records only the `response.incomplete` reason (no tokens or error), for callers that
+    /// answer from the event themselves.
+    pub(crate) fn incomplete(&mut self, v: &Value) {
+        if !self.settled {
+            self.rec.incomplete = Some(incomplete_reason(v));
+        }
+    }
+
     /// A terminal Responses event (`response.completed` / `failed` / `incomplete` / `error`).
     pub(crate) fn terminal_event(&mut self, v: &Value) {
         if self.settled {
@@ -558,14 +566,7 @@ impl Tracker {
         match ty {
             "response.completed" | "response.done" => {}
             // Terminal for Codex (bc9cad3) but not a proxy/upstream failure: keep tokens, flag it.
-            "response.incomplete" => {
-                let reason = resp
-                    .and_then(|r| r.pointer("/incomplete_details/reason"))
-                    .and_then(|r| r.as_str())
-                    .filter(|r| !r.is_empty())
-                    .unwrap_or("unknown");
-                self.rec.incomplete = Some(reason.chars().take(64).collect());
-            }
+            "response.incomplete" => self.rec.incomplete = Some(incomplete_reason(v)),
             _ => {
                 let text = v.to_string();
                 // A request-content problem the upstream reports in-stream: upstream source.
@@ -805,6 +806,27 @@ fn describe(kind: &str, status: u16) -> String {
         "tls" => "TLS handshake with upstream failed".into(),
         _ if status > 0 => format!("HTTP {status} ({kind})"),
         _ => kind.to_string(),
+    }
+}
+
+/// `response.incomplete_details.reason`, bounded; `unknown` when missing.
+pub(crate) fn incomplete_reason(v: &Value) -> String {
+    v.pointer("/response/incomplete_details/reason")
+        .and_then(|r| r.as_str())
+        .filter(|r| !r.is_empty())
+        .unwrap_or("unknown")
+        .chars()
+        .take(64)
+        .collect()
+}
+
+/// Error code for an incomplete response the client could not use: `content_filter` keeps its
+/// own code, other reasons become `incomplete_<reason>`.
+pub(crate) fn incomplete_code(reason: &str) -> String {
+    if reason == "content_filter" {
+        reason.into()
+    } else {
+        format!("incomplete_{reason}")
     }
 }
 

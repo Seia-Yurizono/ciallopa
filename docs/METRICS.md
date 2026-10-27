@@ -64,7 +64,7 @@ reasoning token 已包含在输出中，不能重复相加。这里的缓存比�
 3. `error=observation_incomplete` 且 `err_source=local`、HTTP status 未达 400：`unknown`。
    响应已透传，但超出有界事件观察范围，无法确认最终业务结果；上游返回同名错误码仍按失败处理。
 4. 其余 `error` 非空或 HTTP status≥400：`failures`。包括 HTTP 200 流内错误、截断、超时和本地错误。
-5. 其余 `incomplete` 非空：`incomplete`。例如达到输出 token 上限，是合法终止，但不能标成完整回答。
+5. 其余 `incomplete` 非空且不是 `interrupted`：`incomplete`。例如达到输出 token 上限（`max_output_tokens`）或内容过滤（`content_filter`），是合法终止，但不能标成完整回答。`interrupted` 是 Codex 认可的正常结束，算完成，只在行上标出 `interrupted`。
 6. 其余：正常完整结束，可由 `N − failures − cancelled − incomplete − unknown` 得到。
 
 `outcome=completed|failed|cancelled|incomplete|unknown|prewarm` 与上述分类一致。
@@ -83,7 +83,7 @@ reasoning token 已包含在输出中，不能重复相加。这里的缓存比�
 |---|---|---|---|
 | 报错 | `error` | 客户端收到错误，即 `outcome=failed`；计入失败率 | `quota` 额度、`rate_limit` 限流、`upstream` 上游、`network` 网络代理、`gateway` 网关（`local`/`other`）、`stream` 流中断 |
 | 上游出错 | `upstream` | 上游侧（`err_source` 为 upstream/stream/network）至少失败过一次，含被重试或换号救回的请求 | `unrescued` 未救回（最终报错）、`rescued` 已救回（`retries>0` 或 `switches>0` 后正常完成） |
-| 没答完 | `unfinished` | 客户端断开、上游 `response.incomplete`、未确认结束；**不计入失败率** | `client_closed` 客户端断开（原“取消”）、`truncated` 上游截断（原 incomplete）、`unconfirmed` 未确认结束（原“结果未知”） |
+| 没答完 | `unfinished` | 客户端断开、上游 `response.incomplete`、未确认结束；**不计入失败率** | `client_closed` 客户端断开（原“取消”）、`truncated` 上游截断（原 incomplete，不含 `interrupted`）、`content_filter` 内容过滤、`unconfirmed` 未确认结束（原“结果未知”） |
 | 本地拒绝 | `refused` | 本地上限在生成请求记录前直接返回 503，数据来自拒绝表 | `inflight`、`ws`、`body`、`ws_msg` |
 
 “上游出错”与“报错”可以重叠（未救回的上游错误两边都算），不是第二个失败率。
@@ -141,7 +141,7 @@ HTTP/SSE 的 idle、缺终止事件 EOF 与 bootstrap idle 警告会附上现有
   （忽略大小写和开头的 `…`）；片段对应多个会话时返回400。响应带 `thread`（解析出的完整 ID）。
 - `GET /usage/v1/records/counts`：与列表相同的筛选（忽略 `problem`、`cause` 和分页），返回
   `{all, error, upstream, unfinished, refused, causes:{error:{…}, upstream:{unrescued, rescued},
-  unfinished:{client_closed, truncated, unconfirmed}, refused:{inflight, ws, body, ws_msg}}}`。
+  unfinished:{client_closed, truncated, content_filter, unconfirmed}, refused:{inflight, ws, body, ws_msg}}}`。
   `refused` 按相同时间、密钥和实例统计；设置了账号、模型、会话或其他仅请求有的条件时为 `null`，
   因为拒绝发生在这些信息确定之前。
 - `exclude_prewarm=1`：排除 `endpoint=prewarm`，匹配概况 `count` 的业务请求范围；默认不排除。

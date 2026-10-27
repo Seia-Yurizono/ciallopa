@@ -884,6 +884,8 @@ pub struct RecordRow {
     pub has_detail: bool,
     /// [`failure_class`] when the row is a failure, else null.
     pub failure_class: Option<&'static str>,
+    /// Mutually exclusive outcome ([`crate::problem::outcome`]); the UI shows this one.
+    pub outcome: crate::problem::Outcome,
     /// `error` (报错) or `unfinished` (没答完); null for completed or prewarm rows.
     pub problem: Option<&'static str>,
     /// Cause within `problem` (see [`crate::problem`]).
@@ -1088,12 +1090,13 @@ fn record_rows(
             source: err_source.as_deref(),
             upstream_status,
             endpoint: endpoint.as_deref(),
-            incomplete: incomplete.is_some(),
+            incomplete: incomplete.as_deref(),
             retries,
             switches,
         });
         Ok(RecordRow {
             failure_class,
+            outcome: class.outcome,
             problem: class.problem,
             cause: class.cause,
             upstream_fault: class.upstream_fault,
@@ -1707,6 +1710,7 @@ pub(crate) fn summary(
     );
     let prio = label_id(c, "priority")?;
     let flex = label_id(c, "flex")?;
+    let interrupted = label_id(c, crate::problem::INCOMPLETE_INTERRUPTED)?;
     let mut ps: Vec<i64> = vec![
         q.from_ms << SEQ_BITS,
         if q.to_ms >= i64::MAX >> SEQ_BITS {
@@ -1769,7 +1773,10 @@ pub(crate) fn summary(
         let failed = o == Outcome::Failed;
         let class = failed.then(|| failure_class(status, lbl(err), lbl(src), up));
         let upstream = failed && lbl(src) == Some("upstream");
-        let incomplete = r.get::<_, Option<i64>>(14)?.is_some();
+        // `interrupted` is a normal end (Codex), not a truncated answer.
+        let incomplete = r
+            .get::<_, Option<i64>>(14)?
+            .is_some_and(|i| Some(i) != interrupted);
         let streaming = matches!(r.get::<_, i64>(15)?, 1 | 2);
         let (retries, switches, req_tier): (i64, i64, Option<i64>) =
             (r.get(17)?, r.get(18)?, r.get(19)?);

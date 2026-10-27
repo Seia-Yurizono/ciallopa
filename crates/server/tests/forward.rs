@@ -696,6 +696,13 @@ async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: Bytes) -> Re
             "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"image_generation_call\",\"result\":\"SU1H\",\"output_format\":\"png\",\"size\":\"1024x1024\"}}\n\n",
             "data: {\"type\":\"response.completed\",\"response\":{\"created_at\":7,\"output\":[],\"tool_usage\":{\"image_gen\":{\"images\":1}}}}\n\n"
         )),
+        "image_incomplete" => sse_resp(concat!(
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"image_generation_call\",\"result\":\"SU1H\",\"output_format\":\"png\"}}\n\n",
+            "data: {\"type\":\"response.incomplete\",\"response\":{\"created_at\":7,\"output\":[],\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}\n\n"
+        )),
+        "image_content_filter" => sse_resp(
+            "data: {\"type\":\"response.incomplete\",\"response\":{\"created_at\":7,\"output\":[],\"incomplete_details\":{\"reason\":\"content_filter\"}}}\n\n",
+        ),
         _ => sse_resp("event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n"),
     }
 }
@@ -6731,4 +6738,44 @@ async fn idle_after_completed_is_a_normal_end() {
         "{:?}",
         e.outcomes()
     );
+}
+
+#[tokio::test]
+async fn image_response_incomplete_is_recorded_not_truncated() {
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    // An incomplete response that still carries an image returns it.
+    let r = e
+        .post("/v1/images/generations")
+        .header("x-test-mode", "image_incomplete")
+        .json(&serde_json::json!({"prompt":"cat"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let v: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(v["data"][0]["b64_json"], "SU1H");
+    let rows = wait_rows(&e, 1).await;
+    assert!(rows[0]["error"].is_null(), "{}", rows[0]);
+    assert_eq!(rows[0]["incomplete"], "max_output_tokens", "{}", rows[0]);
+    // Filtered without an image: the client gets an error, logged as content_filter.
+    for stream in [false, true] {
+        let r = e
+            .post("/v1/images/generations")
+            .header("x-test-mode", "image_content_filter")
+            .json(&serde_json::json!({"prompt":"cat","stream":stream}))
+            .send()
+            .await
+            .unwrap();
+        if !stream {
+            assert_eq!(r.status(), 502);
+        }
+        r.bytes().await.unwrap();
+    }
+    let rows = wait_rows(&e, 3).await;
+    for row in &rows[..2] {
+        assert_eq!(row["error"], "content_filter", "{row}");
+        assert_eq!(row["err_source"], "stream", "{row}");
+        assert_eq!(row["incomplete"], "content_filter", "{row}");
+    }
 }

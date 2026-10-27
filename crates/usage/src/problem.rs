@@ -97,7 +97,17 @@ pub const ERROR_CAUSES: &[&str] = &[
 /// 上游出错 split: 未救回 / 已救回.
 pub const UPSTREAM_CAUSES: &[&str] = &["unrescued", "rescued"];
 /// 没答完 reasons: 客户端断开 / 上游截断 / 未确认结束.
-pub const UNFINISHED_CAUSES: &[&str] = &["client_closed", "truncated", "unconfirmed"];
+pub const UNFINISHED_CAUSES: &[&str] = &[
+    "client_closed",
+    "truncated",
+    "content_filter",
+    "unconfirmed",
+];
+
+/// `response.incomplete` reason Codex treats as a normal end of the turn.
+pub const INCOMPLETE_INTERRUPTED: &str = "interrupted";
+/// `response.incomplete` reason for output stopped by the content filter.
+pub const INCOMPLETE_CONTENT_FILTER: &str = "content_filter";
 
 /// Error sources that count as the upstream side for 上游出错.
 const UPSTREAM_SOURCES: &[&str] = &["upstream", "stream", "network"];
@@ -114,7 +124,8 @@ pub struct Facts<'a> {
     pub source: Option<&'a str>,
     pub upstream_status: Option<u16>,
     pub endpoint: Option<&'a str>,
-    pub incomplete: bool,
+    /// `response.incomplete` reason; [`INCOMPLETE_INTERRUPTED`] is a normal end.
+    pub incomplete: Option<&'a str>,
     pub retries: u32,
     pub switches: u32,
 }
@@ -150,10 +161,9 @@ pub fn outcome(f: &Facts) -> Outcome {
     if f.error.is_some() || f.status >= 400 {
         return Outcome::Failed;
     }
-    if f.incomplete {
-        Outcome::Incomplete
-    } else {
-        Outcome::Completed
+    match f.incomplete {
+        Some(r) if r != INCOMPLETE_INTERRUPTED => Outcome::Incomplete,
+        _ => Outcome::Completed,
     }
 }
 
@@ -177,6 +187,9 @@ pub fn classify(f: &Facts) -> Class {
             (Some("error"), Some(error_cause(class)))
         }
         Outcome::Cancelled => (Some("unfinished"), Some("client_closed")),
+        Outcome::Incomplete if f.incomplete == Some(INCOMPLETE_CONTENT_FILTER) => {
+            (Some("unfinished"), Some("content_filter"))
+        }
         Outcome::Incomplete => (Some("unfinished"), Some("truncated")),
         Outcome::Unknown => (Some("unfinished"), Some("unconfirmed")),
         Outcome::Completed | Outcome::Prewarm => (None, None),
@@ -241,6 +254,8 @@ pub(crate) struct Preds {
     client: i64,
     closed: i64,
     obs: i64,
+    interrupted: i64,
+    filtered: i64,
     local: i64,
     upstream: i64,
     network: i64,
@@ -260,6 +275,8 @@ impl Preds {
             client: id("client")?,
             closed: id("client_closed")?,
             obs: id("observation_incomplete")?,
+            interrupted: id(INCOMPLETE_INTERRUPTED)?,
+            filtered: id(INCOMPLETE_CONTENT_FILTER)?,
             local: id("local")?,
             upstream: id("upstream")?,
             network: id("network")?,
@@ -300,12 +317,14 @@ impl Preds {
             Outcome::Cancelled => format!("({np} AND {ca})"),
             Outcome::Unknown => format!("({np} AND NOT {ca} AND {un})"),
             Outcome::Failed => format!("({np} AND NOT {ca} AND NOT {un} AND {er})"),
-            Outcome::Incomplete => {
-                format!("({np} AND NOT {ca} AND NOT {er} AND incomplete IS NOT NULL)")
-            }
-            Outcome::Completed => {
-                format!("({np} AND NOT {ca} AND NOT {er} AND incomplete IS NULL)")
-            }
+            Outcome::Incomplete => format!(
+                "({np} AND NOT {ca} AND NOT {er} AND incomplete IS NOT NULL AND incomplete != {})",
+                self.interrupted
+            ),
+            Outcome::Completed => format!(
+                "({np} AND NOT {ca} AND NOT {er} AND (incomplete IS NULL OR incomplete = {}))",
+                self.interrupted
+            ),
             Outcome::Prewarm => unreachable!(),
         }
     }
@@ -376,7 +395,16 @@ impl Preds {
                 self.outcome(Outcome::Unknown)
             ),
             (Problem::Unfinished, Some("client_closed")) => self.outcome(Outcome::Cancelled),
-            (Problem::Unfinished, Some("truncated")) => self.outcome(Outcome::Incomplete),
+            (Problem::Unfinished, Some("truncated")) => format!(
+                "({} AND incomplete != {})",
+                self.outcome(Outcome::Incomplete),
+                self.filtered
+            ),
+            (Problem::Unfinished, Some("content_filter")) => format!(
+                "({} AND incomplete = {})",
+                self.outcome(Outcome::Incomplete),
+                self.filtered
+            ),
             (Problem::Unfinished, Some("unconfirmed")) => self.outcome(Outcome::Unknown),
             _ => return None,
         })
