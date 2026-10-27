@@ -365,6 +365,7 @@ async fn main() {
         rec.record(r);
     }
     demo_special_rows(&rec, now);
+    demo_error_code_rows(&rec, now);
     demo_refusals(&rec, now);
     demo_occupancy(&rec, now, &mut next);
     rec.flush_blocking().unwrap();
@@ -628,6 +629,131 @@ fn demo_special_rows(rec: &Recorder, now: i64) {
     ok_tokens(&mut r);
     r.incomplete = Some("max_output_tokens".into());
     rec.record(r);
+}
+
+/// The most recent rows: one per error code whose meaning or name changed, so the requests
+/// table shows them together (fake data only).
+fn demo_error_code_rows(rec: &Recorder, now: i64) {
+    let mk = |dt: i64, t: Transport, ep: &'static str| {
+        let mut r = Record::new(rec.ids.next_at(now - dt), t, ep);
+        r.account = Some("alice".into());
+        r.model = Some("gpt-5.6-terra".into());
+        r.resp_model = r.model.clone();
+        r.effort = Some("high".into());
+        r.key = Some("laptop".into());
+        r.status = 200;
+        r.duration_ms = 6_000;
+        r
+    };
+    let tokens = |r: &mut Record| {
+        r.input_tokens = Some(12_000);
+        r.output_tokens = Some(800);
+        r.ttft_ms = Some(1_800);
+    };
+    let detail = |msg: &str, body: &str| {
+        let mut d = ciallopa_usage::ErrorDetail {
+            message: Some(msg.into()),
+            ..Default::default()
+        };
+        d.set_body(body.as_bytes());
+        Some(Box::new(d))
+    };
+    let mut rows: Vec<Record> = Vec::new();
+    // response.incomplete: interrupted (a normal end for Codex) and content_filter
+    let mut r = mk(1_000, Transport::Sse, "responses");
+    tokens(&mut r);
+    r.incomplete = Some("interrupted".into());
+    rows.push(r);
+    let mut r = mk(2_000, Transport::Sse, "responses");
+    tokens(&mut r);
+    r.incomplete = Some("content_filter".into());
+    rows.push(r);
+    // response.failed with a request-side code
+    let mut r = mk(3_000, Transport::Sse, "responses");
+    r.error = Some("response_failed".into());
+    r.err_source = Some("stream");
+    r.detail = detail(
+        "Your input exceeds the context window of this model.",
+        r#"{"type":"response.failed","response":{"status":"failed","error":{"code":"context_length_exceeded","message":"Your input exceeds the context window of this model."}}}"#,
+    );
+    rows.push(r);
+    // WS error frame: connection lifecycle
+    let mut r = mk(4_000, Transport::Ws, "responses");
+    r.error = Some("upstream_error_event".into());
+    r.err_source = Some("stream");
+    r.detail = detail(
+        "Responses websocket connection limit reached (60 minutes).",
+        r#"{"type":"error","status":400,"error":{"type":"invalid_request_error","code":"websocket_connection_limit_reached","message":"Responses websocket connection limit reached (60 minutes)."}}"#,
+    );
+    rows.push(r);
+    // WS error frame: 429 rate limit without a quota code
+    let mut r = mk(5_000, Transport::Ws, "responses");
+    r.error = Some("usage_limit".into());
+    r.err_source = Some("stream");
+    r.detail = detail(
+        "usage limit reached mid-turn; closed for client replay",
+        r#"{"type":"error","status":429,"error":{"type":"rate_limit_error","code":"rate_limit_exceeded","message":"Rate limit reached"}}"#,
+    );
+    rows.push(r);
+    // WS upstream close frame / EOF
+    let mut r = mk(6_000, Transport::Ws, "responses");
+    r.error = Some("upstream_closed".into());
+    r.err_source = Some("stream");
+    r.detail = detail(
+        "upstream websocket closed mid-turn (code 1011) internal error",
+        "",
+    );
+    rows.push(r);
+    let mut r = mk(7_000, Transport::Ws, "responses");
+    r.error = Some("upstream_closed".into());
+    r.err_source = Some("network");
+    r.detail = detail(
+        "upstream websocket disconnected (transport error: connection ended without a close frame)",
+        "",
+    );
+    rows.push(r);
+    // SSE read error after output
+    let mut r = mk(8_000, Transport::Sse, "responses");
+    r.ttft_ms = Some(1_500);
+    r.error = Some("stream_truncated".into());
+    r.err_source = Some("stream");
+    r.detail = detail("upstream stream error: error decoding response body", "");
+    rows.push(r);
+    // completed, then the upstream went idle (the answer was complete)
+    let mut r = mk(9_000, Transport::Sse, "responses");
+    tokens(&mut r);
+    r.error = Some("idle_timeout".into());
+    r.err_source = Some("network");
+    r.detail = detail("upstream stream idle timeout", "");
+    rows.push(r);
+    // connect timeout and preparation budget
+    let mut r = mk(10_000, Transport::Sse, "responses");
+    r.status = 504;
+    r.error = Some("timeout_connect".into());
+    r.err_source = Some("network");
+    r.detail = detail("upstream timed out", "");
+    rows.push(r);
+    let mut r = mk(11_000, Transport::Sse, "responses");
+    r.status = 504;
+    r.error = Some("preparation_timeout".into());
+    r.err_source = Some("network");
+    r.detail = detail(
+        "preparation budget exhausted across retries/account switches; no further attempt started",
+        "",
+    );
+    rows.push(r);
+    // images: non-stream request cut off
+    let mut r = mk(12_000, Transport::Http, "images");
+    r.model = Some("gpt-image-2".into());
+    r.resp_model = r.model.clone();
+    r.status = 504;
+    r.error = Some("stream_truncated".into());
+    r.err_source = Some("stream");
+    r.detail = detail("upstream stream ended without a terminal event", "");
+    rows.push(r);
+    for r in rows {
+        rec.record(r);
+    }
 }
 
 /// One UI_DEMO_BUSY record: 0 = ok, 1 = upstream 502, 2 = client cancel.
