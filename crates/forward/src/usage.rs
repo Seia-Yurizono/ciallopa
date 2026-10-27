@@ -798,6 +798,7 @@ fn describe(kind: &str, status: u16) -> String {
             "every account is cooling down; the first to recover is out of usage quota".into()
         }
         "stream_truncated" => "upstream stream ended without a terminal event".into(),
+        "stream_read_error" => "upstream stream read error before a terminal event".into(),
         "connect" => "could not connect to upstream".into(),
         "timeout" | "timeout_connect" => "upstream timed out".into(),
         "header_timeout" => "upstream did not return response headers within the attempt timeout".into(),

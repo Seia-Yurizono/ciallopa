@@ -1016,8 +1016,8 @@ fn stream_body(
                         );
                     }
                     if let Some(t) = trk.as_mut() {
-                        t.fail_msg("stream_truncated", format!("upstream stream error: {e}"));
-                        t.source(errors::SRC_STREAM);
+                        t.fail_msg("stream_read_error", format!("upstream stream error: {e}"));
+                        t.source(errors::SRC_NETWORK);
                     }
                     router.report(&route, &account, &Outcome::Transient { status: None });
                     if let Some(rest) = align.finish() {
@@ -1712,8 +1712,8 @@ pub(crate) async fn send_streaming(
                     // Consuming the Err means stream_body would only see EOF — surface it here.
                     if let Some(t) = trk.as_mut() {
                         t.status(status.as_u16());
-                        t.fail_msg("stream_truncated", format!("upstream stream error: {e}"));
-                        t.source(errors::SRC_STREAM);
+                        t.fail_msg("stream_read_error", format!("upstream stream error: {e}"));
+                        t.source(errors::SRC_NETWORK);
                     }
                     st.router
                         .report(&route, &account, &Outcome::Transient { status: None });
