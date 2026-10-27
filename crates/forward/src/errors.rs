@@ -112,7 +112,9 @@ pub(crate) fn body_snippet(b: &[u8]) -> Option<String> {
         return None;
     }
     let s = String::from_utf8_lossy(&b[..b.len().min(ATTEMPT_BODY)]);
-    Some(s.into_owned())
+    let stripped = ciallopa_usage::detail::keep_content_safe_str(&s);
+    let bytes = stripped.as_bytes();
+    Some(String::from_utf8_lossy(&bytes[..bytes.len().min(ATTEMPT_BODY)]).into_owned())
 }
 
 /// `error.code` / `error.type` / top-level `code` of an upstream JSON error body.
