@@ -869,7 +869,7 @@ fn stream_body(
                         EventKind::Quota(o) => {
                             *reported = true;
                             report_quota(&o);
-                            fail(trk, "usage_limit");
+                            fail(trk, errors::quota_outcome_code(&o));
                         }
                         EventKind::Overloaded(_) if sse => {
                             *reported = true;
@@ -1037,7 +1037,8 @@ fn stream_body(
                         if let Some(error) = observer.feed(&chunk) {
                             t.meta_err(&errors::ErrMeta {
                                 source: errors::SRC_STREAM,
-                                code: "upstream_error_event".into(),
+                                code: errors::sse_block_code(&error.event)
+                                    .unwrap_or_else(|| "upstream_error_event".into()),
                                 upstream_status: Some(status.as_u16()),
                                 upstream_request_id: upstream_request_id.clone(),
                                 message: Some(error.message),
@@ -1857,7 +1858,7 @@ pub(crate) async fn send_streaming(
             // Recorded so a request rescued by this switch shows how (attempt chain).
             let mut a = errors::attempt(&account, "stream");
             a.status = Some(status.as_u16());
-            a.code = Some("usage_limit".into());
+            a.code = Some(errors::quota_outcome_code(&o).into());
             a.body = errors::body_snippet(&buf);
             let tag = if cooled { "cooldown+" } else { "" };
             let next = if switches < max_switches {
@@ -1880,7 +1881,7 @@ pub(crate) async fn send_streaming(
             if let Some(t) = trk.as_mut() {
                 t.status(status.as_u16());
                 t.fail_msg(
-                    "usage_limit",
+                    errors::quota_outcome_code(&o),
                     "usage limit reached on every available account",
                 );
                 t.source(errors::SRC_STREAM);

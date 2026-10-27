@@ -1216,9 +1216,32 @@ pub const QUOTA_ERRORS: &[&str] = &[
     "first_quota_reset",
 ];
 
+/// Rate-limit codes reported in-stream (no HTTP 429 on the row): cool the model only.
+pub const RATE_LIMIT_ERRORS: &[&str] = &["rate_limit_exceeded"];
+
+/// Upstream codes that blame the request itself (too long, malformed): not an upstream or
+/// account fault.
+pub const REQUEST_ERRORS: &[&str] = &[
+    "context_length_exceeded",
+    "invalid_request_error",
+    "invalid_prompt",
+    "invalid_value",
+    "unsupported_parameter",
+    "unsupported_value",
+    "string_above_max_length",
+];
+
+/// WebSocket lifecycle codes: Codex reconnects (connection age limit) or resends the full
+/// history (unknown `previous_response_id`). Not failures; counted as cancelled.
+pub const LIFECYCLE_ERRORS: &[&str] = &[
+    "websocket_connection_limit_reached",
+    "previous_response_not_found",
+];
+
 /// Why a failed request failed, coarse enough to chart: `quota` (usage limit, upstream or
-/// local), `rate_limit` (another 429), then by source: `upstream`, `network`, `stream`,
-/// `local` (the gateway itself), `other`. Cancellations are not failures and have no class.
+/// local), `rate_limit` (another 429 or an in-stream rate limit), `request` (the upstream
+/// rejected the request content), then by source: `upstream`, `network`, `stream`, `local`
+/// (the gateway itself), `other`. Cancellations are not failures and have no class.
 pub fn failure_class(
     status: u16,
     error: Option<&str>,
@@ -1228,8 +1251,14 @@ pub fn failure_class(
     if error.is_some_and(|e| QUOTA_ERRORS.contains(&e)) {
         return "quota";
     }
-    if status == 429 || (source == Some("upstream") && upstream_status == Some(429)) {
+    if status == 429
+        || (source == Some("upstream") && upstream_status == Some(429))
+        || error.is_some_and(|e| RATE_LIMIT_ERRORS.contains(&e))
+    {
         return "rate_limit";
+    }
+    if error.is_some_and(|e| REQUEST_ERRORS.contains(&e)) {
+        return "request";
     }
     match source {
         Some("upstream") => "upstream",
@@ -1244,6 +1273,7 @@ pub fn failure_class(
 pub const FAILURE_CLASSES: &[&str] = &[
     "quota",
     "rate_limit",
+    "request",
     "upstream",
     "network",
     "stream",
@@ -1772,7 +1802,7 @@ pub(crate) fn summary(
         let unknown = o == Outcome::Unknown;
         let failed = o == Outcome::Failed;
         let class = failed.then(|| failure_class(status, lbl(err), lbl(src), up));
-        let upstream = failed && lbl(src) == Some("upstream");
+        let upstream = failed && lbl(src) == Some("upstream") && class != Some("request");
         // `interrupted` is a normal end (Codex), not a truncated answer.
         let incomplete = r
             .get::<_, Option<i64>>(14)?

@@ -135,6 +135,74 @@ pub(crate) fn body_code(b: &[u8]) -> Option<String> {
     pick("code").or_else(|| pick("type"))
 }
 
+/// Code for an in-stream error event (`error`, `response.failed`), bucketed like
+/// [`body_code`]: `response.error`, then `error`, then the event's own `code`; `code`
+/// before `type`. Quota codes log as `usage_limit`; a 429 without a code as
+/// `rate_limit_exceeded`; otherwise the fallback is `upstream_error_event` /
+/// `response_failed`.
+pub(crate) fn event_code(v: &serde_json::Value) -> String {
+    let (_, quota) = crate::proxy::quota_event(v);
+    if quota {
+        return "usage_limit".into();
+    }
+    if let Some(c) = crate::proxy::overload_code(v) {
+        return c;
+    }
+    let pick = |o: Option<&serde_json::Value>, k: &str| {
+        o.and_then(|o| o.get(k))
+            .and_then(|x| x.as_str())
+            .map(str::trim)
+            .filter(|x| !x.is_empty() && x.len() <= 64)
+            .map(str::to_string)
+    };
+    let objs = [v.pointer("/response/error"), v.get("error")];
+    let found = objs
+        .iter()
+        .find_map(|o| pick(*o, "code"))
+        .or_else(|| objs.iter().find_map(|o| pick(*o, "type")))
+        .or_else(|| pick(Some(v), "code"));
+    if let Some(c) = found {
+        return c;
+    }
+    let status = v
+        .get("status")
+        .or_else(|| v.get("status_code"))
+        .and_then(|s| s.as_u64());
+    if status == Some(429) {
+        return RATE_LIMIT_CODE.into();
+    }
+    match v.get("type").and_then(|t| t.as_str()) {
+        Some("response.failed") => "response_failed".into(),
+        _ => "upstream_error_event".into(),
+    }
+}
+
+/// Logged for a 429 / rate limit that carries no quota code (cools the model only).
+pub(crate) const RATE_LIMIT_CODE: &str = "rate_limit_exceeded";
+
+/// Code to log for a quota-class router outcome.
+pub(crate) fn quota_outcome_code(o: &ciallopa_core::Outcome) -> &'static str {
+    match o {
+        ciallopa_core::Outcome::RateLimited {
+            usage_limit: false, ..
+        } => RATE_LIMIT_CODE,
+        _ => "usage_limit",
+    }
+}
+
+/// Code for a raw SSE event block (`event: …` / `data: …` lines).
+pub(crate) fn sse_block_code(event: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(event).ok()?;
+    let data: String = text
+        .lines()
+        .filter_map(|l| l.strip_prefix("data:"))
+        .map(str::trim_start)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let v: serde_json::Value = serde_json::from_str(&data).ok()?;
+    Some(event_code(&v))
+}
+
 /// Upstream request id for correlating with upstream logs.
 pub(crate) fn request_id(h: &HeaderMap) -> Option<String> {
     ["x-request-id", "x-oai-request-id", "cf-ray"]
@@ -435,6 +503,60 @@ pub(crate) fn truncated_event() -> bytes::Bytes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn event_code_buckets_like_body_code() {
+        let c = |t: &str| event_code(&serde_json::from_str(t).unwrap());
+        assert_eq!(
+            c(
+                r#"{"type":"error","status":429,"error":{"type":"rate_limit_error","code":"rate_limit_exceeded"}}"#
+            ),
+            "rate_limit_exceeded"
+        );
+        assert_eq!(
+            c(r#"{"type":"error","status":429,"error":{"message":"x"}}"#),
+            "rate_limit_exceeded"
+        );
+        assert_eq!(
+            c(r#"{"type":"error","error":{"type":"usage_limit_reached"}}"#),
+            "usage_limit"
+        );
+        assert_eq!(
+            c(
+                r#"{"type":"response.failed","response":{"error":{"code":"context_length_exceeded"}}}"#
+            ),
+            "context_length_exceeded"
+        );
+        assert_eq!(
+            c(r#"{"type":"error","error":{"code":"server_is_overloaded"}}"#),
+            "server_is_overloaded"
+        );
+        assert_eq!(
+            c(r#"{"type":"error","error":{"type":"invalid_request_error"}}"#),
+            "invalid_request_error"
+        );
+        assert_eq!(c(r#"{"type":"error","code":"top_level"}"#), "top_level");
+        assert_eq!(
+            c(r#"{"type":"error","error":{"message":"x"}}"#),
+            "upstream_error_event"
+        );
+        assert_eq!(
+            c(r#"{"type":"response.failed","response":{}}"#),
+            "response_failed"
+        );
+        let long = format!(
+            r#"{{"type":"error","error":{{"code":"{}"}}}}"#,
+            "x".repeat(65)
+        );
+        assert_eq!(c(&long), "upstream_error_event");
+        assert_eq!(
+            sse_block_code(
+                b"event: error\ndata: {\"type\":\"error\",\"error\":{\"code\":\"image_failed\"}}"
+            )
+            .as_deref(),
+            Some("image_failed")
+        );
+    }
     #[tokio::test]
     async fn retry_after_clamped_on_429_and_5xx() {
         let mk = |st: u16, ra: &str| {

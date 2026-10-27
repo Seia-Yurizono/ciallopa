@@ -19,7 +19,7 @@ pub use refusals::{Reason as RefusalReason, Refusal, RefusalRow, RefusalTotals};
 pub use store::{
     failure_class, row_failure_class, AccountQuota, DayBucket, Dim, Estimate, Filters, RecentQuery,
     RecordRow, ScopeValue, Summary, SummaryGroup, SummaryQuery, WindowQuota, FAILURE_CLASSES,
-    PREWARM_ENDPOINT, QUOTA_ERRORS,
+    LIFECYCLE_ERRORS, PREWARM_ENDPOINT, QUOTA_ERRORS, RATE_LIMIT_ERRORS, REQUEST_ERRORS,
 };
 pub use store::{occupancy_step, OccupancyQuery, RefusalQuery, ThreadMatch, THREAD_FRAGMENT_MIN};
 
@@ -1936,7 +1936,7 @@ mod tests {
         assert_eq!(empty, ProblemCounts::zero());
         assert_eq!(empty.causes["error"]["gateway"], 0);
         let base = now_ms();
-        let errors: [(Option<&str>, Option<&'static str>, Option<u16>); 17] = [
+        let errors: [(Option<&str>, Option<&'static str>, Option<u16>); 20] = [
             (None, None, None),
             (Some("usage_limit_reached"), Some("upstream"), Some(429)),
             (Some("all_quota_exhausted"), Some("local"), None),
@@ -1951,6 +1951,13 @@ mod tests {
             (Some("connect"), Some("network"), None),
             (Some("proxy_connect"), Some("network"), None),
             (Some("upstream_error_event"), Some("stream"), None),
+            (Some("rate_limit_exceeded"), Some("stream"), None),
+            (Some("context_length_exceeded"), Some("stream"), None),
+            (
+                Some("websocket_connection_limit_reached"),
+                Some("stream"),
+                None,
+            ),
             (Some("all_cooling"), Some("local"), None),
             (Some("bad_request"), Some("local"), None),
             (Some("mystery"), None, None),
@@ -1962,8 +1969,14 @@ mod tests {
         let mut facts = vec![];
         for endpoint in ["responses", PREWARM_ENDPOINT] {
             for &(error, source, up) in &errors {
-                for status in [200u16, 429, 502] {
-                    // Every reason on business rows; prewarm keeps the list under one page.
+                // Prewarm rows only need to stay out of business counts: one status and
+                // two reasons keep the list under one page.
+                let statuses: &[u16] = if endpoint == PREWARM_ENDPOINT {
+                    &[200, 502]
+                } else {
+                    &[200, 429, 502]
+                };
+                for &status in statuses {
                     let reasons: &[Option<&str>] = if endpoint == PREWARM_ENDPOINT {
                         &[None, Some("max_output_tokens")]
                     } else {
@@ -3033,6 +3046,45 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].account.as_deref(), Some("acct_deadbeef"));
         assert_eq!(rows[0].model.as_deref(), Some("gpt-5.5"));
+    }
+
+    #[test]
+    fn stream_error_codes_classify_by_meaning() {
+        use crate::problem::{classify, Facts};
+        let c = |e: &str| {
+            classify(&Facts {
+                status: 200,
+                error: Some(e),
+                source: Some("stream"),
+                endpoint: Some("responses"),
+                ..Default::default()
+            })
+        };
+        let rl = c("rate_limit_exceeded");
+        assert_eq!(
+            (rl.outcome, rl.cause),
+            (Outcome::Failed, Some("rate_limit"))
+        );
+        assert_eq!(rl.next, vec!["cooldown"]);
+        let rq = c("context_length_exceeded");
+        assert_eq!((rq.outcome, rq.cause), (Outcome::Failed, Some("request")));
+        assert!(!rq.upstream_fault);
+        assert_eq!(
+            failure_class(200, Some("invalid_request_error"), Some("stream"), None),
+            "request"
+        );
+        for e in LIFECYCLE_ERRORS {
+            let l = c(e);
+            assert_eq!(
+                (l.outcome, l.cause),
+                (Outcome::Cancelled, Some("reconnect")),
+                "{e}"
+            );
+            assert!(!l.upstream_fault);
+        }
+        let q = c("usage_limit");
+        assert_eq!(q.cause, Some("quota"));
+        assert!(q.upstream_fault);
     }
 
     #[tokio::test]

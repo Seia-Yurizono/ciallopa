@@ -66,7 +66,8 @@ Direct `/codex/images/*` replies are byte passthrough with HTTP status, idle-tim
 transport-error accounting. Their successful SSE payload is **not** parsed as Responses:
 an `image_generation.completed` stream is never given a fabricated `response.failed` suffix.
 When usage is enabled, complete `event: error` or top-level JSON `type: "error"` events in an
-explicit SSE reply record `upstream_error_event` / `stream`, preserving HTTP 200 and upstream
+explicit SSE reply record the event's own code (as for an in-stream error, below; else
+`upstream_error_event`) / `stream`, preserving HTTP 200 and upstream
 request metadata. They do not trigger replay/cooldown or finalize the record before the Body
 ends. Observation keeps at most 64 KiB per event, skips oversized events to their real delimiter,
 then resumes; bytes are forwarded immediately. Nested fields and literal error text do not count.
@@ -123,7 +124,11 @@ Not recorded: `/models`, `/wham/*` and other passthrough, WS handshakes that suc
 | `local` | ciallopa itself could not serve the request | `no_account`, `no_usable_account` (all disabled / excluded / need relogin), `all_cooling` (every account cooling, the first recovers later than the wait), `all_quota_exhausted` (every account out of usage quota), `first_quota_reset` (every account cooling, the first to recover is out of usage quota), `internal`; the record message gives the time to the first recovery |
 | `network` | no usable upstream response | `connect`, `dns`, `tls`, `timeout`, `timeout_connect`, `header_timeout`, `preparation_timeout`, `error_body_timeout`, `error_body_read`, `models_body_timeout`, `models_body_read`, `transport`, `idle_timeout`, WS `upstream_closed` (transport); with an egress proxy: `proxy_connect` (proxy unreachable, auth or tunnel refused, proxy-side DNS failure), `proxy_timeout` (connect through the proxy timed out). Proxy errors fail the request at once (every account shares the proxy, so no account switching) and never cool an account; the panel labels them 代理. `cf_blocked` (a Cloudflare error page such as `error code: 1010`, browser signature banned, plain text, JSON or HTML) and `challenge` (a Cloudflare challenge page or `cf-mitigated`) on a 403: Cloudflare in front of the upstream blocks this host's egress, so the request fails at once with a neutral 502, no account switching and no cooldown (see [Cloudflare blocks](#cloudflare-blocks)) |
 | `upstream` | upstream HTTP error, passed through verbatim | upstream `error.code` / `error.type`, else `http_<status>`; `invalid_encrypted_content` (also when the upstream reports it inside a 200 stream or WS turn, see below; panel label 加密推理被拒) |
-| `stream` | error inside a 200 stream | `usage_limit`, `response_failed`, `upstream_error_event`, `stream_truncated`, Images `image_output_missing`, WS `upstream_closed` |
+| `stream` | error inside a 200 stream | the event's upstream code, bucketed like an HTTP error body (`response.error`, then `error`, then the event's own `code`; `code` before `type`, at most 64 chars), e.g. `rate_limit_exceeded`, `context_length_exceeded`, `server_is_overloaded`; quota codes (`usage_limit_reached`, `insufficient_quota`, `usage_not_included`, or a 429 whose text says usage limit) log as `usage_limit`; a 429 with no code as `rate_limit_exceeded`; no code at all: `upstream_error_event` (`error` event) / `response_failed`. Also `stream_truncated`, Images `image_output_missing`, WS `upstream_closed`. WS lifecycle codes `websocket_connection_limit_reached` and `previous_response_not_found` are recorded but counted as cancelled (Codex reconnects or resends the history), not as failures |
+
+A rate limit (`rate_limit_exceeded`, or any 429 without a quota code) cools only that model on
+that account; only quota codes cool the whole account. Request-side codes (see `request`
+below) never count against the account.
 
 ### Failure classes
 Every failure (status ≥ 400 or an error code, except cancellations and unknown outcomes) has
@@ -133,14 +138,15 @@ exhaustion is counted as a failure yet charted apart from real faults:
 | class | rule (first match) |
 |---|---|
 | `quota` | code `usage_limit`, `usage_limit_reached` (upstream 429 or in-stream), `all_quota_exhausted`, `first_quota_reset` (local) |
-| `rate_limit` | any other 429 sent to the client, or an upstream 429 |
+| `rate_limit` | any other 429 sent to the client, an upstream 429, or in-stream `rate_limit_exceeded` |
+| `request` | the upstream rejected the request content: `context_length_exceeded`, `invalid_request_error`, `invalid_prompt`, `invalid_value`, `unsupported_parameter`, `unsupported_value`, `string_above_max_length`. Not counted in 上游出错 |
 | `upstream` / `network` / `stream` / `local` | by `err_source` |
 | `other` | no source recorded (old rows) |
 
 `group=error` and `group=err_source` give the codes and origin behind each class (a local
 `all_quota_exhausted` is `quota` with source `local`).
 
-Panel labels: `quota` 额度用尽, `rate_limit` 限流, `upstream` 上游错误, `network` 网络,
+Panel labels: `quota` 额度用尽, `rate_limit` 限流, `request` 请求内容, `upstream` 上游错误, `network` 网络,
 `stream` 流中断, `local` 本地, `other` 其他. `first_quota_reset` is shown as 额度用尽 like the
 other quota codes; the code itself stays in the record.
 
@@ -151,7 +157,7 @@ Rates (business requests: prewarm, and nothing else, is left out of the denomina
 - **upstream failure rate** (`upstream_failures / count`, field `upstream_failure_rate`):
   failures whose `err_source` is `upstream`, i.e. an error HTTP response from the upstream,
   including upstream quota and rate-limit 429s. Local (including the locally synthesized
-  `all_quota_exhausted` / `first_quota_reset`), network and in-stream errors are excluded.
+  `all_quota_exhausted` / `first_quota_reset`), network, in-stream and `request`-class errors are excluded.
   It answers "how often did the upstream itself say no", independent of ciallopa and the path.
 
 What the client receives:
@@ -530,8 +536,8 @@ See [METRICS.md](METRICS.md) for the current outcome, sampling, cursor and bucke
   nothing). A fragment shared by several sessions → 400; UUIDv7 ids of one minute share their
   leading chars, so prefer the tail.
 - `GET /usage/v1/records/counts?<same filters>` → `{all, error, upstream, unfinished, refused,
-  causes:{error:{quota, rate_limit, upstream, network, gateway, stream}, upstream:{unrescued,
-  rescued}, unfinished:{client_closed, truncated, content_filter, unconfirmed}, refused:{inflight, ws, body,
+  causes:{error:{quota, rate_limit, request, upstream, network, gateway, stream}, upstream:{unrescued,
+  rescued}, unfinished:{client_closed, reconnect, truncated, content_filter, unconfirmed}, refused:{inflight, ws, body,
   ws_msg}}}`. `problem`, `cause` and paging are ignored. `refused` (and `causes.refused`)
   covers the same range, key and instance from the refusals table, and is null when an
   account, model, `thread` or another request-only filter is set.
@@ -822,12 +828,12 @@ Page behavior:
   code on hover. Clicking an error code, source or tier row filters the request list to it.
 - Request problems: the list opens with chips 全部 / 报错 / 上游出错 / 没答完 / 本地拒绝, each
   with its count (`fproblem` in the URL), and a cause row under the chosen one (`fcause`):
-  - 报错 = the client got an error (counts in 失败率). Causes 额度, 限流, 上游, 网络代理, 网关
+  - 报错 = the client got an error (counts in 失败率). Causes 额度, 限流, 请求内容 (`request`), 上游, 网络代理, 网关
     (local and other), 流中断.
   - 上游出错 = the upstream side (upstream / stream / network source) failed at least once,
     including requests a retry or account switch rescued. Causes 未救回 and 已救回; the hint
     shows both counts. 上游失败率 on the dashboard keeps its definition and no new rate is added.
-  - 没答完 = 客户端断开 (`client_closed`), 上游截断 (`response.incomplete` other than `interrupted` / `content_filter`), 内容过滤 (`content_filter`) and 未确认结束
+  - 没答完 = 客户端断开 (`client_closed`), 需重连 (`reconnect`: WS lifecycle codes), 上游截断 (`response.incomplete` other than `interrupted` / `content_filter`), 内容过滤 (`content_filter`) and 未确认结束
     (the former 结果未知); not counted as failures.
   - 本地拒绝 = refusals by a local limit (503 before a row exists), by reason; disabled while an
     account, model or request-only filter is set.

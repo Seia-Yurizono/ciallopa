@@ -973,7 +973,7 @@ async fn relay(
                                             quota_h = h;
                                             gen = g;
                                             tracing::info!(from = %account, to = %id, "ws quota error before output; replayed on another account");
-                                            if let Some(t) = turn.as_mut() { t.replay(&account, "usage_limit", "switch"); t.switch_to(&id); t.quota(&quota_h); }
+                                            if let Some(t) = turn.as_mut() { t.replay(&account, crate::errors::quota_outcome_code(&o), "switch"); t.switch_to(&id); t.quota(&quota_h); }
                                             account = id;
                                             let (t, r) = ws.split();
                                             // Finish the old socket's close handshake in the
@@ -1004,7 +1004,7 @@ async fn relay(
                                 }
                             }
                             tracing::info!(account = %ciallopa_core::a(&account), "ws quota error mid-turn; closing for client replay");
-                            if let Some(t) = turn.as_mut() { t.fail_msg("usage_limit", "usage limit reached mid-turn; closed for client replay"); t.source(crate::errors::SRC_STREAM); }
+                            if let Some(t) = turn.as_mut() { t.fail_msg(crate::errors::quota_outcome_code(&o), "usage limit reached mid-turn; closed for client replay"); t.source(crate::errors::SRC_STREAM); }
                             let _ = dtx.send(close(CLOSE_REPLAY, CLOSE_REPLAY_REASON)).await;
                             break;
                         }

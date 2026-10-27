@@ -706,7 +706,7 @@ async fn run(
                             .unwrap_or(json!("upstream failed"));
                         fail(
                             &mut trk,
-                            "upstream_error_event",
+                            &errors::event_code(&ev),
                             errors::SRC_STREAM,
                             msg.as_str().unwrap_or("upstream failed"),
                         );
@@ -809,7 +809,7 @@ async fn run(
                     .and_then(|m| m.as_str())
                     .unwrap_or("upstream failed")
                     .to_string();
-                fail(trk, "upstream_error_event", errors::SRC_STREAM, &msg);
+                fail(trk, &errors::event_code(&ev), errors::SRC_STREAM, &msg);
                 return json_error(StatusCode::BAD_GATEWAY, "upstream_error", &msg);
             }
             _ => {}
