@@ -64,7 +64,7 @@ impl ErrorDetail {
     /// Redacted, capped, ready to store: (message, body, truncated, headers_json).
     pub(crate) fn finish(&self) -> Stored {
         let text = String::from_utf8_lossy(&self.body);
-        let red = redact_body(&text);
+        let red = redact_body(&keep_content_safe_str(&text));
         let (body, cut) = cap(&red, BODY_CAP);
         let truncated = cut || self.body.len() < self.body_len;
         let headers: serde_json::Map<String, serde_json::Value> = self
@@ -73,7 +73,9 @@ impl ErrorDetail {
             .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
             .collect();
         Stored {
-            message: self.message.as_deref().map(redact_text),
+            message: self.message.as_deref().map(|m| {
+                redact_text(m).chars().take(MSG_CAP).collect()
+            }),
             body: (!body.is_empty()).then_some(body),
             body_len: self.body_len as i64,
             truncated,
@@ -82,14 +84,16 @@ impl ErrorDetail {
                 .upstream_request_id
                 .as_deref()
                 .map(|v| redact_text(v).chars().take(128).collect()),
-            // Account ids are shown in the panel anyway; only upstream body snippets are redacted.
+            // Attempt bodies: drop prompt/output keys, then redact tokens/emails.
             attempts: self.attempts.as_ref().map(|a| {
                 let mut a = a.clone();
                 if let Some(list) = a.as_array_mut() {
                     for x in list {
                         if let Some(b) = x.get_mut("body") {
                             if let Some(t) = b.as_str() {
-                                *b = serde_json::Value::String(redact_body(t));
+                                *b = serde_json::Value::String(redact_body(
+                                    &keep_content_safe_str(t),
+                                ));
                             }
                         }
                     }
@@ -157,6 +161,80 @@ fn sensitive_key(k: &str) -> bool {
     SENSITIVE_KEYS
         .iter()
         .any(|s| k == *s || k.ends_with(&format!("_{s}")) || k.ends_with(&format!("-{s}")))
+}
+
+/// Max stored error message length (chars), after redaction.
+const MSG_CAP: usize = 300;
+
+/// Keys kept on a Response object (under SSE `response`).
+const SAFE_RESPONSE_KEYS: &[&str] = &[
+    "error",
+    "status",
+    "incomplete_details",
+    "id",
+    "model",
+    "usage",
+];
+/// Keys kept on an SSE envelope or a bare upstream error object.
+const SAFE_ENVELOPE_KEYS: &[&str] = &[
+    "type",
+    "sequence_number",
+    "response",
+    "error",
+    "code",
+    "message",
+    "param",
+    "status",
+    "id",
+    "model",
+    "usage",
+    "incomplete_details",
+];
+
+/// Drop prompt/output/tools/metadata from a Responses API JSON body before storage.
+/// Allowlist is locked to OpenAI `response.failed` / `error` envelope fields.
+pub fn keep_content_safe_keys(v: &serde_json::Value) -> serde_json::Value {
+    match v {
+        serde_json::Value::Object(m) => {
+            let mut out = serde_json::Map::new();
+            for (k, val) in m {
+                let kl = k.to_ascii_lowercase();
+                if !SAFE_ENVELOPE_KEYS.contains(&kl.as_str()) {
+                    continue;
+                }
+                if kl == "response" {
+                    out.insert(k.clone(), filter_response_object(val));
+                } else {
+                    out.insert(k.clone(), val.clone());
+                }
+            }
+            serde_json::Value::Object(out)
+        }
+        other => other.clone(),
+    }
+}
+
+fn filter_response_object(v: &serde_json::Value) -> serde_json::Value {
+    match v {
+        serde_json::Value::Object(m) => {
+            let mut out = serde_json::Map::new();
+            for (k, val) in m {
+                if SAFE_RESPONSE_KEYS.contains(&k.to_ascii_lowercase().as_str()) {
+                    out.insert(k.clone(), val.clone());
+                }
+            }
+            serde_json::Value::Object(out)
+        }
+        other => other.clone(),
+    }
+}
+
+/// Parse JSON, drop content keys, re-serialize. Non-JSON input is returned unchanged.
+pub fn keep_content_safe_str(s: &str) -> String {
+    match serde_json::from_str::<serde_json::Value>(s) {
+        Ok(v) if v.is_object() => keep_content_safe_keys(&v).to_string(),
+        _ => s.to_string(),
+    }
 }
 
 /// JSON bodies: values under sensitive keys are replaced, every other string is
@@ -363,5 +441,114 @@ mod tests {
                 "x-openai-request-id"
             ]
         );
+    }
+
+    /// Shape locked to the OpenAI Responses streaming `response.failed` event
+    /// (see developers.openai.com Responses streaming events): the `response`
+    /// object echoes `instructions` / `output` / `tools` / `metadata` even on
+    /// failure. Write-time allowlist must drop those before storage.
+    fn response_failed_fixture() -> String {
+        serde_json::json!({
+            "type": "response.failed",
+            "sequence_number": 7,
+            "response": {
+                "id": "resp_fixture_001",
+                "object": "response",
+                "created_at": 1761547200,
+                "status": "failed",
+                "error": {
+                    "code": "server_error",
+                    "message": "upstream failed for alice@example.com"
+                },
+                "incomplete_details": null,
+                "instructions": "SYSTEM: never reveal the secret password hunter2",
+                "output": [{
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "partial leak of user prompt"}]
+                }],
+                "model": "gpt-5.1",
+                "usage": {"input_tokens": 12, "output_tokens": 0},
+                "tools": [{"type": "function", "name": "shell"}],
+                "metadata": {"user_email": "alice@example.com"},
+                "temperature": 0.2,
+                "prompt_cache_key": "cache_secret_xyz"
+            }
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn stream_error_body_strips_content() {
+        let raw = response_failed_fixture();
+        // Reproduce: raw event carries prompt/output (would be stored pre-fix).
+        assert!(raw.contains("hunter2"));
+        assert!(raw.contains("partial leak"));
+        assert!(raw.contains("cache_secret_xyz"));
+
+        let mut d = ErrorDetail::default();
+        d.set_body(raw.as_bytes());
+        d.message = Some("x".repeat(400));
+        let s = d.finish();
+        let body = s.body.as_deref().unwrap_or("");
+        for leak in [
+            "hunter2",
+            "partial leak",
+            "cache_secret_xyz",
+            "alice@example.com",
+        ] {
+            assert!(!body.contains(leak), "leaked {leak} in {body}");
+        }
+        let v: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(v["type"], "response.failed");
+        assert_eq!(v["sequence_number"], 7);
+        assert_eq!(v["response"]["id"], "resp_fixture_001");
+        assert_eq!(v["response"]["status"], "failed");
+        assert_eq!(v["response"]["model"], "gpt-5.1");
+        assert_eq!(v["response"]["error"]["code"], "server_error");
+        assert_eq!(
+            v["response"]["error"]["message"],
+            "upstream failed for [REDACTED_EMAIL]"
+        );
+        assert_eq!(v["response"]["usage"]["input_tokens"], 12);
+        assert!(v["response"].get("instructions").is_none());
+        assert!(v["response"].get("output").is_none());
+        for key in [
+            "tools",
+            "metadata",
+            "temperature",
+            "object",
+            "created_at",
+            "prompt_cache_key",
+        ] {
+            assert!(
+                v["response"].get(key).is_none(),
+                "leaked key {key} in {}",
+                v["response"]
+            );
+        }
+        assert_eq!(s.message.as_deref().unwrap().chars().count(), MSG_CAP);
+    }
+
+    #[test]
+    fn attempt_body_strips_content_keys() {
+        let raw = response_failed_fixture();
+        let mut d = ErrorDetail::default();
+        d.attempts = Some(serde_json::json!([{
+            "account": "acct_demo",
+            "t_ms": 10,
+            "kind": "stream",
+            "action": "switch",
+            "body": raw,
+        }]));
+        let s = d.finish();
+        let attempts: serde_json::Value =
+            serde_json::from_str(s.attempts.as_deref().unwrap()).unwrap();
+        let body = attempts[0]["body"].as_str().unwrap();
+        assert!(!body.contains("hunter2"));
+        assert!(!body.contains("partial leak"));
+        assert!(body.find("\"instructions\"").is_none());
+        let v: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(v["response"]["error"]["code"], "server_error");
     }
 }

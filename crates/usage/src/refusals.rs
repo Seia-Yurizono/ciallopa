@@ -11,8 +11,10 @@ use std::time::Duration;
 pub const FLUSH_EVERY: Duration = Duration::from_secs(5);
 /// Distinct groups kept between flushes before details are dropped.
 const MAX_GROUPS: usize = 4096;
-/// Longest stored user agent / route.
-const MAX_TEXT: usize = 200;
+/// Longest stored route label.
+const MAX_ROUTE: usize = 200;
+/// Longest stored user agent (write-time trim; drop long tokens via redact).
+const MAX_UA: usize = 60;
 
 /// Which limit refused the request (stored as 1..=4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -104,11 +106,16 @@ pub(crate) struct Aggregator {
     map: Mutex<HashMap<Group, Agg>>,
 }
 
-fn clip(s: &str) -> String {
-    match s.char_indices().nth(MAX_TEXT) {
+fn clip(s: &str, max: usize) -> String {
+    match s.char_indices().nth(max) {
         Some((i, _)) => s[..i].to_string(),
         None => s.to_string(),
     }
+}
+
+fn clip_ua(s: &str) -> String {
+    // Strip bearer-like tokens before capping length.
+    clip(&crate::detail::redact_text(s), MAX_UA)
 }
 
 /// Route label for a client path: no query, id-like segments replaced by `:id`, so
@@ -126,7 +133,7 @@ pub fn route_of(path_and_query: &str) -> String {
             }
         })
         .collect();
-    clip(&parts.join("/"))
+    clip(&parts.join("/"), MAX_ROUTE)
 }
 
 impl Aggregator {
@@ -138,8 +145,8 @@ impl Aggregator {
             reason,
             ws: r.ws,
             key: r.key,
-            route: clip(&r.route),
-            ua: r.ua.as_deref().map(clip),
+            route: clip(&r.route, MAX_ROUTE),
+            ua: r.ua.as_deref().map(clip_ua),
             model: r.model,
             account: r.account,
             limit: r.limit,
@@ -301,6 +308,18 @@ mod tests {
             route_of("/backend-api/wham/usage"),
             "/backend-api/wham/usage"
         );
+    }
+
+    #[test]
+    fn ua_truncated_to_sixty() {
+        let long = "Mozilla/5.0 ".to_string() + &"x".repeat(80) + " sk-proj-ABCDEFGHIJKLMNOP";
+        let a = Aggregator::default();
+        a.add(r(0, Reason::Inflight, &long, 1));
+        let m = a.take();
+        let (g, _) = m.iter().next().unwrap();
+        let ua = g.ua.as_deref().unwrap();
+        assert!(ua.chars().count() <= MAX_UA, "ua len {}", ua.chars().count());
+        assert!(!ua.contains("sk-proj-ABCDEF"), "token leaked: {ua}");
     }
 
     #[test]
