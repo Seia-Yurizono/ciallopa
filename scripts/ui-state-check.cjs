@@ -816,7 +816,7 @@ async function observationErrorDetails() {
     return controls.get(id);
   };
   const c = vm.createContext({
-    $: control, key: () => 'demo', clear() {}, field() {}, detailStats() {}, renderDetailNav() {}, saveF() {},
+    $: control, key: () => 'demo', clear() {}, field() {}, threadField() {}, detailStats() {}, renderDetailNav() {}, saveF() {},
     tierName: () => '', normTier: () => '', fmtTime: String,
     lookupSeq: 0, detailSeq: 0, activeRecord: null, authEpoch: 0, hideDetailRetry() {},
   });
@@ -868,6 +868,125 @@ function interactionDom() {
   return {$: control, document, clear: e => {e.children = [];e.textContent = '';},
     h: (tag, attrs, ...children) => element(tag, typeof attrs === 'string' ? {class: attrs} : attrs || {}, ...children),
     keydown(key, modifiers = {}) {const event = {key, ...modifiers, preventDefault() {this.defaultPrevented = true;}};for (const fn of handlers.keydown || []) fn(event);return event;}};
+}
+
+async function threadFilter() {
+  const FULL = '019a2b3c-4d5e-7f60-8a71-0000aaaa2222';
+  // Query: 会话 drops the scope range (whole retention) unless a chart period is picked; scope and chips still apply.
+  {
+    const inputs = new Map();
+    const input = id => {
+      if (!inputs.has(id)) inputs.set(id, {value: '', checked: false, textContent: '', title: '', classList: {toggle() {}}, setAttribute() {}});
+      return inputs.get(id);
+    };
+    for (const [id, value] of Object.entries({facct: 'alice', fkey: 'laptop'})) input(id).value = value;
+    const calls = [];
+    let reply = async () => ({records: [], total: 0, next_before_id: null});
+    const c = vm.createContext({
+      $: input, key: () => 'demo', URLSearchParams, Promise,
+      scopeWindow: {from: 9000000, to: 95400000, fixed: false}, recordWindow: null, recState: {rows: [], cursor: null, total: 0},
+      usageGet: async url => {calls.push(new URL(url, 'http://local')); return reply(url);},
+      renderRecords() {}, renderRefusals() {}, renderProblems() {}, loadCounts() {}, saved: 0, saveF() {c.saved++;}, fail(error) {throw error;},
+    });
+    vm.runInContext([
+      section('function scopeFilters()', 'function scopeLabel('),
+      section('const loadSeq={},loading={};', 'function emptyRow('),
+      section('const PAGE=50;', '$("rmore").addEventListener'),
+      section('function countFilters()', 'async function loadCounts('),
+    ].join('\n'), c);
+    input('fthread').value = '  ' + FULL + ' ';
+    input('fproblem').value = 'error';
+    await vm.runInContext('loadRecords(false)', c);
+    let q = calls.at(-1).searchParams;
+    assert.equal(q.get('thread'), FULL, 'trimmed full id');
+    assert.equal(q.has('from') || q.has('to'), false, '会话 searches the whole retention window');
+    assert.deepEqual([q.get('account'), q.get('key'), q.get('problem')], ['alice', 'laptop', 'error'], 'scope and problem chips combine with 会话');
+    const counts = new URLSearchParams(vm.runInContext('qs(countFilters())', c));
+    assert.equal(counts.get('thread'), FULL, 'chip counts respect 会话');
+    assert.equal(counts.has('from'), false);
+    c.recordWindow = {from: 9100000, to: 9200000};
+    await vm.runInContext('loadRecords(false)', c);
+    q = calls.at(-1).searchParams;
+    assert.deepEqual([q.get('from'), q.get('to')], ['9100000', '9200000'], 'a chart-picked period still narrows a session');
+    c.recordWindow = null;
+    input('fthread').value = '';
+    await vm.runInContext('loadRecords(false)', c);
+    q = calls.at(-1).searchParams;
+    assert.equal(q.has('thread'), false);
+    assert.equal(q.get('from'), '9000000', 'no session: back to the scope range');
+    // A fragment resolves to the full id; the input, URL and paging signature follow it.
+    input('fthread').value = 'aaaa2222';
+    reply = async () => ({records: [{request_id: '0000000000000009'}], total: 1, next_before_id: null, thread: FULL});
+    const saves = c.saved;
+    await vm.runInContext('loadRecords(false)', c);
+    assert.equal(calls.at(-1).searchParams.get('thread'), 'aaaa2222');
+    assert.equal(input('fthread').value, FULL);
+    assert.ok(c.saved > saves, 'resolved id is saved to the URL');
+    assert.equal(c.recState.signature, vm.runInContext('qs(recordFilters())', c), 'next page keeps the list');
+    // A fragment matching several sessions is a 400: an empty list with its own message, not an update failure.
+    input('fthread').value = '019a2b3c';
+    reply = async () => {const e = new Error('thread fragment matches several sessions; paste more of the id'); e.status = 400; throw e;};
+    await vm.runInContext('loadRecords(false)', c);
+    assert.equal(c.recState.ambiguous, true);
+    assert.equal(c.recState.rows.length, 0);
+    assert.equal(input('fthread').value, '019a2b3c', 'an ambiguous fragment stays as typed');
+    input('fthread').value = '';
+    await assert.rejects(vm.runInContext('loadRecords(false)', c), /several/, 'without 会话 a 400 is still a failure');
+  }
+  // Chip, URL and 只看这个会话.
+  {
+    const dom = interactionDom(), control = dom.$, loads = [];
+    const c = vm.createContext({...dom, URLSearchParams, clearTimeout, kt: 0,
+      scopeWindow: {from: 1000, to: 9000, fixed: false}, recordWindow: {from: 2000, to: 3000}, activeRecord: null,
+      location: {pathname: '/ui', search: ''}, history: {replaceState(_state, _title, url) {c.location.search = new URL(url, 'http://local').search;}},
+      localStorage: {setItem() {}, getItem() {return null;}}, fmtTime: String, renderKpis() {}, renderTrend() {}, showScope() {}, rollWindow() {},
+      fail(e) {throw e;}, loadSummary: async () => {}, loadRecords: async () => loads.push(vm.runInContext('recordFilters()', c)),
+      syncMini() {}, MINI: {}, closed: 0, closeModal() {c.closed++;}, revealed: 0, revealRecords() {c.revealed++;},
+      withPrewarm: () => false, hms: () => 'now', Date,
+    });
+    vm.runInContext([
+      section('function scopeFilters()', 'async function usageGet('),
+      section('function recordFilters()', 'async function loadRecords('),
+      section('function changeScope()', '$("range").addEventListener'),
+      section('function clearRecordFilters()', 'function revealRecords('),
+      section('function shortId(', 'function detailStats('),
+      section('const SF=', 'loadF();showExtra('),
+    ].join('\n'), c);
+    for (const [id, v] of Object.entries({range: '24h', group: 'account', tmode: 'auto', tmetric: 'requests'})) control(id).value = v;
+    control('fthread').value = FULL;
+    vm.runInContext('saveF()', c);
+    assert.equal(new URLSearchParams(c.location.search).get('fthread'), FULL, '会话 persists in the URL like the other filters');
+    const chip = control('recordchips').children.find(b => b.dataset.clearFilter === 'fthread');
+    assert.ok(chip, '会话 shows as a removable chip');
+    assert.equal(chip.children[0].children[0], '会话：…aaaa2222', 'chip shows the id tail');
+    assert.equal(chip.getAttribute('title'), '清除请求筛选：会话：' + FULL, 'full id on hover');
+    assert.equal(vm.runInContext('shortId("abc")', c), 'abc');
+    chip.events.click();
+    assert.equal(control('fthread').value, '');
+    assert.equal(loads.at(-1).thread, '');
+    assert.equal(new URLSearchParams(c.location.search).has('fthread'), false);
+    // Back from a URL.
+    c.location.search = '?fthread=' + FULL + '&fproblem=error';
+    control('fthread').value = control('fproblem').value = '';
+    vm.runInContext('loadF()', c);
+    assert.equal(control('fthread').value, FULL);
+    assert.equal(control('fproblem').value, 'error');
+    // 只看这个会话: clears the request filters and the chart period, keeps 筛选范围, reloads and scrolls to the list.
+    control('fmodel').value = 'gpt-demo';control('fcode').value = '429';
+    c.recordWindow = {from: 2000, to: 3000};
+    const other = '019a2b3c-4d5e-7f60-8a71-0000bbbb3333';
+    vm.runInContext('viewThread(' + JSON.stringify(other) + ')', c);
+    assert.equal(c.recordWindow, null);
+    assert.deepEqual([control('fthread').value, control('fproblem').value, control('fcode').value, control('fmodel').value], [other, '', '', 'gpt-demo']);
+    assert.equal(loads.at(-1).thread, other);
+    assert.equal(loads.at(-1).from, '', 'whole retention window');
+    assert.equal(c.revealed, 1);
+    assert.equal(new URLSearchParams(c.location.search).get('fthread'), other);
+  }
+  // Markup: the paste box sits with the other request filters and is hidden with them in 本地拒绝.
+  assert.match(html, /<input id="fthread" type="text" placeholder="会话 ID（回车）"/);
+  assert.match(section('function showRefusedMode()', '\n'), /"fthread"/);
+  assert.match(section('function threadField(', 'function viewThread('), /id:"dthread"/);
 }
 
 async function filterChipScopeAndFocus() {
@@ -1432,10 +1551,11 @@ async function problemChipsAndNextSteps() {
   failureClassesAndTrend();
   await observationErrorDetails();
   await filterChipScopeAndFocus();
+  await threadFilter();
   await inspectorRetryAndNavigation();
   await problemChipsAndNextSteps();
   recordRenderingAndInspectorFocus();
   autoRefreshInterval();
   cloudflareEgressBanner();
-  console.log('PASS: status chip colours/contrast, auto-refresh interval, Cloudflare egress banner, query/auth races, Cloudflare Access expiry, shared scope and buckets, ID paging, history/drill-down, usage samples and unknown outcomes, overview snapshots, egress identity/order/logout, scoped filter chips/URL/focus, inspector retry/expiry/stale authorization/keyboard, keyed record updates and inspector focus, memory panel, scope suggestions, Token cache rate, failure classes/upstream rate/deltas/失败原因 filter, problem chips/causes/hint/next steps/conclusion');
+  console.log('PASS: status chip colours/contrast, auto-refresh interval, Cloudflare egress banner, query/auth races, Cloudflare Access expiry, shared scope and buckets, ID paging, history/drill-down, usage samples and unknown outcomes, overview snapshots, egress identity/order/logout, scoped filter chips/URL/focus, inspector retry/expiry/stale authorization/keyboard, keyed record updates and inspector focus, memory panel, scope suggestions, Token cache rate, failure classes/upstream rate/deltas/失败原因 filter, problem chips/causes/hint/next steps/conclusion, 会话 filter/fragment/chip/URL');
 })().catch(error => {console.error(error); process.exitCode = 1;}).finally(() => clearTimeout(watchdog));

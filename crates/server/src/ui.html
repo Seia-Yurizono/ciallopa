@@ -344,6 +344,7 @@ button.pc.sm{height:24px;padding:0 8px;font-size:var(--fs-xs)}
 .detail-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--s3);padding:var(--s3);background:var(--surface-2);border-radius:var(--r1)}
 .detail-stats .v{font-size:var(--fs-l);font-variant-numeric:tabular-nums;margin-top:var(--s1)}
 .detail-meta{padding:var(--s2) 0}
+.tid{display:inline-flex;align-items:center;flex-wrap:wrap;gap:var(--s1) var(--s2)}
 .rowA{display:grid;grid-template-columns:auto minmax(0,1fr);gap:var(--s5);align-items:start;margin-bottom:var(--s6)}
 .rowA>section{margin-bottom:0;min-width:0}
 @media (max-width:1180px){.rowA{grid-template-columns:minmax(0,1fr)}}
@@ -590,6 +591,7 @@ button.pc.sm{height:24px;padding:0 8px;font-size:var(--fs-xs)}
         <select id="fsrc" aria-label="按错误来源筛选"><option value="">全部来源</option><option value="upstream">上游</option><option value="stream">流内</option><option value="network">网络</option><option value="local">ciallopa</option><option value="client">客户端</option><option value="upstream,stream,network,local">排除客户端</option></select>
         <select id="ftier" aria-label="按档位筛选"><option value="">全部档位</option><option value="priority">Fast</option><option value="flex">Flex</option><option value="standard">标准</option><option value="dg">仅降级</option></select>
         <input id="fcode" type="text" placeholder="错误码（回车）" aria-label="按错误码筛选，回车应用">
+        <input id="fthread" type="text" placeholder="会话 ID（回车）" aria-label="按会话 ID 筛选，回车应用" title="完整会话 ID 或其中至少 8 位；按会话筛选时不限时间范围" maxlength="140" spellcheck="false" autocomplete="off">
         <label class="chk" title="只看重试过或换过账号的请求"><input type="checkbox" class="sw" id="fretry"> 重试/换号</label>
         <label class="chk" title="同「筛选范围」里的含预热，保存在本浏览器"><input type="checkbox" id="rprewarm"> 含预热</label>
         <label class="chk hide" id="legacyerror"><input type="checkbox" id="ferr"> 旧错误筛选（含取消）</label>
@@ -1315,10 +1317,10 @@ function renderRecords(){const tb=$("rec").tBodies[0],dp=$("dp"),opener=!dp.clas
       if(!entry||!sameRecord(entry.record,r)){const next={record:r,node:recRow(r)};
         if(entry){if(cursor===entry.node)cursor=next.node;entry.node.replaceWith(next.node)}recordRows.set(r.request_id,next);entry=next}
       if(entry.node!==cursor)tb.insertBefore(entry.node,cursor);cursor=entry.node.nextElementSibling}
-    if(!recState.rows.length)emptyRow(tb,12,"没有符合条件的请求",anyF()?"清除筛选或换个时间段试试":"换个时间段试试")}));
+    if(!recState.rows.length){if(recState.ambiguous)emptyRow(tb,12,"这段 ID 对应多个会话","粘贴更长的会话 ID");else if($("fthread").value.trim())emptyRow(tb,12,"这个会话没有符合条件的请求","可能已过保留期，或 ID 不完整");else emptyRow(tb,12,"没有符合条件的请求",anyF()?"清除筛选或换个时间段试试":"换个时间段试试")}}));
   // A refresh already in flight can replace the opener while its detail dialog is open.
   if(anchor)dp._opener=tb.querySelector('[data-ak="'+CSS.escape(anchor)+'"] button')||$("rextra");
-  $("rcount").textContent="共 "+exact(recState.total)+" 条";
+  const wide=!!$("fthread").value.trim()&&!recordWindow;$("rcount").textContent="共 "+exact(recState.total)+" 条"+(wide?" · 不限时间":"");$("rcount").title=wide?"按会话筛选时查整个保留期":"";
   $("rmore").classList.toggle("hide",!recState.cursor);
   $("rpage").textContent=(recState.cursor?"已显示 "+exact(recState.rows.length)+" 条":"")+(recState.rows.length>PAGE?" · 已暂停滚动更新；刷新查看最新":"");renderDetailNav()}
 const PAGE=50;
@@ -1332,14 +1334,20 @@ async function loadRefusals(append){const f=refFilters(),signature=qs(f);
   const q=qs(Object.assign({},f,{limit:PAGE,offset:base.offset}));
   await currentLoad("sr",()=>"refused|"+qs(refFilters()),(_q,current)=>usageGet("/usage/v1/refusals?"+q,current),d=>{
     const rows=base.rows.concat(d.rows);refState={rows,offset:base.offset+d.rows.length,more:d.rows.length===PAGE,total:d.totals.count,signature};renderRefusals()})}
-function showRefusedMode(){const on=refusedMode();$("rw").classList.toggle("hide",on);$("refw").classList.toggle("hide",!on);$("fclass").classList.toggle("hide",on);for(const id of ["fsrc","ftier","fcode"])$(id).classList.toggle("hide",on)}
-function recordFilters(){const t=$("ftier").value,o=$("foutcome").value;return Object.assign({},scopeFilters(),recordWindow||{},{problem:$("fproblem").value,cause:$("fproblem").value?$("fcause").value:"",outcome:o==="business"?"":o,exclude_prewarm:o==="business"||(o!=="prewarm"&&!withPrewarm())?1:"",errors:$("ferr").checked?1:"",source:$("fsrc").value,error:$("fcode").value.trim(),failure_class:$("fclass").value,retried:$("fretry").checked?1:"",tier:t==="dg"?"":t,downgraded:t==="dg"?1:""})}
+function showRefusedMode(){const on=refusedMode();$("rw").classList.toggle("hide",on);$("refw").classList.toggle("hide",!on);$("fclass").classList.toggle("hide",on);for(const id of ["fsrc","ftier","fcode","fthread"])$(id).classList.toggle("hide",on)}
+function recordFilters(){const t=$("ftier").value,o=$("foutcome").value,th=$("fthread").value.trim();return Object.assign({},scopeFilters(),threadAll()?{from:"",to:""}:{},recordWindow||{},{thread:th,problem:$("fproblem").value,cause:$("fproblem").value?$("fcause").value:"",outcome:o==="business"?"":o,exclude_prewarm:o==="business"||(o!=="prewarm"&&!withPrewarm())?1:"",errors:$("ferr").checked?1:"",source:$("fsrc").value,error:$("fcode").value.trim(),failure_class:$("fclass").value,retried:$("fretry").checked?1:"",tier:t==="dg"?"":t,downgraded:t==="dg"?1:""})}
+// A session spans whatever time it spans: with 会话 set the list ignores the range (a chart-picked window still applies).
+function threadAll(){return !!$("fthread").value.trim()&&!recordWindow}
 async function loadRecords(append){showRefusedMode();if(!append){renderProblems();loadCounts()}if(refusedMode())return loadRefusals(append);const filters=recordFilters(),signature=qs(filters);
   const base=append&&recState.signature===signature?recState:{cursor:null,total:0,rows:[]};
   if(append&&base.rows.length&&!base.cursor)return;
   const q=qs(Object.assign({},filters,{limit:PAGE,before_id:base.cursor}));
-  await currentLoad("sr",()=>qs(recordFilters()),(_q,current)=>usageGet("/usage/v1/records?"+q,current),d=>{
-    const rows=base.rows.concat(d.records);recState={cursor:d.next_before_id,total:d.total,rows,signature};renderRecords()})}
+  // A fragment shared by several sessions is a 400; show it in the list instead of as an update failure.
+  await currentLoad("sr",()=>qs(recordFilters()),(_q,current)=>usageGet("/usage/v1/records?"+q,current).catch(e=>{if(e.status===400&&filters.thread)return {records:[],total:0,next_before_id:null,ambiguous:true};throw e}),d=>{
+    const rows=base.rows.concat(d.records);recState={cursor:d.next_before_id,total:d.total,rows,signature,ambiguous:!!d.ambiguous};
+    // The API resolves a fragment to the full id; keep the full id so the URL and chip stay exact.
+    if(d.thread&&filters.thread&&d.thread!==filters.thread&&$("fthread").value.trim()===filters.thread){$("fthread").value=d.thread;recState.signature=qs(recordFilters());saveF()}
+    renderRecords()})}
 function qs(o){const u=new URLSearchParams();for(const k in o)if(o[k]!==""&&o[k]!==null&&o[k]!==undefined)u.set(k,o[k]);return u.toString()}
 $("rmore").addEventListener("click",async()=>{$("rmore").disabled=true;try{await loadRecords(true)}catch(e){fail(e)}finally{$("rmore").disabled=false}});
 
@@ -1347,6 +1355,14 @@ $("rmore").addEventListener("click",async()=>{$("rmore").disabled=true;try{await
 let dtext="",detailSeq=0,lookupSeq=0,detailRecord=null;
 function pretty(s){if(s===null||s===undefined)return"";try{return JSON.stringify(JSON.parse(s),null,2)}catch(_){return String(s)}}
 function field(name,value){if(value!==null&&value!==undefined&&value!=="")$("dfields").append(h("dt",null,name),h("dd",null,String(value)))}
+// Codex thread ids are UUIDv7: the head is a timestamp shared by nearby sessions, so the short form is the tail.
+function shortId(s){s=String(s||"");return s.length>12?"…"+s.slice(-8):s}
+function threadField(r){const id=r.thread_id;if(!id)return;const copy=h("button",{class:"ghost xs",type:"button",id:"dthreadcopy",title:"复制完整会话 ID"},"复制"),box=h("span","tid",h("code",{title:id},shortId(id)),copy);
+  copy.addEventListener("click",async()=>{try{await navigator.clipboard.writeText(id);toast("已复制会话 ID")}catch(_){toast("复制失败，请检查浏览器剪贴板权限",{kind:"err"})}});
+  if($("fthread").value.trim()!==id){const only=h("button",{class:"ghost xs",type:"button",id:"dthread",title:"清除请求筛选，列出这个会话的全部请求"},"只看这个会话");only.addEventListener("click",()=>viewThread(id));box.appendChild(only)}
+  $("dfields").append(h("dt",null,"会话"),h("dd",null,box))}
+// 只看这个会话 replaces the request filters (and a chart-picked window); 筛选范围 stays.
+function viewThread(id){recordWindow=null;clearRecordFilters();$("fthread").value=id;if(!$("dp").classList.contains("hide"))closeModal($("dp"));changeRecords();showScope();renderTrend();revealRecords()}
 function detailStats(r){clear($("dstats"));const cells=[["首输出",fmtMs(streamRecord(r)?r.ttft_ms:null)],["总耗时",fmtMs(r.duration_ms)],["输入 / 输出",fmtN(r.input_tokens)+" / "+fmtN(r.output_tokens)],
   ["缓存输入",fmtN(r.cached_tokens)],["估算费用",r.price_status==="unknown_price"?"未定价":r.price_status==="ignored"?"0（已忽略）":fmtUsd(r.cost_usd)],["重试 / 换号",(r.retries||0)+" / "+(r.switches||0)]];
   for(const [name,value] of cells)$("dstats").appendChild(h("div",null,h("div","mut xs",name),h("div","v",value)))}
@@ -1359,7 +1375,7 @@ async function openDetail(r,from,retry=false){if(!/^[0-9a-f]{16}$/.test(r.reques
   $("dmeta").textContent=fmtTime(r.ts_ms,true)+" · "+(r.status?"HTTP "+r.status:"未记录 HTTP 状态")+" · "+(r.transport||"–").toUpperCase();renderConclusion(r);detailStats(r);clear($("dfields"));
   for(const [name,value] of [["记录 ID",r.request_id],["账号",r.account],["密钥 / 实例",[r.key,r.instance].filter(Boolean).join(" / ")],["端点",r.endpoint],
     ["实际模型",r.response_model],["推理强度",r.reasoning_effort||r.response_effort],["请求 / 实际档位",tierName(normTier(r.requested_service_tier))+" / "+tierName(normTier(r.service_tier))],
-    ["最初账号",r.first_account],["会话 / 轮次",[r.thread_id,r.turn_id].filter(Boolean).join(" / ")],["截断原因",r.incomplete]])field(name,value);
+    ["最初账号",r.first_account]])field(name,value);threadField(r);field("轮次",r.turn_id);field("截断原因",r.incomplete);
   $("dmsg").classList.toggle("error",outcome==="failed");
   const message=(es&&SRC[es]?SRC[es][0]+" · ":"")+(r.error?(error.label?error.label+" ":"")+r.error:"")+(error.tip?"\n"+error.tip:"");$("dmsg").textContent=message;
   for(const id of ["dhdr","dbody"])$(id).textContent="";clear($("dtl"));$("dtll").classList.add("hide");
@@ -1524,6 +1540,8 @@ $("tmetric").addEventListener("change",()=>{saveF();renderTrend()});
 $("facct").addEventListener("change",changeScope);
 $("fprewarm").addEventListener("change",()=>{localStorage.setItem(PW,withPrewarm()?"1":"0");changeScope()});
 for(const id of ["ferr","ftier","fsrc","fretry","fcode"])$(id).addEventListener("change",changeRecords);
+// Refusals carry no session: pasting one leaves 本地拒绝.
+$("fthread").addEventListener("change",()=>{const e=$("fthread");e.value=e.value.trim();if(e.value&&refusedMode()){if($("fproblem").value==="refused")$("fproblem").value=$("fcause").value="";if($("foutcome").value==="refused")$("foutcome").value=""}changeRecords()});
 // A failure class only matches failed requests: picking one moves the outcome to 失败, other outcomes clear it.
 // A failure class implies 结果 = 失败; clearing the class leaves 结果 as it is, another 结果 clears the class.
 // The old 结果 / 失败原因 selects (under 「更多」) and the problem chips are alternatives: setting one clears the other.
@@ -1568,7 +1586,7 @@ function syncMini(){for(const id in MINI){const sel=$(id),src=MINI[id],v=$(src).
   const want=[...new Set([...vals,...(v?[v]:[])])],sig=want.join("\n");
   if(sel._sig!==sig){sel._sig=sig;while(sel.options.length>1)sel.remove(1);for(const x of want)sel.appendChild(h("option",{value:x},x))}sel.value=v}}
 // ---- URL keeps the query and inspector context; only display preferences use localStorage.
-const SF=["facct","fmodel","fkey","finstance"],RF=["fproblem","fcause","foutcome","fclass","ftier","fsrc","fcode","ferr","fretry"],FIDS=["range","group","tmode","tmetric",...SF,...RF],FDEF={range:"24h",group:"account",tmode:"auto",tmetric:"requests"},FL="ciallopa_f_";
+const SF=["facct","fmodel","fkey","finstance"],RF=["fproblem","fcause","foutcome","fclass","ftier","fsrc","fcode","fthread","ferr","fretry"],FIDS=["range","group","tmode","tmetric",...SF,...RF],FDEF={range:"24h",group:"account",tmode:"auto",tmetric:"requests"},FL="ciallopa_f_";
 // Problem buckets and their causes, as the backend names them (usage::problem).
 const PROB=[["","全部"],["error","报错",1],["upstream","上游出错",1],["unfinished","没答完"],["refused","本地拒绝"]];
 const CAUSES={error:[["quota","额度"],["rate_limit","限流"],["upstream","上游"],["network","网络代理"],["gateway","网关"],["stream","流中断"]],
@@ -1576,15 +1594,16 @@ const CAUSES={error:[["quota","额度"],["rate_limit","限流"],["upstream","上
   refused:[["inflight","转发上限"],["ws","WS 上限"],["body","请求体缓冲"],["ws_msg","WS 消息缓冲"]]};
 function fval(id){const e=$(id);return e.type==="checkbox"?(e.checked?"1":""):e.value}
 function anyF(){return RF.some(id=>fval(id))}
-const FILTER_NAMES={fproblem:"问题",fcause:"原因",facct:"账号",fmodel:"模型",fkey:"密钥",finstance:"实例",foutcome:"结果",fclass:"失败原因",ftier:"档位",fsrc:"来源",fcode:"错误码",ferr:"旧错误筛选（含取消）",fretry:"重试/换号"};
-function renderFilterChips(box,ids,scope,fallback){const parts=ids.filter(id=>fval(id).trim()).map(id=>{const e=$(id),value=fval(id).trim();return {id,label:FILTER_NAMES[id]+(e.type==="checkbox"?"":"："+(e.tagName==="SELECT"?e.options[e.selectedIndex].textContent:value))}}),signature=JSON.stringify(parts);
+const FILTER_NAMES={fproblem:"问题",fcause:"原因",facct:"账号",fmodel:"模型",fkey:"密钥",finstance:"实例",foutcome:"结果",fclass:"失败原因",ftier:"档位",fsrc:"来源",fcode:"错误码",fthread:"会话",ferr:"旧错误筛选（含取消）",fretry:"重试/换号"};
+function renderFilterChips(box,ids,scope,fallback){const parts=ids.filter(id=>fval(id).trim()).map(id=>{const e=$(id),value=fval(id).trim(),text=e.type==="checkbox"?"":"："+(e.tagName==="SELECT"?e.options[e.selectedIndex].textContent:value);
+    return {id,label:FILTER_NAMES[id]+(id==="fthread"?"："+shortId(value):text),full:FILTER_NAMES[id]+text}}),signature=JSON.stringify(parts);
   if(box._signature===signature)return;box._signature=signature;
   const buttons=Array.from(box.querySelectorAll("button")),focused=document.activeElement,index=buttons.indexOf(focused);box.classList.toggle("hide",!parts.length);clear(box);
-  const next=parts.map(({id,label})=>{const b=h("button",{type:"button",class:"filterchip","data-clear-filter":id,"aria-label":"清除"+scope+"筛选："+label,title:"清除"+scope+"筛选："+label},h("span","filterlabel",label),h("span",{class:"filterremove","aria-hidden":"true"},"×"));b.addEventListener("click",()=>clearFilter(id));box.appendChild(b);return b});
+  const next=parts.map(({id,label,full})=>{const b=h("button",{type:"button",class:"filterchip","data-clear-filter":id,"aria-label":"清除"+scope+"筛选："+full,title:"清除"+scope+"筛选："+full},h("span","filterlabel",label),h("span",{class:"filterremove","aria-hidden":"true"},"×"));b.addEventListener("click",()=>clearFilter(id));box.appendChild(b);return b});
   if(index>=0)(next.find(b=>b.dataset.clearFilter===focused.dataset.clearFilter)||next[Math.min(index,next.length-1)]||fallback).focus({preventScroll:true})}
 function clearFilter(id){const e=$(id);if(e.type==="checkbox")e.checked=false;else e.value="";if(SF.includes(id))changeScope();else changeRecords()}
 // 问题 / 原因 already show as pressed chips; the removable chips list only the 「更多」 filters.
-const MORE_F=["foutcome","fclass","ftier","fsrc","fcode","ferr","fretry"];
+const MORE_F=["foutcome","fclass","ftier","fsrc","fcode","fthread","ferr","fretry"];
 function showRecordFilters(){const count=MORE_F.filter(id=>fval(id).trim()).length;$("fsummary").textContent=count?" · "+count:"";renderFilterChips($("recordchips"),MORE_F,"请求",$("rextra"))}
 function showExtra(open){$("recordextra").classList.toggle("hide",!open);$("rextra").setAttribute("aria-expanded",String(open));$("rextra").classList.toggle("on",open)}
 function saveF(){const u=new URLSearchParams();for(const id of FIDS){const v=fval(id);if(v&&v!==FDEF[id])u.set(id,v)}
