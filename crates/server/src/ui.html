@@ -1359,10 +1359,11 @@ function field(name,value){if(value!==null&&value!==undefined&&value!=="")$("dfi
 function shortId(s){s=String(s||"");return s.length>12?"…"+s.slice(-8):s}
 function threadField(r){const id=r.thread_id;if(!id)return;const copy=h("button",{class:"ghost xs",type:"button",id:"dthreadcopy",title:"复制完整会话 ID"},"复制"),box=h("span","tid",h("code",{title:id},shortId(id)),copy);
   copy.addEventListener("click",async()=>{try{await navigator.clipboard.writeText(id);toast("已复制会话 ID")}catch(_){toast("复制失败，请检查浏览器剪贴板权限",{kind:"err"})}});
-  if($("fthread").value.trim()!==id){const only=h("button",{class:"ghost xs",type:"button",id:"dthread",title:"清除请求筛选，列出这个会话的全部请求"},"只看这个会话");only.addEventListener("click",()=>viewThread(id));box.appendChild(only)}
+  if($("fthread").value.trim()!==id){const only=h("button",{class:"ghost xs",type:"button",id:"dthread",title:"清除筛选和范围，列出这个会话的全部请求"},"只看这个会话");only.addEventListener("click",()=>viewThread(id));box.appendChild(only)}
   $("dfields").append(h("dt",null,"会话"),h("dd",null,box))}
-// 只看这个会话 replaces the request filters (and a chart-picked window); 筛选范围 stays.
-function viewThread(id){recordWindow=null;clearRecordFilters();$("fthread").value=id;if(!$("dp").classList.contains("hide"))closeModal($("dp"));changeRecords();showScope();renderTrend();revealRecords()}
+// 只看这个会话 clears the request filters, a chart-picked window and the shared account / model / key / instance
+// scope too: a session that switched accounts shows every request. A pasted id keeps the scope.
+function viewThread(id){recordWindow=null;clearRecordFilters();for(const k of SF)$(k).value="";$("fthread").value=id;if(!$("dp").classList.contains("hide"))closeModal($("dp"));changeScope();revealRecords()}
 function detailStats(r){clear($("dstats"));const cells=[["首输出",fmtMs(streamRecord(r)?r.ttft_ms:null)],["总耗时",fmtMs(r.duration_ms)],["输入 / 输出",fmtN(r.input_tokens)+" / "+fmtN(r.output_tokens)],
   ["缓存输入",fmtN(r.cached_tokens)],["估算费用",r.price_status==="unknown_price"?"未定价":r.price_status==="ignored"?"0（已忽略）":fmtUsd(r.cost_usd)],["重试 / 换号",(r.retries||0)+" / "+(r.switches||0)]];
   for(const [name,value] of cells)$("dstats").appendChild(h("div",null,h("div","mut xs",name),h("div","v",value)))}

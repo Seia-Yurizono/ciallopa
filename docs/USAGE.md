@@ -852,7 +852,8 @@ Page behavior:
   fragment; the UI swaps in the full id the API returns. Unlike the other 更多 filters it
   combines with the problem chips and drops the time range (whole retention, shown as
   「不限时间」) unless a chart period is picked. The detail shows the id tail with 复制 and
-  只看这个会话, which clears the request filters but keeps the shared scope.
+  只看这个会话, which also clears the shared account / model / key / instance
+  scope so a session that switched accounts shows in full; a pasted id keeps the scope.
 - Quota cards show **remaining** percent (bar width = remaining). Color follows remaining:
   green when ≥ 50%, yellow when < 50%, red when < 20%. The card top strip is yellow when
   the account's max used percent is over 50%, and red when over 80%.
