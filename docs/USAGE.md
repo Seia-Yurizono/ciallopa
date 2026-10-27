@@ -426,12 +426,14 @@ CREATE TABLE occupancy(minute INTEGER NOT NULL, instance INTEGER NOT NULL, sampl
   lim_inflight INTEGER NOT NULL, lim_ws INTEGER NOT NULL, lim_buffered INTEGER NOT NULL,
   PRIMARY KEY(minute, instance));
 ```
-- Schema is at `user_version = 11`. Opening an older file upgrades it in place (`ALTER TABLE` /
+- Schema is at `user_version = 13` (v13 only adds the `requests_thread` index). Opening an older file upgrades it in place (`ALTER TABLE` /
   new tables); columns that did not exist yet stay NULL on old rows.
 - `quota_obs` gets a row only when used % / plan changes or a reset time moves by > 120 s
   (upstream reset times jitter by a few seconds). Purge keeps each account's latest row.
-- **No secondary index.** Time ranges are rowid range scans (`id BETWEEN from<<20 AND to<<20`),
-  purge is a rowid range delete, "recent" is a reverse rowid scan. Strings (account e-mails,
+- **One secondary index on `requests`**: the partial `requests_thread(thread) WHERE thread IS
+  NOT NULL`, for the session view. Everything else on `requests` is rowid based: time ranges are
+  rowid range scans (`id BETWEEN from<<20 AND to<<20`), purge is a rowid range delete, "recent"
+  is a reverse rowid scan. Strings (account e-mails,
   model names) are interned in `labels`, so a row is ~51 bytes on disk (1M rows ≈ 51 MB).
 
 ## Refusals (local limits)
@@ -521,12 +523,18 @@ See [METRICS.md](METRICS.md) for the current outcome, sampling, cursor and bucke
   *Request problems*). `problem=all|error|upstream|unfinished` with an optional
   `cause=<cause>` filters by those buckets (`problem=refused`, an unknown value or a cause
   without a problem → 400; refusals are in `/usage/v1/refusals?reason=`).
+  `thread=<id>` keeps one Codex session (thread id): the full id, or a fragment of at least 8
+  chars of `[A-Za-z0-9-]` found anywhere in the id (ASCII case-insensitive; a leading `…` is
+  ignored). It composes with the time range and every other filter. The reply then carries
+  `"thread"`: the resolved full id (the input itself when no session has it, which matches
+  nothing). A fragment shared by several sessions → 400; UUIDv7 ids of one minute share their
+  leading chars, so prefer the tail.
 - `GET /usage/v1/records/counts?<same filters>` → `{all, error, upstream, unfinished, refused,
   causes:{error:{quota, rate_limit, upstream, network, gateway, stream}, upstream:{unrescued,
   rescued}, unfinished:{client_closed, truncated, unconfirmed}, refused:{inflight, ws, body,
   ws_msg}}}`. `problem`, `cause` and paging are ignored. `refused` (and `causes.refused`)
   covers the same range, key and instance from the refusals table, and is null when an
-  account, model or another request-only filter is set.
+  account, model, `thread` or another request-only filter is set.
 - `GET /usage/v1/records/{request_id}` → `{record: …}` for a preserved success, failure or prewarm.
   It does not require captured error detail. Returns 404 if the record is absent and 400 for an invalid ID.
 - `GET /usage/v1/records/{request_id}/detail` → `{request_id, ts_ms, message, body, body_len,

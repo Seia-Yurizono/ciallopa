@@ -137,10 +137,12 @@ HTTP/SSE 的 idle、缺终止事件 EOF 与 bootstrap idle 警告会附上现有
 - `outcome`：上述五种结果。旧 `errors=1` 仍含取消和错误预热记录，不等同于 `outcome=failed`。
 - `problem=all|error|upstream|unfinished` 与 `cause=<上表原因>`：问题分组筛选；`problem=refused`
   返回400（拒绝记录在 `/usage/v1/refusals?reason=`）；未知值返回400；`cause` 需与 `problem` 同传。
+- `thread=<会话 ID>`：只看一个 Codex 会话。可传完整 ID，或 ID 中任意位置不少于 8 个字符的片段
+  （忽略大小写和开头的 `…`）；片段对应多个会话时返回400。响应带 `thread`（解析出的完整 ID）。
 - `GET /usage/v1/records/counts`：与列表相同的筛选（忽略 `problem`、`cause` 和分页），返回
   `{all, error, upstream, unfinished, refused, causes:{error:{…}, upstream:{unrescued, rescued},
   unfinished:{client_closed, truncated, unconfirmed}, refused:{inflight, ws, body, ws_msg}}}`。
-  `refused` 按相同时间、密钥和实例统计；设置了账号、模型或其他仅请求有的条件时为 `null`，
+  `refused` 按相同时间、密钥和实例统计；设置了账号、模型、会话或其他仅请求有的条件时为 `null`，
   因为拒绝发生在这些信息确定之前。
 - `exclude_prewarm=1`：排除 `endpoint=prewarm`，匹配概况 `count` 的业务请求范围；默认不排除。
   与其余请求条件取交集，因此与 `outcome=prewarm` 同传时返回空列表。分页与 `total` 沿用此条件。
