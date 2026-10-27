@@ -8,7 +8,9 @@ use axum::{Json, Router};
 use ciallopa_core::settings::SharedConfig;
 use ciallopa_core::AccountStore;
 use ciallopa_forward::{ClientKey, EgressStatus};
-use ciallopa_usage::{now_ms, Dim, Filters, Outcome, Problem, RecentQuery, Recorder, SummaryQuery};
+use ciallopa_usage::{
+    now_ms, Dim, Filters, Outcome, Problem, RecentQuery, Recorder, SummaryQuery, ThreadMatch,
+};
 use serde::Deserialize;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -154,6 +156,8 @@ struct RecordsQ {
     problem: Option<String>,
     /// Cause within `problem` (`quota`, `rescued`, `client_closed`, …).
     cause: Option<String>,
+    /// Codex session (thread) id, or a unique fragment of at least 8 chars.
+    thread: Option<String>,
     #[serde(flatten)]
     f: FiltersQ,
 }
@@ -259,6 +263,10 @@ fn records_query(q: RecordsQ) -> Result<RecordsReq, String> {
         failure_class,
         problem,
         cause,
+        thread: q
+            .thread
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty()),
     };
     Ok(RecordsReq {
         rq,
@@ -268,12 +276,32 @@ fn records_query(q: RecordsQ) -> Result<RecordsReq, String> {
     })
 }
 
+/// Replace a pasted session id or fragment with the full id. An unknown one is kept as is
+/// (it matches nothing); a fragment shared by several sessions is a 400.
+async fn resolve_thread(rec: &Recorder, rq: &mut RecentQuery) -> Result<(), Response> {
+    let Some(t) = rq.thread.clone() else {
+        return Ok(());
+    };
+    match rec.resolve_thread(t).await {
+        Ok(ThreadMatch::Exact(id)) => rq.thread = Some(id),
+        Ok(ThreadMatch::None) => {}
+        Ok(ThreadMatch::Ambiguous) => {
+            return Err(err(
+                StatusCode::BAD_REQUEST,
+                "thread fragment matches several sessions; paste more of the id",
+            ))
+        }
+        Err(e) => return Err(err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string())),
+    }
+    Ok(())
+}
+
 async fn records(State(St { rec, .. }): State<St>, Query(q): Query<RecordsQ>) -> Response {
     let Some(rec) = rec else {
         return err(StatusCode::NOT_FOUND, "usage log disabled");
     };
     let RecordsReq {
-        rq,
+        mut rq,
         limit,
         offset,
         before_id,
@@ -287,6 +315,10 @@ async fn records(State(St { rec, .. }): State<St>, Query(q): Query<RecordsQ>) ->
             "refused requests have no record rows; use /usage/v1/refusals",
         );
     }
+    if let Err(r) = resolve_thread(&rec, &mut rq).await {
+        return r;
+    }
+    let thread = rq.thread.clone();
     let total = match rec
         .recent_count(RecentQuery {
             before_id: None,
@@ -316,6 +348,7 @@ async fn records(State(St { rec, .. }): State<St>, Query(q): Query<RecordsQ>) ->
                 "offset": offset,
                 "next_offset": if more && before_id.is_none() { Some(next) } else { None },
                 "next_before_id": next_before_id,
+                "thread": thread,
             }))
             .into_response()
         }
@@ -325,16 +358,19 @@ async fn records(State(St { rec, .. }): State<St>, Query(q): Query<RecordsQ>) ->
 
 /// Request counts per problem chip and cause, under the same filters as `/usage/v1/records`
 /// (its `problem`, `cause` and paging ignored). `refused` and its reasons come from the
-/// refusals table over the same range, key and instance; null when an account, model or
+/// refusals table over the same range, key and instance; null when an account, model, session or
 /// another request-only filter is set, because a refusal happens before any of those is known.
 async fn record_counts(State(St { rec, .. }): State<St>, Query(q): Query<RecordsQ>) -> Response {
     let Some(rec) = rec else {
         return err(StatusCode::NOT_FOUND, "usage log disabled");
     };
-    let rq = match records_query(q) {
+    let mut rq = match records_query(q) {
         Ok(r) => r.rq,
         Err(m) => return err(StatusCode::BAD_REQUEST, &m),
     };
+    if let Err(r) = resolve_thread(&rec, &mut rq).await {
+        return r;
+    }
     let mut counts = match rec.problem_counts(rq.clone()).await {
         Ok(c) => c,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
@@ -349,7 +385,8 @@ async fn record_counts(State(St { rec, .. }): State<St>, Query(q): Query<Records
         || rq.error.is_some()
         || rq.retried
         || rq.outcome.is_some()
-        || rq.failure_class.is_some();
+        || rq.failure_class.is_some()
+        || rq.thread.is_some();
     if !request_only {
         let to = rq.before_ms.map(|b| b - 1).unwrap_or_else(now_ms);
         let t = match rec
@@ -874,6 +911,89 @@ mod tests {
         let status = response.status();
         let body = to_bytes(response.into_body(), 128 * 1024).await.unwrap();
         (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    #[tokio::test]
+    async fn thread_param_filters_list_and_counts() {
+        let temp = tempfile::tempdir().unwrap();
+        let rec = Recorder::open_as(
+            &ciallopa_core::config::UsageConfig {
+                path: temp.path().join("usage.db"),
+                retention_days: 0,
+                ..Default::default()
+            },
+            "demo",
+        )
+        .unwrap();
+        let app = routes(
+            Some(rec.clone()),
+            Arc::new(NoAccounts),
+            Default::default(),
+            None,
+        );
+        let a = "019a2b3c-4d5e-7f00-8a1b-aaaa11112222";
+        let b = "019a2b3c-4d5e-7f00-8a1b-bbbb33334444";
+        let base = now_ms() - 1000;
+        for (i, (t, status)) in [(a, 200), (a, 502), (b, 200)].into_iter().enumerate() {
+            let mut row = Record::new(
+                rec.ids.next_at(base + i as i64),
+                Transport::Sse,
+                "responses",
+            );
+            row.status = status;
+            row.account = Some("acc".into());
+            row.thread_id = Some(t.into());
+            assert!(rec.record(row));
+        }
+        rec.flush_blocking().unwrap();
+        // Full id and unique fragment both resolve; the reply echoes the full id.
+        for t in [a, "aaaa1111", "…11112222"] {
+            let url = format!("/usage/v1/records?thread={}", urlencoding(t));
+            let (status, v) = query(&app, &url).await;
+            assert_eq!(status, StatusCode::OK, "{t}");
+            assert_eq!(v["total"], 2, "{t}");
+            assert_eq!(v["thread"], a);
+            assert!(v["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|r| r["thread_id"] == a));
+        }
+        // Composes with a time range that excludes everything.
+        let (_, v) = query(&app, &format!("/usage/v1/records?thread={a}&to=1")).await;
+        assert_eq!(v["total"], 0);
+        // A shared (UUIDv7 timestamp) prefix is ambiguous: neutral 400.
+        let (status, v) = query(&app, "/usage/v1/records?thread=019a2b3c").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("several sessions"));
+        let (status, _) = query(&app, "/usage/v1/records/counts?thread=019a2b3c").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        // Unknown session: empty, not an error.
+        let (status, v) = query(&app, "/usage/v1/records?thread=nope").await;
+        assert_eq!((status, v["total"].clone()), (StatusCode::OK, 0.into()));
+        assert!(v["thread"].is_string());
+        // Counts follow the session; refusals carry no session, so refused is null.
+        let (status, c) = query(&app, "/usage/v1/records/counts?thread=bbbb3333").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!((c["all"].clone(), c["error"].clone()), (1.into(), 0.into()));
+        assert!(c["refused"].is_null());
+        let (_, c) = query(&app, &format!("/usage/v1/records/counts?thread={a}")).await;
+        assert_eq!((c["all"].clone(), c["error"].clone()), (2.into(), 1.into()));
+        let (_, c) = query(&app, "/usage/v1/records/counts").await;
+        assert_eq!(c["all"], 3);
+        assert!(!c["refused"].is_null());
+    }
+
+    fn urlencoding(s: &str) -> String {
+        s.bytes()
+            .map(|b| match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' => (b as char).to_string(),
+                _ => format!("%{b:02X}"),
+            })
+            .collect()
     }
 
     #[tokio::test]
