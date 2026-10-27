@@ -16,6 +16,9 @@ pub(crate) struct Tracker {
     start: Instant,
     /// A terminal Responses event was seen (or the response is not a stream).
     terminal: bool,
+    /// A terminal Responses event has been recorded. Its outcome is final: a later read
+    /// error, idle timeout or close is a normal end of the stream, never the request's error.
+    settled: bool,
     /// `response.created` already parsed.
     created: bool,
     /// A terminal event set the served tier (`response.created` must not override it).
@@ -184,6 +187,7 @@ impl Tracker {
             sink,
             start: started.at,
             terminal: false,
+            settled: false,
             created: false,
             tier_final: false,
             drain: st.upstream.drain.clone(),
@@ -375,6 +379,9 @@ impl Tracker {
 
     /// First error wins (later ones are usually consequences).
     pub(crate) fn fail(&mut self, kind: &str) {
+        if self.settled {
+            return;
+        }
         if self.rec.error.is_none() {
             self.rec.error = Some(kind.to_string());
         }
@@ -382,6 +389,9 @@ impl Tracker {
 
     /// `fail` plus a human-readable message for the error detail (first message wins).
     pub(crate) fn fail_msg(&mut self, kind: &str, msg: impl Into<String>) {
+        if self.settled {
+            return;
+        }
         self.fail(kind);
         let d = self.detail();
         if d.message.is_none() {
@@ -395,6 +405,9 @@ impl Tracker {
 
     /// Where the (first) error came from; first one wins.
     pub(crate) fn source(&mut self, src: &'static str) {
+        if self.settled {
+            return;
+        }
         if self.rec.err_source.is_none() {
             self.rec.err_source = Some(src);
         }
@@ -422,6 +435,9 @@ impl Tracker {
 
     /// Provenance attached to a ready-made error response.
     pub(crate) fn meta_err(&mut self, m: &crate::errors::ErrMeta) {
+        if self.settled {
+            return;
+        }
         self.source(m.source);
         if self.rec.error.is_none() {
             self.rec.error = Some(m.code.clone());
@@ -510,6 +526,14 @@ impl Tracker {
 
     /// A terminal Responses event (`response.completed` / `failed` / `incomplete` / `error`).
     pub(crate) fn terminal_event(&mut self, v: &Value) {
+        if self.settled {
+            return;
+        }
+        self.terminal_outcome(v);
+        self.settled = true;
+    }
+
+    fn terminal_outcome(&mut self, v: &Value) {
         self.terminal = true;
         let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
         let resp = v.get("response");

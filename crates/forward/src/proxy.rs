@@ -916,6 +916,14 @@ fn stream_body(
         }
         loop {
             match tokio::time::timeout(idle, up.next()).await {
+                // After a terminal event the answer is complete: a later idle or read error is
+                // a normal end of the stream, not an account or request failure.
+                Err(_) | Ok(Some(Err(_))) if sse && terminal_seen => {
+                    if let Some(rest) = align.finish() {
+                        let _ = tx.send(Ok(rest)).await;
+                    }
+                    return;
+                }
                 Err(_) => {
                     if let Some(t) = trk.as_mut() {
                         t.fail_msg(

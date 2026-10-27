@@ -602,6 +602,24 @@ async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: Bytes) -> Re
             });
             Response::builder().header("content-type", "text/event-stream").body(Body::from_stream(s)).unwrap()
         }
+        "completed_then_reset" => {
+            let s = futures::stream::unfold(0, |i| async move {
+                match i {
+                    0 => Some((Ok::<_, std::io::Error>(Bytes::from_static(COMPLETED_HI)), 1)),
+                    1 => {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        Some((Err(std::io::Error::other("reset after completed")), 2))
+                    }
+                    _ => None,
+                }
+            });
+            Response::builder().header("content-type", "text/event-stream").body(Body::from_stream(s)).unwrap()
+        }
+        "completed_then_idle" => {
+            let s = futures::stream::once(async { Ok::<_, std::io::Error>(Bytes::from_static(COMPLETED_HI)) })
+                .chain(futures::stream::pending());
+            Response::builder().header("content-type", "text/event-stream").body(Body::from_stream(s)).unwrap()
+        }
         "idle_after_output" => {
             let s = futures::stream::once(async {
                 Ok::<_, std::io::Error>(Bytes::from_static(
@@ -988,6 +1006,8 @@ async fn serve(app: Router) -> String {
     });
     format!("127.0.0.1:{}", addr.port())
 }
+
+const COMPLETED_HI: &[u8] = b"data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-x\"}}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r-x\",\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}}\n\n";
 
 struct Env {
     proxy: String,
@@ -6663,4 +6683,52 @@ async fn summary_breaks_failures_down_by_class_error_code_and_source() {
         .await
         .unwrap();
     assert_eq!(v["total"], 0, "a conflicting outcome matches nothing");
+}
+
+async fn read_all(e: &Env, mode: &str) {
+    let mut r = e
+        .post("/v1/responses")
+        .header("x-test-mode", mode)
+        .body(r#"{"model":"gpt-5.5","stream":true,"input":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    while let Ok(Some(_)) = r.chunk().await {}
+}
+
+#[tokio::test]
+async fn read_error_after_completed_is_a_normal_end() {
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    read_all(&e, "completed_then_reset").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let rows = wait_rows(&e, 1).await;
+    assert!(rows[0]["error"].is_null(), "{}", rows[0]);
+    assert!(rows[0]["err_source"].is_null(), "{}", rows[0]);
+    assert_eq!(rows[0]["output_tokens"], 1);
+    assert!(
+        e.outcomes()
+            .iter()
+            .all(|(_, o)| matches!(o, Outcome::Success { .. })),
+        "{:?}",
+        e.outcomes()
+    );
+}
+
+#[tokio::test]
+async fn idle_after_completed_is_a_normal_end() {
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(1, Some(usage_recorder(d.path()))).await;
+    read_all(&e, "completed_then_idle").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let rows = wait_rows(&e, 1).await;
+    assert!(rows[0]["error"].is_null(), "{}", rows[0]);
+    assert!(rows[0]["err_source"].is_null(), "{}", rows[0]);
+    assert!(
+        e.outcomes()
+            .iter()
+            .all(|(_, o)| matches!(o, Outcome::Success { .. })),
+        "{:?}",
+        e.outcomes()
+    );
 }
