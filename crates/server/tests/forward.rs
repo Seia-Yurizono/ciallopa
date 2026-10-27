@@ -269,6 +269,14 @@ async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: Bytes) -> Re
             return r;
         }
         "image_truncated" => return sse_resp("data: {\"type\":\"response.created\"}\n\n"),
+        "image_reset" => {
+            let s = futures::stream::once(async { Ok::<_, std::io::Error>(Bytes::from_static(b"data: {\"type\":\"response.created\"}\n\n")) })
+                .chain(futures::stream::once(async {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    Err(std::io::Error::other("connection reset"))
+                }));
+            return Response::builder().header("content-type", "text/event-stream").body(Body::from_stream(s)).unwrap();
+        }
         "event_literal_complete" => return sse_resp(concat!(
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"response.completed\"}\n\n",
             "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":7,\"output_tokens\":3}}}\n\n"
@@ -614,6 +622,20 @@ async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: Bytes) -> Re
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"x\"}\n\n",
             "event: error\ndata: {\"type\":\"error\",\"status\":429,\"error\":{\"message\":\"slow down\"}}\n\n"
         )),
+        mode @ ("delta_then_reset" | "reset_first") => {
+            let first = mode == "delta_then_reset";
+            let s = futures::stream::unfold(0, move |i| async move {
+                match i {
+                    0 if first => Some((Ok::<_, std::io::Error>(Bytes::from_static(b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"x\"}\n\n")), 1)),
+                    0 | 1 => {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        Some((Err(std::io::Error::other("connection reset")), 2))
+                    }
+                    _ => None,
+                }
+            });
+            Response::builder().header("content-type", "text/event-stream").body(Body::from_stream(s)).unwrap()
+        }
         "completed_then_reset" => {
             let s = futures::stream::unfold(0, |i| async move {
                 match i {
@@ -2652,10 +2674,10 @@ async fn image_records_wait_for_body_and_direct_sse_is_not_responses() {
         .unwrap();
     let failed = rows
         .iter()
-        .find(|r| r["error"] == "stream_truncated")
+        .find(|r| r["error"] == "stream_read_error")
         .unwrap();
     assert_eq!(failed["status"], 200);
-    assert_eq!(failed["err_source"], "stream");
+    assert_eq!(failed["err_source"], "network");
     assert_eq!(failed["account"], "a");
     let ok = rows.iter().find(|r| r["error"].is_null()).unwrap();
     assert_eq!(ok["transport"], "sse");
@@ -6902,4 +6924,45 @@ async fn ws_rate_limit_and_lifecycle_errors_keep_their_codes() {
         rows[0]
     );
     assert_eq!(rows[0]["outcome"], "cancelled", "{}", rows[0]);
+}
+
+#[tokio::test]
+async fn stream_read_error_is_network_not_truncated() {
+    for mode in ["delta_then_reset", "reset_first"] {
+        let d = tempfile::tempdir().unwrap();
+        let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+        read_all(&e, mode).await;
+        let rows = wait_rows(&e, 1).await;
+        assert_eq!(rows[0]["error"], "stream_read_error", "{mode}: {}", rows[0]);
+        assert_eq!(rows[0]["err_source"], "network", "{mode}: {}", rows[0]);
+        assert_eq!(rows[0]["failure_class"], "network", "{mode}: {}", rows[0]);
+    }
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    read_all(&e, "event_literal_truncated").await;
+    let rows = wait_rows(&e, 1).await;
+    assert_eq!(rows[0]["error"], "stream_truncated", "{}", rows[0]);
+    assert_eq!(rows[0]["err_source"], "stream", "{}", rows[0]);
+}
+
+#[tokio::test]
+async fn image_non_stream_truncation_is_bad_gateway() {
+    for (mode, code, source) in [
+        ("image_truncated", "stream_truncated", "stream"),
+        ("image_reset", "stream_read_error", "network"),
+    ] {
+        let d = tempfile::tempdir().unwrap();
+        let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+        let r = e
+            .post("/v1/images/generations")
+            .header("x-test-mode", mode)
+            .json(&serde_json::json!({"model":"gpt-image-1","prompt":"cat"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status().as_u16(), 502, "{mode}");
+        let rows = wait_rows(&e, 1).await;
+        assert_eq!(rows[0]["error"], code, "{mode}: {}", rows[0]);
+        assert_eq!(rows[0]["err_source"], source, "{mode}: {}", rows[0]);
+    }
 }

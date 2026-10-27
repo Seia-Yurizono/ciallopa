@@ -116,8 +116,8 @@ impl HttpBody for RecordedBody {
             Poll::Ready(Some(Err(e))) => {
                 fail(
                     &mut self.tracker,
-                    "stream_truncated",
-                    errors::SRC_STREAM,
+                    "stream_read_error",
+                    errors::SRC_NETWORK,
                     format!("response body error: {e}"),
                 );
                 self.tracker.take();
@@ -750,7 +750,12 @@ async fn run(
             Ok(v) => v,
             Err(e) => {
                 fail(trk, e.code, e.source, &e.message);
-                return json_error(StatusCode::GATEWAY_TIMEOUT, "upstream_error", &e.message);
+                let status = if e.code == "idle_timeout" {
+                    StatusCode::GATEWAY_TIMEOUT
+                } else {
+                    StatusCode::BAD_GATEWAY
+                };
+                return json_error(status, "upstream_error", &e.message);
             }
         };
         match ev.get("type").and_then(|t| t.as_str()).unwrap_or("") {
@@ -822,7 +827,7 @@ async fn run(
         "upstream image stream ended before completion",
     );
     json_error(
-        StatusCode::GATEWAY_TIMEOUT,
+        StatusCode::BAD_GATEWAY,
         "upstream_error",
         "stream error: stream disconnected before completion",
     )
@@ -965,8 +970,8 @@ fn sse_events(
                     Ok(Some(Err(e))) => {
                         return Some((
                             Err(ImageReadError {
-                                code: "stream_truncated",
-                                source: errors::SRC_STREAM,
+                                code: "stream_read_error",
+                                source: errors::SRC_NETWORK,
                                 message: e.to_string(),
                             }),
                             (up, buf, true),
