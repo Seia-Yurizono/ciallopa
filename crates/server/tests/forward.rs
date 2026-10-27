@@ -3727,7 +3727,11 @@ async fn usage_error_detail_capture_and_api() {
     assert!(v["headers"].get("set-cookie").is_none());
     assert_eq!(v["truncated"], false);
     let body: serde_json::Value = serde_json::from_str(v["body"].as_str().unwrap()).unwrap();
-    assert_eq!(body["refresh_token"], "[REDACTED]");
+    // Content allowlist drops non-envelope keys (stronger than [REDACTED]).
+    assert!(
+        body.get("refresh_token").is_none() || body["refresh_token"] == "[REDACTED]",
+        "refresh_token must be absent or redacted: {body}"
+    );
     assert!(
         body["error"]["message"]
             .as_str()

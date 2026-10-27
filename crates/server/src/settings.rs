@@ -357,7 +357,7 @@ impl Settings {
         detail: Value,
     ) {
         let c = Change {
-            key: format!("account:{account}"),
+            key: format!("account:{}", ciallopa_core::a(account)),
             old: Value::Null,
             new: detail,
             effect: Effect::Hot,
@@ -426,16 +426,22 @@ impl Settings {
         };
         added.sort();
         for id in &gone {
-            tracing::info!(account = %id, "account removed; runtime state dropped");
+            tracing::info!(account = %ciallopa_core::a(id), "account removed; runtime state dropped");
             self.cleanup_account(id);
+        }
+        if let Some(al) = ciallopa_core::current() {
+            al.register_many(&added);
         }
         *lock(&self.known_accounts) = now;
         Ok((added, gone))
     }
 
     pub async fn init_known_accounts(&self) {
-        let ids = self.st.accounts.list().await.into_iter().map(|a| a.id);
-        *lock(&self.known_accounts) = ids.collect();
+        let ids: Vec<String> = self.st.accounts.list().await.into_iter().map(|a| a.id).collect();
+        if let Some(al) = ciallopa_core::current() {
+            al.register_many(&ids);
+        }
+        *lock(&self.known_accounts) = ids.into_iter().collect();
     }
 
     // ---------------- write path ----------------

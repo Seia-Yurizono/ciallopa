@@ -568,7 +568,7 @@ impl FileAccountStore {
         // Another process (CPA, second ciallopa) already wrote a newer, still-valid token:
         // the 401 was against our stale copy, so use theirs instead of refreshing again.
         if force && f.s("access_token") != mem_before.s("access_token") && !f.needs_refresh(now) {
-            tracing::info!(account = %id, "newer token on disk; adopted instead of refreshing");
+            tracing::info!(account = %ciallopa_core::a(&id), "newer token on disk; adopted instead of refreshing");
             return f.credentials();
         }
         let oauth = self
@@ -603,7 +603,7 @@ impl FileAccountStore {
                         id: f.id.clone(),
                         raw: disk.unwrap_or_default(),
                     };
-                    tracing::warn!(account = %id, "auth file changed during refresh; keeping disk version");
+                    tracing::warn!(account = %ciallopa_core::a(&id), "auth file changed during refresh; keeping disk version");
                     self.cache(&df).await;
                     *last = Some(Instant::now());
                     return df.credentials();
@@ -616,7 +616,7 @@ impl FileAccountStore {
                 };
                 self.put(nf.clone()).await?;
                 *last = Some(Instant::now());
-                tracing::info!(account = %id, "token refreshed");
+                tracing::info!(account = %ciallopa_core::a(&id), "token refreshed");
                 nf.credentials()
             }
             Err(RefreshFailure::Permanent(why)) => {
@@ -628,12 +628,12 @@ impl FileAccountStore {
                         raw: base.clone(),
                     };
                     if !df.needs_relogin() {
-                        tracing::info!(account = %id, "refresh token rotated by another process; adopted");
+                        tracing::info!(account = %ciallopa_core::a(&id), "refresh token rotated by another process; adopted");
                         self.cache(&df).await;
                         return df.credentials();
                     }
                 }
-                tracing::warn!(account = %id, %why, "refresh token rejected; account needs_relogin (excluded from routing, no retry)");
+                tracing::warn!(account = %ciallopa_core::a(&id), %why, "refresh token rejected; account needs_relogin (excluded from routing, no retry)");
                 let mut raw = base;
                 if let Some(o) = raw.as_object_mut() {
                     o.insert("disabled".into(), true.into());
@@ -649,7 +649,7 @@ impl FileAccountStore {
             Err(RefreshFailure::Transient(why)) => {
                 let still_valid = f.expires_at().is_some_and(|e| e > now);
                 if !force && still_valid {
-                    tracing::warn!(account = %id, %why, "proactive refresh failed; using current token");
+                    tracing::warn!(account = %ciallopa_core::a(&id), %why, "proactive refresh failed; using current token");
                     f.credentials()
                 } else {
                     Err(AuthError::Refresh(why))

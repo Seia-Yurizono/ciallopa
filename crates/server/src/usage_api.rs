@@ -70,10 +70,47 @@ struct FiltersQ {
 impl From<FiltersQ> for Filters {
     fn from(q: FiltersQ) -> Self {
         Filters {
-            account: q.account,
+            // UI / callers pass the live account id; DB labels store aliases.
+            account: q.account.map(|a| ciallopa_core::a(&a)),
             model: q.model,
             key: q.key,
             instance: q.instance,
+        }
+    }
+}
+
+/// Map a stored alias back to the live account id when the process knows it (admin UI).
+fn reveal(s: &mut Option<String>) {
+    let Some(cur) = s.as_mut() else { return };
+    if let Some(al) = ciallopa_core::current() {
+        if let Some(id) = al.resolve(cur) {
+            *cur = id;
+        }
+    }
+}
+
+fn reveal_row(r: &mut ciallopa_usage::RecordRow) {
+    reveal(&mut r.account);
+    reveal(&mut r.first_account);
+}
+
+fn reveal_attempts(v: &mut serde_json::Value) {
+    let Some(list) = v.as_array_mut() else { return };
+    for x in list {
+        if let Some(a) = x.get_mut("account").and_then(|x| x.as_str().map(str::to_string)) {
+            let mut opt = Some(a);
+            reveal(&mut opt);
+            if let Some(id) = opt {
+                x["account"] = serde_json::Value::String(id);
+            }
+        }
+    }
+}
+
+fn reveal_summary(s: &mut ciallopa_usage::Summary) {
+    for g in &mut s.groups {
+        if let Some(v) = g.group.get_mut("account") {
+            reveal(v);
         }
     }
 }
@@ -262,6 +299,9 @@ async fn records(State(St { rec, .. }): State<St>, Query(q): Query<RecordsQ>) ->
     };
     match rec.recent(rq).await {
         Ok(mut rows) => {
+            for r in &mut rows {
+                reveal_row(r);
+            }
             let more = rows.len() > limit;
             rows.truncate(limit);
             let next = offset + rows.len();
@@ -358,7 +398,10 @@ async fn record(State(St { rec, .. }): State<St>, Path(id): Path<String>) -> Res
         return err(StatusCode::BAD_REQUEST, "invalid request id");
     }
     match rec.record_by_id(&id).await {
-        Ok(Some(record)) => Json(serde_json::json!({"record": record})).into_response(),
+        Ok(Some(mut record)) => {
+            reveal_row(&mut record);
+            Json(serde_json::json!({"record": record})).into_response()
+        }
         Ok(None) => err(
             StatusCode::NOT_FOUND,
             "record not found or no longer retained",
@@ -376,7 +419,10 @@ async fn detail(State(St { rec, .. }): State<St>, Path(id): Path<String>) -> Res
         return err(StatusCode::BAD_REQUEST, "invalid request id");
     }
     match rec.detail(&id).await {
-        Ok(Some(d)) => Json(d).into_response(),
+        Ok(Some(mut d)) => {
+            reveal_attempts(&mut d.attempts);
+            Json(d).into_response()
+        }
         Ok(None) => err(StatusCode::NOT_FOUND, "no detail for this request"),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     }
@@ -496,10 +542,11 @@ async fn summary(State(St { rec, .. }): State<St>, Query(q): Query<SummaryQ>) ->
             ..Default::default()
         }
     });
-    let s = match rec.summary(sq).await {
+    let mut s = match rec.summary(sq).await {
         Ok(s) => s,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     };
+    reveal_summary(&mut s);
     let refusals = match rq.clone() {
         None => None,
         Some(rq) => match rec.refusal_totals(rq).await {
