@@ -493,6 +493,30 @@ async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: Bytes) -> Re
                 .body(Body::from(concat!(r#"{"error":"#, enc_obj!(), "}")))
                 .unwrap()
         }
+        // Codex 0.166 `policy_capacity_unavailable` and the upstream's per-turn capacity limit
+        // (`turn_rate_limit_exceeded`, "Codex is at capacity"), both before any output.
+        "pre_policycap" if auth.contains("tok-a") => {
+            return sse_resp(concat!(
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-a\"}}\n\n",
+                "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"r-a\",\"error\":{\"code\":\"policy_capacity_unavailable\",\"message\":\"fake capacity notice\"}}}\n\n"
+            ))
+        }
+        "pre_turnrl" if auth.contains("tok-a") => {
+            return sse_resp(concat!(
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-a\"}}\n\n",
+                "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"r-a\",\"error\":{\"code\":\"turn_rate_limit_exceeded\",\"message\":\"Codex is at capacity, please try again later\"}}}\n\n"
+            ))
+        }
+        "pre_policycap" | "pre_turnrl" => return sse_resp(OK_B),
+        "http_turnrl" | "http_turnrl_all" if auth.contains("tok-a") || mode == "http_turnrl_all" => {
+            return Response::builder()
+                .status(429)
+                .header("content-type", "application/json")
+                .header("retry-after", "30")
+                .body(Body::from(r#"{"error":{"type":"rate_limit_error","code":"turn_rate_limit_exceeded","message":"Codex is at capacity, please try again later"}}"#))
+                .unwrap()
+        }
+        "http_turnrl" => return sse_resp(OK_B),
         "midover" if auth.contains("tok-a") => return sse_resp(OVER),
         "allover" => return sse_resp(OVER),
         "midover" => return sse_resp(OK_B),
@@ -919,6 +943,26 @@ async fn up_ws(State(m): State<Mock>, h: HeaderMap, ws: WebSocketUpgrade) -> Res
                         r#"{"type":"error","status":429,"error":{"type":"usage_limit_reached","resets_in_seconds":45}}"#
                     };
                     let _ = s.send(Message::Text(event.into())).await;
+                    continue;
+                }
+                if t.as_str().contains("\"pre_turnrl_ws\"") || t.as_str().contains("\"pre_policycap_ws\"") {
+                    if auth.contains("tok-a") {
+                        let event = if t.as_str().contains("\"pre_turnrl_ws\"") {
+                            r#"{"type":"error","error":{"type":"rate_limit_error","code":"turn_rate_limit_exceeded","message":"Codex is at capacity, please try again later"}}"#
+                        } else {
+                            r#"{"type":"error","error":{"code":"policy_capacity_unavailable","message":"fake capacity notice"}}"#
+                        };
+                        let _ = s.send(Message::Text(r#"{"type":"response.created","response":{"id":"r-a"}}"#.into())).await;
+                        let _ = s.send(Message::Text(event.into())).await;
+                    } else {
+                        for f in [
+                            r#"{"type":"response.created","response":{"id":"r-b"}}"#,
+                            r#"{"type":"response.output_text.delta","delta":"ok"}"#,
+                            r#"{"type":"response.completed","response":{"id":"r-b"}}"#,
+                        ] {
+                            let _ = s.send(Message::Text(f.into())).await;
+                        }
+                    }
                     continue;
                 }
                 if t.as_str().contains("\"late_ratelimit_ws\"") || t.as_str().contains("\"lifecycle_ws\"") {
@@ -7119,4 +7163,140 @@ async fn image_non_stream_truncation_is_bad_gateway() {
         assert_eq!(rows[0]["error"], code, "{mode}: {}", rows[0]);
         assert_eq!(rows[0]["err_source"], source, "{mode}: {}", rows[0]);
     }
+}
+
+/// Codex 0.166 `policy_capacity_unavailable` before any output is an overload: switch the
+/// account instead of failing the turn (SSE `response.failed` and a code-only WS frame).
+#[tokio::test]
+async fn policy_capacity_unavailable_before_output_switches() {
+    let e = env(300).await;
+    let t = sse_text(&e, "pre_policycap").await;
+    assert!(!t.contains("policy_capacity_unavailable"), "{t}");
+    assert!(
+        t.contains("r-b") && t.contains("response.completed") && !t.contains("r-a"),
+        "{t}"
+    );
+    assert!(e
+        .outcomes()
+        .iter()
+        .any(|(a, o)| a == "a" && matches!(o, Outcome::Overloaded { .. })));
+    let e = env(300).await;
+    let got = ws_frames(&e, "pre_policycap_ws").await;
+    assert!(
+        got.iter()
+            .all(|t| !t.contains("policy_capacity_unavailable")),
+        "{got:?}"
+    );
+    assert!(
+        got.iter()
+            .any(|t| t.contains("r-b") && t.contains("response.completed")),
+        "{got:?}"
+    );
+    assert!(e
+        .outcomes()
+        .iter()
+        .any(|(a, o)| a == "a" && matches!(o, Outcome::Overloaded { .. })));
+}
+
+/// `turn_rate_limit_exceeded` ("Codex is at capacity") before any output cools the model on
+/// that account and switches, like `rate_limit_exceeded`; never a usage limit.
+#[tokio::test]
+async fn turn_rate_limit_before_output_cools_model_and_switches() {
+    let rate_limited = |e: &Env| {
+        let o = e.outcomes();
+        assert!(
+            o.iter().any(|(a, o)| a == "a"
+                && matches!(
+                    o,
+                    Outcome::RateLimited {
+                        usage_limit: false,
+                        ..
+                    }
+                )),
+            "{o:?}"
+        );
+        assert!(
+            !o.iter().any(|(_, o)| matches!(
+                o,
+                Outcome::RateLimited {
+                    usage_limit: true,
+                    ..
+                }
+            )),
+            "{o:?}"
+        );
+    };
+    let e = env(300).await;
+    let t = sse_text(&e, "pre_turnrl").await;
+    assert!(!t.contains("turn_rate_limit_exceeded"), "{t}");
+    assert!(
+        t.contains("r-b") && t.contains("response.completed") && !t.contains("r-a"),
+        "{t}"
+    );
+    rate_limited(&e);
+    let e = env(300).await;
+    let got = ws_frames(&e, "pre_turnrl_ws").await;
+    assert!(
+        got.iter().all(|t| !t.contains("turn_rate_limit_exceeded")),
+        "{got:?}"
+    );
+    assert!(
+        got.iter()
+            .any(|t| t.contains("r-b") && t.contains("response.completed")),
+        "{got:?}"
+    );
+    rate_limited(&e);
+}
+
+/// HTTP 429 `turn_rate_limit_exceeded`: a model-level rate limit that honours Retry-After, not
+/// a usage limit. Recorded with its own code and classed as a rate limit, not quota.
+#[tokio::test]
+async fn http_turn_rate_limit_is_a_rate_limit_not_quota() {
+    let e = env(300).await;
+    let t = sse_text(&e, "http_turnrl").await;
+    assert!(t.contains("r-b") && t.contains("response.completed"), "{t}");
+    assert!(e.outcomes().iter().any(|(a, o)| a == "a"
+        && matches!(o, Outcome::RateLimited { usage_limit: false, retry_after: Some(d), .. } if *d == Duration::from_secs(30))));
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    read_all(&e, "http_turnrl_all").await;
+    let rows = wait_rows(&e, 1).await;
+    assert_eq!(rows[0]["error"], "turn_rate_limit_exceeded", "{}", rows[0]);
+    assert_eq!(rows[0]["status"], 429, "{}", rows[0]);
+    assert!(
+        e.outcomes().iter().all(|(_, o)| matches!(
+            o,
+            Outcome::RateLimited {
+                usage_limit: false,
+                ..
+            }
+        )),
+        "{:?}",
+        e.outcomes()
+    );
+}
+
+async fn ws_frames(e: &Env, tag: &str) -> Vec<String> {
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as M};
+    let mut req = format!("ws://{}/backend-api/codex/responses", e.proxy)
+        .into_client_request()
+        .unwrap();
+    req.headers_mut()
+        .insert("authorization", format!("Bearer {KEY}").parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    ws.send(M::text(format!(
+        r#"{{"type":"response.create","model":"gpt-5.5","tag":"{tag}"}}"#
+    )))
+    .await
+    .unwrap();
+    let mut got = Vec::new();
+    while let Ok(Some(Ok(m))) = tokio::time::timeout(Duration::from_secs(3), ws.next()).await {
+        let Ok(t) = m.to_text() else { break };
+        got.push(t.to_string());
+        if m.is_close() || t.contains("response.completed") || t.contains("\"error\"") {
+            break;
+        }
+    }
+    let _ = ws.close(None).await;
+    got
 }

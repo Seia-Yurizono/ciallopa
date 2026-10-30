@@ -1246,17 +1246,21 @@ fn quota_code(v: Option<&serde_json::Value>) -> bool {
     })
 }
 
-/// `code == rate_limit_exceeded`: a temporary (per-model) limit, which Codex retries.
+/// Temporary (per-model) limits, which Codex retries: `rate_limit_exceeded` and the per-turn
+/// capacity limit `turn_rate_limit_exceeded` ("Codex is at capacity").
+const RATE_LIMIT_CODES: [&str; 2] = [crate::errors::RATE_LIMIT_CODE, "turn_rate_limit_exceeded"];
+
+/// `code` is one of [`RATE_LIMIT_CODES`].
 fn rate_limit_code(v: Option<&serde_json::Value>) -> bool {
     v.and_then(|o| o.get("code"))
         .and_then(|c| c.as_str())
-        .is_some_and(|c| c.trim() == crate::errors::RATE_LIMIT_CODE)
+        .is_some_and(|c| RATE_LIMIT_CODES.contains(&c.trim()))
 }
 
 /// Structured quota check shared by HTTP SSE, WS and the usage tracker. Only these fields
 /// count (never free text such as instructions / messages):
 /// `error` event: `status`/`status_code == 429`, `error.type|code`, top-level `type|code`;
-/// `response.failed`: `response.error.type|code`. `code == rate_limit_exceeded` (either
+/// `response.failed`: `response.error.type|code`. A [`RATE_LIMIT_CODES`] code (either
 /// shape) is a rate limit without a quota code: it cools the model, never the account.
 /// Returns `(is_quota, has_quota_code)`.
 pub(crate) fn quota_event(v: &serde_json::Value) -> (bool, bool) {
@@ -1282,10 +1286,12 @@ pub(crate) fn quota_event(v: &serde_json::Value) -> (bool, bool) {
 }
 
 /// Structured codes that mean "upstream capacity / account throttled", never quota.
-const OVERLOAD_CODES: [&str; 3] = [
+const OVERLOAD_CODES: [&str; 4] = [
     "server_is_overloaded",
     "slow_down",
     "service_unavailable_error",
+    // Codex 0.166 retries it like `server_is_overloaded`.
+    "policy_capacity_unavailable",
 ];
 
 /// Overload detection on an error event (`error`, `response.failed`, or an event whose own
@@ -2273,6 +2279,47 @@ mod quota_tests {
                 ..
             })
         ));
+    }
+    #[test]
+    fn turn_rate_limit_is_a_model_rate_limit() {
+        // "Codex is at capacity" per-turn limit: a temporary rate limit (model cooldown and
+        // switch before output), never a usage limit, and never mistaken for an overload by
+        // its message.
+        for ev in [
+            r#"{"type":"response.failed","response":{"error":{"code":"turn_rate_limit_exceeded","message":"Codex is at capacity, please try again later"}}}"#,
+            r#"{"type":"error","error":{"type":"rate_limit_error","code":"turn_rate_limit_exceeded","message":"Codex is at capacity, please try again later"}}"#,
+        ] {
+            assert!(
+                matches!(
+                    event_kind(ev),
+                    EventKind::Quota(Outcome::RateLimited {
+                        usage_limit: false,
+                        ..
+                    })
+                ),
+                "{ev}"
+            );
+            let v: serde_json::Value = serde_json::from_str(ev).unwrap();
+            assert_eq!(quota_event(&v), (true, false), "{ev}");
+        }
+        let body = br#"{"error":{"type":"rate_limit_error","code":"turn_rate_limit_exceeded","message":"Codex is at capacity, please try again later"}}"#;
+        assert_eq!(overload_body(429, body), None);
+    }
+    #[test]
+    fn policy_capacity_unavailable_is_an_overload() {
+        for ev in [
+            r#"{"type":"response.failed","response":{"error":{"code":"policy_capacity_unavailable","message":"x"}}}"#,
+            r#"{"type":"error","error":{"code":"policy_capacity_unavailable"}}"#,
+        ] {
+            assert!(
+                matches!(event_kind(ev), EventKind::Overloaded(ref c) if c == "policy_capacity_unavailable"),
+                "{ev}"
+            );
+        }
+        assert_eq!(
+            overload_body(503, br#"{"error":{"code":"policy_capacity_unavailable"}}"#).as_deref(),
+            Some("policy_capacity_unavailable")
+        );
     }
     #[test]
     fn sse_types_survive_fragmented_crlf_and_multiline_data() {

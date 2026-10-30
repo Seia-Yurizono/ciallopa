@@ -128,7 +128,7 @@ Not recorded: `/models`, `/wham/*` and other passthrough, WS handshakes that suc
 | `upstream` | upstream HTTP error, passed through verbatim | upstream `error.code` / `error.type`, else `http_<status>`; `invalid_encrypted_content` (also when the upstream reports it inside a 200 stream or WS turn, see below; panel label 加密推理被拒) |
 | `stream` | error inside a 200 stream | the event's upstream code, bucketed like an HTTP error body (`response.error`, then `error`, then the event's own `code`; `code` before `type`, at most 64 chars), e.g. `rate_limit_exceeded`, `context_length_exceeded`, `server_is_overloaded`; quota codes (`usage_limit_reached`, `insufficient_quota`, `usage_not_included`, or a 429 whose text says usage limit) log as `usage_limit`; a 429 with no code as `rate_limit_exceeded`; no code at all: `upstream_error_event` (`error` event) / `response_failed`. Also `stream_truncated` (the body ended cleanly without a terminal event; a read error is `stream_read_error` / `network`), Images `image_output_missing`, WS `upstream_ws_close` (the upstream sent a close frame mid-turn; the close code and reason are in the detail). Rows written before this split carry `upstream_closed`. A WS `error` frame ends the turn only where Codex treats it as fatal: a non-2xx `status` / `status_code`, or the code `websocket_connection_limit_reached`, `previous_response_not_found` or `flex_unavailable` (quota and overload frames too). Any other error frame is forwarded, logged as a warning and kept in the detail body, and the turn continues. WS lifecycle codes `websocket_connection_limit_reached` and `previous_response_not_found` are recorded but counted as cancelled (Codex reconnects or resends the history), not as failures |
 
-A rate limit (`rate_limit_exceeded`, or any 429 without a quota code, including a `response.failed` event with `rate_limit_exceeded`) cools only that model on
+A rate limit (`rate_limit_exceeded`, the per-turn capacity limit `turn_rate_limit_exceeded` ("Codex is at capacity", panel label 容量不足), or any 429 without a quota code, including a `response.failed` event or code-only WS `error` frame with either code) cools only that model on
 that account; only quota codes cool the whole account. Request-side codes (see `request`
 below) never count against the account.
 
@@ -145,7 +145,7 @@ exhaustion is counted as a failure yet charted apart from real faults:
 | class | rule (first match) |
 |---|---|
 | `quota` | code `usage_limit`, `usage_limit_reached` (upstream 429 or in-stream), `all_quota_exhausted`, `first_quota_reset` (local) |
-| `rate_limit` | any other 429 sent to the client, an upstream 429, or in-stream `rate_limit_exceeded` |
+| `rate_limit` | any other 429 sent to the client, an upstream 429, or in-stream `rate_limit_exceeded` / `turn_rate_limit_exceeded` |
 | `request` | the upstream rejected the request content: `context_length_exceeded`, `invalid_request_error`, `invalid_prompt`, `invalid_value`, `unsupported_parameter`, `unsupported_value`, `string_above_max_length`. Not counted in 上游出错 |
 | `upstream` / `network` / `stream` / `local` | by `err_source` |
 | `other` | no source recorded (old rows) |
@@ -333,7 +333,8 @@ cooled the account (for example a usage limit) only updates the quota snapshot, 
 account stays out of rotation. WS `codex.rate_limits` snapshots count as the handshake's attempt.
 
 ### Overloaded / "at capacity"
-`server_is_overloaded`, `slow_down`, `service_unavailable_error`, or an error that only says
+`server_is_overloaded`, `slow_down`, `service_unavailable_error`, `policy_capacity_unavailable`
+(Codex 0.166 retries it like an overload), or an error that only says
 "…overloaded…" / "…at capacity…" with no other code. It usually arrives as HTTP 200 followed by
 an in-stream `error` event and `response.failed`; it can also be an HTTP 503 / 502 / 400 / 429
 body. It is account-level throttling, not quota and not a credential problem.
