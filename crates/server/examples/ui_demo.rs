@@ -697,7 +697,7 @@ fn demo_error_code_rows(rec: &Recorder, now: i64) {
     rows.push(r);
     // WS upstream close frame / EOF
     let mut r = mk(6_000, Transport::Ws, "responses");
-    r.error = Some("upstream_closed".into());
+    r.error = Some("upstream_ws_close".into());
     r.err_source = Some("stream");
     r.detail = detail(
         "upstream websocket closed mid-turn (code 1011) internal error",
@@ -705,10 +705,10 @@ fn demo_error_code_rows(rec: &Recorder, now: i64) {
     );
     rows.push(r);
     let mut r = mk(7_000, Transport::Ws, "responses");
-    r.error = Some("upstream_closed".into());
+    r.error = Some("upstream_ws_eof".into());
     r.err_source = Some("network");
     r.detail = detail(
-        "upstream websocket disconnected (transport error: connection ended without a close frame)",
+        "upstream websocket ended without a close frame (Connection reset without closing handshake)",
         "",
     );
     rows.push(r);

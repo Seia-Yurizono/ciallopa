@@ -5314,19 +5314,21 @@ async fn ws_upstream_transport_error_mid_turn_recorded_with_cause() {
     assert_eq!(u16::from(f.code), 1011);
     let rows = wait_rows(&e, 1).await;
     let r = &rows[0];
-    assert_eq!(r["error"], "upstream_closed", "{r}");
+    // TCP gone without a close frame: an EOF, not a close frame or a read error.
+    assert_eq!(r["error"], "upstream_ws_eof", "{r}");
+    assert_eq!(r["err_source"], "network", "{r}");
     let id = r["request_id"].as_str().unwrap().to_string();
     let v: serde_json::Value = detail_of(&e, &id, true).await.json().await.unwrap();
     let msg = v["message"].as_str().unwrap_or_default();
     assert!(
-        msg.starts_with("upstream websocket disconnected (transport error: ") && msg.len() > 52,
+        msg.starts_with("upstream websocket ended without a close frame (") && msg.len() > 50,
         "{v}"
     );
     let logs = warnings.0.lock().unwrap().clone();
     assert_eq!(logs.len(), 1, "{logs:?}");
     let log = &logs[0];
     assert_eq!(log["transport"], "ws");
-    assert_eq!(log["error_class"], "read_error");
+    assert_eq!(log["error_class"], "eof");
     assert_eq!(log["last_event"], "response.created");
     assert_eq!(log["event_count"], 1);
     assert_eq!(log["terminal_received"], false);
@@ -5366,7 +5368,7 @@ async fn ws_replayed_attempt_diagnostics_use_current_handshake_and_fresh_progres
             assert_eq!(logs.len(), 1, "{tag}: {logs:?}");
             let log = &logs[0];
             assert_eq!(log["transport"], "ws");
-            assert_eq!(log["error_class"], "read_error");
+            assert_eq!(log["error_class"], "eof");
             assert_eq!(log["account"], "b");
             assert_eq!(log["upstream_request_id"], "ws-replay-upstream-id");
             assert_eq!(log["record_id"], rows[0]["request_id"]);
@@ -5424,6 +5426,39 @@ async fn ws_stream_diagnostics_count_ping_as_activity_and_hide_unknown_event_typ
         );
         assert!(!log.to_string().contains("private-"), "{log}");
     }
+}
+
+#[tokio::test]
+async fn ws_upstream_close_frame_mid_turn_is_upstream_ws_close() {
+    use tokio_tungstenite::tungstenite::Message as M;
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(ws_req(&e)).await.unwrap();
+    ws.send(M::text(
+        r#"{"type":"response.create","tag":"diagnostic_close"}"#,
+    ))
+    .await
+    .unwrap();
+    let mut code = None;
+    while let Some(Ok(m)) = ws.next().await {
+        if let M::Close(f) = m {
+            code = f.map(|f| u16::from(f.code));
+            break;
+        }
+    }
+    // The upstream close frame is relayed as is.
+    assert_eq!(code, Some(1000));
+    let rows = wait_rows(&e, 1).await;
+    let r = &rows[0];
+    assert_eq!(r["error"], "upstream_ws_close", "{r}");
+    assert_eq!(r["err_source"], "stream", "{r}");
+    let id = r["request_id"].as_str().unwrap().to_string();
+    let v: serde_json::Value = detail_of(&e, &id, true).await.json().await.unwrap();
+    let msg = v["message"].as_str().unwrap_or_default();
+    assert!(
+        msg.starts_with("upstream websocket closed mid-turn (code 1000)"),
+        "{v}"
+    );
 }
 
 async fn mode_post(e: &Env, mode: &str) -> reqwest::Response {

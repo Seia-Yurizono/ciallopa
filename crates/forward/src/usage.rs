@@ -785,7 +785,10 @@ fn describe(kind: &str, status: u16) -> String {
     match kind {
         "client_closed" => "client disconnected before the response completed".into(),
         "shutdown" => "server shutdown interrupted the response before completion".into(),
-        "upstream_closed" => "upstream closed the connection before a terminal event".into(),
+        "upstream_ws_close" => "upstream websocket sent a close frame before a terminal event".into(),
+        "upstream_ws_eof" => "upstream websocket ended without a close frame".into(),
+        "upstream_ws_read_error" => "upstream websocket read error before a terminal event".into(),
+        "upstream_ws_send_error" => "could not forward the client frame to the upstream websocket".into(),
         "idle_timeout" => "upstream stream idle timeout".into(),
         "stream_error" => "upstream stream transport error".into(),
         "incomplete" => "response.incomplete from upstream".into(),

@@ -645,7 +645,7 @@ def run_tool_recovery(args, directory, transport, stage):
             "actual_transport": not any(x["t"] == ("sse" if transport == "ws" else "ws") for x in wire),
             "three_gateway_records": records["total"] == 3,
             "two_successes_one_fault": sum(x.get("error") is None for x in rows) == 2
-                and sum(x.get("error") == ("stream_truncated" if transport == "sse" else "upstream_closed") for x in rows) == 1,
+                and sum(x.get("error") in (("stream_truncated",) if transport == "sse" else ("upstream_ws_eof", "upstream_ws_read_error")) for x in rows) == 1,
             "gateway_did_not_replay": all(x.get("retries") == 0 and x.get("switches") == 0 for x in rows),
             "gateway_released": runtime["inflight"] == 0 and runtime["ws_connections"] == 0 and runtime["rejected"] == 0,
             "one_diagnostic_correlates_fault": len(diagnostics) == len(faults) == 1
@@ -854,8 +854,8 @@ os.kill(os.getpid(), signal.SIGKILL)
         tool_calls = [call for client in clients for call in client.tool_calls]
         rows = records["records"]
         first_events = [x["event"] for x in wire if x["t"] == "response" and x["id"] == held["id"]]
-        expected_error = ("stream_truncated" if transport == "sse" else "upstream_closed") \
-            if fault == "pending-disconnect" else "client_closed"
+        expected_errors = (("stream_truncated",) if transport == "sse" else ("upstream_ws_eof", "upstream_ws_read_error")) \
+            if fault == "pending-disconnect" else ("client_closed",)
         checks = {
             "persistent_isolated_thread": started_thread["ephemeral"] is False and rollout.is_relative_to(client_dir.resolve()),
             "pending_call_persisted_before_fault": len(tool_items(before, "function_call")) == 1,
@@ -886,7 +886,7 @@ os.kill(os.getpid(), signal.SIGKILL)
             "gateway_released": runtime["inflight"] == 0 and runtime["ws_connections"] == 0 and runtime["rejected"] == 0,
             "two_gateway_records": records["total"] == 2,
             "one_success_one_expected_fault": sum(row.get("error") is None for row in rows) == 1
-                and sum(row.get("error") == expected_error for row in rows) == 1,
+                and sum(row.get("error") in expected_errors for row in rows) == 1,
         }
         if crash:
             checks.update({
