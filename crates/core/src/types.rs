@@ -166,6 +166,9 @@ pub enum Outcome {
     /// 401/403 after a forced refresh also failed.
     AuthFailed,
     /// 408 / 5xx / connect error / empty stream / idle timeout.
+    /// `status: None` (transport-level: connect, reset, EOF, idle) is reported for
+    /// observers only: the router deliberately does nothing with it (no cooldown, bindings
+    /// kept; CPA shouldSkipCredentialCooldown), so a dropped stream never benches an account.
     Transient {
         status: Option<u16>,
     },

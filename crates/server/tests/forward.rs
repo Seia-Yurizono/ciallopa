@@ -618,6 +618,10 @@ async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: Bytes) -> Re
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"x\"}\n\n",
             "event: error\ndata: {\"type\":\"error\",\"status\":429,\"error\":{\"type\":\"rate_limit_error\",\"code\":\"rate_limit_exceeded\",\"message\":\"slow down\"}}\n\n"
         )),
+        "late_failed_rate_limit" => sse_resp(concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"x\"}\n\n",
+            "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"Please try again in 11s.\"}}}\n\n"
+        )),
         "late_429_nocode" => sse_resp(concat!(
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"x\"}\n\n",
             "event: error\ndata: {\"type\":\"error\",\"status\":429,\"error\":{\"message\":\"slow down\"}}\n\n"
@@ -6873,6 +6877,7 @@ async fn stream_rate_limit_without_quota_code_is_not_usage_limit() {
     for (mode, code) in [
         ("late_rate_limit", "rate_limit_exceeded"),
         ("late_429_nocode", "rate_limit_exceeded"),
+        ("late_failed_rate_limit", "rate_limit_exceeded"),
     ] {
         let d = tempfile::tempdir().unwrap();
         let e = env_usage(300, Some(usage_recorder(d.path()))).await;
@@ -6889,6 +6894,18 @@ async fn stream_rate_limit_without_quota_code_is_not_usage_limit() {
                 o,
                 Outcome::RateLimited {
                     usage_limit: true,
+                    ..
+                }
+            )),
+            "{mode}: {:?}",
+            e.outcomes()
+        );
+        // The model is cooled (rate limit), not left untouched.
+        assert!(
+            e.outcomes().iter().any(|(_, o)| matches!(
+                o,
+                Outcome::RateLimited {
+                    usage_limit: false,
                     ..
                 }
             )),
