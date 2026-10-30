@@ -305,6 +305,9 @@ impl Settings {
         }
         if !applied.is_empty() {
             tracing::info!(source, changed = applied.len(), "config reloaded");
+            for a in self.st.config.load().advisories() {
+                tracing::warn!(source, "{a}");
+            }
             self.audit(actor, "reload", source, &applied);
         }
         Ok(rep)

@@ -866,6 +866,7 @@ async fn relay(
                     Some(Ok(m)) => {
                         if awaiting {
                             progress.activity();
+                            if let Some(t) = turn.as_mut() { t.upstream_activity(); }
                         }
                         let (kind, done) = match &m {
                             WsMessage::Text(t) => {

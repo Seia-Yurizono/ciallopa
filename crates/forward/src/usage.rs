@@ -28,6 +28,10 @@ pub(crate) struct Tracker {
     /// WS turn replays (switch / wait+retry); allocated on the first replay only, so a turn
     /// without one stores no attempt chain.
     replays: Option<crate::errors::Attempts>,
+    /// Last upstream data (body chunk / WS frame) for this request or turn. A client close is
+    /// recorded with how long the upstream had been silent, so a client-side idle timeout
+    /// (Codex: 300 s) is distinguishable from a user cancel.
+    last_upstream: Option<Instant>,
 }
 
 /// Capture the record ID and monotonic start together.
@@ -193,6 +197,7 @@ impl Tracker {
             drain: st.upstream.drain.clone(),
             emit: true,
             replays: None,
+            last_upstream: None,
         })
     }
 
@@ -353,9 +358,24 @@ impl Tracker {
             self.fail("shutdown");
             self.source(crate::errors::SRC_LOCAL);
         } else {
-            self.fail("client_closed");
+            let msg = match self.last_upstream {
+                Some(t) => format!(
+                    "client disconnected before the response completed; upstream silent for {:.1}s",
+                    t.elapsed().as_secs_f64()
+                ),
+                None => format!(
+                    "client disconnected before the response completed; upstream silent for {:.1}s (no upstream data yet)",
+                    self.start.elapsed().as_secs_f64()
+                ),
+            };
+            self.fail_msg("client_closed", msg);
             self.source(crate::errors::SRC_CLIENT);
         }
+    }
+
+    /// The upstream sent data (a body chunk or WS frame) for this request / turn.
+    pub(crate) fn upstream_activity(&mut self) {
+        self.last_upstream = Some(Instant::now());
     }
 
     /// Codex WS prewarm (`generate:false`): logged under its own endpoint so it stays out of

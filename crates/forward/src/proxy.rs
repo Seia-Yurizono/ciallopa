@@ -1047,6 +1047,11 @@ fn stream_body(
                             t.error_text(&error.event);
                         }
                     }
+                    if !chunk.is_empty() {
+                        if let Some(t) = trk.as_mut() {
+                            t.upstream_activity();
+                        }
+                    }
                     if sse {
                         if !chunk.is_empty() {
                             progress.activity();

@@ -81,6 +81,9 @@ impl RoutingConfig {
     }
 }
 
+/// Codex's default `stream_idle_timeout_ms` (300 000 ms) for SSE and WebSocket streams.
+pub const CODEX_STREAM_IDLE_SECS: u64 = 300;
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct UpstreamOpts {
@@ -486,6 +489,20 @@ impl Config {
         c.validate()?;
         Ok(c)
     }
+    /// Valid but likely unintended settings, logged as warnings at startup and on reload.
+    pub fn advisories(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        let idle = self.upstream_opts.stream_idle_timeout_secs;
+        if idle > CODEX_STREAM_IDLE_SECS {
+            out.push(format!(
+                "upstream_opts.stream_idle_timeout_secs ({idle}s) is above the Codex client's \
+                 stream idle timeout ({CODEX_STREAM_IDLE_SECS}s): a silent upstream makes Codex \
+                 disconnect first, so the turn is recorded as client_closed (Codex retries) \
+                 instead of idle_timeout"
+            ));
+        }
+        out
+    }
     pub fn validate(&self) -> Result<(), ConfigError> {
         if !(1..=4096).contains(&self.max_body_mb) {
             return Err(ConfigError::Invalid(
@@ -728,6 +745,19 @@ pub fn env_var(name: &str) -> Option<(String, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn idle_above_codex_client_timeout_is_advised() {
+        assert!(Config::default().advisories().is_empty());
+        let c = Config::parse("[upstream_opts]\nstream_idle_timeout_secs = 300").unwrap();
+        assert!(c.advisories().is_empty());
+        let c = Config::parse("[upstream_opts]\nstream_idle_timeout_secs = 301").unwrap();
+        let a = c.advisories();
+        assert_eq!(a.len(), 1, "{a:?}");
+        assert!(a[0].contains("stream_idle_timeout_secs (301s)"), "{a:?}");
+        assert!(a[0].contains("300s"), "{a:?}");
+        assert!(a[0].contains("client_closed"), "{a:?}");
+    }
 
     #[test]
     fn example_key_is_rejected() {
