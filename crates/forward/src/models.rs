@@ -171,11 +171,11 @@ mod tests {
     fn client_version_default() {
         assert_eq!(
             w("/codex/models".into()),
-            "/codex/models?client_version=0.164.0"
+            "/codex/models?client_version=0.166.0"
         );
         assert_eq!(
             w("/codex/models?a=1".into()),
-            "/codex/models?a=1&client_version=0.164.0"
+            "/codex/models?a=1&client_version=0.166.0"
         );
         assert_eq!(
             w("/codex/models?client_version=9".into()),
