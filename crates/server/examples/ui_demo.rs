@@ -746,7 +746,7 @@ fn demo_error_code_rows(rec: &Recorder, now: i64) {
     let mut r = mk(12_000, Transport::Http, "images");
     r.model = Some("gpt-image-2".into());
     r.resp_model = r.model.clone();
-    r.status = 504;
+    r.status = 502;
     r.error = Some("stream_truncated".into());
     r.err_source = Some("stream");
     r.detail = detail("upstream stream ended without a terminal event", "");
