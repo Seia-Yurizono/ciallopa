@@ -3066,6 +3066,15 @@ mod tests {
             (Outcome::Failed, Some("rate_limit"))
         );
         assert_eq!(rl.next, vec!["cooldown"]);
+        let trl = c("turn_rate_limit_exceeded");
+        assert_eq!(
+            (trl.outcome, trl.cause),
+            (Outcome::Failed, Some("rate_limit"))
+        );
+        assert_eq!(
+            failure_class(200, Some("turn_rate_limit_exceeded"), Some("stream"), None),
+            "rate_limit"
+        );
         let rq = c("context_length_exceeded");
         assert_eq!((rq.outcome, rq.cause), (Outcome::Failed, Some("request")));
         assert!(!rq.upstream_fault);

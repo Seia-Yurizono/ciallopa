@@ -64,6 +64,8 @@ pub const UPSTREAM: &[&str] = &[
     "websocket_connection_limit_reached",
     "previous_response_not_found",
     "server_is_overloaded",
+    "policy_capacity_unavailable",
+    "turn_rate_limit_exceeded",
 ];
 
 /// No longer produced, still present in older rows.

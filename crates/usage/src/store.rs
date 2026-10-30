@@ -1217,7 +1217,7 @@ pub const QUOTA_ERRORS: &[&str] = &[
 ];
 
 /// Rate-limit codes reported in-stream (no HTTP 429 on the row): cool the model only.
-pub const RATE_LIMIT_ERRORS: &[&str] = &["rate_limit_exceeded"];
+pub const RATE_LIMIT_ERRORS: &[&str] = &["rate_limit_exceeded", "turn_rate_limit_exceeded"];
 
 /// Upstream codes that blame the request itself (too long, malformed): not an upstream or
 /// account fault.
