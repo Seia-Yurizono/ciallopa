@@ -8,6 +8,7 @@
 //! `/backend-api/*` is a sticky passthrough.
 mod admission;
 mod budget;
+pub mod codes;
 mod egress;
 mod encrypted;
 mod errors;

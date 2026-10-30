@@ -798,7 +798,7 @@ function failureClassesAndTrend() {
   }
   // 错误码 rows show the Chinese label; the raw code stays in the hover title.
   vm.runInContext('SRC={upstream:["上游"]};tierName=v=>v;' + section('function groupName(', '\n'), c);
-  assert.equal(vm.runInContext('groupName("error","first_quota_reset")', c), '额度用尽');
+  assert.equal(vm.runInContext('groupName("error","first_quota_reset")', c), 'first_quota_reset（额度用尽）', 'group rows name the English code first');
   assert.equal(vm.runInContext('groupName("error","weird_code")', c), 'weird_code');
   assert.match(html, /title:g==="error"&&v\?v:shown/);
   // 占用与拒绝: limit lines carry their series colour; no 右轴 text in the legend.
@@ -836,6 +836,9 @@ async function observationErrorDetails() {
       assert.match(control('dmsg').textContent, /observation_incomplete/);
     }
   }
+  c.record = {request_id: '0000000000000001', status: 504, err_source: 'network', error: 'timeout_connect'};
+  await vm.runInContext('openDetail(record)', c);
+  assert.equal(control('dmsg').textContent, '网络 · timeout_connect（连接上游超时）', 'detail: English code first, Chinese label after');
 }
 
 // Only the DOM operations used by the chip and inspector flows; no browser/layout claims.
@@ -1466,6 +1469,11 @@ async function problemChipsAndNextSteps() {
   const egress = vm.runInContext('recRow', c)({...base, status: 502, error: 'proxy_connect', err_source: 'network', problem: 'error', cause: 'network', next: ['egress']});
   await egress.children.find(td => td.getAttribute('class') === 'err').children.find(e => e.tagName === 'BUTTON').events.click(click);
   assert.equal(visits.at(-1), '/ui/settings#network');
+  // Error cells: the English code is the primary text, the Chinese label is secondary.
+  const espans = egress.children.find(td => td.getAttribute('class') === 'err').children.filter(e => e.tagName === 'SPAN');
+  assert.deepEqual(espans.slice(0, 3).map(e => [e.getAttribute('class'), flat(e)]), [['tag proxy', '代理'], ['mono sm', 'proxy_connect'], ['xs mut', '出口代理连接失败']]);
+  const raw = vm.runInContext('recRow', c)({...base, status: 418, error: 'some_new_code', err_source: 'upstream', upstream_status: 418, problem: 'error', next: []});
+  assert.deepEqual(raw.children.find(td => td.getAttribute('class') === 'err').children.filter(e => e.tagName === 'SPAN').slice(0, 2).map(flat), ['上游 418', 'some_new_code'], 'an unlabelled code is shown verbatim, without an invented label');
   const truncated = vm.runInContext('recRow', c)({...base, status: 200, incomplete: 'max_output_tokens', problem: 'unfinished', cause: 'truncated', next: ['detail']});
   assert.match(flat(truncated.children.find(td => td.getAttribute('class')?.startsWith('s'))), /上游截断/);
   assert.match(flat(truncated.children.find(td => td.getAttribute('class') === 'err')), /incomplete_max_output_tokens/);
