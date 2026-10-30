@@ -167,12 +167,12 @@ async fn learned_fingerprint_end_to_end() {
     // 1. default before anything is learned
     let v = fp().await;
     assert_eq!(v["source"], "default");
-    assert_eq!(v["user_agent"], "codex_cli_rs/0.164.0");
+    assert_eq!(v["user_agent"], "codex_cli_rs/0.166.0");
     refresh_list().await;
     assert_eq!(
         last(&seen, "list"),
         (
-            Some("codex_cli_rs/0.164.0".into()),
+            Some("codex_cli_rs/0.166.0".into()),
             Some("codex_cli_rs".into())
         )
     );

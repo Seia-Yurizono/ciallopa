@@ -389,7 +389,7 @@ cloudflare_cookies = false # true = per-account in-memory jar of ChatGPT infrast
 enabled = true
 main_model = "gpt-6.1-sol"         # wrapper model for non-gpt-image-* Images requests
 default_originator = "codex_exec"       # only for clients that don't send one
-default_user_agent = "codex_exec/0.164.0"   # used when client UA doesn't start with "codex"
+default_user_agent = "codex_exec/0.166.0"   # used when client UA doesn't start with "codex"
 ```
 
 ## Codex CLI client
@@ -526,7 +526,7 @@ button after re-listing the cards upstream; disabled / re-login accounts are ski
 
 Internal upstream calls (token refresh, `/wham/*`, reset credits) reuse the `User-Agent` +
 `originator` of the latest validated Codex client request (`GET /usage/v1/client-fingerprint`;
-default `codex_cli_rs/0.164.0`). See docs/USAGE.md.
+default `codex_cli_rs/0.166.0`). See docs/USAGE.md.
 
 Details: docs/USAGE.md.
 

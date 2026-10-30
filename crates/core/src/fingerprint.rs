@@ -291,7 +291,7 @@ mod tests {
             let ua = if i % 2 == 0 {
                 "codex_cli_rs/0.163.0 (A)"
             } else {
-                "codex_cli_rs/0.164.0 (B)"
+                "codex_cli_rs/0.166.0 (B)"
             };
             h.insert("user-agent", ua.parse().unwrap());
             assert!(observe(&h, Some("k")));
@@ -301,7 +301,7 @@ mod tests {
         assert!((1..=2).contains(&writes), "200 requests → {writes} writes");
         assert_eq!(
             &*saved.lock().unwrap(),
-            "codex_cli_rs/0.164.0 (B)",
+            "codex_cli_rs/0.166.0 (B)",
             "latest wins"
         );
         // Same pair again: no new write (only the hourly timestamp bump would).
