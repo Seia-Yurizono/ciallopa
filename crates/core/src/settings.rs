@@ -131,7 +131,7 @@ pub const SCHEMA: &[Field] = &[
     Field { options: &["quota", "any"], choices: &[c("quota", "仅额度或令牌问题", "原账号额度用尽、令牌失效、402 或被停用时才换绑；短暂故障（如连续 5xx）期间临时借用其他账号，恢复后回到原账号"), c("any", "任何不可用", "原账号因任何原因不能用就换绑到新账号，之后留在新账号")], ..f("routing.session_affinity_rebind_on", "enum", Hot, true, "何时换绑账号", "绑定的账号暂时不能用时，这次请求总会改用其他账号；这里决定绑定是否跟着换") },
     f("routing.quota_avoid_threshold", "float", Hot, true, "额度回避阈值", "取值 0–1，0 = 关闭。新会话跳过最近一次观测到已用比例（任一未重置的额度窗口）达到该值的账号，全部达到时不回避；已绑定且可用的会话不受影响。"),
     f("routing.cooldown_wait_secs", "int", Hot, true, "全部冷却时最长等待（秒）", "所有账号都在冷却、且有账号会在这段时间内恢复时，请求等它恢复（WebSocket 握手最多 10 秒）；最大 120，0 = 不等待，直接返回错误"),
-    f("upstream_opts.stream_idle_timeout_secs", "int", Hot, true, "流空闲超时（秒）", "上游流式响应这么久没有新数据就断开"),
+    f("upstream_opts.stream_idle_timeout_secs", "int", Hot, true, "流空闲超时（秒）", "上游流式响应这么久没有新数据就断开（记为 idle_timeout）。Codex 自己的流空闲超时默认 300 秒，设得更大时 Codex 会先断开，记录变成 client_closed。"),
     f("upstream_opts.response_header_timeout_secs", "int", Hot, true, "响应头等待上限（秒）", "每次 HTTP 尝试从发送请求（含上传请求体）到收到响应头的最长时间，超时按网络错误换号、不冷却账号；只用于 HTTP，不限制之后的流式生成。取值 1–86400。"),
     f("upstream_opts.preparation_timeout_secs", "int", Hot, true, "准备阶段总预算（秒）", "一个请求在重试和换号上累计可花的时间：获取令牌、等待响应头、读取错误、冷却等待和重试等待都计入，正常生成不计入；用完后不再重试，返回 504。WebSocket 握手和每个 turn 各有一份预算。取值 1–86400。"),
     f("upstream_opts.max_attempts", "int", Hot, true, "换号重试次数", "首字节前遇到网络错误、408 或 5xx 时最多换几次账号，不重试同一账号；401/402/403/404/429 换号不占次数；WebSocket 握手另有固定的 4 次重试"),

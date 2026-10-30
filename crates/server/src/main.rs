@@ -228,6 +228,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     if cfg.api_keys.is_empty() {
         tracing::warn!("api_keys is empty: every proxied request will get 401");
     }
+    for a in cfg.advisories() {
+        tracing::warn!("{a}");
+    }
     // Exists from startup so the watcher picks up accounts added later (`ciallopa login`).
     if let Err(e) = ciallopa_auth::file::ensure_auth_dir(&cfg.auth_dir) {
         tracing::warn!(dir = %cfg.auth_dir.display(), error = %e, "cannot create auth_dir");

@@ -4552,6 +4552,7 @@ async fn sse_disconnect_while_upstream_idle_records_client_close_promptly() {
         .unwrap();
     assert_eq!(response.status(), 200);
     assert!(response.chunk().await.unwrap().is_some());
+    tokio::time::sleep(Duration::from_millis(300)).await;
     drop(response);
 
     // The upstream never yields another chunk; client closure must finish the tracker
@@ -4562,6 +4563,21 @@ async fn sse_disconnect_while_upstream_idle_records_client_close_promptly() {
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0]["error"], "client_closed", "{rows:?}");
     assert_eq!(rows[0]["err_source"], "client", "{rows:?}");
+    // The detail records how long the upstream had been silent when the client left,
+    // which tells a Codex idle-timeout disconnect apart from a user cancel.
+    let v: serde_json::Value = detail_of(&e, rows[0]["request_id"].as_str().unwrap(), true)
+        .await
+        .json()
+        .await
+        .unwrap();
+    let msg = v["message"].as_str().unwrap_or_default();
+    let secs: f64 = msg
+        .split("upstream silent for ")
+        .nth(1)
+        .and_then(|r| r.split('s').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("no silent duration: {v}"));
+    assert!((0.2..5.0).contains(&secs), "{v}");
 }
 
 #[tokio::test]
@@ -5459,6 +5475,40 @@ async fn ws_upstream_close_frame_mid_turn_is_upstream_ws_close() {
         msg.starts_with("upstream websocket closed mid-turn (code 1000)"),
         "{v}"
     );
+}
+
+/// Codex gives up on a silent stream after its own idle timeout; the client_closed detail
+/// carries how long the upstream had been silent so that case is visible.
+#[tokio::test]
+async fn ws_client_close_records_upstream_silent_duration() {
+    use tokio_tungstenite::tungstenite::Message as M;
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(ws_req(&e)).await.unwrap();
+    ws.send(M::text(r#"{"type":"response.create","tag":"held"}"#))
+        .await
+        .unwrap();
+    loop {
+        match ws.next().await {
+            Some(Ok(M::Text(t))) if t.as_str().contains("held") => break,
+            Some(Ok(_)) => {}
+            other => panic!("{other:?}"),
+        }
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    ws.close(None).await.unwrap();
+    let rows = wait_rows(&e, 1).await;
+    assert_eq!(rows[0]["error"], "client_closed", "{rows:?}");
+    let id = rows[0]["request_id"].as_str().unwrap().to_string();
+    let v: serde_json::Value = detail_of(&e, &id, true).await.json().await.unwrap();
+    let msg = v["message"].as_str().unwrap_or_default();
+    let secs: f64 = msg
+        .split("upstream silent for ")
+        .nth(1)
+        .and_then(|r| r.split('s').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("no silent duration: {v}"));
+    assert!((0.2..5.0).contains(&secs), "{v}");
 }
 
 async fn mode_post(e: &Env, mode: &str) -> reqwest::Response {
