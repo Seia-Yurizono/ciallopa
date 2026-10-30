@@ -812,7 +812,7 @@ async fn relay(
                                         progress.warn("ws", "write_error", &account, upstream_request_id.as_deref(), turn.as_ref());
                                     }
                                     if let Some(t) = turn.as_mut() {
-                                        t.fail_msg("upstream_closed", format!("upstream websocket send failed (transport error: {e})"));
+                                        t.fail_msg("upstream_ws_send_error", format!("upstream websocket send failed (transport error: {e})"));
                                         t.source(crate::errors::SRC_NETWORK);
                                     }
                                 }
@@ -852,7 +852,7 @@ async fn relay(
                         let code = f.as_ref().map(|f| u16::from(f.code)).unwrap_or(1000);
                         if let Some(t) = turn.as_mut() {
                             let reason = f.as_ref().map(|f| f.reason.to_string()).unwrap_or_default();
-                            t.fail_msg("upstream_closed", format!("upstream websocket closed mid-turn (code {code}) {reason}").trim_end().to_string()); t.source(crate::errors::SRC_STREAM);
+                            t.fail_msg("upstream_ws_close", format!("upstream websocket closed mid-turn (code {code}) {reason}").trim_end().to_string()); t.source(crate::errors::SRC_STREAM);
                         }
                         if code != 1000 {
                             st.router.report(&route, &account, &Outcome::Transient { status: None });
@@ -1096,16 +1096,13 @@ async fn relay(
                         }
                     }
                     other => {
-                        let cause = match &other {
-                            Some(Err(e)) => e.to_string(),
-                            _ => "connection ended without a close frame".to_string(),
-                        };
+                        let (class, code, msg) = upstream_end(&other);
                         if awaiting {
-                            progress.warn("ws", if other.is_some() { "read_error" } else { "eof" }, &account, upstream_request_id.as_deref(), turn.as_ref());
+                            progress.warn("ws", class, &account, upstream_request_id.as_deref(), turn.as_ref());
                         } else {
-                            tracing::info!(account = %ciallopa_core::a(&account), error_class = if other.is_some() { "read_error" } else { "eof" }, "upstream websocket transport error between turns");
+                            tracing::info!(account = %ciallopa_core::a(&account), error_class = class, "upstream websocket transport error between turns");
                         }
-                        if let Some(t) = turn.as_mut() { t.fail_msg("upstream_closed", format!("upstream websocket disconnected (transport error: {cause})")); t.source(crate::errors::SRC_NETWORK); }
+                        if let Some(t) = turn.as_mut() { t.fail_msg(code, msg); t.source(crate::errors::SRC_NETWORK); }
                         st.router.report(&route, &account, &Outcome::Transient { status: None });
                         let _ = dtx.send(close(CLOSE_INTERNAL, "upstream disconnected")).await;
                         break;
@@ -1306,9 +1303,70 @@ where
     .await;
 }
 
+/// How an upstream read ended without a frame: `(diagnostic class, record code, message)`.
+/// The peer dropping TCP without a close handshake (tungstenite reports a clean EOF as
+/// `ResetWithoutClosingHandshake`) is `upstream_ws_eof`; a reset, TLS or protocol failure
+/// while reading is `upstream_ws_read_error`. An upstream close frame is `upstream_ws_close`
+/// and a failed forward of a client frame `upstream_ws_send_error` (both at their call site).
+fn upstream_end(
+    r: &Option<Result<WsMessage, tokio_tungstenite::tungstenite::Error>>,
+) -> (&'static str, &'static str, String) {
+    use tokio_tungstenite::tungstenite::error::{Error as E, ProtocolError};
+    match r {
+        None => (
+            "eof",
+            "upstream_ws_eof",
+            "upstream websocket ended without a close frame (connection closed)".into(),
+        ),
+        Some(Err(
+            e @ (E::ConnectionClosed
+            | E::AlreadyClosed
+            | E::Protocol(ProtocolError::ResetWithoutClosingHandshake)),
+        )) => (
+            "eof",
+            "upstream_ws_eof",
+            format!("upstream websocket ended without a close frame ({e})"),
+        ),
+        Some(Err(e)) => (
+            "read_error",
+            "upstream_ws_read_error",
+            format!("upstream websocket read failed (transport error: {e})"),
+        ),
+        // Callers handle every message; kept total for the signature.
+        Some(Ok(_)) => (
+            "eof",
+            "upstream_ws_eof",
+            "upstream websocket ended without a close frame".into(),
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upstream_end_splits_eof_from_read_error() {
+        use tokio_tungstenite::tungstenite::error::{Error as E, ProtocolError};
+        let eof = |r: Option<Result<WsMessage, E>>| upstream_end(&r);
+        assert_eq!(eof(None).0, "eof");
+        assert_eq!(eof(None).1, "upstream_ws_eof");
+        assert_eq!(
+            eof(Some(Err(E::Protocol(
+                ProtocolError::ResetWithoutClosingHandshake
+            ))))
+            .1,
+            "upstream_ws_eof"
+        );
+        assert_eq!(eof(Some(Err(E::ConnectionClosed))).1, "upstream_ws_eof");
+        let reset = eof(Some(Err(E::Io(std::io::Error::from(
+            std::io::ErrorKind::ConnectionReset,
+        )))));
+        assert_eq!((reset.0, reset.1), ("read_error", "upstream_ws_read_error"));
+        assert!(reset
+            .2
+            .starts_with("upstream websocket read failed (transport error: "));
+    }
 
     #[derive(Clone, Default)]
     struct StreamWarnings(std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>);
