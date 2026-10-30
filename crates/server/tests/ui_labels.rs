@@ -1,5 +1,6 @@
 //! Every error code a usage row can carry has exactly one Chinese explanation in the admin
 //! UI (shown next to the English code), and the UI has no label for a code nothing records.
+#![allow(clippy::unwrap_used)]
 use std::collections::BTreeSet;
 
 fn keys(html: &str, start: &str) -> BTreeSet<String> {
