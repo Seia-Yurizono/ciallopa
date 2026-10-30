@@ -1241,10 +1241,18 @@ fn quota_code(v: Option<&serde_json::Value>) -> bool {
     })
 }
 
+/// `code == rate_limit_exceeded`: a temporary (per-model) limit, which Codex retries.
+fn rate_limit_code(v: Option<&serde_json::Value>) -> bool {
+    v.and_then(|o| o.get("code"))
+        .and_then(|c| c.as_str())
+        .is_some_and(|c| c.trim() == crate::errors::RATE_LIMIT_CODE)
+}
+
 /// Structured quota check shared by HTTP SSE, WS and the usage tracker. Only these fields
 /// count (never free text such as instructions / messages):
 /// `error` event: `status`/`status_code == 429`, `error.type|code`, top-level `type|code`;
-/// `response.failed`: `response.error.type|code`.
+/// `response.failed`: `response.error.type|code`. `code == rate_limit_exceeded` (either
+/// shape) is a rate limit without a quota code: it cools the model, never the account.
 /// Returns `(is_quota, has_quota_code)`.
 pub(crate) fn quota_event(v: &serde_json::Value) -> (bool, bool) {
     match v.get("type").and_then(|t| t.as_str()).unwrap_or("") {
@@ -1254,11 +1262,15 @@ pub(crate) fn quota_event(v: &serde_json::Value) -> (bool, bool) {
                 .or_else(|| v.get("status_code"))
                 .and_then(|s| s.as_u64());
             let code = quota_code(v.get("error"));
-            (status == Some(429) || code, code)
+            (
+                status == Some(429) || code || rate_limit_code(v.get("error")),
+                code,
+            )
         }
         "response.failed" => {
-            let code = quota_code(v.pointer("/response/error"));
-            (code, code)
+            let e = v.pointer("/response/error");
+            let code = quota_code(e);
+            (code || rate_limit_code(e), code)
         }
         _ => (false, false),
     }
@@ -2229,6 +2241,32 @@ mod quota_tests {
         ));
         assert!(!q(
             r#"{"type":"response.output_text.delta","delta":"usage_limit_reached"}"#
+        ));
+    }
+    #[test]
+    fn failed_rate_limit_is_a_model_rate_limit() {
+        // Codex retries `response.failed` `rate_limit_exceeded` (temporary limit); the router
+        // must hear it as a rate limit (model cooldown), never as a usage limit.
+        let ev = r#"{"type":"response.failed","response":{"error":{"code":"rate_limit_exceeded","message":"Rate limit reached for gpt-5.1 on tokens per min (TPM). Please try again in 11.054s."}}}"#;
+        assert!(matches!(
+            event_kind(ev),
+            EventKind::Quota(Outcome::RateLimited {
+                usage_limit: false,
+                ..
+            })
+        ));
+        let v: serde_json::Value = serde_json::from_str(ev).unwrap();
+        assert_eq!(quota_event(&v), (true, false));
+        assert_eq!(errors::event_code(&v), "rate_limit_exceeded");
+        // Same code on an `error` frame without a status.
+        let ev =
+            r#"{"type":"error","error":{"type":"rate_limit_error","code":"rate_limit_exceeded"}}"#;
+        assert!(matches!(
+            event_kind(ev),
+            EventKind::Quota(Outcome::RateLimited {
+                usage_limit: false,
+                ..
+            })
         ));
     }
     #[test]
