@@ -990,6 +990,18 @@ async fn up_ws(State(m): State<Mock>, h: HeaderMap, ws: WebSocketUpgrade) -> Res
                     let _ = s.send(Message::Text(r#"{"type":"response.created","response":{"id":"r-d"}}"#.into())).await;
                     return;
                 }
+                if t.as_str().contains("\"soft_error\"") {
+                    // An error frame Codex ignores (no status, unknown code), then the turn goes on.
+                    for f in [
+                        r#"{"type":"response.created","response":{"id":"r-s"}}"#,
+                        r#"{"type":"error","error":{"code":"some_notice","message":"fyi"}}"#,
+                        r#"{"type":"response.output_text.delta","delta":"ok"}"#,
+                        r#"{"type":"response.completed","response":{"id":"r-s","usage":{"input_tokens":5,"output_tokens":1}}}"#,
+                    ] {
+                        let _ = s.send(Message::Text(f.into())).await;
+                    }
+                    continue;
+                }
                 if t.as_str().contains("\"held\"") {
                     let _ = s.send(Message::Text(r#"{"type":"response.output_text.delta","delta":"held"}"#.into())).await;
                     continue;
@@ -5509,6 +5521,45 @@ async fn ws_client_close_records_upstream_silent_duration() {
         .and_then(|n| n.parse().ok())
         .unwrap_or_else(|| panic!("no silent duration: {v}"));
     assert!((0.2..5.0).contains(&secs), "{v}");
+}
+
+/// A status-less error frame with an unknown code does not end the turn (Codex ignores it);
+/// it is forwarded and the turn completes normally.
+#[tokio::test]
+async fn ws_soft_error_frame_does_not_end_turn() {
+    use tokio_tungstenite::tungstenite::Message as M;
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(ws_req(&e)).await.unwrap();
+    ws.send(M::text(r#"{"type":"response.create","tag":"soft_error"}"#))
+        .await
+        .unwrap();
+    let mut seen = Vec::new();
+    loop {
+        match tokio::time::timeout(Duration::from_secs(3), ws.next())
+            .await
+            .unwrap()
+        {
+            Some(Ok(M::Text(t))) => {
+                let done = t.as_str().contains("response.completed");
+                seen.push(t.as_str().to_string());
+                if done {
+                    break;
+                }
+            }
+            Some(Ok(_)) => {}
+            other => panic!("{other:?} after {seen:?}"),
+        }
+    }
+    assert!(seen.iter().any(|t| t.contains("some_notice")), "{seen:?}");
+    ws.close(None).await.unwrap();
+    let rows = wait_rows(&e, 1).await;
+    assert!(rows[0]["error"].is_null(), "{rows:?}");
+    assert_eq!(rows[0]["input_tokens"], 5, "{rows:?}");
+    assert!(e
+        .outcomes()
+        .iter()
+        .all(|(_, o)| !matches!(o, Outcome::Transient { .. })));
 }
 
 async fn mode_post(e: &Env, mode: &str) -> reqwest::Response {

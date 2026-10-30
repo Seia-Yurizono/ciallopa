@@ -521,19 +521,46 @@ fn classify_observed(
     if v.get("type").and_then(|t| t.as_str()).is_some() {
         progress.event(ty);
     }
-    let done = matches!(
-        ty,
-        "error"
-            | "response.completed"
-            | "response.failed"
-            | "response.incomplete"
-            | "response.done"
-    );
+    let kind = proxy::event_kind(text);
+    let done = match ty {
+        "response.completed" | "response.failed" | "response.incomplete" | "response.done" => true,
+        "error" => error_frame_ends_turn(&v, &kind),
+        _ => false,
+    };
     let snapshot = (ty == "codex.rate_limits")
         .then(|| parse_quota_event_headers(text.as_bytes()).and_then(|h| parse_quota(&h)))
         .flatten()
         .map(|q| Outcome::Success { quota: Some(q) });
-    (proxy::event_kind(text), done, snapshot)
+    (kind, done, snapshot)
+}
+
+/// Whether Codex ends the turn on this `error` frame (codex-api
+/// `map_wrapped_websocket_error_event` + `flex_unavailable`): a non-2xx `status` /
+/// `status_code`, or a code it maps itself. Frames the proxy classifies (quota, overload,
+/// encrypted-content rejection) also end it, as before. Anything else Codex ignores and
+/// keeps reading, so the proxy forwards it and the turn goes on.
+fn error_frame_ends_turn(v: &serde_json::Value, kind: &proxy::EventKind) -> bool {
+    if !matches!(kind, proxy::EventKind::Content | proxy::EventKind::Preamble) {
+        return true;
+    }
+    let status = ["status", "status_code"]
+        .iter()
+        .find_map(|k| v.get(*k).and_then(|s| s.as_u64()));
+    if status.is_some_and(|s| !(200..300).contains(&s)) {
+        return true;
+    }
+    let code = v
+        .get("error")
+        .and_then(|e| e.get("code"))
+        .and_then(|c| c.as_str());
+    matches!(
+        code,
+        Some(
+            "websocket_connection_limit_reached"
+                | "previous_response_not_found"
+                | "flex_unavailable"
+        )
+    )
 }
 
 /// A client `response.create` that may be replayed on another account.
@@ -878,7 +905,16 @@ async fn relay(
                                         quota_h = h;
                                     }
                                 }
-                                (k, d)
+                                // An error frame Codex ignores: forward it, but it neither
+                                // commits the attempt nor counts as model output.
+                                let soft = !d && crate::usage::event_type(t.as_str()).as_deref() == Some("error");
+                                if soft {
+                                    tracing::warn!(account = %ciallopa_core::a(&account), record_id = turn.as_ref().map(Tracker::record_id), "upstream websocket error frame without status; forwarded, turn continues");
+                                    if let Some(tr) = turn.as_mut() { tr.error_text(t.as_str().as_bytes()); }
+                                    (proxy::EventKind::Preamble, d)
+                                } else {
+                                    (k, d)
+                                }
                             }
                             _ => (proxy::EventKind::Preamble, false),
                         };
@@ -1617,6 +1653,45 @@ mod tests {
             proxy::EventKind::Content
         );
         assert!(replayable(r#"{"type":"response.create","input":[]}"#));
+    }
+
+    /// Codex (`map_wrapped_websocket_error_event`) ends a turn on an `error` frame only for
+    /// a non-2xx `status`, or the codes it maps itself; any other error frame is ignored and
+    /// it keeps reading. The proxy must not settle the turn on such a frame.
+    #[test]
+    fn error_frame_ends_turn_like_codex() {
+        let done = |t: &str| classify(t).1;
+        assert!(!done(
+            r#"{"type":"error","error":{"code":"some_notice","message":"x"}}"#
+        ));
+        assert!(!done(
+            r#"{"type":"error","status":200,"error":{"code":"x"}}"#
+        ));
+        assert!(done(
+            r#"{"type":"error","status":400,"error":{"code":"x"}}"#
+        ));
+        assert!(done(
+            r#"{"type":"error","status_code":502,"error":{"code":"x"}}"#
+        ));
+        for code in [
+            "websocket_connection_limit_reached",
+            "previous_response_not_found",
+            "flex_unavailable",
+        ] {
+            assert!(
+                done(&format!(
+                    r#"{{"type":"error","error":{{"code":"{code}"}}}}"#
+                )),
+                "{code}"
+            );
+        }
+        // Classified kinds the proxy acts on keep ending the turn.
+        assert!(done(
+            r#"{"type":"error","error":{"code":"server_is_overloaded"}}"#
+        ));
+        assert!(done(
+            r#"{"type":"error","error":{"type":"usage_limit_reached","resets_in_seconds":30}}"#
+        ));
         assert!(!replayable(
             r#"{"type":"response.create","previous_response_id":"r1"}"#
         ));
