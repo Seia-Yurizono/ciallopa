@@ -489,6 +489,35 @@ pub(crate) fn network(code: &'static str) -> Response {
     local(st, SRC_NETWORK, code, None)
 }
 
+/// The local preparation budget (`preparation_timeout_secs`) ran out across retries /
+/// account switches. A proxy-side deadline, not a network fault: source `local`.
+pub(crate) fn preparation_timeout() -> Response {
+    local(
+        StatusCode::GATEWAY_TIMEOUT,
+        SRC_LOCAL,
+        "preparation_timeout",
+        None,
+    )
+}
+
+/// Same buckets as [`net_code`] for a failed WebSocket dial (no egress proxy involved).
+pub(crate) fn ws_connect_code(e: &ciallopa_upstream::UpstreamError) -> &'static str {
+    use ciallopa_upstream::UpstreamError as U;
+    match e {
+        U::ConnectTimeout => return "timeout_connect",
+        U::Ws(b) if matches!(b.as_ref(), tungstenite::Error::Tls(_)) => return "tls",
+        _ => {}
+    }
+    let s = chain(e).to_ascii_lowercase();
+    if s.contains("failed to lookup") || s.contains("dns") || s.contains("resolve") {
+        "dns"
+    } else if s.contains("tls") || s.contains("certificate") {
+        "tls"
+    } else {
+        "connect"
+    }
+}
+
 /// SSE event that ends a cut-off stream so Codex retries the turn (it treats an unknown
 /// `response.failed` code as a retryable stream error).
 pub(crate) fn truncated_event() -> bytes::Bytes {
@@ -503,6 +532,45 @@ pub(crate) fn truncated_event() -> bytes::Bytes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ws_connect_failures_are_broken_down_like_http() {
+        use ciallopa_upstream::UpstreamError as U;
+        use std::io::{Error, ErrorKind};
+        assert_eq!(ws_connect_code(&U::ConnectTimeout), "timeout_connect");
+        assert_eq!(
+            ws_connect_code(&U::Io(Error::other(
+                "failed to lookup address information: Name or service not known"
+            ))),
+            "dns"
+        );
+        assert_eq!(
+            ws_connect_code(&U::Ws(Box::new(tungstenite::Error::Tls(
+                tungstenite::error::TlsError::InvalidDnsName
+            )))),
+            "tls"
+        );
+        assert_eq!(
+            ws_connect_code(&U::Io(Error::new(
+                ErrorKind::ConnectionRefused,
+                "connection refused"
+            ))),
+            "connect"
+        );
+        assert_eq!(
+            ws_connect_code(&U::Ws(Box::new(tungstenite::Error::ConnectionClosed))),
+            "connect"
+        );
+    }
+
+    #[test]
+    fn preparation_timeout_is_local() {
+        let r = preparation_timeout();
+        assert_eq!(r.status(), StatusCode::GATEWAY_TIMEOUT);
+        let m = r.extensions().get::<ErrMeta>().expect("meta");
+        assert_eq!(m.source, SRC_LOCAL);
+        assert_eq!(m.code, "preparation_timeout");
+    }
 
     #[test]
     fn event_code_buckets_like_body_code() {

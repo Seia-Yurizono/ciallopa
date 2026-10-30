@@ -2189,6 +2189,7 @@ async fn bounded_preparation_budget_is_shared_across_sse_replay() {
     assert_eq!(e.mock.hits.load(Ordering::SeqCst), 2);
     let rows = wait_rows(&e, 1).await;
     assert_eq!(rows[0]["error"], "preparation_timeout", "{rows:?}");
+    assert_eq!(rows[0]["err_source"], "local", "{rows:?}");
     assert_eq!(rows[0]["account"], "b", "{rows:?}");
 }
 
@@ -4939,7 +4940,7 @@ async fn ws_preparation_budget_cancels_a_credential_lock_wait() {
     assert_eq!(response.status(), 504);
     let rows = wait_rows(&e, 1).await;
     assert_eq!(rows[0]["error"], "preparation_timeout", "{rows:?}");
-    assert_eq!(rows[0]["err_source"], "network", "{rows:?}");
+    assert_eq!(rows[0]["err_source"], "local", "{rows:?}");
     assert!(rows[0]["duration_ms"].as_u64().unwrap() >= 1000);
     assert_eq!(rows[0]["account"], "acct", "{rows:?}");
     assert_eq!(rows[0]["switches"], 0);
@@ -5011,7 +5012,7 @@ async fn ws_preparation_budget_is_shared_across_handshake_retries() {
     assert_eq!(response.status(), 504);
     let rows = wait_rows(&e, 1).await;
     assert_eq!(rows[0]["error"], "preparation_timeout", "{rows:?}");
-    assert_eq!(rows[0]["err_source"], "network", "{rows:?}");
+    assert_eq!(rows[0]["err_source"], "local", "{rows:?}");
     assert_eq!(e.mock.hits.load(Ordering::SeqCst), 2);
     assert_eq!(rows[0]["account"], "b", "{rows:?}");
     assert_eq!(rows[0]["first_account"], "a", "{rows:?}");
@@ -5135,7 +5136,7 @@ async fn ws_preparation_budget_is_shared_across_turn_replays() {
         let rows = wait_rows(&e, 1).await;
         assert_eq!(rows.len(), 1, "{tag}: {rows:?}");
         assert_eq!(rows[0]["error"], "preparation_timeout", "{tag}: {rows:?}");
-        assert_eq!(rows[0]["err_source"], "network", "{tag}: {rows:?}");
+        assert_eq!(rows[0]["err_source"], "local", "{tag}: {rows:?}");
         assert_eq!(e.mock.hits.load(Ordering::SeqCst), 3);
         assert_eq!(e.drain.wait_idle(Duration::from_secs(3)).await, 0);
     }

@@ -73,7 +73,7 @@ pub(crate) async fn connect(
     match opts.connect_timeout {
         Some(t) => tokio::time::timeout(t, fut).await.map_err(|_| {
             if opts.proxy_url.is_empty() {
-                UpstreamError::Other("websocket connect timeout".into())
+                UpstreamError::ConnectTimeout
             } else {
                 UpstreamError::ProxyTimeout
             }

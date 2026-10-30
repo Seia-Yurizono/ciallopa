@@ -294,7 +294,7 @@ async fn connect(
                         }
                         tracing::warn!(account = %ciallopa_core::a(&id), error = %cause, "upstream ws connect failed");
                         if transient >= retries {
-                            return Err(crate::errors::network("connect"));
+                            return Err(crate::errors::network(crate::errors::ws_connect_code(&e)));
                         }
                         transient += 1;
                         if proxy::others_usable(st, &accounts, route, &id) {
@@ -1312,7 +1312,7 @@ where
             "preparation_timeout",
             "websocket preparation budget exhausted across retries/account switches",
         );
-        t.source(crate::errors::SRC_NETWORK);
+        t.source(crate::errors::SRC_LOCAL);
     }
     // This is cleanup after a bounded preparation, not a deadline for ordinary data writes.
     let _ = tokio::time::timeout(
