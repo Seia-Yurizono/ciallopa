@@ -6755,7 +6755,7 @@ async fn summary_breaks_failures_down_by_class_error_code_and_source() {
         Some(429),
     );
     row(500, Some("server_error"), Some("upstream"), Some(500));
-    row(502, Some("connect_timeout"), Some("network"), None);
+    row(502, Some("timeout_connect"), Some("network"), None);
     row(200, Some("stream_truncated"), Some("stream"), None);
     row(503, Some("all_cooling"), Some("local"), None);
     row(499, Some("client_closed"), Some("client"), None);

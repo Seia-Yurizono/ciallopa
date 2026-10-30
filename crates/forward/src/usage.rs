@@ -801,35 +801,76 @@ impl Drop for Tracker {
 }
 
 /// Default message for an error kind (local errors have no upstream body).
+/// Default detail message per locally recorded code (a recorded message wins).
+pub(crate) const DESCRIPTIONS: &[(&str, &str)] = &[
+    (
+        "client_closed",
+        "client disconnected before the response completed",
+    ),
+    (
+        "shutdown",
+        "server shutdown interrupted the response before completion",
+    ),
+    (
+        "upstream_ws_close",
+        "upstream websocket sent a close frame before a terminal event",
+    ),
+    (
+        "upstream_ws_eof",
+        "upstream websocket ended without a close frame",
+    ),
+    (
+        "upstream_ws_read_error",
+        "upstream websocket read error before a terminal event",
+    ),
+    (
+        "upstream_ws_send_error",
+        "could not forward the client frame to the upstream websocket",
+    ),
+    ("idle_timeout", "upstream stream idle timeout"),
+    ("usage_limit", "upstream usage limit reached"),
+    ("no_account", "no account configured"),
+    (
+        "no_usable_account",
+        "no usable account (all disabled, excluded or need relogin)",
+    ),
+    (
+        "all_cooling",
+        "every account is cooling down after upstream errors",
+    ),
+    ("all_quota_exhausted", "every account is out of usage quota"),
+    (
+        "first_quota_reset",
+        "every account is cooling down; the first to recover is out of usage quota",
+    ),
+    (
+        "stream_truncated",
+        "upstream stream ended without a terminal event",
+    ),
+    (
+        "stream_read_error",
+        "upstream stream read error before a terminal event",
+    ),
+    ("connect", "could not connect to upstream"),
+    ("timeout", "upstream timed out"),
+    ("timeout_connect", "upstream timed out"),
+    (
+        "header_timeout",
+        "upstream did not return response headers within the attempt timeout",
+    ),
+    (
+        "preparation_timeout",
+        "preparation budget exhausted across retries/account switches; no further attempt started",
+    ),
+    ("dns", "upstream DNS resolution failed"),
+    ("tls", "TLS handshake with upstream failed"),
+];
+
 fn describe(kind: &str, status: u16) -> String {
-    match kind {
-        "client_closed" => "client disconnected before the response completed".into(),
-        "shutdown" => "server shutdown interrupted the response before completion".into(),
-        "upstream_ws_close" => "upstream websocket sent a close frame before a terminal event".into(),
-        "upstream_ws_eof" => "upstream websocket ended without a close frame".into(),
-        "upstream_ws_read_error" => "upstream websocket read error before a terminal event".into(),
-        "upstream_ws_send_error" => "could not forward the client frame to the upstream websocket".into(),
-        "idle_timeout" => "upstream stream idle timeout".into(),
-        "stream_error" => "upstream stream transport error".into(),
-        "incomplete" => "response.incomplete from upstream".into(),
-        "usage_limit" => "upstream usage limit reached".into(),
-        "no_account" => "no account configured".into(),
-        "no_usable_account" => "no usable account (all disabled, excluded or need relogin)".into(),
-        "all_cooling" => "every account is cooling down after upstream errors".into(),
-        "all_quota_exhausted" => "every account is out of usage quota".into(),
-        "first_quota_reset" => {
-            "every account is cooling down; the first to recover is out of usage quota".into()
-        }
-        "stream_truncated" => "upstream stream ended without a terminal event".into(),
-        "stream_read_error" => "upstream stream read error before a terminal event".into(),
-        "connect" => "could not connect to upstream".into(),
-        "timeout" | "timeout_connect" => "upstream timed out".into(),
-        "header_timeout" => "upstream did not return response headers within the attempt timeout".into(),
-        "preparation_timeout" => "preparation budget exhausted across retries/account switches; no further attempt started".into(),
-        "dns" => "upstream DNS resolution failed".into(),
-        "tls" => "TLS handshake with upstream failed".into(),
-        _ if status > 0 => format!("HTTP {status} ({kind})"),
-        _ => kind.to_string(),
+    match DESCRIPTIONS.iter().find(|(k, _)| *k == kind) {
+        Some((_, d)) => (*d).into(),
+        None if status > 0 => format!("HTTP {status} ({kind})"),
+        None => kind.to_string(),
     }
 }
 

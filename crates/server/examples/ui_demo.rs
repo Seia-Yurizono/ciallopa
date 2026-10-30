@@ -220,7 +220,7 @@ async fn main() {
         if fail && i != n - 10 && i != n - 11 && kind >= 5 {
             let (code, src, status) = match kind {
                 5 => ("rate_limit_exceeded", "upstream", 429),
-                6 => ("connect_timeout", "network", 502),
+                6 => ("timeout_connect", "network", 504),
                 7 => ("stream_truncated", "stream", 200),
                 8 => ("first_quota_reset", "local", 429),
                 _ => ("all_cooling", "local", 503),
@@ -234,9 +234,9 @@ async fn main() {
         } else if fail {
             let limit = i == n - 11 || (kind % 2 == 0 && i != n - 10);
             r.error = Some(if limit {
-                "usage_limit".into()
+                "usage_limit_reached".into()
             } else {
-                "upstream_5xx".into()
+                "server_error".into()
             });
             r.status = if limit { 429 } else { 502 };
             r.err_source = Some("upstream");
@@ -582,27 +582,27 @@ fn demo_special_rows(rec: &Recorder, now: i64) {
     rec.record(r);
     // network: connect timeout after retry on the same account
     let mut r = mk(120_000, Transport::Sse, "responses");
-    r.status = 502;
-    r.error = Some("connect_timeout".into());
+    r.status = 504;
+    r.error = Some("timeout_connect".into());
     r.err_source = Some("network");
     r.retries = 1;
     r.duration_ms = 30_050;
     r.detail = Some(Box::new(ciallopa_usage::ErrorDetail {
         message: Some("connect timeout 30s".into()),
         attempts: Some(json!([
-            {"account":"alice","t_ms":0,"kind":"transport","code":"connect_timeout","action":"switch"},
-            {"account":"bob","t_ms":15020,"kind":"transport","code":"connect_timeout","action":"stop"}
+            {"account":"alice","t_ms":0,"kind":"transport","code":"timeout_connect","action":"switch"},
+            {"account":"bob","t_ms":15020,"kind":"transport","code":"timeout_connect","action":"stop"}
         ])),
         ..Default::default()
     }));
     rec.record(r);
     // stream: truncated after output
-    let mut r = mk(150_000, Transport::Ws, "responses");
+    let mut r = mk(150_000, Transport::Sse, "responses");
     ok_tokens(&mut r);
     r.error = Some("stream_truncated".into());
     r.err_source = Some("stream");
     r.detail = Some(Box::new(ciallopa_usage::ErrorDetail {
-        message: Some("upstream closed before response.completed".into()),
+        message: Some("upstream stream ended without a terminal event".into()),
         ..Default::default()
     }));
     rec.record(r);
@@ -679,7 +679,7 @@ fn demo_error_code_rows(rec: &Recorder, now: i64) {
     rows.push(r);
     // WS error frame: connection lifecycle
     let mut r = mk(4_000, Transport::Ws, "responses");
-    r.error = Some("upstream_error_event".into());
+    r.error = Some("websocket_connection_limit_reached".into());
     r.err_source = Some("stream");
     r.detail = detail(
         "Responses websocket connection limit reached (60 minutes).",
@@ -688,10 +688,10 @@ fn demo_error_code_rows(rec: &Recorder, now: i64) {
     rows.push(r);
     // WS error frame: 429 rate limit without a quota code
     let mut r = mk(5_000, Transport::Ws, "responses");
-    r.error = Some("usage_limit".into());
+    r.error = Some("rate_limit_exceeded".into());
     r.err_source = Some("stream");
     r.detail = detail(
-        "usage limit reached mid-turn; closed for client replay",
+        "rate limit reached mid-turn; closed for client replay",
         r#"{"type":"error","status":429,"error":{"type":"rate_limit_error","code":"rate_limit_exceeded","message":"Rate limit reached"}}"#,
     );
     rows.push(r);
@@ -715,8 +715,8 @@ fn demo_error_code_rows(rec: &Recorder, now: i64) {
     // SSE read error after output
     let mut r = mk(8_000, Transport::Sse, "responses");
     r.ttft_ms = Some(1_500);
-    r.error = Some("stream_truncated".into());
-    r.err_source = Some("stream");
+    r.error = Some("stream_read_error".into());
+    r.err_source = Some("network");
     r.detail = detail("upstream stream error: error decoding response body", "");
     rows.push(r);
     // completed, then the upstream went idle (the answer was complete)
@@ -736,7 +736,7 @@ fn demo_error_code_rows(rec: &Recorder, now: i64) {
     let mut r = mk(11_000, Transport::Sse, "responses");
     r.status = 504;
     r.error = Some("preparation_timeout".into());
-    r.err_source = Some("network");
+    r.err_source = Some("local");
     r.detail = detail(
         "preparation budget exhausted across retries/account switches; no further attempt started",
         "",
@@ -765,7 +765,7 @@ fn busy_record(rec: &Recorder, at: i64, kind: u8) {
     r.account = Some(if at % 2 == 0 { "alice" } else { "bob" }.into());
     match kind {
         1 => {
-            r.error = Some("upstream_5xx".into());
+            r.error = Some("server_error".into());
             r.status = 502;
             r.err_source = Some("upstream");
             r.upstream_status = Some(502);

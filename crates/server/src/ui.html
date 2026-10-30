@@ -1077,7 +1077,7 @@ $("cpyes").addEventListener("click",async()=>{const acct=cpFor;if(!acct)return;$
 const GN={account:"账号",key:"密钥",instance:"实例",model:"模型",response_model:"实际模型",endpoint:"接口",reasoning_effort:"推理",transport:"传输",service_tier:"档位",error:"错误码",err_source:"错误来源"};
 // Scope groups filter the whole page; error, source and tier groups open the matching failed requests.
 const GSCOPE={account:"facct",model:"fmodel",key:"fkey",instance:"finstance"},GDRILL={error:"fcode",err_source:"fsrc",service_tier:"ftier"};
-function groupName(g,v){return g==="error"?ERR_LBL[v]||v:g==="err_source"?(SRC[v]?SRC[v][0]:v):g==="service_tier"?tierName(v):v}
+function groupName(g,v){return g==="error"?(ERR_LBL[v]?v+"（"+ERR_LBL[v]+"）":v):g==="err_source"?(SRC[v]?SRC[v][0]:v):g==="service_tier"?tierName(v):v}
 function drillGroup(id,v){if(!summaryCurrent())return;recordWindow=null;clearRecordFilters();
   $("fproblem").value=id==="ftier"?"":"error";$(id).value=v;saveF();showScope();renderTrend();loadRecords(false).catch(fail);revealRecords()}
 function unkIcon(unk,tip){const i=h("span",{class:"wi",tabindex:"0",role:"img","aria-label":"部分未定价"},"⚠");i.dataset.tt="部分未定价：实际成本不低于此值\n"+unk+" 条请求缺少价格；已定价部分 "+tip;return i}
@@ -1233,8 +1233,8 @@ function effortCell(r){const box=h("span"),q=r.reasoning_effort,a=r.response_eff
   box.dataset.tip=tip;return box}
 const SRC={client:["客户端","off","客户端断开或请求本身的问题"],local:["ciallopa","off","ciallopa 本地产生（没有可用账号、全部冷却等）"],network:["网络","err","连不上上游、超时或流空闲超时"],proxy:["代理","proxy","出口代理连不上、拒绝隧道或超时（不计入账号冷却）"],upstream:["上游","err","上游 HTTP 返回的错误，原样转给客户端"],stream:["流内","err","上游流里的错误事件或流被截断"]};
 const PROXY_ERR={proxy_connect:"出口代理连接失败",proxy_timeout:"经出口代理连接超时"};
-const ERR_LBL=Object.assign({invalid_encrypted_content:"加密推理被拒",usage_limit:"额度用尽",usage_limit_reached:"额度用尽",rate_limit_exceeded:"限流",context_length_exceeded:"上下文过长",invalid_request_error:"请求无效",websocket_connection_limit_reached:"WS 连接到期",previous_response_not_found:"上一轮响应失效",server_is_overloaded:"上游过载",client_closed:"客户端断开",no_account:"没有账号",no_usable_account:"没有可用账号",all_cooling:"全部账号冷却中",all_quota_exhausted:"额度用尽",first_quota_reset:"额度用尽",stream_truncated:"流被截断",stream_read_error:"流读取中断",upstream_ws_close:"上游关闭 WS",upstream_ws_eof:"上游 WS 断开",upstream_ws_read_error:"上游 WS 读取中断",upstream_ws_send_error:"发往上游失败",upstream_closed:"上游断开",observation_incomplete:"观察不完整",connect_timeout:"连接超时",header_timeout:"等待响应头超时",preparation_timeout:"准备等待超时",error_body_timeout:"读取错误响应超时",error_body_too_large:"错误响应过大",error_body_read:"错误响应中断",upstream_5xx:"上游 5xx",cf_blocked:"Cloudflare 拦截出口",challenge:"Cloudflare 质询"},PROXY_ERR);
-const ERR_TIP={cf_blocked:"上游前面的 Cloudflare 返回了拦截页（如 1010 浏览器签名被封），拦的是本机出口（IP、TLS 或 HTTP 指纹），不是账号：不换号、不冷却账号，客户端收到中性的 502",challenge:"上游前面的 Cloudflare 返回了质询页，拦的是本机出口，不是账号：不换号、不冷却账号，客户端收到中性的 502",invalid_encrypted_content:"上游拒绝了对话历史里的加密推理内容（多为在另一个账号/组织下生成，原因见详情）。属于请求内容问题：不换号、不冷却、不重试；客户端收到明确提示，需新开会话",observation_incomplete:"响应已透传，但事件超过网关的有界观察范围，无法确认最终业务结果。未报告的用量不是零，未知结果不计为失败或客户端取消。"};
+const ERR_LBL=Object.assign({client_closed:"客户端断开",shutdown:"网关关闭",no_account:"没有账号",no_usable_account:"没有可用账号",all_cooling:"全部账号冷却中",all_quota_exhausted:"额度用尽",first_quota_reset:"额度用尽",model_cooldown:"模型冷却，交客户端重放",usage_limit:"额度用尽",rate_limit_exceeded:"限流",connect:"连不上上游",dns:"上游 DNS 解析失败",tls:"上游 TLS 握手失败",timeout:"上游超时",timeout_connect:"连接上游超时",transport:"上游传输错误",header_timeout:"等待响应头超时",preparation_timeout:"准备等待超时",idle_timeout:"上游流空闲超时",error_body_timeout:"读取错误响应超时",error_body_too_large:"错误响应过大",error_body_read:"错误响应中断",cf_blocked:"Cloudflare 拦截出口",challenge:"Cloudflare 质询",stream_read_error:"流读取中断",stream_truncated:"流被截断",upstream_error_event:"上游错误事件",response_failed:"上游 response.failed",image_output_missing:"未返回图片",upstream_ws_close:"上游关闭 WS",upstream_ws_eof:"上游 WS 断开",upstream_ws_read_error:"上游 WS 读取中断",upstream_ws_send_error:"发往上游失败",observation_incomplete:"观察不完整",internal:"网关内部错误",usage_limit_reached:"额度用尽",invalid_encrypted_content:"加密推理被拒",context_length_exceeded:"上下文过长",invalid_request_error:"请求无效",websocket_connection_limit_reached:"WS 连接到期",previous_response_not_found:"上一轮响应失效",server_is_overloaded:"上游过载",upstream_closed:"上游断开（旧记录）"},PROXY_ERR);
+const ERR_TIP={upstream_closed:"旧版本记录的上游断开，现已细分为 upstream_ws_close（上游发了关闭帧）、upstream_ws_eof（无关闭帧直接断开）、upstream_ws_read_error（读取出错）、upstream_ws_send_error（转发客户端帧失败）",model_cooldown:"该账号对此模型冷却中，网关关闭本轮 WS 让 Codex 重放到其他账号",idle_timeout:"上游流在空闲超时内没有任何数据；超过 Codex 客户端 300s 空闲超时时会先被记为 client_closed",cf_blocked:"上游前面的 Cloudflare 返回了拦截页（如 1010 浏览器签名被封），拦的是本机出口（IP、TLS 或 HTTP 指纹），不是账号：不换号、不冷却账号，客户端收到中性的 502",challenge:"上游前面的 Cloudflare 返回了质询页，拦的是本机出口，不是账号：不换号、不冷却账号，客户端收到中性的 502",invalid_encrypted_content:"上游拒绝了对话历史里的加密推理内容（多为在另一个账号/组织下生成，原因见详情）。属于请求内容问题：不换号、不冷却、不重试；客户端收到明确提示，需新开会话",observation_incomplete:"响应已透传，但事件超过网关的有界观察范围，无法确认最终业务结果。未报告的用量不是零，未知结果不计为失败或客户端取消。"};
 function errorInfo(r){const known=r.error!=="observation_incomplete"||requestOutcome(r)==="unknown";return {label:known?ERR_LBL[r.error]:"",tip:known?ERR_TIP[r.error]:""}}
 function srcOf(r){return r.err_source==="network"&&PROXY_ERR[r.error]?"proxy":r.err_source}
 let recState={cursor:null,total:0,rows:[]};
@@ -1288,8 +1288,8 @@ function recRow(r){const outcome=requestOutcome(r),isErr=outcome==="failed",es=s
   if(outcome==="incomplete")sc.appendChild(h("span","tag cool",r.incomplete==="content_filter"?"内容过滤":"上游截断"));tr.appendChild(sc);
   const ec=h("td",{class:"err",title:(error.tip?error.tip+"："+r.error:es&&SRC[es]?SRC[es][2]+"："+(r.error||""):(r.error||""))+hint});
   if(pw){ec.appendChild(h("span","tag line","预热"));ec.title="Codex WS 预热（generate:false）：token 计入用量与费用，不计入请求数、错误率和延迟统计"}
-  else if(outcome==="unknown")ec.append(h("span","tag line","未确认结束")," ",h("span","sm mut","观察不完整"));
-  else if(es&&SRC[es]){ec.append(h("span","tag "+SRC[es][1],SRC[es][0]+(es==="upstream"&&r.upstream_status?" "+r.upstream_status:""))," ",h("span","sm",error.label||r.error||"")," ");if(error.label)ec.appendChild(h("span","mono xs mut d-only",r.error))}
+  else if(outcome==="unknown")ec.append(h("span","tag line","未确认结束")," ",h("span","mono sm","observation_incomplete"));
+  else if(es&&SRC[es]){ec.append(h("span","tag "+SRC[es][1],SRC[es][0]+(es==="upstream"&&r.upstream_status?" "+r.upstream_status:""))," ",h("span","mono sm",r.error||"")," ");if(error.label)ec.appendChild(h("span","xs mut",error.label))}
   else if(r.rescued)ec.append(h("span","tag save","已救回")," ",h("span","sm mut",rescueText(r)));
   else if(r.incomplete&&!r.error){ec.append(h("span","mono sm",incompleteCode(r)));ec.title=incompleteTip(r)+hint}
   else ec.appendChild(h("span","sm mut",OUTCOME[outcome]));
@@ -1383,7 +1383,7 @@ async function openDetail(r,from,retry=false){if(!/^[0-9a-f]{16}$/.test(r.reques
     ["实际模型",r.response_model],["推理强度",r.reasoning_effort||r.response_effort],["请求 / 实际档位",tierName(normTier(r.requested_service_tier))+" / "+tierName(normTier(r.service_tier))],
     ["最初账号",r.first_account]])field(name,value);threadField(r);field("轮次",r.turn_id);field("结束原因",r.incomplete&&incompleteCode(r));
   $("dmsg").classList.toggle("error",outcome==="failed");
-  const message=(es&&SRC[es]?SRC[es][0]+" · ":"")+(r.error?(error.label?error.label+" ":"")+r.error:"")+(error.tip?"\n"+error.tip:"");$("dmsg").textContent=message;
+  const message=(es&&SRC[es]?SRC[es][0]+" · ":"")+(r.error?r.error+(error.label?"（"+error.label+"）":""):"")+(error.tip?"\n"+error.tip:"");$("dmsg").textContent=message;
   for(const id of ["dhdr","dbody"])$(id).textContent="";clear($("dtl"));$("dtll").classList.add("hide");
   for(const id of ["dhlab","dhdr","dblab","dbody"])$(id).classList.add("hide");
   dtext=JSON.stringify({record:r},null,2);$("dcopy").disabled=!!r.has_detail;$("dcopy").textContent="复制 JSON";
