@@ -17,14 +17,14 @@ impl PreparationBudget {
     ) -> Result<T, Response> {
         // Do not poll a new attempt after the shared budget has been spent.
         if self.remaining.is_zero() {
-            return Err(crate::errors::network("preparation_timeout"));
+            return Err(crate::errors::preparation_timeout());
         }
         let start = tokio::time::Instant::now();
         let result = tokio::time::timeout(self.remaining, future).await;
         self.remaining = self.remaining.saturating_sub(start.elapsed());
         result.map_err(|_| {
             self.remaining = Duration::ZERO;
-            crate::errors::network("preparation_timeout")
+            crate::errors::preparation_timeout()
         })
     }
 }

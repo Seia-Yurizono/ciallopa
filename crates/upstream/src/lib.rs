@@ -23,6 +23,10 @@ pub enum UpstreamError {
     /// Connecting through the egress proxy did not finish within the connect timeout.
     #[error("egress proxy: connect timeout")]
     ProxyTimeout,
+    /// The direct WebSocket dial (DNS + TCP + TLS + upgrade) did not finish within the
+    /// connect timeout.
+    #[error("websocket connect timeout")]
+    ConnectTimeout,
     #[error("{0}")]
     Other(String),
 }
