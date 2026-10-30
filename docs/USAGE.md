@@ -122,15 +122,20 @@ Not recorded: `/models`, `/wham/*` and other passthrough, WS handshakes that suc
 ## Error sources
 | `err_source` | Meaning | Codes |
 |---|---|---|
-| `client` | the client went away **before** the terminal event | `client_closed` (not counted as an upstream failure). Closing after `response.completed` / `incomplete` / `failed` is a normal end (Codex hangs up as soon as it has the terminal event) and is not recorded as an error |
-| `local` | ciallopa itself could not serve the request | `no_account`, `no_usable_account` (all disabled / excluded / need relogin), `all_cooling` (every account cooling, the first recovers later than the wait), `all_quota_exhausted` (every account out of usage quota), `first_quota_reset` (every account cooling, the first to recover is out of usage quota), `internal`; the record message gives the time to the first recovery |
-| `network` | no usable upstream response | `connect`, `dns`, `tls`, `timeout`, `timeout_connect`, `header_timeout`, `preparation_timeout`, `error_body_timeout`, `error_body_read`, `models_body_timeout`, `models_body_read`, `transport`, `idle_timeout`, `stream_read_error` (the 200 body broke mid-stream: reset, broken chunking, TLS error), WS `upstream_ws_eof` (the upstream connection ended without a close frame), `upstream_ws_read_error` (reset, TLS or protocol error while reading), `upstream_ws_send_error` (forwarding a client frame failed); with an egress proxy: `proxy_connect` (proxy unreachable, auth or tunnel refused, proxy-side DNS failure), `proxy_timeout` (connect through the proxy timed out). Proxy errors fail the request at once (every account shares the proxy, so no account switching) and never cool an account; the panel labels them 代理. `cf_blocked` (a Cloudflare error page such as `error code: 1010`, browser signature banned, plain text, JSON or HTML) and `challenge` (a Cloudflare challenge page or `cf-mitigated`) on a 403: Cloudflare in front of the upstream blocks this host's egress, so the request fails at once with a neutral 502, no account switching and no cooldown (see [Cloudflare blocks](#cloudflare-blocks)) |
+| `client` | the client went away **before** the terminal event | `client_closed` (not counted as an upstream failure; the message says how long the upstream had been silent, e.g. `upstream silent for 301.2s`, or `no upstream data yet`, so a client-side idle timeout is visible). Closing after `response.completed` / `incomplete` / `failed` is a normal end (Codex hangs up as soon as it has the terminal event) and is not recorded as an error |
+| `local` | ciallopa itself could not serve the request | `no_account`, `no_usable_account` (all disabled / excluded / need relogin), `all_cooling` (every account cooling, the first recovers later than the wait), `all_quota_exhausted` (every account out of usage quota), `first_quota_reset` (every account cooling, the first to recover is out of usage quota), `model_cooldown` (WS: the turn's account is cooling for this model; closed so the client replays elsewhere), `preparation_timeout` (the preparation budget ran out; no further attempt), `error_body_too_large`, `shutdown`, `internal`; the record message gives the time to the first recovery |
+| `network` | no usable upstream response | `connect`, `dns`, `tls`, `timeout`, `timeout_connect`, `header_timeout`, `error_body_timeout`, `error_body_read`, `transport` (HTTP and the WS handshake use the same breakdown: `dns`, `tls`, `timeout_connect`, else `connect`), `idle_timeout`, `stream_read_error` (the 200 body broke mid-stream: reset, broken chunking, TLS error), WS `upstream_ws_eof` (the upstream connection ended without a close frame), `upstream_ws_read_error` (reset, TLS or protocol error while reading), `upstream_ws_send_error` (forwarding a client frame failed); with an egress proxy: `proxy_connect` (proxy unreachable, auth or tunnel refused, proxy-side DNS failure), `proxy_timeout` (connect through the proxy timed out). Proxy errors fail the request at once (every account shares the proxy, so no account switching) and never cool an account; the panel labels them 代理. `cf_blocked` (a Cloudflare error page such as `error code: 1010`, browser signature banned, plain text, JSON or HTML) and `challenge` (a Cloudflare challenge page or `cf-mitigated`) on a 403: Cloudflare in front of the upstream blocks this host's egress, so the request fails at once with a neutral 502, no account switching and no cooldown (see [Cloudflare blocks](#cloudflare-blocks)) |
 | `upstream` | upstream HTTP error, passed through verbatim | upstream `error.code` / `error.type`, else `http_<status>`; `invalid_encrypted_content` (also when the upstream reports it inside a 200 stream or WS turn, see below; panel label 加密推理被拒) |
-| `stream` | error inside a 200 stream | the event's upstream code, bucketed like an HTTP error body (`response.error`, then `error`, then the event's own `code`; `code` before `type`, at most 64 chars), e.g. `rate_limit_exceeded`, `context_length_exceeded`, `server_is_overloaded`; quota codes (`usage_limit_reached`, `insufficient_quota`, `usage_not_included`, or a 429 whose text says usage limit) log as `usage_limit`; a 429 with no code as `rate_limit_exceeded`; no code at all: `upstream_error_event` (`error` event) / `response_failed`. Also `stream_truncated` (the body ended cleanly without a terminal event; a read error is `stream_read_error` / `network`), Images `image_output_missing`, WS `upstream_ws_close` (the upstream sent a close frame mid-turn; the close code and reason are in the detail). Rows written before this split carry `upstream_closed`. WS lifecycle codes `websocket_connection_limit_reached` and `previous_response_not_found` are recorded but counted as cancelled (Codex reconnects or resends the history), not as failures |
+| `stream` | error inside a 200 stream | the event's upstream code, bucketed like an HTTP error body (`response.error`, then `error`, then the event's own `code`; `code` before `type`, at most 64 chars), e.g. `rate_limit_exceeded`, `context_length_exceeded`, `server_is_overloaded`; quota codes (`usage_limit_reached`, `insufficient_quota`, `usage_not_included`, or a 429 whose text says usage limit) log as `usage_limit`; a 429 with no code as `rate_limit_exceeded`; no code at all: `upstream_error_event` (`error` event) / `response_failed`. Also `stream_truncated` (the body ended cleanly without a terminal event; a read error is `stream_read_error` / `network`), Images `image_output_missing`, WS `upstream_ws_close` (the upstream sent a close frame mid-turn; the close code and reason are in the detail). Rows written before this split carry `upstream_closed`. A WS `error` frame ends the turn only where Codex treats it as fatal: a non-2xx `status` / `status_code`, or the code `websocket_connection_limit_reached`, `previous_response_not_found` or `flex_unavailable` (quota and overload frames too). Any other error frame is forwarded, logged as a warning and kept in the detail body, and the turn continues. WS lifecycle codes `websocket_connection_limit_reached` and `previous_response_not_found` are recorded but counted as cancelled (Codex reconnects or resends the history), not as failures |
 
-A rate limit (`rate_limit_exceeded`, or any 429 without a quota code) cools only that model on
+A rate limit (`rate_limit_exceeded`, or any 429 without a quota code, including a `response.failed` event with `rate_limit_exceeded`) cools only that model on
 that account; only quota codes cool the whole account. Request-side codes (see `request`
 below) never count against the account.
+
+Every recorded code is listed once in `crates/forward/src/codes.rs` (local codes, upstream
+codes the panel explains, legacy codes). The panel shows the English code as the primary text
+with its Chinese label beside it (row, detail and group lists); a test keeps the labels and that
+list 1:1, so an unknown upstream code is shown verbatim without a label.
 
 ### Failure classes
 Every failure (status ≥ 400 or an error code, except cancellations and unknown outcomes) has
@@ -208,7 +213,7 @@ WS also uses `preparation_timeout_secs`: one budget covers the initial credentia
 sequence; each turn gets a fresh budget shared across its pre-output reconnects and retry
 waits. Normal generation and frame writes are outside it. WS captures preparation and idle
 limits before the initial handshake; reconnect to adopt changed values. Successful replay
-restarts upstream idle. Exhaustion records `preparation_timeout` / `network`: a failed initial
+restarts upstream idle. Exhaustion records `preparation_timeout` / `local` (a local budget, not a network fault): a failed initial
 handshake returns 504, while an active turn closes with 1012 for client replay. Closing an
 abandoned upstream connection is bounded cleanup, not a prerequisite that can hold up redial.
 The per-attempt response-header budget remains HTTP-only.
@@ -236,6 +241,9 @@ Codes are `error_body_too_large` (source `local`), `error_body_timeout` or `erro
 Successful `/models` responses are buffered under an 8 MiB / 10-second bound, then cached for
 five minutes (at most 64 query variants and 16 MiB total body bytes). Incomplete catalogs return 502/504 and are never cached.
 Normal response streams retain their idle timeout without an absolute generation time limit.
+Codex gives up on a silent stream after 300s (`stream_idle_timeout_ms`), so a
+`stream_idle_timeout_secs` above 300 is reported as a warning at startup and on reload: Codex
+disconnects first, and the row is `client_closed` (Codex retries) instead of `idle_timeout`.
 
 ### Encrypted reasoning rejected (`invalid_encrypted_content`)
 Codex sends the `encrypted_content` of earlier reasoning and compaction items back on every turn.
@@ -371,7 +379,7 @@ an overload wait; a request with no retry stores no chain:
   then capped at **16 KiB** (`truncated = true`, `body_len` = original byte length).
 - `message`: upstream `error.message` or a descriptive local message (`upstream stream idle
   for 300s (timeout)`, `no account available`, `upstream websocket closed mid-turn (code …)`,
-  `upstream websocket disconnected (transport error: <cause>)`, …). The transport cause is also
+  `upstream websocket ended without a close frame (…)`, `upstream websocket read failed (transport error: <cause>)`, `client disconnected before the response completed; upstream silent for 12.3s`, …). The transport cause is also
   logged as a warning for read-side failures that interrupt a turn.
 - `attempts` (v9): JSON array, at most 8 entries (`{"dropped": n}` marks omitted middle ones):
   `account`, `t_ms` (since request start), `kind` (`http` / `transport` / `refresh` / `stream`), `status`,

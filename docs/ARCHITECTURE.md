@@ -67,7 +67,7 @@ HTTP 租约跟随响应 Body，WS 升级将同一个租约移交给连接任务�
 - `preparation_timeout_secs` 默认600秒，累计覆盖 HTTP 凭据获取、连接/响应头、错误体和重试等待。
   HTTP SSE 前导窗口触发重放时继承剩余预算；读取合法成功流的时间不扣入该预算。
   WS 初始握手另有一个预算，每个 turn 的输出前重连/凭据/退避共享一份新预算；正常生成与帧写入不计入。
-  WS 准备超时保留 `preparation_timeout/network`，握手返回504，活动 turn 以1012要求客户端重放。
+  WS 准备超时记为 `preparation_timeout/local`，握手返回504，活动 turn 以1012要求客户端重放。
 - HTTP 错误体最多1MiB、绝对读取时间10秒；models 成功体最多8MiB、10秒。
   不完整错误体不会被当作完整上游响应透传；已有上游状态与 request ID 保留在错误元数据中。
   models 缓存另受64个条目、16MiB总正文、5分钟TTL限制。
