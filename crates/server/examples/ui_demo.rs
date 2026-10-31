@@ -789,6 +789,7 @@ fn busy_record(rec: &Recorder, at: i64, kind: u8) {
 async fn fake_upstream() -> std::net::SocketAddr {
     use axum::extract::State;
     use axum::http::HeaderMap;
+    use axum::response::IntoResponse;
     use axum::routing::{get, post};
     use axum::Json;
     use serde_json::{json, Value};
@@ -879,6 +880,14 @@ async fn fake_upstream() -> std::net::SocketAddr {
                 let w = |pct: f64, secs: i64, left: i64| json!({"used_percent": pct,
                     "limit_window_seconds": secs, "reset_after_seconds": left, "reset_at": now + left});
                 let who = who(&h);
+                // A deterministic failure for manual UI recovery checks; no real provider is used.
+                if who.ends_with("evil") {
+                    return (
+                        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                        Json(json!({"error": "demo quota refresh failure"})),
+                    )
+                        .into_response();
+                }
                 Json(if who.ends_with("frank") {
                     json!({"plan_type": "free", "rate_limit": {"allowed": true, "limit_reached": false,
                         "primary_window": w(3.0, 2_592_000, 27 * 86_400), "secondary_window": null},
@@ -892,7 +901,7 @@ async fn fake_upstream() -> std::net::SocketAddr {
                     json!({"plan_type": "plus", "rate_limit": {"allowed": true, "limit_reached": false,
                         "primary_window": w(12.0, 18_000, 2 * 3600),
                         "secondary_window": w(40.0, 604_800, 3 * 86_400)}})
-                })
+                }).into_response()
             }),
         )
         .with_state(cards_state());

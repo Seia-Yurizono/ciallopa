@@ -30,6 +30,8 @@
 --proxy:#b79cff;--proxy-bg:#221a38;--off:#a1a8b3;--off-bg:#20242a;--focus:#7aa2ff;--danger:#b4321f;--shadow:0 8px 28px rgba(0,0,0,.55)}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
+@media (min-width:761px){html{scrollbar-gutter:stable}}
+html.modal-open{overflow:hidden}
 body{margin:0;background:var(--bg);color:var(--fg);font:var(--fs-m)/1.45 var(--font);-webkit-font-smoothing:antialiased}
 a{color:var(--fg)}
 a.tag{text-decoration:none}
@@ -144,7 +146,7 @@ tr.hl>td:first-child{box-shadow:inset 2px 0 0 var(--focus)}
 .toast button.x{width:28px;padding:0;border-color:transparent}
 /* dialogs (bottom sheet on phone) */
 .modal{position:fixed;inset:0;z-index:40;display:flex;align-items:flex-start;justify-content:center;padding:10vh var(--s4) var(--s4);background:var(--scrim)}
-.mbox{width:min(480px,100%);max-height:84vh;overflow:auto;background:var(--surface);border-radius:var(--r2);border:1px solid var(--line);padding:var(--s4);display:flex;flex-direction:column;gap:var(--s3)}
+.mbox{width:min(480px,100%);max-height:84vh;overflow:auto;overscroll-behavior:contain;background:var(--surface);border-radius:var(--r2);border:1px solid var(--line);padding:var(--s4);display:flex;flex-direction:column;gap:var(--s3)}
 .mbox.dz{border-top:3px solid var(--err)}
 .mbox.wide{width:min(880px,100%)}
 .mbox h3{margin:0;font-size:var(--fs-l);font-weight:600;overflow-wrap:anywhere}
@@ -354,7 +356,6 @@ details.adv>.srow:first-of-type{border-top:1px solid var(--line)}
 .editbar span small{display:block;font-weight:400;opacity:.8;font-size:var(--fs-xs)}
 .editbar button{border-color:color-mix(in srgb,var(--surface) 40%,transparent);background:transparent;color:inherit}
 .editbar button.pri{background:var(--surface);color:var(--fg)}
-.editbar button.armed{background:var(--cool-bg);border-color:var(--cool);color:var(--cool)}
 .pad{padding:var(--s2) var(--s3)}
 #keys td:last-child{text-align:right}
 .newkey{margin:0 var(--s3) var(--s3);padding:var(--s2) var(--s3);border:1px solid color-mix(in srgb,var(--ok) 40%,transparent);background:var(--ok-bg);border-radius:var(--r1);display:flex;flex-wrap:wrap;gap:var(--s2);align-items:center}
@@ -591,8 +592,8 @@ function steady(boxes,f){const a=document.activeElement;if(a&&a!==document.body&
 // ---- dialogs: focus goes to 取消, Esc / backdrop close, Tab trapped, focus returns to the opener.
 // A [data-arm] button ignores clicks for its first 400 ms (no double tap through the opener).
 const MODALS=[];
-function openModal(m,focus,opener){if(!m.classList.contains("hide"))return;m.classList.remove("hide");m._opener=opener||document.activeElement;m._at=Date.now();MODALS.push(m);(focus||m.querySelector("button")).focus()}
-function closeModal(m){if(m.classList.contains("hide"))return;m.classList.add("hide");const i=MODALS.indexOf(m);if(i>=0)MODALS.splice(i,1);const o=m._opener;m._opener=null;if(m._onclose)m._onclose();if(o&&document.contains(o))o.focus({preventScroll:true})}
+function openModal(m,focus,opener){if(!m.classList.contains("hide"))return;m.classList.remove("hide");m._opener=opener||document.activeElement;m._at=Date.now();MODALS.push(m);document.documentElement.classList.add("modal-open");(focus||m.querySelector("button")).focus()}
+function closeModal(m){if(m.classList.contains("hide"))return;m.classList.add("hide");const i=MODALS.indexOf(m);if(i>=0)MODALS.splice(i,1);const o=m._opener;m._opener=null;if(m._onclose)m._onclose();document.documentElement.classList.toggle("modal-open",MODALS.length>0);if(o&&document.contains(o))o.focus({preventScroll:true})}
 function closeAllModals(){for(const m of MODALS.slice().reverse())closeModal(m)}
 document.addEventListener("keydown",e=>{const m=MODALS[MODALS.length-1];if(!m)return;
   if(e.key==="Escape"){e.preventDefault();closeModal(m);return}
@@ -632,8 +633,11 @@ function ok(t,o){$("msg").textContent="";return toast(t,o)}
 function fmt(v){if(v===null||v===undefined)return"（默认）";if(typeof v==="object")return JSON.stringify(v);if(v==="")return"（空）";return String(v)}
 function eff(f){return f.effect==="hot"?h("span",{class:"xs mut",title:"保存或修改文件后无需重启；具体生效时机因设置而异"},"热更新"):h("span",{class:"tag cool",title:"写入文件后，重启 ciallopa 才生效"},"需重启")}
 const BAD=new Set();
+const SERVER_ERRORS=new Map();
+function clearServerErrors(){for(const [k,{field,hint}] of SERVER_ERRORS){if(!BAD.has(k)){field.setAttribute("aria-invalid","false");hint.textContent="";hint.classList.add("hide")}}SERVER_ERRORS.clear()}
+addEventListener("input",clearServerErrors,true);
 function nEdits(){return new Set([...Object.keys(EDITS),...BAD]).size}
-function upd(){EDIT_REV++;const n=nEdits();disarm($("discard"));const nc=$("nchg");nc.textContent=n+" 项未保存"+(BAD.size?" · "+BAD.size+" 项有误":"");
+function upd(){EDIT_REV++;const n=nEdits();const nc=$("nchg");nc.textContent=n+" 项未保存"+(BAD.size?" · "+BAD.size+" 项有误":"");
   const pg=editPages();if(pg.length)nc.appendChild(h("small",null,pg.join(" · ")));
   $("check").disabled=BAD.size>0;$("editbar").classList.toggle("hide",!n||!CFG||!CFG.write_enabled);if(!n)$("draft").classList.add("hide");sync()}
 // Leaving or reloading the page with unsaved edits asks first (native prompt; only then).
@@ -917,10 +921,10 @@ $("qmod").addEventListener("click",()=>{$("q").value=$("q").value==="@modified"?
 function render(){steady([$("pages"),$("navl")],renderNow);route();filt()}
 function renderNow(){const c=CFG;for(const k in BOXES)$("stash").appendChild(BOXES[k]);clear($("pages"));clear($("navl"));
   EDITS={};BAD.clear();BASE_STALE=false;REG.clear();PAGE_OF.clear();DEPS.length=0;ADVS.length=0;PG.length=0;PLINK=null;for(const k in NAV)delete NAV[k];upd();
-  $("mode").textContent=c.write_enabled?"可编辑":"只读";$("mode").className="tag "+(c.write_enabled?"ok":"off");
+  $("mode").textContent=c.write_enabled?"配置可编辑":"配置只读";$("mode").className="tag "+(c.write_enabled?"ok":"off");
   $("mode").title=c.write_enabled?"配置文件中 [ui] allow_config_write = true":"在配置文件中设置 [ui] allow_config_write = true 才能在这里修改（此开关只能在文件里改）";
   $("meta").textContent=(c.path||"（未使用配置文件）")+" · 版本 "+c.version;
-  $("ro").textContent=c.write_enabled?"":"当前为只读。配置文件的修改会自动应用；也可以点右上角「重新加载配置文件」。";$("ro").classList.toggle("hide",!!c.write_enabled);
+  $("ro").textContent=c.write_enabled?"":"配置只读：此页面不能保存配置。配置文件的修改仍会自动应用，也可重新加载；账号页的刷新额度、解除冷却等运行操作仍可用。";$("ro").classList.toggle("hide",!!c.write_enabled);
   const fe=$("ferr");clear(fe);if(c.file_error){fe.append(h("b",null,"配置文件有错误，未应用"),"仍在使用上一次的配置："+c.file_error)}fe.classList.toggle("hide",!c.file_error);
   const pend=c.pending_restart||[],pe=$("pend");clear(pe);pe.classList.toggle("hide",!pend.length);
   if(pend.length)pe.append(h("b",null,pend.length+" 项需重启后生效"),pend.map(p=>p.key+"（运行中 "+fmt(p.old)+" → 文件 "+fmt(p.new)+"）").join("；"));
@@ -1015,8 +1019,10 @@ function dialog(title,body,yes,cls,cb,from,o){$("dlgt").textContent=title;if(o&&
 $("dno").addEventListener("click",()=>closeModal($("dlg")));
 $("dyes").addEventListener("click",()=>{const f=$("dlg")._yes;if(!f)return;const t=$("dyes").textContent;busyRun($("dyes"),t,async()=>{try{if(await f()!==false)closeModal($("dlg"))}catch(e){closeModal($("dlg"));fail(e)}},"处理中…")});
 async function reviewEdits(){const changes={...EDITS},rev=EDIT_REV,auth=key();const {j}=await call("POST","/admin/v1/config/validate",{changes});
-  if(auth!==key())return;if(rev!==EDIT_REV){toast("编辑已变化，请重新检查后保存");return}const box=h("div");
-  if(!j.ok){box.append(h("p",null,"有错误，无法保存："),h("ul",null,j.errors.map(e=>h("li",null,(e.key?e.key+"：":"")+e.message))));dialog("检查未通过",box,"","",null,$("check"));return}
+  if(auth!==key())return;if(rev!==EDIT_REV){toast("编辑已变化，请重新检查后保存");return}clearServerErrors();const box=h("div");
+  if(!j.ok){const errors=j.errors.map(e=>{const raw=String(e.message||"检查失败").replace(/^invalid:\s*/,""),f=e.key?fld(e.key):(CFG&&CFG.schema||[]).find(f=>raw.startsWith(f.key+" ")),k=f?f.key:e.key,detail=f&&raw.startsWith(f.key+" ")?raw.slice(f.key.length+1):raw,message=detail.replace(/^must be in (\d+)\.\.=(\d+)$/,"需要在 $1 到 $2 之间"),field=k&&document.querySelector('input[type=number][data-fk="'+CSS.escape(k)+'"]'),hint=k&&$("fe-"+k.replace(/\W/g,"_"));
+    if(field&&hint){field.setAttribute("aria-invalid","true");hint.textContent=message;hint.classList.remove("hide");SERVER_ERRORS.set(k,{field,hint})}
+    return h("li",null,(f?f.desc+"：":k?k+"：":"")+message)});box.append(h("p",null,"有错误，无法保存："),h("ul",null,errors));dialog("检查未通过",box,"","",null,$("check"));return}
   box.appendChild(h("div","tw",h("table",null,h("thead",null,h("tr",null,["设置项","原值","新值","生效方式"].map(x=>h("th",{scope:"col"},x)))),h("tbody",null,j.diff.map(d=>h("tr",null,h("td","mono",d.key),h("td","mono",fmt(d.old)),h("td","mono",fmt(d.new)),h("td",null,eff(d))))))));
   if(j.diff.some(d=>d.effect==="restart"))box.appendChild(h("p","mut","标为「需重启」的项会写入文件，重启 ciallopa 后才生效。"));
   if(CFG&&j.version!==CFG.version)box.prepend(h("p","hintp","配置已更新。下方「原值」来自最新配置，请确认要用草稿覆盖这些值。"));
@@ -1030,8 +1036,15 @@ async function reviewEdits(){const changes={...EDITS},rev=EDIT_REV,auth=key();co
     if(auth!==key())return;
     ok("已保存："+r.applied.length+" 项已应用"+(r.pending_restart.length?"，"+r.pending_restart.length+" 项需重启":"")+(nEdits()?"；后续编辑已保留":""))},$("check"))}
 $("check").addEventListener("click",()=>busyRun($("check"),"检查",()=>reviewEdits().catch(fail),"检查中…"));
-// 放弃 loses typed work: click again to confirm.
-$("discard").addEventListener("click",()=>clickAgain($("discard"),"再点一次：放弃 "+nEdits()+" 项改动",()=>busyRun($("discard"),"载入最新配置",async()=>{if(await load(true))ok("已放弃未保存的改动，已载入最新配置");else toast("载入期间有新的编辑，草稿已保留")},"载入中…")));
+// Discarding typed work needs explicit confirmation, without a reading deadline.
+$("discard").addEventListener("click",()=>{const rev=EDIT_REV,auth=key(),field=Object.keys(EDITS)[0]||[...BAD][0];
+  dialog("放弃 "+nEdits()+" 项未保存的改动？",h("p",null,"草稿将丢弃并载入最新配置，已保存的配置不会改变。"),"放弃改动并载入","danger solid",async()=>{
+    if(auth!==key()||rev!==EDIT_REV)throw new Error("编辑或登录已变化，请重新确认放弃");
+    if(await load(true)){const target=(field&&document.querySelector('[data-fk="'+CSS.escape(field)+'"]'))||$("refresh");$("dlg")._opener=target;closeModal($("dlg"));
+      const r=target.getBoundingClientRect(),head=document.querySelector("header").getBoundingClientRect(),tabs=document.querySelector("nav.tabs").getBoundingClientRect(),bottom=tabs.top>innerHeight/2?tabs.top:innerHeight;
+      if(r.top<head.bottom+8||r.bottom>bottom-8)target.scrollIntoView({block:"center",inline:"nearest"});
+      ok("已放弃未保存的改动，已载入最新配置")}
+    else toast("载入期间有新的编辑，草稿已保留")},$("discard"))});
 $("reload").addEventListener("click",()=>busyRun($("reload"),"重新加载",async()=>{try{const {j}=await call("POST","/admin/v1/config/reload",{});await load();ok("已重新加载："+(j.applied.length?j.applied.length+" 项改动已生效":"没有需要应用的改动"))}catch(e){fail(e);load().catch(()=>{})}},"加载中…"));
 function delKey(label,from){const b=h("div",null,h("p",null,"使用它的客户端会立即无法访问；此操作会写回配置文件。要恢复只能生成新密钥并更新客户端。"));
   dialog("删除密钥 "+label+"？",b,"删除密钥 "+label,"danger solid",async()=>{await call("DELETE","/admin/v1/config/keys/"+encodeURIComponent(label),{},{"If-Match":ETAG});await load();ok("已删除密钥 "+label)},from,{irrev:true})}
