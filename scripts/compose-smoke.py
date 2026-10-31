@@ -247,6 +247,43 @@ class MockProxy(BaseHTTPRequestHandler):
             flow.closed.set()
 
 
+def shutdown_records(database, models, reference_request_id, force):
+    """Check persisted rows against the fixture request already verified by the admin API.
+
+    Admin responses reveal live account IDs, but schema v12+ stores aliases. Read the
+    reference row from the same database instead of assuming its account label is raw,
+    accepting any alias, or reimplementing the application's keyed alias algorithm.
+    """
+    with sqlite3.connect(database.as_uri() + '?mode=ro', uri=True) as db:
+        db.row_factory = sqlite3.Row
+        reference = db.execute('''
+            SELECT a.name AS account FROM requests r
+            LEFT JOIN labels a ON a.id=r.account
+            WHERE printf('%016x', r.id)=?''', (reference_request_id,)).fetchone()
+        require(reference is not None, 'fixture reference request missing from usage database')
+        account = reference['account']
+        require(isinstance(account, str) and re.fullmatch(r'acct_[0-9a-f]{8}(?:-[0-9]+)?', account),
+                'fixture account was not stored as an alias')
+        rows = [dict(row) for row in db.execute('''
+            SELECT printf('%016x', r.id) AS request_id, m.name AS model,
+                   a.name AS account, r.transport, r.status, e.name AS error,
+                   s.name AS err_source, r.in_tok, r.out_tok
+            FROM requests r LEFT JOIN labels m ON m.id=r.model
+            LEFT JOIN labels a ON a.id=r.account LEFT JOIN labels e ON e.id=r.error
+            LEFT JOIN labels s ON s.id=r.err_source WHERE m.name IN (?,?)
+            ORDER BY m.name''', tuple(models))]
+    require(len(rows) == 2, f'final usage flush lost records: {rows}')
+    require({row['transport'] for row in rows} == {1, 2}, f'wrong persisted protocols: {rows}')
+    for row in rows:
+        require(row['account'] == account, f'wrong account: {row}')
+        if force:
+            require(row['error'] == 'shutdown' and row['err_source'] == 'local', f'wrong Force cause: {row}')
+        else:
+            require(not row['error'] and row['in_tok'] == 7 and row['out_tok'] == 3,
+                    f'wrong completed usage: {row}')
+    return rows
+
+
 class Smoke:
     def __init__(self, image, output, upgrade_from=None):
         self.image = image
@@ -591,24 +628,8 @@ class Smoke:
                 if flow.protocol == 'ws':
                     require(flow.client.get('close_code') == (1001 if force else 1000), f'wrong WS close: {flow.client}')
             database = self.active / 'data/usage.db'
-            with sqlite3.connect(database.as_uri() + '?mode=ro', uri=True) as db:
-                db.row_factory = sqlite3.Row
-                rows = [dict(row) for row in db.execute('''
-                    SELECT printf('%016x', r.id) AS request_id, m.name AS model,
-                           a.name AS account, r.transport, r.status, e.name AS error,
-                           s.name AS err_source, r.in_tok, r.out_tok
-                    FROM requests r LEFT JOIN labels m ON m.id=r.model
-                    LEFT JOIN labels a ON a.id=r.account LEFT JOIN labels e ON e.id=r.error
-                    LEFT JOIN labels s ON s.id=r.err_source WHERE m.name IN (?,?)
-                    ORDER BY m.name''', tuple(flow.model for flow in flows))]
-            require(len(rows) == 2, f'final usage flush lost records: {rows}')
-            require({row['transport'] for row in rows} == {1, 2}, f'wrong persisted protocols: {rows}')
-            for row in rows:
-                require(row['account'] == 'fixture', f'wrong account: {row}')
-                if force:
-                    require(row['error'] == 'shutdown' and row['err_source'] == 'local', f'wrong Force cause: {row}')
-                else:
-                    require(not row['error'] and row['in_tok'] == 7 and row['out_tok'] == 3, f'wrong completed usage: {row}')
+            rows = shutdown_records(database, [flow.model for flow in flows],
+                                    self.evidence['record']['request_id'], force)
             self.compose('start', 'ciallopa')
             self.ready()
             runtime = self.request('/admin/v1/config')['runtime']

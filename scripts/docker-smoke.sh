@@ -31,8 +31,10 @@ run() {
         -v "$WORK/config:/etc/ciallopa" -v "$WORK/data:/var/lib/ciallopa/.ciallopa" "$@"
 }
 expect_exit() {   # <pattern> <container id>: exits 1 and logs the pattern
-    docker wait "$2" | grep -qx 1
-    docker logs "$2" 2>&1 | tee /dev/stderr | grep -qF "$1"
+    # Consume all producer output: grep -q can close the pipe early and turn
+    # a successful match into SIGPIPE (141) under pipefail.
+    docker wait "$2" | grep -x 1 >/dev/null
+    docker logs "$2" 2>&1 | tee /dev/stderr | grep -F "$1" >/dev/null
     docker rm "$2" >/dev/null
 }
 
@@ -43,12 +45,12 @@ CID=
 
 # init: random key, listen from CIALLOPA_INIT_LISTEN, mode 0600, owned by the container user.
 out=$(docker run --rm --user "$U:$G" --read-only -v "$WORK/config:/etc/ciallopa" "$IMAGE" init)
-echo "$out" | head -n 3
-KEY=$(echo "$out" | grep -oE 'sk-cpa-[0-9a-f]{48}' | head -n 1)
+printf '%s\n' "$out" | sed -n '1,3p'
+KEY=$(grep -oE 'sk-cpa-[0-9a-f]{48}' <<<"$out" | sed -n '1p')
 test -n "$KEY"
-echo "$out" | grep -q "CPA_KEY=$KEY"
-echo "$out" | grep -q 'docker compose exec ciallopa ciallopa login'
-echo "$out" | grep -qF 'Wrote /etc/ciallopa/config.toml (mode 0600; config/config.toml on the host, with the example compose file)'
+grep -q "CPA_KEY=$KEY" <<<"$out"
+grep -q 'docker compose exec ciallopa ciallopa login' <<<"$out"
+grep -qF 'Wrote /etc/ciallopa/config.toml (mode 0600; config/config.toml on the host, with the example compose file)' <<<"$out"
 cfg="$WORK/config/config.toml"
 test "$(sudo stat -c '%u %a' "$cfg")" = "$U 600"
 sudo grep -q '^listen = "0.0.0.0:8317"' "$cfg"
@@ -71,11 +73,11 @@ for _ in $(seq 30); do
     [[ "$(docker inspect -f '{{.State.Health.Status}}' "$CID")" == healthy ]] && break
     sleep 1
 done
-docker inspect -f '{{.State.Health.Status}}' "$CID" | grep -qx healthy
+docker inspect -f '{{.State.Health.Status}}' "$CID" | grep -x healthy >/dev/null
 curl -fsS "http://127.0.0.1:$PORT/healthz"; echo
 test "$(ps -o uid= -p "$(docker inspect -f '{{.State.Pid}}' "$CID")" | tr -d ' ')" = "$U"
 sudo test -d "$WORK/data/auths"
-docker logs "$CID" 2>&1 | grep -q 'no accounts yet'
+docker logs "$CID" 2>&1 | grep 'no accounts yet' >/dev/null
 
 # Settings write: temp file + rename inside the mounted directory.
 version=$(curl -fsS -H "X-Api-Key: $KEY" "http://127.0.0.1:$PORT/admin/v1/config" | jq -r .version)
@@ -86,7 +88,7 @@ sudo test -f "$cfg.bak"
 sudo test -f "$cfg.audit.jsonl"
 # Files the server created are private to its user, whatever the runtime's umask.
 test -z "$(sudo find "$WORK/config" "$WORK/data" -mindepth 1 -perm /077)"
-if sudo find "$WORK/config" -name '.config.toml.tmp-*' | grep -q .; then exit 1; fi
+if sudo find "$WORK/config" -name '.config.toml.tmp-*' | grep . >/dev/null; then exit 1; fi
 
 # Graceful stop: exit 0 well inside the grace period.
 start=$(date +%s)

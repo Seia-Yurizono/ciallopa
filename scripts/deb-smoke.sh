@@ -28,7 +28,7 @@ grep -q 'permission denied' err
 grep -q 'sudo ciallopa -c /etc/ciallopa/config.toml init' err
 
 sudo ciallopa -c "$CFG" init | tee init.out >/dev/null
-KEY=$(grep -oE 'sk-cpa-[0-9a-f]{48}' init.out | head -n 1)
+KEY=$(grep -oE 'sk-cpa-[0-9a-f]{48}' init.out | sed -n '1p')
 test -n "$KEY"
 grep -q 'sudo -u ciallopa HOME=/var/lib/ciallopa ciallopa -c /etc/ciallopa/config.toml login' init.out
 test "$(sudo stat -c '%U:%G %a' "$CFG")" = "ciallopa:ciallopa 600"
@@ -72,7 +72,7 @@ jq -e '.last_reload.source == "sighup" and .last_reload.ok' config.json
 test "$(systemctl show ciallopa --property MainPID --value)" = "$service_pid"
 sudo systemctl stop ciallopa
 sudo journalctl -u ciallopa --no-pager | tail -n 20
-sudo journalctl -u ciallopa --no-pager | grep -q 'no accounts yet'
+sudo journalctl -u ciallopa --no-pager | grep 'no accounts yet' >/dev/null
 # Files the service created are private to it (UMask=0077).
 test -z "$(sudo find /var/lib/ciallopa -perm /077 ! -path /var/lib/ciallopa)"
 
