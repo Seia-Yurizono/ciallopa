@@ -863,6 +863,7 @@ function interactionDom() {
     for (const [n, v] of Object.entries(attrs)) e.setAttribute(n, v);
     return e;
   };
+  document.documentElement = element('html');
   const control = id => {
     if (!controls.has(id)) {
       const select = html.match(new RegExp('<select id="' + id + '"[^>]*>(.*?)</select>', 's'));
@@ -1180,7 +1181,7 @@ function recordRenderingAndInspectorFocus() {
     emptyRow(body) {const empty=row({request_id:'empty'});empty.empty=true;body.appendChild(empty);}, anyF: () => false, renderDetailNav() {}, exact: String, pwText: () => '不含预热', PAGE: 50,
     CSS: {escape: value => value},
     Date: class extends Date {constructor(...args){super(...(args.length?args:[now]));}},
-    document: {contains: node => tb.contains(node) || [...controls.values()].includes(node)},
+    document: {contains: node => tb.contains(node) || [...controls.values()].includes(node), documentElement: control('html')},
     recState: {rows: [{request_id: '0000000000000001'}, {request_id: '0000000000000002'}], total: 2},
   });
   vm.runInContext(section('const MODALS=[];', 'document.addEventListener("keydown"') + '\n' + section('const recordRows=new Map();', 'const PAGE=50;'), c);
@@ -1354,7 +1355,7 @@ async function memoryPanel() {
   reply = {...reply, now: s(10000, null, null), rss_peak_bytes: null, jemalloc: false, ws_max_connections: 0, history: []};
   await vm.runInContext('loadMem()', c);
   assert.deepEqual(el('memstrip').children.slice(0, 4).map(text), [
-    '进程 RSS–此系统不提供', 'jemalloc 已分配不可用未使用 jemalloc 分配器', '缓冲请求体0 B上限 256 MiB · 0%', 'WebSocket 连接0缓冲 0 B']);
+    '进程 RSS–此系统不提供', 'jemalloc 已分配不可用未使用 jemalloc 分配器', '缓冲请求体0 B上限 256 MiB · 0%', 'WebSocket 连接0 · 不限缓冲 0 B']);
   assert.equal(text(el('memstrip').children[4].kids[0]), '内存趋势 · 采集中');
   // Failure or a usage-only key hides the panel; NOADMIN skips the request.
   reply = new Error('down');
@@ -1459,6 +1460,7 @@ async function problemChipsAndNextSteps() {
   // 刷新额度 only moves to the existing button: no API call, never a reset card.
   const before = gets.length;
   control('qall').focus = function () {this.focused = true;};control('sq').scrollIntoView = () => {};
+  control('sq').style = {};dom.document.querySelector = () => ({offsetHeight: 109});c.getComputedStyle = () => ({top: '44px'});
   await qbtn[0].events.click(click);
   assert.equal(gets.length, before);assert.ok(control('qall').focused);assert.deepEqual(visits, []);
   control('qall').classList.add('hide');

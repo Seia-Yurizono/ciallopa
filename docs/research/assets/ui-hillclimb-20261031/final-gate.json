@@ -1,0 +1,127 @@
+{
+  "status": "pass",
+  "candidate": "source-11",
+  "basis": "10 Astra完整C01–C14手测 + 11 Terra对唯一剩余C14文案的局部独立复验。代码差异只有WS不限显示；不是11重新执行14项。",
+  "cases": [
+    {
+      "id": "C01",
+      "status": "pass",
+      "evidence": "1440浅色：概览失败率9.6%点击后URL为?fproblem=error，请求11条、报错11选中，显示“报错计入失败率”；业务失败语义及原因可继续调查。overviewDesktop.png、c01.png。",
+      "source": "rounds/10-final/review.json"
+    },
+    {
+      "id": "C02",
+      "status": "pass",
+      "evidence": "从报错范围选alice：URL facct=alice&fproblem=error，概览63请求/12.7%失败，趋势随范围变化，请求8条。再选gpt-5.6-terra和laptop：概览18/22.2%，请求4条，共享标签3项；清账号后只移除facct，保留fmodel、fkey和fproblem=error，概览33/15.2%，请求5条。读取facct/racct同步。之后逐个清模型/密钥恢复。动态时间窗口不固定这些计数。",
+      "source": "rounds/10-final/review.json"
+    },
+    {
+      "id": "C03",
+      "status": "pass",
+      "evidence": "报错11→原因额度2，URL ?fproblem=error&fcause=quota，2条usage_limit，选中反馈、额度导航出现；点击全部原因回?fproblem=error，保留报错分组。后续再次选择额度打开两条详情。c01.png、quota375firstFocus.png。",
+      "source": "rounds/10-final/review.json"
+    },
+    {
+      "id": "C04",
+      "status": "pass",
+      "evidence": "375×812深色实际查看请求区域，账号/模型/密钥三下拉横排，同屏独立“更多筛选”；实际点击打开高级筛选，aria-expanded=true，失败原因下拉可见，再收起。页面scrollWidth=375。mobileFilters.png。",
+      "source": "rounds/10-final/review.json"
+    },
+    {
+      "id": "C05",
+      "status": "pass",
+      "evidence": "从额度第一条时间打开1a191003ebb00000。桌面和375移动均真实滚动读到响应头retry-after=120、x-codex-primary-used-percent=97及末字段x-request-id；响应体debug脱敏、message中间行、resets_in_seconds=1800、type=usage_limit_reached和最终闭括号可读。桌面mbox到底scrollTop325.5、背景scrollY577；点击体后PageDown仍577。移动到底519.5、背景662，PageDown仍662。桌面回顶关闭回原时间按钮/577；移动Esc回原记录。detailDesktopBody.png、detailMobileBody.png。",
+      "source": "rounds/10-final/review.json"
+    },
+    {
+      "id": "C06",
+      "status": "pass",
+      "evidence": "第一条16:07/SSE/xhigh，下一条为1a190cf2a7e00000、15:14/WS/medium、2/2，上一条返回第一条。首个dlink Shift+Tab到末个dthread，再Tab回dlink，焦点均在#dp。关闭回原时间按钮。重开完整http://localhost:8402/ui?fproblem=error&fcause=quota&record=1a190cf2a7e00000，正确显示第二条2/2；Esc关闭。两移动宽度的两条记录也分别从时间入口打开后Esc恢复。detailDesktopTop.png和四张quota*Focus.png。",
+      "source": "rounds/10-final/review.json"
+    },
+    {
+      "id": "C07",
+      "status": "pass",
+      "evidence": "全部问题→更多筛选→失败原因quota，自动得到foutcome=failed&fclass=quota、2条；清原因标签后保留显式结果失败，URL仅foutcome=failed、11条，焦点在剩余结果标签；清结果后URL无参数、115条，焦点回#rextra。计数是在同一实际操作时读取，非固定长期值。",
+      "source": "rounds/10-final/review.json"
+    },
+    {
+      "id": "C08",
+      "status": "pass",
+      "evidence": "高级错误码输入review_nonexistent_10_final并Enter，URL含fcode、0条，显示没有符合条件的请求及清除/换时间提示；实际清错误码标签恢复无参数115条，焦点回更多筛选。emptyState.png。",
+      "source": "rounds/10-final/review.json"
+    },
+    {
+      "id": "C09",
+      "status": "pass",
+      "evidence": "账号页看到正常4/冷却1/已停用1/令牌失效1，bob额度冷却、erin停用、carol需重新登录。evil展开普通刷新额度，行内与toast均显示上游HTTP503/demo quota refresh failure。alice普通刷新成功，额度11%/23%变88%/60%，桌面再次普通刷新看到“已刷新alice@example.com的额度”toast。alice重置卡前后3张；未使用重置卡，未更新令牌。accounts320.png、accountsEvilFailure.png、accountsSuccess.png。",
+      "source": "rounds/10-final/review.json"
+    },
+    {
+      "id": "C10",
+      "status": "pass",
+      "evidence": "8402 settings#routing：20改121后检查拒绝；改25并实际点击页头刷新仍25/1项未保存。放弃确认无倒计时，默认取消；实际取消和Esc分别保留25且焦点回#discard。确认放弃后20、编辑条关闭。320深色再次改25，滚页首点固定编辑条放弃并确认，原字段20和完整焦点可见；随后字段已可见时重复改25/确认放弃，前后scrollY均680。未点写入配置并应用。discardDialog.png、settings320topDraft.png、settings320discardFocus.png。",
+      "source": "rounds/10-final/review.json"
+    },
+    {
+      "id": "C11",
+      "status": "pass",
+      "evidence": "8403管理key：设置明确配置只读，等待值是只读20秒而非输入，编辑条隐藏；说明自动/手动reload及账号刷新额度、解除冷却仍允许。账号页说明不能添加/删除/调整账号；添加/导入隐藏，权重编辑、停用、令牌更新、删除入口不呈现，alice操作菜单只有刷新额度，bob解除冷却仍可用。未执行文件写入或解除冷却。补充只读检查crates/server/src/accounts_api.rs:287和docs/SETTINGS.md:118–133，与合法运行操作边界一致。readonlySettings.png、readonlyAccounts.png。",
+      "source": "rounds/10-final/review.json"
+    },
+    {
+      "id": "C12",
+      "status": "pass",
+      "evidence": "三页均实看1440×900浅色、375×812和320×812深色截图；核心KPI/单位/缓存率/上游率/未定价入口完整，桌面请求/账号表格保留。额外实看1024/1181概览。长账号/模型安全省略不盖操作，320展开权重/优先级横排、Tab焦点完整。375及320分别从两条额度记录的时间开详情→Esc→Tab到行内刷新额度，四次焦点环均实际截图可见；Enter均只聚焦导航至qall，top约165.6px在固定栏下，未点击刷新全部。未定价链接实际进入settings#prices后点概览返回。观察到320次要数据时效/重置时间和长模型尾部省略，记I2为非阻碍建议。overview*、accounts*、settings*、四张quota*Focus及quota*target、prices375.png、longModelRow320.png。",
+      "source": "rounds/10-final/review.json"
+    },
+    {
+      "id": "C13",
+      "status": "pass",
+      "evidence": "独立从20再改121检查：中文字段全部冷却时最长等待（秒），范围0到120；input aria-invalid=true、aria-describedby=fe-routing_cooldown_wait_secs，对应描述“需要在0到120之间”。知道了关闭后字段错误在视野内。改25立即aria-invalid=false且旧错误文字为空，重新检查进入原值20→新值25/热更新预览。实际取消预览，最后放弃并确认回20、编辑条关闭。settings375ErrorFocus.png、settings375Preview.png。",
+      "source": "rounds/10-final/review.json"
+    },
+    {
+      "id": "C14",
+      "scope": "unlimited WebSocket display and adjacent hot/normal memory branches",
+      "result": "pass",
+      "evidence": [
+        "unlimited-desktop.png",
+        "unlimited-mobile.png",
+        "hot-collapsed.png",
+        "hot-expanded.png",
+        "normal-focus.png"
+      ],
+      "observations": [
+        "Unlimited: summary and expanded WebSocket show 3 · 不限; buffer 4.0 KiB unlimited; RSS unknown; no false zero limit, percentage or memory threshold warning.",
+        "320 dark hot: 230 MiB / 256 MiB, 90%, WS 24 / 24 and textual warnings in collapsed and expanded views.",
+        "Normal refreshed: WS 0 / 24 and buffer 0 B / 256 MiB; hot warnings cleared. Enter expands and Space collapses; keyboard focus ring visible."
+      ],
+      "limitations": [
+        "Unlimited and hot are synthetic read-only memory responses, not actual pressure.",
+        "Other C14 paths, C01–C13, abnormal network and cross-page flows were not retested."
+      ],
+      "status": "pass",
+      "source": "rounds/11-terra/review.json",
+      "supporting_sources": [
+        "10-final/C14:默认摘要、完整展开、键盘/刷新、权限、内存读取失败及恢复已有证据",
+        "11-terra/C14:不限文案修正及hot/normal相邻分支独立复验"
+      ]
+    }
+  ],
+  "sha256": {
+    "ui_demo.rs": "26082c6cb6c515e716765f7a43580ebc163633fca8316da3824482277bea768e",
+    "settings.html": "0a911cc02f9ad26d88a35ae54161e5267c80826ac0c75989ff339705cd06f6ae",
+    "accounts.html": "fa06697765150f01c12907d55e86a89c2e5747c5803a0c6ee194a4ff2f17c8d0",
+    "ui.html": "d1c56c90d4fd5e1c9d54e12d79b198ac766ba80a7db58833ee4c14e3086d75cb"
+  },
+  "remaining_nonblocking": [
+    "部分没有尝试数据的动作仍叫尝试链，可正常进入详情",
+    "320px次要额度时效/重置时间、长模型尾部仍有省略"
+  ],
+  "limits": [
+    "CSS视口模拟；未实测真实触控/软键盘/屏幕阅读器",
+    "合成内存响应验证UI分支，未进行真实内存压力/限流实验",
+    "动态演示时间/ID/读数不同，非完全相同数据逐像素比较"
+  ]
+}

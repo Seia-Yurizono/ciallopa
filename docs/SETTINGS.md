@@ -126,7 +126,9 @@ All routes sit behind the client-key middleware.
   Auth header precedence: `X-Api-Key` over `Authorization: Bearer` when both are present.
 - Writes (config PUT, keys, account actions, reset-credit consume) also need the matching
   `[ui] allow_*` switch, which can only be set in the file — the page cannot grant itself
-  permissions. Without the switch the API answers 403 and the pages are read-only. Validate and
+  permissions. Without the switch, persistent config/account-file edits answer 403 and the pages
+  label that scope as configuration read-only. Runtime actions such as clearing account cooldowns
+  remain available to admin keys; this is not a promise that every management operation is disabled. Validate and
   reload stay available without `allow_config_write` (they only read the file the operator
   already controls), but they still need an admin key. Price updates (settings → 「价格」,
   `POST /admin/v1/prices/check` / `apply` / `models`) need an admin key only: they write the price table,

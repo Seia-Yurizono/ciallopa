@@ -30,6 +30,8 @@
 --proxy:#b79cff;--proxy-bg:#221a38;--off:#a1a8b3;--off-bg:#20242a;--focus:#7aa2ff;--danger:#b4321f;--shadow:0 8px 28px rgba(0,0,0,.55)}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
+@media (min-width:761px){html{scrollbar-gutter:stable}}
+html.modal-open{overflow:hidden}
 body{margin:0;background:var(--bg);color:var(--fg);font:var(--fs-m)/1.45 var(--font);-webkit-font-smoothing:antialiased}
 a{color:var(--fg)}
 a.tag{text-decoration:none}
@@ -144,7 +146,7 @@ tr.hl>td:first-child{box-shadow:inset 2px 0 0 var(--focus)}
 .toast button.x{width:28px;padding:0;border-color:transparent}
 /* dialogs (bottom sheet on phone) */
 .modal{position:fixed;inset:0;z-index:40;display:flex;align-items:flex-start;justify-content:center;padding:10vh var(--s4) var(--s4);background:var(--scrim)}
-.mbox{width:min(480px,100%);max-height:84vh;overflow:auto;background:var(--surface);border-radius:var(--r2);border:1px solid var(--line);padding:var(--s4);display:flex;flex-direction:column;gap:var(--s3)}
+.mbox{width:min(480px,100%);max-height:84vh;overflow:auto;overscroll-behavior:contain;background:var(--surface);border-radius:var(--r2);border:1px solid var(--line);padding:var(--s4);display:flex;flex-direction:column;gap:var(--s3)}
 .mbox.dz{border-top:3px solid var(--err)}
 .mbox.wide{width:min(880px,100%)}
 .mbox h3{margin:0;font-size:var(--fs-l);font-weight:600;overflow-wrap:anywhere}
@@ -330,6 +332,11 @@ main.noadm>:not(#noadm){display:none!important}
 #acc .meta-c .row button{height:32px}
 #acc .sdot{margin-top:var(--s1);align-self:flex-start}
 }
+@media (max-width:480px){
+#acc tr{grid-template-columns:repeat(2,minmax(0,1fr));grid-template-areas:"who who" "q5 qw" "aut aut" "st st" "meta meta" "act act"}
+#acc .mrow .xs{white-space:nowrap;flex:none}
+#acc .mrow input{flex:1;min-width:0;width:0;max-width:72px;font-size:16px}
+}
 #dlgc{display:flex;flex-direction:column;gap:var(--s2)}
 #authf ul,#imrc ul{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:var(--s1);flex-basis:100%;min-width:0}
 #authf li,#imrc li{display:flex;gap:var(--s2);align-items:baseline;flex-wrap:wrap;min-width:0}
@@ -358,6 +365,7 @@ main.noadm>:not(#noadm){display:none!important}
 </header>
 <main id="main" tabindex="-1">
   <div id="msg" class="banner err" role="alert"></div>
+  <div id="write-mode" class="banner hide" role="status"></div>
   <div id="noacc" class="banner err hide" role="status"></div>
   <div id="coolb" class="banner cool hide" role="status"></div>
   <div id="authf" class="banner err hide" role="status"></div>
@@ -517,8 +525,8 @@ function steady(boxes,f){const a=document.activeElement;if(a&&a!==document.body&
 // ---- dialogs: focus goes to 取消, Esc / backdrop close, Tab trapped, focus returns to the opener.
 // A [data-arm] button ignores clicks for its first 400 ms (no double tap through the opener).
 const MODALS=[];
-function openModal(m,focus,opener){if(!m.classList.contains("hide"))return;m.classList.remove("hide");m._opener=opener||document.activeElement;m._at=Date.now();MODALS.push(m);(focus||m.querySelector("button")).focus()}
-function closeModal(m){if(m.classList.contains("hide"))return;m.classList.add("hide");const i=MODALS.indexOf(m);if(i>=0)MODALS.splice(i,1);const o=m._opener;m._opener=null;if(m._onclose)m._onclose();if(o&&document.contains(o))o.focus({preventScroll:true})}
+function openModal(m,focus,opener){if(!m.classList.contains("hide"))return;m.classList.remove("hide");m._opener=opener||document.activeElement;m._at=Date.now();MODALS.push(m);document.documentElement.classList.add("modal-open");(focus||m.querySelector("button")).focus()}
+function closeModal(m){if(m.classList.contains("hide"))return;m.classList.add("hide");const i=MODALS.indexOf(m);if(i>=0)MODALS.splice(i,1);const o=m._opener;m._opener=null;if(m._onclose)m._onclose();document.documentElement.classList.toggle("modal-open",MODALS.length>0);if(o&&document.contains(o))o.focus({preventScroll:true})}
 function closeAllModals(){for(const m of MODALS.slice().reverse())closeModal(m)}
 document.addEventListener("keydown",e=>{const m=MODALS[MODALS.length-1];if(!m)return;
   if(e.key==="Escape"){e.preventDefault();closeModal(m);return}
@@ -662,8 +670,9 @@ function row(a,usage_on){const s=ST[a.status]||[a.status,"off",""],full=a.email?
   r.appendChild(actc);return r}
 function render(){steady([$("rows"),$("authf")],renderNow)}
 function renderNow(){const j=DATA;W=j.write_enabled;setTabCount(j.accounts.length);
-  $("meta").textContent=j.accounts.length+" 个 · 选号策略 "+j.strategy+" · "+(W?"可编辑":"只读");
-  $("hint").textContent=W?"权重和优先级保存后立即生效，不影响冷却状态和已绑定的会话":"当前为只读：在配置文件中设置 [ui] allow_config_write = true 后可启用、停用、调整、删除和添加账号";
+  $("meta").textContent=j.accounts.length+" 个 · 选号策略 "+j.strategy+" · "+(W?"配置可编辑":"配置只读");
+  $("write-mode").textContent=W?"":"账号配置只读：无法添加、删除或调整账号。刷新额度、解除冷却等运行操作仍可用。";$("write-mode").classList.toggle("hide",W);
+  $("hint").textContent=W?"权重和优先级保存后立即生效，不影响冷却状态和已绑定的会话":"如需修改账号配置，在配置文件中设置 [ui] allow_config_write = true；此开关不限制额度查询和解除冷却";
   $("hint").classList.toggle("hide",W&&!j.accounts.length);
   setAdd(addOpen);$("addbtn").classList.toggle("hide",!W);$("impbtn").classList.toggle("hide",!W);$("qall").classList.toggle("hide",!j.accounts.length);
   const cn={},cb=$("counts");clear(cb);for(const a of j.accounts)cn[a.status]=(cn[a.status]||0)+1;

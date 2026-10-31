@@ -1,0 +1,476 @@
+{
+  "result": "pass",
+  "case_count": 14,
+  "basis": "10-final全量+C14最后局部修正复验，非11-terra全量重跑",
+  "measurements": [
+    {
+      "version": "source-10",
+      "state": "default",
+      "url": "http://localhost:8402/ui",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "theme": "rgb(246, 247, 249)",
+      "range": "24h",
+      "filters": "",
+      "auto": false,
+      "metric": "requests",
+      "grain": "auto",
+      "compare": true,
+      "memoryHeight": 79.3984375,
+      "memoryDocumentTop": 377.796875,
+      "requestDocumentTop": 804.3046875,
+      "memoryExpanded": false,
+      "scrollY": 0,
+      "scrollWidth": 1425
+    },
+    {
+      "version": "source-10",
+      "state": "expanded",
+      "url": "http://localhost:8402/ui",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "theme": "rgb(246, 247, 249)",
+      "range": "24h",
+      "filters": "",
+      "auto": false,
+      "metric": "requests",
+      "grain": "auto",
+      "compare": true,
+      "memoryHeight": 206.796875,
+      "memoryDocumentTop": 377.796875,
+      "requestDocumentTop": 931.703125,
+      "memoryExpanded": true,
+      "scrollY": 0,
+      "scrollWidth": 1425
+    },
+    {
+      "version": "baseline-8399",
+      "state": "default",
+      "url": "http://localhost:8399/ui",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "theme": "rgb(246, 247, 249)",
+      "range": "24h",
+      "filters": "",
+      "auto": false,
+      "metric": "requests",
+      "grain": "auto",
+      "compare": true,
+      "memoryHeight": 151.3984375,
+      "memoryDocumentTop": 377.796875,
+      "requestDocumentTop": 876.3046875,
+      "memoryExpanded": null,
+      "scrollY": 0,
+      "scrollWidth": 1425
+    },
+    {
+      "version": "baseline-8399",
+      "state": "default",
+      "url": "http://localhost:8399/ui",
+      "viewport": {
+        "width": 375,
+        "height": 812
+      },
+      "theme": "rgb(14, 16, 19)",
+      "range": "24h",
+      "filters": "",
+      "auto": false,
+      "metric": "requests",
+      "grain": "auto",
+      "compare": true,
+      "memoryHeight": 310.0859375,
+      "memoryDocumentTop": 647.7734375,
+      "requestDocumentTop": 1264.671875,
+      "memoryExpanded": null,
+      "scrollY": 0,
+      "scrollWidth": 375
+    },
+    {
+      "version": "source-10",
+      "state": "default",
+      "url": "http://localhost:8402/ui",
+      "viewport": {
+        "width": 375,
+        "height": 812
+      },
+      "theme": "rgb(14, 16, 19)",
+      "range": "24h",
+      "filters": "",
+      "auto": false,
+      "metric": "requests",
+      "grain": "auto",
+      "compare": true,
+      "memoryHeight": 100.796875,
+      "memoryDocumentTop": 647.7734375,
+      "requestDocumentTop": 1055.3828125,
+      "memoryExpanded": false,
+      "scrollY": 0,
+      "scrollWidth": 375
+    },
+    {
+      "version": "source-10",
+      "state": "expanded",
+      "url": "http://localhost:8402/ui",
+      "viewport": {
+        "width": 375,
+        "height": 812
+      },
+      "theme": "rgb(14, 16, 19)",
+      "range": "24h",
+      "filters": "",
+      "auto": false,
+      "metric": "requests",
+      "grain": "auto",
+      "compare": true,
+      "memoryHeight": 386.8828125,
+      "memoryDocumentTop": 647.7734375,
+      "requestDocumentTop": 1341.46875,
+      "memoryExpanded": true,
+      "scrollY": 490,
+      "scrollWidth": 375
+    },
+    {
+      "version": "source-10",
+      "state": "default",
+      "url": "http://localhost:8402/ui",
+      "viewport": {
+        "width": 320,
+        "height": 812
+      },
+      "theme": "rgb(14, 16, 19)",
+      "range": "24h",
+      "filters": "",
+      "auto": false,
+      "metric": "requests",
+      "grain": "auto",
+      "compare": true,
+      "memoryHeight": 100.796875,
+      "memoryDocumentTop": 663.71875,
+      "requestDocumentTop": 1049.9375,
+      "memoryExpanded": false,
+      "scrollY": 0,
+      "scrollWidth": 320
+    },
+    {
+      "version": "baseline-8399",
+      "state": "default",
+      "url": "http://localhost:8399/ui",
+      "viewport": {
+        "width": 320,
+        "height": 812
+      },
+      "theme": "rgb(14, 16, 19)",
+      "range": "24h",
+      "filters": "",
+      "auto": false,
+      "metric": "requests",
+      "grain": "auto",
+      "compare": true,
+      "memoryHeight": 310.0859375,
+      "memoryDocumentTop": 663.71875,
+      "requestDocumentTop": 1259.2265625,
+      "memoryExpanded": null,
+      "scrollY": 0,
+      "scrollWidth": 320
+    },
+    {
+      "version": "source-10",
+      "state": "expanded",
+      "url": "http://localhost:8402/ui",
+      "viewport": {
+        "width": 320,
+        "height": 812
+      },
+      "theme": "rgb(14, 16, 19)",
+      "range": "24h",
+      "filters": "",
+      "auto": false,
+      "metric": "requests",
+      "grain": "auto",
+      "compare": true,
+      "memoryHeight": 386.8828125,
+      "memoryDocumentTop": 663.71875,
+      "requestDocumentTop": 1336.0234375,
+      "memoryExpanded": true,
+      "scrollY": 490,
+      "scrollWidth": 320
+    }
+  ],
+  "deltas": [
+    {
+      "width": 1440,
+      "defaultMemoryDeltaPx": -72,
+      "defaultRequestTopDeltaPx": -72,
+      "expandedMemoryDeltaPx": 55.3984375,
+      "expandedRequestTopDeltaPx": 55.3984375,
+      "defaultMemoryReductionPct": 47.55663346921926
+    },
+    {
+      "width": 375,
+      "defaultMemoryDeltaPx": -209.2890625,
+      "defaultRequestTopDeltaPx": -209.2890625,
+      "expandedMemoryDeltaPx": 76.796875,
+      "expandedRequestTopDeltaPx": 76.796875,
+      "defaultMemoryReductionPct": 67.49389030258749
+    },
+    {
+      "width": 320,
+      "defaultMemoryDeltaPx": -209.2890625,
+      "defaultRequestTopDeltaPx": -209.2890625,
+      "expandedMemoryDeltaPx": 76.796875,
+      "expandedRequestTopDeltaPx": 76.796875,
+      "defaultMemoryReductionPct": 67.49389030258749
+    }
+  ],
+  "rounds": [
+    {
+      "id": "00-terra",
+      "model": "gpt-6.1-terra high",
+      "cases": {
+        "C01": "pass",
+        "C02": "pass",
+        "C03": "pass",
+        "C04": "fail",
+        "C05": "pass",
+        "C06": "blocked",
+        "C07": "pass",
+        "C08": "pass",
+        "C09": "blocked",
+        "C10": "pass",
+        "C11": "pass",
+        "C12": "blocked"
+      },
+      "scores": {
+        "discoverability": 2,
+        "hierarchy": 4,
+        "interaction": 4,
+        "consistency": 4
+      },
+      "scope": "full"
+    },
+    {
+      "id": "01-terra",
+      "model": "gpt-6.1-terra high",
+      "cases": {
+        "C01": "pass",
+        "C02": "pass",
+        "C03": "pass",
+        "C04": "pass",
+        "C05": "pass",
+        "C06": "pass",
+        "C07": "pass",
+        "C08": "pass",
+        "C09": "pass",
+        "C10": "fail",
+        "C11": "fail",
+        "C12": "fail"
+      },
+      "scores": {
+        "discoverability": 4,
+        "hierarchy": 3,
+        "interaction": 3,
+        "consistency": 4
+      },
+      "scope": "full"
+    },
+    {
+      "id": "02-terra",
+      "model": "gpt-6.1-terra",
+      "cases": {
+        "C01": "pass",
+        "C02": "pass",
+        "C03": "pass",
+        "C04": "pass",
+        "C05": "pass",
+        "C06": "pass",
+        "C07": "pass",
+        "C08": "pass",
+        "C09": "pass",
+        "C10": "pass",
+        "C11": "pass",
+        "C12": "fail",
+        "C13": "pass"
+      },
+      "scores": {
+        "discoverability": 4,
+        "hierarchy": 3,
+        "interaction": 4,
+        "consistency": 4
+      },
+      "scope": "full"
+    },
+    {
+      "id": "03-terra",
+      "model": "gpt-6.1-terra",
+      "cases": {
+        "C01": "pass",
+        "C02": "pass",
+        "C03": "pass",
+        "C04": "pass",
+        "C05": "pass",
+        "C06": "pass",
+        "C07": "pass",
+        "C08": "pass",
+        "C09": "pass",
+        "C10": "pass",
+        "C11": "pass",
+        "C12": "fail",
+        "C13": "pass"
+      },
+      "scores": {
+        "discoverability": 4,
+        "hierarchy": 3,
+        "interaction": 4,
+        "consistency": 4
+      },
+      "scope": "full"
+    },
+    {
+      "id": "04-terra",
+      "model": "gpt-6.1-terra",
+      "cases": {
+        "C01": "pass",
+        "C12": "pass"
+      },
+      "scores": {
+        "discoverability": 4,
+        "hierarchy": 4,
+        "interaction": 4,
+        "consistency": 4
+      },
+      "scope": "focused"
+    },
+    {
+      "id": "05-sol",
+      "model": "gpt-6.1-sol",
+      "cases": {
+        "C01": "pass",
+        "C02": "pass",
+        "C03": "pass",
+        "C04": "pass",
+        "C05": "fail",
+        "C06": "pass",
+        "C07": "pass",
+        "C08": "pass",
+        "C09": "pass",
+        "C10": "blocked",
+        "C11": "pass",
+        "C12": "pass",
+        "C13": "pass"
+      },
+      "scores": {
+        "discoverability": 4,
+        "hierarchy": 3,
+        "interaction": 3,
+        "consistency": 4
+      },
+      "scope": "full"
+    },
+    {
+      "id": "06-sol",
+      "model": "gpt-6.1-sol",
+      "cases": {
+        "C05": "pass",
+        "C06": "pass",
+        "C10": "pass",
+        "C13": "pass"
+      },
+      "scores": {
+        "discoverability": 4,
+        "hierarchy": 4,
+        "interaction": 4,
+        "consistency": 4
+      },
+      "scope": "focused"
+    },
+    {
+      "id": "07-astra",
+      "model": "gpt-6-astra",
+      "cases": {
+        "C01": "pass",
+        "C02": "pass",
+        "C03": "pass",
+        "C04": "pass",
+        "C05": "pass",
+        "C06": "pass",
+        "C07": "pass",
+        "C08": "pass",
+        "C09": "pass",
+        "C10": "pass",
+        "C11": "pass",
+        "C12": "fail",
+        "C13": "pass"
+      },
+      "scores": {
+        "discoverability": 4,
+        "hierarchy": 3,
+        "interaction": 3,
+        "consistency": 4
+      },
+      "scope": "full"
+    },
+    {
+      "id": "08-astra",
+      "model": "gpt-6-astra",
+      "cases": {
+        "C04": "pass",
+        "C05": "pass",
+        "C12": "pass"
+      },
+      "scores": {
+        "discoverability": 4,
+        "hierarchy": 4,
+        "interaction": 4,
+        "consistency": 4
+      },
+      "scope": "focused"
+    },
+    {
+      "id": "10-final",
+      "model": "gpt-6-astra",
+      "cases": {
+        "C01": "pass",
+        "C02": "pass",
+        "C03": "pass",
+        "C04": "pass",
+        "C05": "pass",
+        "C06": "pass",
+        "C07": "pass",
+        "C08": "pass",
+        "C09": "pass",
+        "C10": "pass",
+        "C11": "pass",
+        "C12": "pass",
+        "C13": "pass",
+        "C14": "fail"
+      },
+      "scores": {
+        "discoverability": 4,
+        "hierarchy": 4,
+        "interaction": 4,
+        "consistency": 4
+      },
+      "scope": "full"
+    },
+    {
+      "id": "11-terra",
+      "model": "gpt-6.1-terra",
+      "cases": {
+        "C14": "pass"
+      },
+      "scores": null,
+      "scope": "focused"
+    }
+  ],
+  "constraints": [
+    "手动UI验收，未新增自动测试",
+    "动态合成数据，非逐像素完全相同数据比较",
+    "真实触控/屏幕阅读器/内存压力未测"
+  ]
+}
