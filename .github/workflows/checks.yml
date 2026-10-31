@@ -30,6 +30,10 @@ jobs:
             exit 1
           fi
       - run: cargo fmt --all --check
+      - name: Release version references
+        run: |
+          python3 scripts/release-version-test.py
+          python3 scripts/release-version.py --check
       - name: Container cleanup retention rules
         run: python3 scripts/ghcr-cleanup-test.py
       - name: UI state regressions

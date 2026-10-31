@@ -27,6 +27,7 @@ These documents follow `main`, which can contain unreleased changes. For an inst
 use the documentation at its tag; pushing `main` does not update existing container images.
 
 ## Quick start (Linux x86_64 / arm64)
+<!-- Pinned install versions are synchronized from Cargo.toml by scripts/release-version.py. -->
 Each path ends with the server on `127.0.0.1:8317`, one account and a client key.
 `ciallopa init` writes `config.toml` with a new random admin key and prints that key, the Codex
 client config and the next commands; then [set up the client](#codex-cli-client).
@@ -152,9 +153,9 @@ also runs natively under Docker Desktop on Apple Silicon) holds the same static 
 `listen = "0.0.0.0:8317"` on `init` and checks itself with `ciallopa healthcheck`. Using
 [`packaging/docker/compose.yaml`](packaging/docker/compose.yaml) in an empty directory:
 
-The current `v0.2.4` release uses image tag `0.2.4` (also `0.2`). The `latest` tag follows
-successful tagged builds, including pre-releases. Only stable releases update
-`<major>.<minor>`. Use an exact version or digest for controlled upgrades.
+The [Compose example](packaging/docker/compose.yaml) pins an exact image version.
+See [image tags and upgrades](docs/DEPLOYMENT.md#image-tags-and-upgrades) for tag aliases,
+updates and rollback.
 
 ```
 mkdir -m 700 config data

@@ -57,6 +57,8 @@ There is one Ubuntu job with the pinned Rust toolchain and Cargo cache:
 
 ```sh
 cargo fmt --all --check
+python3 scripts/release-version-test.py
+python3 scripts/release-version.py --check
 python3 scripts/ghcr-cleanup-test.py
 node scripts/ui-state-check.cjs
 node scripts/settings-state-check.cjs
