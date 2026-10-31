@@ -66,6 +66,9 @@ jobs:
   docker:
     needs: package
     strategy:
+      # Keep evidence from both architectures when one smoke test fails.
+      # docker-publish still requires the entire matrix to succeed.
+      fail-fast: false
       matrix:
         include:
           - arch: amd64
