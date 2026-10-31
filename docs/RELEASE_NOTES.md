@@ -1,4 +1,4 @@
-ciallopa v0.2.4
+# Release notes
 
 This release follows v0.2.3. It reduces sensitive data in stored diagnostics, adds a
 Codex session filter, and makes streaming failures and capacity limits easier to
@@ -49,20 +49,11 @@ upstream adapter is still the Codex backend; this release does not add Claude su
   subscription quota. Eligible requests can recover before output is committed.
 - Apply model cooldown to in-stream `response.failed` rate-limit errors.
 
-**Validation and publication**
-
-The tag-triggered release workflow runs the shared formatting, UI/state, cleanup,
-Clippy and Rust test checks before packaging. Native amd64 and arm64 runners build
-and smoke-test the packages and containers. Publication verifies that the uploaded
-runtime images match the smoke-tested images before creating the multi-architecture
-tags and GitHub Release. These checks use synthetic data and local mocks, not real
-provider accounts.
-
 **Upgrade**
 
-- Image tags: `ghcr.io/seia-yurizono/ciallopa:0.2.4`, `0.2` and `latest`, for
-  `linux/amd64` and `linux/arm64`. Update a pinned `0.2.3` Compose tag before pulling
-  and recreating.
+- Update a pinned Compose image tag before pulling and recreating. See the
+  [deployment guide](https://github.com/Seia-Yurizono/ciallopa/blob/main/docs/DEPLOYMENT.md#image-tags-and-upgrades)
+  for image aliases and the upgrade procedure.
 - The usage database upgrades automatically from schema v11 in v0.2.3 to v13. The v12
   migration rewrites historical diagnostic data; v13 adds the session index.
   Back up the data directory and configuration before upgrading. An image rollback
