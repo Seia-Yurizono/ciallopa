@@ -60,6 +60,8 @@ cargo fmt --all --check
 python3 scripts/release-version-test.py
 python3 scripts/release-version.py --check
 python3 scripts/ghcr-cleanup-test.py
+python3 scripts/docker-smoke-test.py
+python3 scripts/compose-smoke-test.py
 node scripts/ui-state-check.cjs
 node scripts/settings-state-check.cjs
 node scripts/accounts-state-check.cjs

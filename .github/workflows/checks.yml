@@ -36,6 +36,10 @@ jobs:
           python3 scripts/release-version.py --check
       - name: Container cleanup retention rules
         run: python3 scripts/ghcr-cleanup-test.py
+      - name: Docker smoke script pipe handling
+        run: python3 scripts/docker-smoke-test.py
+      - name: Compose smoke persisted-account checks
+        run: python3 scripts/compose-smoke-test.py
       - name: UI state regressions
         run: node scripts/ui-state-check.cjs
       - name: Settings draft regressions
