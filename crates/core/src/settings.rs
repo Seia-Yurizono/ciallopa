@@ -145,6 +145,7 @@ pub const SCHEMA: &[Field] = &[
     f("upstream_opts.not_found_cooldown_secs", "int", Hot, true, "404 模型冷却（秒）", "上游 404 且没有明确说模型不支持时，该账号的这个模型冷却这么久（明确不支持固定 12 小时）；0 = 只换号不冷却"),
     f("upstream_opts.connect_timeout_secs", "int", Hot, true, "连接超时（秒）", "连接上游或代理超过这么久算网络错误"),
     f("upstream_opts.compress_requests", "bool", Hot, true, "压缩请求体（zstd）", "用 zstd 压缩发往上游的 /responses 请求体，与官方 Codex 一致；WebSocket 和其他接口不压缩"),
+    f("upstream_opts.gzip_responses", "bool", Hot, true, "压缩上游响应（gzip）", "为直接 Responses HTTP 请求向上游请求 gzip，并在本机流式解压后返回明文；关闭时请求 identity，WebSocket、compact、models、images 与透传接口保持原行为"),
     f("upstream_opts.cloudflare_cookies", "bool", Hot, true, "按账号保存 Cloudflare cookie", "在内存中按账号保存上游基础设施 cookie，只在该账号的请求里回放，账号之间不共享"),
     f("images.enabled", "bool", Hot, true, "图片接口", "开放 /v1/images/generations 和 /v1/images/edits"),
     f("images.main_model", "string", Hot, true, "图片接口主模型", "非 gpt-image-* 的图片请求用这个模型包装，默认 gpt-6.1-sol"),
@@ -375,5 +376,16 @@ mod tests {
         let e = effective(&a, &b);
         assert_eq!(e.listen, a.listen);
         assert_eq!(e.proxy_url, b.proxy_url);
+    }
+
+    #[test]
+    fn response_compression_can_be_applied_without_restart() {
+        let running = Config::parse("").unwrap();
+        let changed = Config::parse("[upstream_opts]\ngzip_responses = false").unwrap();
+        let changes = diff(&running, &changed);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].key, "upstream_opts.gzip_responses");
+        assert_eq!(changes[0].effect, Effect::Hot);
+        assert!(!effective(&running, &changed).upstream_opts.gzip_responses);
     }
 }

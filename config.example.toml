@@ -77,6 +77,14 @@ enabled = true
 main_model = "gpt-6.1-sol"        # wrapper model for non-gpt-image-* Images requests
 
 [upstream_opts]
+# Independent upload and response compression policies for direct HTTP POST /responses.
+# Upload bodies already carrying Content-Encoding are forwarded byte-for-byte.
+compress_requests = true
+# Ask the upstream for gzip, stream-decode before error/SSE parsing, and return plaintext.
+# false asks for identity; gzip returned despite that is still decoded. A hot change applies
+# to new requests, while retries keep their original policy. Compact, models, Images,
+# passthrough, OAuth and WebSocket traffic retain their existing behavior.
+gzip_responses = true
 # HTTP header bound (seconds): one attempt includes sending the request and waiting for headers.
 response_header_timeout_secs = 300
 # Cumulative preparation: HTTP credentials, headers, error bodies and waits across retries;

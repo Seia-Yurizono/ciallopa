@@ -50,6 +50,7 @@ streaming, including Images; a reload cannot shorten an already-running stream's
 | `upstream_opts.cloudflare_cookies` | Off: every account's jar is dropped. On: empty jars. Connections are kept. |
 | `upstream_opts.stream_idle_timeout_secs`, `response_header_timeout_secs`, `preparation_timeout_secs` | Captured together at the next HTTP request's upstream dispatch. The idle limit covers SSE bootstrap and body streaming; header/preparation budgets do not count successful stream reads. WS captures idle and preparation limits before its initial handshake and retains them for the entire connection: one preparation budget covers initial credentials/handshake retries, and each turn gets a fresh budget shared across its pre-output reconnects and retry waits. WS frame writes retain normal backpressure without this budget; successful replay restarts upstream idle. Reconnect to adopt changed WS limits. The response-header budget remains HTTP-only. |
 | `upstream_opts.compress_requests` | When the next HTTP request body is prepared; its retries reuse the prepared bytes. |
+| `upstream_opts.gzip_responses` | Default `true`. Captured when the next direct HTTP Responses request is prepared; every retry and pre-output SSE replay keeps that value. `true` asks for gzip, `false` asks for identity. Gzip responses are stream-decoded before error/SSE handling in either case, so downstream receives plaintext. Changing this setting does not rebuild clients or change compact, models, Images, passthrough, OAuth or WS. |
 | `upstream_opts.max_attempts`, `transient_cooldown_secs` | HTTP captures these at the start of each selection/retry sequence; a replay after a pre-output SSE error starts a new sequence and can see updated values. The retry count remains cumulative for that request. WS uses a fixed handshake retry limit of 4, independent of `max_attempts`, and reads transient cooldown when handling an error. |
 | `upstream_opts.overload_streak`, `overload_cooldown_secs`, `overload_cooldown_max_secs`, `overload_retry_wait_secs`, `deactivated_cooldown_secs`, `payment_required_cooldown_secs`, `not_found_cooldown_secs` | Next error/cooldown decision, including errors from in-flight work. Already-running cooldowns keep their end time; an already-started retry wait is not rescheduled. |
 | `routing.*` | Next selection. Cooldowns, quota snapshots, session bindings and round-robin cursors are kept; a new `session_affinity_ttl` applies to bindings written from then on. |
@@ -93,6 +94,26 @@ Interrupted unfinished streams use `shutdown` / `local` rather than `client_clos
 Accounts: adding, editing or deleting files in `auth_dir` (also `ciallopa login` from another
 shell) is picked up automatically. When an account disappears, its connection pool, cookie jar,
 session bindings, cooldown state, turn-state ownership and reset-credit listing are dropped.
+
+### Upstream response compression
+
+For direct `POST /v1/responses` and `POST /backend-api/codex/responses` requests, including
+queries, `gzip_responses` replaces the upstream `Accept-Encoding` with `gzip` or `identity`.
+It is independent of the client's accepted response encodings and of the upload-only
+`compress_requests` setting. Both SSE and ordinary HTTP replies from these routes are decoded
+before forwarding; transformed responses do not retain the upstream compressed length or
+encoding headers. Other routes preserve their existing encoding behavior.
+
+Turning `gzip_responses` off is a hot rollback for new requests. It stops requesting gzip,
+but still decodes an upstream gzip reply to preserve the plaintext downstream contract.
+Unknown, stacked or duplicate response encodings produce `unsupported_response_encoding`
+rather than exposing encoded bytes to the SSE parser. Corrupt or truncated gzip before
+business completion is `response_decode_error`; ordinary network read failures keep their
+existing classification. An already delivered terminal event remains the business result:
+it does not prove the gzip trailer was subsequently read or verified.
+
+The upstream decides whether it compresses and how promptly it flushes. Local mock checks
+establish gateway behavior, not a real provider's support, compression ratio or latency.
 
 ## Admin API
 

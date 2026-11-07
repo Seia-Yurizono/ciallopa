@@ -851,6 +851,14 @@ pub(crate) const DESCRIPTIONS: &[(&str, &str)] = &[
         "stream_read_error",
         "upstream stream read error before a terminal event",
     ),
+    (
+        "response_decode_error",
+        "upstream gzip response is invalid or incomplete",
+    ),
+    (
+        "unsupported_response_encoding",
+        "upstream response used an unsupported content encoding",
+    ),
     ("connect", "could not connect to upstream"),
     ("timeout", "upstream timed out"),
     ("timeout_connect", "upstream timed out"),

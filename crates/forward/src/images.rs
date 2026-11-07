@@ -563,6 +563,7 @@ async fn run(
             body: Bytes::from(payload.to_string()),
             route,
             expect_sse: false,
+            decode_response: false,
         };
         return match proxy::send_tracked(&st, ob, trk).await {
             Ok(c) => proxy::stream_image_body(&st, c, trk.take()),
@@ -618,6 +619,7 @@ async fn run(
         body: Bytes::from(req.to_string()),
         route,
         expect_sse: false,
+        decode_response: false,
     };
     let c = match proxy::send_tracked(&st, ob, trk).await {
         Ok(c) if c.resp.status().is_success() => c,

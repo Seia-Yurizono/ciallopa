@@ -32,14 +32,14 @@ Each path ends with the server on `127.0.0.1:8317`, one account and a client key
 `ciallopa init` writes `config.toml` with a new random admin key and prints that key, the Codex
 client config and the next commands; then [set up the client](#codex-cli-client).
 The commands below use the x86_64 (`amd64`) files; on arm64 Linux use
-`ciallopa_0.2.5-1_arm64.deb` or `ciallopa-0.2.5-aarch64-unknown-linux-musl.tar.gz`. The Docker
+`ciallopa_0.2.6-1_arm64.deb` or `ciallopa-0.2.6-aarch64-unknown-linux-musl.tar.gz`. The Docker
 image is multi-arch, so Compose works unchanged on both, including Docker Desktop on Apple
 Silicon Macs.
 
 **.deb (Ubuntu / Debian)**
 ```
-curl -fLO https://github.com/Seia-Yurizono/ciallopa/releases/download/v0.2.5/ciallopa_0.2.5-1_amd64.deb
-sudo apt install ./ciallopa_0.2.5-1_amd64.deb
+curl -fLO https://github.com/Seia-Yurizono/ciallopa/releases/download/v0.2.6/ciallopa_0.2.6-1_amd64.deb
+sudo apt install ./ciallopa_0.2.6-1_amd64.deb
 sudo ciallopa -c /etc/ciallopa/config.toml init
 sudo -u ciallopa HOME=/var/lib/ciallopa ciallopa -c /etc/ciallopa/config.toml login
 sudo systemctl start ciallopa
@@ -48,7 +48,7 @@ sudo systemctl start ciallopa
 **Docker Compose**
 ```
 mkdir ciallopa && cd ciallopa && mkdir -m 700 config data
-curl -fsSLO https://raw.githubusercontent.com/Seia-Yurizono/ciallopa/v0.2.5/packaging/docker/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/Seia-Yurizono/ciallopa/v0.2.6/packaging/docker/compose.yaml
 sed -i "s/^    user: .*/    user: \"$(id -u):$(id -g)\"/" compose.yaml
 docker compose run --rm ciallopa init
 docker compose up -d && docker compose exec ciallopa ciallopa login
@@ -56,8 +56,8 @@ docker compose up -d && docker compose exec ciallopa ciallopa login
 
 **Tarball**
 ```
-curl -fL https://github.com/Seia-Yurizono/ciallopa/releases/download/v0.2.5/ciallopa-0.2.5-x86_64-unknown-linux-musl.tar.gz | tar xz
-cd ciallopa-0.2.5-x86_64-unknown-linux-musl
+curl -fL https://github.com/Seia-Yurizono/ciallopa/releases/download/v0.2.6/ciallopa-0.2.6-x86_64-unknown-linux-musl.tar.gz | tar xz
+cd ciallopa-0.2.6-x86_64-unknown-linux-musl
 ./ciallopa init
 ./ciallopa -c config.toml login
 ./ciallopa -c config.toml
@@ -109,7 +109,7 @@ from the same release and run `sha256sum -c --ignore-missing SHA256SUMS`.
 
 ### .deb
 ```
-sudo apt install ./ciallopa_0.2.5-1_amd64.deb
+sudo apt install ./ciallopa_0.2.6-1_amd64.deb
 sudo ciallopa -c /etc/ciallopa/config.toml init
 sudo -u ciallopa HOME=/var/lib/ciallopa ciallopa -c /etc/ciallopa/config.toml login
 sudo systemctl start ciallopa             # enabled at install; starts once config.toml exists
@@ -159,7 +159,7 @@ updates and rollback.
 
 ```
 mkdir -m 700 config data
-curl -fsSLO https://raw.githubusercontent.com/Seia-Yurizono/ciallopa/v0.2.5/packaging/docker/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/Seia-Yurizono/ciallopa/v0.2.6/packaging/docker/compose.yaml
 sed -i "s/^    user: .*/    user: \"$(id -u):$(id -g)\"/" compose.yaml   # your uid:gid
 docker compose run --rm ciallopa init           # writes config/config.toml, prints the key
 docker compose up -d
@@ -376,9 +376,11 @@ connect_timeout_secs = 30
 compress_requests = true   # zstd level 3 on plaintext HTTP POST /responses bodies (incl. compaction
                            # turns), like official Codex with ChatGPT auth. Already-encoded bodies,
                            # /responses/compact, /models, images, passthrough and WS are never touched.
-                           # Client Accept-Encoding is always stripped on /responses so upstream
-                           # SSE stays identity (usage/TTFT parsing). Upstream set-cookie is never
-                           # returned to clients (HTTP and WS handshake).
+gzip_responses = true      # direct POST /responses: ask the upstream for gzip, stream-decode before
+                           # error/SSE parsing, and return plaintext downstream. false asks for identity;
+                           # unexpected gzip is still decoded. New requests adopt the hot setting;
+                           # retries keep their request's value. Other routes and WS are unchanged.
+                           # Upstream set-cookie is never returned to clients (HTTP and WS handshake).
 cloudflare_cookies = false # true = per-account in-memory jar of ChatGPT infrastructure cookies
                            # (__cf_bm, __cflb, _cfuvid, cf_clearance, cf_chl_*, __oailb …, the
                            # official Codex allowlist), replayed on that account's HTTP, WS

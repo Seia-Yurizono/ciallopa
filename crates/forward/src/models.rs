@@ -82,6 +82,7 @@ pub(crate) async fn handler(
         body: Bytes::new(),
         route,
         expect_sse: false,
+        decode_response: false,
     };
     let c = match proxy::send(&st, ob).await {
         Ok(c) => c,

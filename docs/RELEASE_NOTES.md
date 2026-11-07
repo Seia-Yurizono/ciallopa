@@ -1,43 +1,57 @@
 # Release notes
 
-This patch release follows v0.2.4. It improves the management UI's readability,
-keyboard navigation and mobile layout, and gives the memory panel a compact default
-view. The existing error catalog, streaming behavior and Codex 0.166.0 compatibility
-baseline are retained.
+This patch release follows v0.2.5. Direct HTTP Responses requests can now ask the model
+upstream for gzip while ciallopa stream-decodes the reply before error handling and SSE
+observation. Downstream clients continue to receive plaintext, so the upstream leg can use
+compression independently of the client's accepted response encodings.
 
-**Request investigation and readability**
+**Upstream response compression**
 
-- Keep account, model and key filters visible on small screens, with “更多筛选” in
-  the request heading for less common conditions.
-- Adapt overview metric columns to the available width; keep primary values, cache
-  rates and upstream rates readable instead of truncating them.
-- Give mobile request actions and account controls enough space. Quota navigation
-  places its focused refresh button below the fixed time bar.
-- Keep response headers and JSON bodies readable in request details. Lock background
-  scrolling while dialogs are open and restore the originating row's focus and position.
+- New hot setting `[upstream_opts] gzip_responses = true` is enabled by default. It applies
+  only to direct `POST /v1/responses` and `POST /backend-api/codex/responses`, including
+  requests with query parameters and responses without an explicit streaming hint.
+- Set it to `false` to request identity for new requests. In-flight requests, retries and
+  pre-output SSE replays retain their original policy; changing the setting does not rebuild
+  the shared HTTP clients. A gzip reply is still decoded when the setting is off.
+- Both success and HTTP error bodies are decoded before the existing quota, overload,
+  authentication and stream classifiers. Transformed bodies no longer carry the compressed
+  content length, encoding or representation-specific integrity headers.
+- Unsupported, stacked or duplicate response encodings are rejected as
+  `unsupported_response_encoding`. Corrupt or truncated gzip is reported as
+  `response_decode_error`, separately from ordinary network read failures.
+- Decoding is incremental, uses bounded output chunks and follows downstream backpressure
+  and cancellation. Existing error-body, SSE bootstrap and observation limits apply to
+  decoded bytes. There is no new total response-size or cumulative expansion-ratio limit.
 
-**Settings and memory**
+**Compatibility boundaries**
 
-- Associate Chinese validation messages with their fields. Replace the short
-  double-click discard window with an explicit confirmation dialog, defaulting to
-  cancel; restore the field's focus and scroll it into view when needed.
-- Clarify that configuration read-only mode still permits authorized runtime actions.
-- Show RSS, buffer usage and WebSocket connections in a compact memory summary.
-  Expand once to see the full metrics and history; refresh preserves the expanded
-  state and focus. Threshold warnings remain visible when collapsed, and unlimited
-  caps are explicitly labeled “不限” in both views.
+- Request-body zstd compression and already-encoded upload passthrough retain their existing
+  behavior and the separate `compress_requests` switch. Compact, models, Images, passthrough,
+  OAuth and WebSocket traffic retain their existing encoding behavior.
+- The existing completed-event contract is preserved: a terminal event already delivered to
+  the client is not followed by another failure event for a late read or gzip-trailer error.
+  Business completion does not prove that the entire gzip trailer was read and verified.
+- The implementation uses the existing pinned gzip backend; reqwest's automatic response
+  compression features remain disabled. The Codex 0.166.0 transport compatibility baseline
+  is retained.
+- Synthetic local upstreams are the regression boundary. Real model-upstream gzip support,
+  flush timing, bandwidth savings and latency are not established by those mocks.
 
-**Validation and upgrade**
+**Upgrade**
 
-- The UI candidate was evaluated through successive independent manual browser
-  reviews. All 14 cases have passing evidence from the final full review plus a
-  targeted recheck of the unlimited-cap wording. The release integrates that candidate
-  onto v0.2.4; it does not claim another full manual pass after integration. The
-  [experiment report](https://github.com/Seia-Yurizono/ciallopa/blob/v0.2.5/docs/research/UI_HILL_CLIMBING_RESULTS.md)
-  records scope, screenshots, measurements and remaining limitations.
-- No new automatic UI tests were added. Existing state checks are adapted for the
-  browser APIs and text used by the updated UI.
-- No configuration migration or database migration is introduced relative to v0.2.4
-  (usage schema remains v13). When upgrading from an older release, follow its migration
-  notes as well. Update a pinned image tag before pulling and recreating; see the
+- No configuration or database migration is introduced relative to v0.2.5; usage schema
+  remains v13. Existing configuration files adopt `gzip_responses = true` by default.
+- Use the hot `gzip_responses = false` setting to stop requesting gzip without restarting.
+- Update a pinned image tag before pulling and recreating; see the
   [deployment guide](https://github.com/Seia-Yurizono/ciallopa/blob/main/docs/DEPLOYMENT.md#image-tags-and-upgrades).
+
+**Validation**
+
+- Local workspace tests: 505 passed, including incremental gzip output, error classification,
+  terminal/trailer ordering, cancellation, hot reload and decoded error-body limits.
+- Strict Clippy, formatting, UI/settings/accounts state checks and the loadbench example
+  regressions passed. Release package and container smoke checks run in the tag workflow.
+- The dependency lock comparison has no drift and the enabled third-party package/feature
+  graph matches v0.2.5. No transport builder or reqwest compression feature changed. A new
+  TLS/h2/WS wire capture was not performed; the external fingerprint-survey tools are not
+  available in this workspace. Real model calls were not used for validation.
