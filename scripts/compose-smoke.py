@@ -51,6 +51,40 @@ def replace_once(text, pattern, replacement):
     return text
 
 
+def set_section_value(text, section, key, value):
+    """Set a scalar fixture field whether the shipped template spells out its default."""
+    headers = list(re.finditer(r'^\[' + re.escape(section) + r'\][ \t]*(?:#[^\n]*)?\n',
+                               text, re.MULTILINE))
+    require(len(headers) == 1, f'expected one [{section}] table')
+    start = headers[0].end()
+    following = re.search(r'^[ \t]*\[', text[start:], re.MULTILINE)
+    end = start + following.start() if following else len(text)
+    body = text[start:end]
+    pattern = r'^[ \t]*' + re.escape(key) + r'[ \t]*=.*$'
+    replacement = key + ' = ' + value
+    body, count = re.subn(pattern, lambda _: replacement, body, flags=re.MULTILINE)
+    require(count <= 1, f'duplicate {section}.{key} fixture field')
+    if count == 0:
+        body = replacement + '\n' + body
+    return text[:start] + body + text[end:]
+
+
+def fixture_config(config, gateway, port):
+    """Keep all fixture traffic local, without duplicating explicit template defaults."""
+    tomllib.loads(config)
+    config = replace_once(config, r'^upstream = .*$', f'upstream = "http://{UPSTREAM}/backend-api"')
+    config = replace_once(config, r'^proxy_url = .*$', f'proxy_url = "http://{gateway}:{port}"')
+    config = replace_once(config, r'^proxy_enabled = .*$', 'proxy_enabled = true')
+    config = replace_once(config, r'^allow_config_write = .*$', 'allow_config_write = true')
+    config = replace_once(config, r'^reset_credits_refresh_mins = .*$', 'reset_credits_refresh_mins = 0')
+    for section, key, value in [('usage', 'prices_source', '\"\"'),
+                                ('usage', 'flush_ms', '20'),
+                                ('upstream_opts', 'compress_requests', 'false')]:
+        config = set_section_value(config, section, key, value)
+    tomllib.loads(config)
+    return config
+
+
 def compose_text(image, port):
     text = (ROOT / 'packaging/docker/compose.yaml').read_text()
     text = replace_once(text, r'^    image: .*$', '    image: ' + json.dumps(image))
@@ -427,14 +461,7 @@ class Smoke:
         self.thread = threading.Thread(target=self.mock.serve_forever, daemon=True)
         self.thread.start()
         # All outbound clients use this proxy, which serves fixtures and cannot relay traffic.
-        config = replace_once(config, r'^upstream = .*$', f'upstream = "http://{UPSTREAM}/backend-api"')
-        config = replace_once(config, r'^proxy_url = .*$', f'proxy_url = "http://{gateway}:{self.mock.server_port}"')
-        config = replace_once(config, r'^proxy_enabled = .*$', 'proxy_enabled = true')
-        config = replace_once(config, r'^allow_config_write = .*$', 'allow_config_write = true')
-        config = replace_once(config, r'^reset_credits_refresh_mins = .*$', 'reset_credits_refresh_mins = 0')
-        config = config.replace('[usage]\n', '[usage]\nprices_source = ""\nflush_ms = 20\n', 1)
-        config = config.replace('[upstream_opts]\n', '[upstream_opts]\ncompress_requests = false\n', 1)
-        tomllib.loads(config)  # Reject duplicate or malformed fixture settings before starting.
+        config = fixture_config(config, gateway, self.mock.server_port)
         config_path.write_text(config)
         auth = self.active / 'data/auths'
         auth.mkdir(mode=0o700)

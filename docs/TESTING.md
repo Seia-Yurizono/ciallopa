@@ -70,6 +70,10 @@ cargo test --workspace --locked
 cargo test --locked -p ciallopa --example loadbench
 ```
 
+`compose-smoke-test.py` checks fixture configuration generation and persisted-account
+assertions without Docker. It covers both explicit and implicit template defaults so
+duplicate TOML fields fail before container smoke testing.
+
 Clippy compiles all targets, so a separate full debug build adds little here. The explicit
 example test command runs loadbench's SSE parser and measurement regressions. These checks
 do not install a browser, run capacity benchmarks or build release packages.
