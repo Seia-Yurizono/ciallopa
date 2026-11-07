@@ -1,17 +1,64 @@
 #!/usr/bin/env python3
-"""Check Compose smoke's persisted-account assertions using a synthetic SQLite file."""
+"""Check Compose smoke fixture configuration and persisted-account assertions locally."""
 
 import importlib.util
 from pathlib import Path
 import sqlite3
 import sys
 import tempfile
+import tomllib
 import unittest
 
 sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location('compose_smoke', Path(__file__).with_name('compose-smoke.py'))
 smoke = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(smoke)
+
+
+class FixtureConfigTests(unittest.TestCase):
+    def test_current_shipped_template_has_no_duplicate_keys(self):
+        template = (smoke.ROOT / 'config.example.toml').read_text()
+        result = smoke.fixture_config(template, '127.0.0.1', 12345)
+        config = tomllib.loads(result)
+        self.assertEqual(config['upstream'], 'http://ciallopa-smoke.invalid/backend-api')
+        self.assertEqual(config['proxy_url'], 'http://127.0.0.1:12345')
+        self.assertTrue(config['proxy_enabled'])
+        self.assertTrue(config['ui']['allow_config_write'])
+        self.assertEqual(config['ui']['reset_credits_refresh_mins'], 0)
+        self.assertEqual(config['usage']['prices_source'], '')
+        self.assertEqual(config['usage']['flush_ms'], 20)
+        self.assertFalse(config['upstream_opts']['compress_requests'])
+        self.assertTrue(config['upstream_opts']['gzip_responses'])
+        self.assertEqual(tomllib.loads(template)['upstream_opts']['compress_requests'], True)
+
+    def test_older_template_with_implicit_compression_default(self):
+        template = (smoke.ROOT / 'config.example.toml').read_text()
+        template = template.replace('compress_requests = true\n', '')
+        template = template.replace('gzip_responses = true\n', '')
+        config = tomllib.loads(smoke.fixture_config(template, '127.0.0.1', 12345))
+        self.assertFalse(config['upstream_opts']['compress_requests'])
+        self.assertNotIn('gzip_responses', config['upstream_opts'])
+
+    def test_existing_usage_defaults_are_replaced_and_generation_is_idempotent(self):
+        template = (smoke.ROOT / 'config.example.toml').read_text()
+        template = template.replace('[usage]\n', '[usage]\nflush_ms = 999\nprices_source = "fixture"\n')
+        result = smoke.fixture_config(template, '127.0.0.1', 12345)
+        self.assertEqual(result, smoke.fixture_config(result, '127.0.0.1', 12345))
+        config = tomllib.loads(result)
+        self.assertEqual(config['usage']['flush_ms'], 20)
+        self.assertEqual(config['usage']['prices_source'], '')
+
+    def test_section_scoping_keeps_other_tables_unchanged(self):
+        text = '[usage]\nflush_ms = 100\n[other]\nflush_ms = 999\n'
+        result = smoke.set_section_value(text, 'usage', 'flush_ms', '20')
+        config = tomllib.loads(result)
+        self.assertEqual(config['usage']['flush_ms'], 20)
+        self.assertEqual(config['other']['flush_ms'], 999)
+
+    def test_missing_or_duplicate_table_is_rejected(self):
+        for text in ['', '[usage]\n[usage]\n']:
+            with self.assertRaises(RuntimeError):
+                smoke.set_section_value(text, 'usage', 'flush_ms', '20')
 
 
 class ShutdownRecordsTests(unittest.TestCase):

@@ -1,9 +1,13 @@
-# Release notes
+# Release notes — v0.2.7
 
 This patch release follows v0.2.5. Direct HTTP Responses requests can now ask the model
 upstream for gzip while ciallopa stream-decodes the reply before error handling and SSE
 observation. Downstream clients continue to receive plaintext, so the upstream leg can use
 compression independently of the client's accepted response encodings.
+
+The v0.2.6 tag did not publish a release or image: its Compose smoke fixture inserted a
+duplicate configuration key. This release fixes fixture generation for templates with
+explicit or implicit defaults and preserves the original v0.2.6 tag.
 
 **Upstream response compression**
 
@@ -47,6 +51,8 @@ compression independently of the client's accepted response encodings.
 
 **Validation**
 
+- Local Compose fixture and persisted-state regressions: 12 passed. Existing scalar settings
+  are replaced within their table rather than inserted again; absent defaults are added.
 - Local workspace tests: 505 passed, including incremental gzip output, error classification,
   terminal/trailer ordering, cancellation, hot reload and decoded error-body limits.
 - Strict Clippy, formatting, UI/settings/accounts state checks and the loadbench example
