@@ -595,9 +595,11 @@ const MODALS=[];
 function openModal(m,focus,opener){if(!m.classList.contains("hide"))return;m.classList.remove("hide");m._opener=opener||document.activeElement;m._at=Date.now();MODALS.push(m);document.documentElement.classList.add("modal-open");(focus||m.querySelector("button")).focus()}
 function closeModal(m){if(m.classList.contains("hide"))return;m.classList.add("hide");const i=MODALS.indexOf(m);if(i>=0)MODALS.splice(i,1);const o=m._opener;m._opener=null;if(m._onclose)m._onclose();document.documentElement.classList.toggle("modal-open",MODALS.length>0);if(o&&document.contains(o))o.focus({preventScroll:true})}
 function closeAllModals(){for(const m of MODALS.slice().reverse())closeModal(m)}
+// Tab order inside a modal: visible, enabled controls, including <summary> toggles; nothing inside a closed <details>.
+function tabbables(m){return Array.from(m.querySelectorAll("button,a[href],input,select,textarea,summary,[tabindex]:not([tabindex='-1'])")).filter(x=>!x.disabled&&x.offsetParent!==null&&!x.closest("details:not([open]) > :not(summary)"))}
 document.addEventListener("keydown",e=>{const m=MODALS[MODALS.length-1];if(!m)return;
   if(e.key==="Escape"){e.preventDefault();closeModal(m);return}
-  if(e.key!=="Tab")return;const f=Array.from(m.querySelectorAll("button,a[href],input,select,textarea,[tabindex]:not([tabindex='-1'])")).filter(x=>!x.disabled&&x.offsetParent!==null);if(!f.length)return;
+  if(e.key!=="Tab")return;const f=tabbables(m);if(!f.length)return;
   const i=f.indexOf(document.activeElement);e.preventDefault();f[i<0?(e.shiftKey?f.length-1:0):(i+(e.shiftKey?f.length-1:1))%f.length].focus()});
 document.addEventListener("click",e=>{const b=e.target.closest&&e.target.closest("[data-arm]");if(!b)return;const m=b.closest(".modal");if(m&&Date.now()-m._at<400){e.preventDefault();e.stopImmediatePropagation()}},true);
 document.addEventListener("click",e=>{const m=MODALS[MODALS.length-1];if(m&&e.target===m)closeModal(m)});

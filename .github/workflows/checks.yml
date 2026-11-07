@@ -46,6 +46,8 @@ jobs:
         run: node scripts/settings-state-check.cjs
       - name: Account snapshot regressions
         run: node scripts/accounts-state-check.cjs
+      - name: Request observation render regressions
+        run: node scripts/ui-observation-check.cjs
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
       - run: cargo test --locked -p ciallopa --example loadbench
