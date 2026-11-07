@@ -809,7 +809,20 @@ fn stream_body(
     let upstream_request_id = errors::request_id(&headers);
     let image_headers =
         (matches!(observation, Observation::Images) && trk.is_some()).then(|| headers.clone());
-    let body = async_stream(st.upstream.drain.clone(), move |tx| async move {
+    // Responses SSE: gateway downstream observation (queue / body yield); the record waits
+    // for the body to end so its yield fields are complete.
+    let link = match (sse, trk.as_mut()) {
+        (true, Some(t)) => {
+            t.obs_upstream_request_id(upstream_request_id.as_deref());
+            t.obs_up_bytes(prefix.len());
+            let l = crate::downstream::DownLink::new(t.start_instant());
+            t.defer_to(l.clone());
+            Some(l)
+        }
+        _ => None,
+    };
+    let drain = st.upstream.drain.clone();
+    let body = crate::downstream::observed(drain, link, move |tx| async move {
         let mut image_events = image_headers
             .as_ref()
             .map(|_| crate::image_events::ImageErrors::default());
@@ -1050,6 +1063,9 @@ fn stream_body(
                     if !chunk.is_empty() {
                         if let Some(t) = trk.as_mut() {
                             t.upstream_activity();
+                            if sse {
+                                t.obs_up_bytes(chunk.len());
+                            }
                         }
                     }
                     if sse {

@@ -47,6 +47,7 @@ pub fn routes(
         .route("/usage/v1/records/counts", get(record_counts))
         .route("/usage/v1/records/{id}", get(record))
         .route("/usage/v1/records/{id}/detail", get(detail))
+        .route("/usage/v1/records/{id}/observation", get(observation))
         .route("/usage/v1/summary", get(summary))
         .route("/usage/v1/quota", get(quota))
         .route("/usage/v1/refusals", get(refusals))
@@ -464,6 +465,21 @@ async fn detail(State(St { rec, .. }): State<St>, Path(id): Path<String>) -> Res
             Json(d).into_response()
         }
         Ok(None) => err(StatusCode::NOT_FOUND, "no detail for this request"),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    }
+}
+
+/// Gateway stream observation of one SSE request / WS turn (`id` = `request_id`).
+async fn observation(State(St { rec, .. }): State<St>, Path(id): Path<String>) -> Response {
+    let Some(rec) = rec else {
+        return err(StatusCode::NOT_FOUND, "usage log disabled");
+    };
+    if parse_id(&id).is_none() {
+        return err(StatusCode::BAD_REQUEST, "invalid request id");
+    }
+    match rec.observation(&id).await {
+        Ok(Some(o)) => Json(o).into_response(),
+        Ok(None) => err(StatusCode::NOT_FOUND, "no observation for this request"),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     }
 }
