@@ -40,6 +40,9 @@ pub(crate) struct Outbound {
     /// `Accept: text/event-stream`). chatgpt.com sends SSE without any `Content-Type`, so this
     /// hint decides SSE handling when the upstream omits it.
     pub expect_sse: bool,
+    /// Direct Responses HTTP requests return identity downstream, even if gzip negotiation
+    /// is disabled. Other routes retain their existing passthrough policy.
+    pub decode_response: bool,
 }
 
 /// The upstream response chosen for the client (2xx, or a non-retryable / final error).
@@ -480,6 +483,31 @@ async fn send_inner(
             info.active_response = Some((status, errors::request_id(r.headers())));
             let mut a = errors::attempt(&id, "http");
             a.status = Some(status);
+            let r = if ob.decode_response {
+                match crate::response_body::prepare(r) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        a.code = Some("unsupported_response_encoding".into());
+                        a.action = "stop".into();
+                        info.attempts.push(a);
+                        let mut response = errors::local(
+                            StatusCode::BAD_GATEWAY,
+                            errors::SRC_UPSTREAM,
+                            "unsupported_response_encoding",
+                            None,
+                        );
+                        if let Some(meta) = response.extensions_mut().get_mut::<errors::ErrMeta>() {
+                            meta.upstream_status = Some(status);
+                            meta.upstream_request_id =
+                                info.active_response.as_ref().and_then(|x| x.1.clone());
+                            meta.message = Some(e.to_string());
+                        }
+                        return Err(response);
+                    }
+                }
+            } else {
+                r
+            };
             // Overload answered as an HTTP error (503 `server_is_overloaded`, 502/400 with only
             // an "overloaded" message): account-level throttling, so try every other usable
             // account once (does not use the transient budget); the last one passes it through.
@@ -758,6 +786,14 @@ pub(crate) fn stream_back_tracked(
 
 type UpStream = futures::stream::BoxStream<'static, reqwest::Result<Bytes>>;
 
+fn response_read_failure(error: &reqwest::Error) -> (&'static str, &'static str) {
+    if crate::response_body::is_decode_error(error) {
+        ("response_decode_error", errors::SRC_STREAM)
+    } else {
+        ("stream_read_error", errors::SRC_NETWORK)
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Observation {
     Http,
@@ -928,7 +964,10 @@ fn stream_body(
                     if let Some(t) = trk.as_mut() {
                         t.fail_msg(
                             "idle_timeout",
-                            format!("upstream stream idle for {}s (timeout)", idle.as_secs()),
+                            format!(
+                                "upstream response body produced no data for {}s (idle timeout)",
+                                idle.as_secs()
+                            ),
                         );
                     }
                     if sse {
@@ -1016,10 +1055,13 @@ fn stream_body(
                         );
                     }
                     if let Some(t) = trk.as_mut() {
-                        t.fail_msg("stream_read_error", format!("upstream stream error: {e}"));
-                        t.source(errors::SRC_NETWORK);
+                        let (code, source) = response_read_failure(&e);
+                        t.fail_msg(code, format!("upstream stream error: {e}"));
+                        t.source(source);
                     }
-                    router.report(&route, &account, &Outcome::Transient { status: None });
+                    if !crate::response_body::is_decode_error(&e) {
+                        router.report(&route, &account, &Outcome::Transient { status: None });
+                    }
                     if let Some(rest) = align.finish() {
                         let _ = tx.send(Ok(rest)).await;
                     }
@@ -1577,6 +1619,8 @@ fn is_json(h: &HeaderMap) -> bool {
 /// Clients other than Codex (browsers, SDKs) need the media type to parse a stream; Codex itself
 /// parses SSE regardless of `Content-Type`, so adding it is harmless.
 fn ensure_sse_content_type(h: &mut HeaderMap) {
+    // SSE error/timeout handling can replace or append events on every exit path.
+    h.remove(http::header::CONTENT_LENGTH);
     let known = h
         .get(http::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
@@ -1735,11 +1779,14 @@ pub(crate) async fn send_streaming(
                     // Consuming the Err means stream_body would only see EOF — surface it here.
                     if let Some(t) = trk.as_mut() {
                         t.status(status.as_u16());
-                        t.fail_msg("stream_read_error", format!("upstream stream error: {e}"));
-                        t.source(errors::SRC_NETWORK);
+                        let (code, source) = response_read_failure(&e);
+                        t.fail_msg(code, format!("upstream stream error: {e}"));
+                        t.source(source);
                     }
-                    st.router
-                        .report(&route, &account, &Outcome::Transient { status: None });
+                    if !crate::response_body::is_decode_error(&e) {
+                        st.router
+                            .report(&route, &account, &Outcome::Transient { status: None });
+                    }
                     let err_body = async_stream(st.upstream.drain.clone(), move |tx| async move {
                         if !buf.is_empty() {
                             let _ = tx.send(Ok(Bytes::from(buf))).await;
@@ -1758,7 +1805,10 @@ pub(crate) async fn send_streaming(
                         t.status(status.as_u16());
                         t.fail_msg(
                             "idle_timeout",
-                            format!("upstream stream idle for {}s (timeout)", idle.as_secs()),
+                            format!(
+                                "upstream response body produced no data for {}s (idle timeout)",
+                                idle.as_secs()
+                            ),
                         );
                         t.source(errors::SRC_NETWORK);
                     }

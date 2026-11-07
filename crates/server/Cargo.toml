@@ -39,6 +39,7 @@ tikv-jemallocator = "=0.7.0"
 tikv-jemalloc-sys = { version = "=0.7.1", features = ["stats"] }
 
 [dev-dependencies]
+flate2 = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 tokio-tungstenite = { workspace = true }
 reqwest = { workspace = true }

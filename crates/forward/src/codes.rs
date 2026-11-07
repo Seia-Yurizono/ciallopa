@@ -40,6 +40,8 @@ pub const LOCAL: &[&str] = &[
     "challenge",
     // SSE stream
     "stream_read_error",
+    "response_decode_error",
+    "unsupported_response_encoding",
     "stream_truncated",
     "upstream_error_event",
     "response_failed",

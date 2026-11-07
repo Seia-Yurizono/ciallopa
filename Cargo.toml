@@ -4,7 +4,7 @@ members = ["crates/core", "crates/auth", "crates/routing", "crates/upstream", "c
 
 [workspace.package]
 edition = "2021"
-version = "0.2.5"
+version = "0.2.6"
 license = "MIT"
 
 # Network stack pinned (=) to codex-rs Cargo.lock so the TLS/h2
@@ -22,6 +22,7 @@ axum = { version = "=0.8.8", features = ["ws"] }
 tungstenite = { version = "0.27.0", features = ["deflate", "proxy"] }
 rand = "0.9"
 zstd = "0.13"
+flate2 = { version = "=1.1.8", default-features = false, features = ["zlib-rs"] }
 base64 = "0.22"
 http = "1"
 bytes = "1"

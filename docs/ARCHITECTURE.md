@@ -45,7 +45,7 @@ flowchart LR
 | 层 | 实现入口 | 保持的职责 |
 | --- | --- | --- |
 | 服务装配 | `server/src/{lib,main}.rs` | 监听、客户端鉴权、控制面、静态 UI、进程生命周期 |
-| 请求编排 | `forward/src/{lib,proxy,ws,images}.rs` | 协议检查、尝试与重放、输出提交、取消及记录 |
+| 请求编排 | `forward/src/{lib,proxy,response_body,ws,images}.rs` | 协议检查、响应解码、尝试与重放、输出提交、取消及记录 |
 | 准入与停机 | `forward/src/admission.rs`、`upstream/src/drain.rs` | 一次操作的共享租约、运行状态、结束等待与强制取消 |
 | 路由 | `routing`，`core::Router` | 无网络/磁盘 I/O 的账号选择与结果反馈；绑定、权重、冷却 |
 | 上游传输 | `upstream` | 每账号连接池、HTTP/WS、TLS 兼容、出口代理和有限 cookie 状态 |
@@ -59,6 +59,27 @@ HTTP 租约跟随响应 Body，WS 升级将同一个租约移交给连接任务�
 控制面和数据面职责分开，仍共享同一个进程、runtime 和主机资源。
 
 ## 生命周期与资源边界
+
+### HTTP Responses 响应压缩
+
+直接 `POST /v1/responses`、`POST /backend-api/codex/responses` 在请求准备时捕获
+`upstream_opts.gzip_responses`（默认true），向上游明确协商gzip；关闭则请求identity。
+客户端传入的Accept-Encoding不决定上游这一段，上传zstd与响应gzip是独立策略。
+同一请求的重试及输出前重放保留已捕获的值；热更新不重建共享连接池。
+compact、models、Images包装、透传、OAuth与WS不使用这项响应策略。
+
+Responses的成功和错误正文都先通过转发层的gzip流式解码，再交给既有业务判断。
+下游保持明文，移除压缩长度、编码及与原表示绑定的校验头；未知、叠加或重复编码拒绝为
+`unsupported_response_encoding`，不把原压缩字节当作SSE。损坏和截断记为
+`response_decode_error`，不触发账号鉴权/额度惩罚或新增重放；真实网络读错仍使用网络分类。
+关闭协商后收到的gzip也会解码，以保持下游契约。
+
+解码状态由响应流持有，按有界输出块和下游通道背压推进，不另启后台解压任务。
+错误正文、SSE前导和事件观察的既有上限作用于解压后字节；请求体上限不是响应总量上限，
+也不以累计膨胀比截断合法长流。这限制缓冲和单次调度工作，不保证整个请求的累计CPU成本。
+空闲超时围绕下一块明文数据计算，TTFT仍由实际输出事件决定；客户端取消会释放流和解码器。
+完整终止事件之后仍沿用业务完成语义，不因迟到的读取/校验失败再追加一个失败事件，因此
+业务成功不证明整个gzip尾部已经读完并验证。
 
 ### 等待、读取与重试
 

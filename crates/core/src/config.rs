@@ -107,6 +107,11 @@ pub struct UpstreamOpts {
     /// official Codex does with ChatGPT auth. Bodies that already carry a `Content-Encoding`
     /// are forwarded untouched; models / images / passthrough / WebSocket are never compressed.
     pub compress_requests: bool,
+    /// Ask for gzip on direct HTTP `POST /responses` requests, then decode incrementally
+    /// before error handling and SSE observation. False requests identity; returned gzip is
+    /// still decoded. A request and all its retries keep the same policy. This does not
+    /// change compact, models, Images, passthrough, OAuth or WebSocket traffic.
+    pub gzip_responses: bool,
     /// Keep an in-memory, per-account jar of ChatGPT infrastructure cookies (Cloudflare
     /// `__cf_bm`/`__cflb`/`_cfuvid`/`cf_clearance`/`cf_chl_*`… and the `__oailb` routing
     /// cookie) and replay them like official Codex. Off by default. Client `Cookie` headers are
@@ -147,6 +152,7 @@ impl Default for UpstreamOpts {
             max_attempts: 1,
             connect_timeout_secs: 30,
             compress_requests: true,
+            gzip_responses: true,
             cloudflare_cookies: false,
             transient_cooldown_secs: 15,
             overload_streak: 2,
@@ -745,6 +751,18 @@ pub fn env_var(name: &str) -> Option<(String, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn response_compression_defaults_on_and_is_independent_of_upload_compression() {
+        let defaults = Config::parse("").unwrap();
+        assert!(defaults.upstream_opts.gzip_responses);
+        let c = Config::parse("[upstream_opts]\ngzip_responses = false").unwrap();
+        assert!(!c.upstream_opts.gzip_responses);
+        assert!(c.upstream_opts.compress_requests);
+        let c = Config::parse("[upstream_opts]\ncompress_requests = false").unwrap();
+        assert!(c.upstream_opts.gzip_responses);
+        assert!(!c.upstream_opts.compress_requests);
+    }
 
     #[test]
     fn idle_above_codex_client_timeout_is_advised() {

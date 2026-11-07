@@ -15,6 +15,7 @@ enum Failure {
     Timeout,
     TooLarge,
     Read,
+    Decode,
 }
 
 #[derive(Debug)]
@@ -31,6 +32,7 @@ impl BodyFailure {
             (Failure::Timeout, false) => "error_body_timeout",
             (Failure::TooLarge, false) => "error_body_too_large",
             (Failure::Read, false) => "error_body_read",
+            (Failure::Decode, _) => "response_decode_error",
             (Failure::Timeout, true) => "models_body_timeout",
             (Failure::TooLarge, true) => "models_body_too_large",
             (Failure::Read, true) => "models_body_read",
@@ -45,7 +47,9 @@ impl BodyFailure {
             } else {
                 StatusCode::BAD_GATEWAY
             },
-            if matches!(self.failure, Failure::TooLarge) {
+            if matches!(self.failure, Failure::Decode) {
+                errors::SRC_STREAM
+            } else if matches!(self.failure, Failure::TooLarge) {
                 errors::SRC_LOCAL
             } else {
                 errors::SRC_NETWORK
@@ -62,6 +66,7 @@ impl BodyFailure {
                 }
                 Failure::TooLarge => format!("body exceeded the {} byte limit", self.limit),
                 Failure::Read => "body transfer failed".to_string(),
+                Failure::Decode => "gzip response decoding failed".to_string(),
             };
             meta.message = Some(format!(
                 "upstream HTTP {status}: {reason}; body incomplete and not forwarded"
@@ -81,7 +86,13 @@ pub(crate) async fn read_body(
     let mut body = BytesMut::new();
     let read = async {
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|_| Failure::Read)?;
+            let chunk = chunk.map_err(|e| {
+                if crate::response_body::is_decode_error(&e) {
+                    Failure::Decode
+                } else {
+                    Failure::Read
+                }
+            })?;
             if chunk.len() > limit.saturating_sub(body.len()) {
                 // Keep a bounded prefix even when the first chunk already exceeds the cap.
                 let room = limit.saturating_sub(body.len());

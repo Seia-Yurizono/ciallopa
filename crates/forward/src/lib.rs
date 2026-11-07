@@ -21,6 +21,7 @@ pub mod occupancy;
 mod proxy;
 mod refusal;
 mod reqbody;
+mod response_body;
 mod turn_state;
 mod usage;
 mod ws;
@@ -186,18 +187,33 @@ async fn forward(
     let expect_sse = inspect && client_wants_sse(&path, &headers, parsed.as_ref());
     // The parsed request is as large as the body; free it before making another copy.
     drop(parsed);
-    let (headers, body) = if inspect {
+    let upstream_opts = st.config.load().upstream_opts.clone();
+    let decode_response =
+        inspect && method == Method::POST && path.split('?').next() == Some("/codex/responses");
+    let (mut headers, body) = if inspect {
         prepare_responses_body(
             &path,
             &method,
             headers,
             req.bytes.clone(),
-            st.config.load().upstream_opts.compress_requests,
+            upstream_opts.compress_requests,
             |z| req.wrap(z),
         )
     } else {
         (headers, req.bytes.clone())
     };
+    if decode_response {
+        // This hop has its own encoding contract, independent of the downstream client.
+        // Retries and pre-output replays keep the same choice in Outbound.
+        headers.insert(
+            http::header::ACCEPT_ENCODING,
+            http::HeaderValue::from_static(if upstream_opts.gzip_responses {
+                "gzip"
+            } else {
+                "identity"
+            }),
+        );
+    }
     drop(req);
     let ob = proxy::Outbound {
         method,
@@ -206,6 +222,7 @@ async fn forward(
         body,
         route,
         expect_sse,
+        decode_response,
     };
     proxy::send_streaming(&st, ob, trk).await
 }
@@ -236,7 +253,7 @@ pub(crate) fn client_wants_sse(
 const ZSTD_LEVEL: i32 = 3;
 
 /// `/responses` request shaping (after the plaintext was inspected): drop the client's
-/// `Accept-Encoding` so the upstream SSE stays identity (usage/TTFT parsing), and zstd-compress
+/// `Accept-Encoding` before applying this hop's response policy, and zstd-compress
 /// plaintext `POST /codex/responses` bodies like official Codex. The returned bytes are reused
 /// verbatim for every retry / failover attempt.
 pub(crate) fn prepare_responses_body(

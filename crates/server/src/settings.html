@@ -738,7 +738,7 @@ const PAGES=[
   {g:"转发",id:"network",name:"网络",sub:"出口代理、IPv6 和到上游的连接",secs:[
     {t:"出口代理",note:"开关立即生效，不用保存",rows:["proxy_enabled","proxy_url"]},
     {t:"连接",rows:["ipv6","upstream_opts.connect_timeout_secs"]}],
-    adv:["upstream","ws_compression","upstream_opts.compress_requests","upstream_opts.cloudflare_cookies"]},
+    adv:["upstream","ws_compression","upstream_opts.compress_requests","upstream_opts.gzip_responses","upstream_opts.cloudflare_cookies"]},
   {g:"转发",id:"forward",name:"限流与容错",sub:"资源上限、超时和重试，以及上游出错时账号冷却多久",secs:[
     {t:"资源上限",rows:["max_body_mb","max_buffered_body_mb","max_inflight_requests","ws_max_connections","ws_max_message_mb"]},
     {t:"超时与重试",rows:["upstream_opts.max_attempts","upstream_opts.preparation_timeout_secs"]},

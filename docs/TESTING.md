@@ -74,6 +74,33 @@ Clippy compiles all targets, so a separate full debug build adds little here. Th
 example test command runs loadbench's SSE parser and measurement regressions. These checks
 do not install a browser, run capacity benchmarks or build release packages.
 
+### Responses gzip regressions
+
+Use synthetic upstreams for gzip changes; no provider account is needed:
+
+```sh
+cargo test --locked -p ciallopa-forward response_body
+cargo test --locked -p ciallopa --test forward gzip
+```
+
+The stream fixture must flush an output event while withholding the gzip trailer, and the
+client must receive the event before the trailer is released. Include input/SSE/UTF-8
+boundaries split across chunks, concatenated members, CRC/length failures, truncated trailers,
+trailing garbage and original socket read errors. Keep decode faults distinct from network
+faults, and cover both bootstrap and already-committed output. Completion followed by a late
+trailer failure must retain the delivered business result rather than append another error.
+
+Check gzip HTTP errors as well as successful SSE and JSON: decoding must precede quota,
+overload and credential-error handling, while existing limits apply to decoded bytes.
+Capture request headers to verify exact Responses scope, identity rollback, request-scoped
+hot-reload behavior and preserved zstd upload bytes; compact, models, Images, passthrough,
+OAuth and WS must retain their existing encoding behavior. Include cancellation, force,
+idle timeouts and a high-expansion payload to check released occupancy and bounded buffering.
+
+The existing transport checks below still apply when exposing the already-used gzip backend
+as an explicit forwarding dependency. A local mock establishes these contracts, not that a
+real upstream chooses gzip, flushes promptly or saves a particular amount of bandwidth.
+
 ## Checks triggered by the change
 
 | Change | Additional evidence |
