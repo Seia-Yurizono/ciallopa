@@ -7300,3 +7300,210 @@ async fn ws_frames(e: &Env, tag: &str) -> Vec<String> {
     let _ = ws.close(None).await;
     got
 }
+
+async fn obs_of(e: &Env, id: &str) -> (u16, serde_json::Value) {
+    let r = e
+        .http
+        .get(format!(
+            "http://{}/usage/v1/records/{id}/observation",
+            e.proxy
+        ))
+        .bearer_auth(KEY)
+        .send()
+        .await
+        .unwrap();
+    let s = r.status().as_u16();
+    (s, r.json().await.unwrap_or_default())
+}
+
+fn ms(v: &serde_json::Value, k: &str) -> u64 {
+    v[k].as_u64().unwrap_or_else(|| panic!("{k} missing: {v}"))
+}
+
+/// SSE: upstream event times, queue / yield times and bytes; a tail after the terminal
+/// event (client already gone) does not change the old TTFT / error semantics.
+#[tokio::test]
+async fn sse_downstream_observation_recorded() {
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    let mut r = e
+        .post("/v1/responses")
+        .header("x-test-mode", "slowtail")
+        .body(r#"{"model":"gpt-5.5","input":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    let mut got = Vec::new();
+    while let Some(c) = r.chunk().await.unwrap() {
+        got.extend_from_slice(&c);
+        if String::from_utf8_lossy(&got).contains("response.completed") {
+            break;
+        }
+    }
+    drop(r);
+    let rows = wait_rows(&e, 1).await;
+    let u = &rows[0];
+    assert!(u["error"].is_null(), "{u}");
+    let (s, o) = obs_of(&e, u["request_id"].as_str().unwrap()).await;
+    assert_eq!(s, 200, "{o}");
+    let text = ms(&o, "up_first_text_ms");
+    assert!(
+        text >= 250 && text == u["ttft_ms"].as_u64().unwrap(),
+        "{o} {u}"
+    );
+    assert!(ms(&o, "up_terminal_ms") >= text, "{o}");
+    assert!(
+        o["up_first_reasoning_ms"].is_null() && o["up_first_tool_ms"].is_null(),
+        "{o}"
+    );
+    assert_eq!(o["response_id"], "r-s", "{o}");
+    assert!(
+        ms(&o, "sse_first_queue_ms") <= ms(&o, "sse_last_queue_ms"),
+        "{o}"
+    );
+    assert!(
+        ms(&o, "sse_first_yield_ms") <= ms(&o, "sse_last_yield_ms"),
+        "{o}"
+    );
+    assert!(ms(&o, "sse_last_yield_ms") >= text, "{o}");
+    assert!(
+        ms(&o, "sse_yield_bytes") >= ms(&o, "sse_queue_bytes").min(1),
+        "{o}"
+    );
+    assert!(
+        ms(&o, "up_bytes") > 0
+            && ms(&o, "sse_queue_blocked_max_us") <= ms(&o, "sse_queue_blocked_us"),
+        "{o}"
+    );
+    // The client closed right after the terminal event, before the tail: may be true.
+    assert!(o["down_incomplete"].is_boolean(), "{o}");
+    // WS-only fields stay null (not 0) on an SSE row.
+    for k in [
+        "ws_first_send_ms",
+        "ws_sink_blocked_us",
+        "ws_deflate_down",
+        "ws_ext_up",
+    ] {
+        assert!(o[k].is_null(), "{k}: {o}");
+    }
+    // Old duration semantics: producer end, not body end; still ≥ the terminal event.
+    assert!(
+        u["duration_ms"].as_u64().unwrap() >= ms(&o, "up_terminal_ms"),
+        "{u} {o}"
+    );
+}
+
+/// SSE client disconnect mid-stream: the row is still written (once) with the client_closed
+/// outcome and whatever downstream observation existed.
+#[tokio::test]
+async fn sse_observation_on_client_disconnect() {
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    let mut response = e
+        .post("/v1/responses")
+        .header("x-test-mode", "idle_after_output")
+        .body(r#"{"model":"gpt-5.5","input":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert!(response.chunk().await.unwrap().is_some());
+    drop(response);
+    let rows = tokio::time::timeout(Duration::from_secs(5), wait_rows(&e, 1))
+        .await
+        .expect("row written after disconnect");
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["error"], "client_closed", "{rows:?}");
+    let (s, o) = obs_of(&e, rows[0]["request_id"].as_str().unwrap()).await;
+    assert_eq!(s, 200, "{o}");
+    assert!(o["up_terminal_ms"].is_null(), "{o}");
+    assert!(ms(&o, "sse_yield_chunks") >= 1, "{o}");
+    assert_eq!(o["down_incomplete"], true, "{o}");
+}
+
+/// WS: per-turn send completion, deflate negotiation per leg, prewarm turn has its own row.
+#[tokio::test]
+async fn ws_downstream_observation_per_turn() {
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as M};
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    let mut req = format!("ws://{}/v1/responses", e.proxy)
+        .into_client_request()
+        .unwrap();
+    req.headers_mut()
+        .insert("authorization", format!("Bearer {KEY}").parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    for body in [
+        r#"{"type":"response.create","model":"gpt-5.5","generate":false}"#,
+        r#"{"type":"response.create","model":"gpt-5.5","tag":"slow"}"#,
+    ] {
+        ws.send(M::text(body)).await.unwrap();
+        loop {
+            let t = ws
+                .next()
+                .await
+                .unwrap()
+                .unwrap()
+                .to_text()
+                .unwrap()
+                .to_string();
+            if t.contains("response.completed") {
+                break;
+            }
+        }
+    }
+    drop(ws);
+    let rows = wait_rows(&e, 2).await;
+    let (turn, warm) = (&rows[0], &rows[1]);
+    assert_eq!(warm["endpoint"], "prewarm", "{warm}");
+    let (s, o) = obs_of(&e, turn["request_id"].as_str().unwrap()).await;
+    assert_eq!(s, 200, "{o}");
+    let term = ms(&o, "up_terminal_ms");
+    // The terminal frame's send is attributed to its own turn.
+    assert!(ms(&o, "ws_last_send_ms") >= term, "{o}");
+    assert!(
+        ms(&o, "ws_first_send_ms") <= ms(&o, "ws_last_send_ms"),
+        "{o}"
+    );
+    assert!(
+        ms(&o, "ws_send_msgs") >= 2 && ms(&o, "ws_send_bytes") > 0,
+        "{o}"
+    );
+    assert!(
+        ms(&o, "ws_sink_blocked_max_us") <= ms(&o, "ws_sink_blocked_us"),
+        "{o}"
+    );
+    assert_eq!(o["down_incomplete"], false, "{o}");
+    // The test client offers no permessage-deflate.
+    assert_eq!(o["ws_deflate_down"], false, "{o}");
+    assert!(o["ws_ext_down"].is_null(), "{o}");
+    assert!(o["ws_deflate_up"].is_boolean(), "{o}");
+    for k in ["sse_first_queue_ms", "sse_first_yield_ms"] {
+        assert!(o[k].is_null(), "{k}: {o}");
+    }
+    // Old duration semantics: fixed when the terminal frame arrived (before its send).
+    assert!(turn["duration_ms"].as_u64().unwrap() >= term, "{turn} {o}");
+    let (s, w) = obs_of(&e, warm["request_id"].as_str().unwrap()).await;
+    assert_eq!(s, 200, "{w}");
+    assert!(
+        w["response_id"].is_string() || w["response_id"].is_null(),
+        "{w}"
+    );
+}
+
+#[tokio::test]
+async fn observation_api_rejects_bad_ids_and_old_rows() {
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    assert_eq!(obs_of(&e, "xyz").await.0, 400);
+    assert_eq!(obs_of(&e, "0000000000000001").await.0, 404);
+    let r = e
+        .http
+        .get(format!(
+            "http://{}/usage/v1/records/0000000000000001/observation",
+            e.proxy
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401);
+}

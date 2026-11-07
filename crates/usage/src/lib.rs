@@ -3,6 +3,7 @@
 //! to SQLite (WAL). Reads open their own read-only connections. Design: docs/USAGE.md.
 pub mod detail;
 mod migrate_v12;
+pub mod observation;
 pub mod occupancy;
 pub mod prices;
 pub mod problem;
@@ -12,6 +13,7 @@ mod store;
 mod writer;
 
 pub use detail::{DetailRow, ErrorDetail};
+pub use observation::{Observation, ObservationRow};
 pub use occupancy::{OccupancyRow, Sample as OccupancySample};
 pub use prices::{PriceTable, Tier};
 pub use problem::{Outcome, Problem, ProblemCounts};
@@ -111,6 +113,8 @@ pub struct Record {
     pub quota: Option<QuotaObs>,
     /// Only for failed requests (status ≥ 400 or `error`); redacted when written.
     pub detail: Option<Box<ErrorDetail>>,
+    /// Gateway stream observation (SSE requests / WS turns); stored in `request_obs`.
+    pub obs: Option<Box<Observation>>,
 }
 
 /// One upstream quota snapshot (`x-codex-{primary,secondary}-*`, `x-codex-plan-type`).
@@ -188,6 +192,7 @@ impl Record {
             key: None,
             quota: None,
             detail: None,
+            obs: None,
         }
     }
     pub fn ts_ms(&self) -> i64 {
@@ -563,6 +568,20 @@ impl Recorder {
                 .map_err(|_| UsageError::Gone)??;
         s.price_models = n;
         Ok(s)
+    }
+
+    /// Gateway stream observation by request id (16 hex chars); None when not recorded.
+    pub async fn observation(
+        &self,
+        request_id: &str,
+    ) -> Result<Option<ObservationRow>, UsageError> {
+        let Ok(id) = i64::from_str_radix(request_id, 16) else {
+            return Ok(None);
+        };
+        let p = self.path.clone();
+        tokio::task::spawn_blocking(move || Ok(observation::read(&store::open_ro(&p)?, id)?))
+            .await
+            .map_err(|_| UsageError::Gone)?
     }
 
     /// Error detail by request id (16 hex chars as shown in records).
@@ -2355,6 +2374,118 @@ mod tests {
         r.shutdown();
     }
 
+    #[tokio::test]
+    async fn observation_stored_nullable_and_purged() {
+        let d = tempfile::tempdir().unwrap();
+        let c = UsageConfig {
+            retention_days: 0,
+            ..cfg(d.path())
+        };
+        let r = Recorder::open(&c).unwrap();
+        let mk = |ms: i64, obs: Option<Observation>| {
+            let mut x = Record::new(r.ids.next_at(ms), Transport::Ws, "responses");
+            x.status = 200;
+            x.obs = obs.map(Box::new);
+            let id = x.id;
+            assert!(r.record(x));
+            id
+        };
+        let full = Observation {
+            up_first_text_ms: Some(0), // a real 0 stays 0
+            up_terminal_ms: Some(42),
+            up_bytes: Some(u64::MAX), // clamped, not wrapped
+            response_id: Some("resp_1".into()),
+            ws_sink_blocked_us: Some(7),
+            down_incomplete: Some(false),
+            ws_deflate_down: Some(true),
+            ws_ext_down: Some("permessage-deflate".into()),
+            ..Default::default()
+        };
+        let old = mk(now_ms() - 200 * 86_400_000, Some(full.clone()));
+        let with = mk(now_ms(), Some(full.clone()));
+        let none = mk(now_ms(), None);
+        let empty = mk(now_ms(), Some(Observation::default()));
+        r.flush_blocking().unwrap();
+        let got = r
+            .observation(&format!("{with:016x}"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.request_id, format!("{with:016x}"));
+        assert_eq!(got.obs.up_first_text_ms, Some(0));
+        assert_eq!(got.obs.up_bytes, Some(i64::MAX as u64));
+        assert_eq!(got.obs.up_first_reasoning_ms, None);
+        assert_eq!(got.obs.ws_deflate_up, None);
+        assert_eq!(got.obs.down_incomplete, Some(false));
+        let j = serde_json::to_value(&got).unwrap();
+        assert!(j["sse_first_yield_ms"].is_null() && j["up_first_text_ms"] == 0);
+        assert!(r
+            .observation(&format!("{none:016x}"))
+            .await
+            .unwrap()
+            .is_none());
+        assert!(r
+            .observation(&format!("{empty:016x}"))
+            .await
+            .unwrap()
+            .is_none());
+        assert!(r.observation("zz").await.unwrap().is_none());
+        r.shutdown();
+        let r = Recorder::open(&UsageConfig {
+            retention_days: 90,
+            ..c.clone()
+        })
+        .unwrap();
+        r.flush_blocking().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(r
+            .observation(&format!("{old:016x}"))
+            .await
+            .unwrap()
+            .is_none());
+        assert!(r
+            .observation(&format!("{with:016x}"))
+            .await
+            .unwrap()
+            .is_some());
+        r.shutdown();
+    }
+
+    /// A v13 DB (no `request_obs`) upgrades in place; old rows read as "no observation".
+    #[tokio::test]
+    async fn migrate_v13_adds_observation_table() {
+        let d = tempfile::tempdir().unwrap();
+        let c = cfg(d.path());
+        let rid = (now_ms() - 5_000) << SEQ_BITS;
+        {
+            let mut db = rusqlite::Connection::open(&c.path).unwrap();
+            store::migrate(&mut db).unwrap();
+            db.execute_batch(&format!(
+                "DROP TABLE request_obs;
+                 INSERT INTO requests(id, transport, status, retries, switches, duration_ms)
+                   VALUES({rid}, 1, 200, 0, 0, 10);
+                 PRAGMA user_version = 13;"
+            ))
+            .unwrap();
+        }
+        let r = Recorder::open(&c).unwrap();
+        let db = rusqlite::Connection::open(&c.path).unwrap();
+        let v: i64 = db
+            .query_row("PRAGMA user_version", [], |x| x.get(0))
+            .unwrap();
+        assert_eq!(v, store::SCHEMA_VERSION);
+        assert!(r
+            .observation(&format!("{rid:016x}"))
+            .await
+            .unwrap()
+            .is_none());
+        let n: i64 = db
+            .query_row("SELECT COUNT(*) FROM requests", [], |x| x.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+        r.shutdown();
+    }
+
     #[test]
     fn retention_zero_keeps_forever_and_default_is_90() {
         assert_eq!(UsageConfig::default().retention_days, 90);
@@ -2951,7 +3082,7 @@ mod tests {
         let v: i64 = c
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 13);
+        assert_eq!(v, store::SCHEMA_VERSION);
         let idx: i64 = c
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='requests_thread'",

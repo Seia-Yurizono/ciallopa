@@ -165,6 +165,14 @@ pub(crate) fn negotiate(offers: &[HeaderValue]) -> Option<(DeflateConfig, String
 }
 
 impl Upgrade {
+    /// The `Sec-WebSocket-Extensions` answer `on_upgrade` will send (None = no deflate).
+    pub(crate) fn agreed_ext(&self, compression: bool) -> Option<String> {
+        compression
+            .then(|| negotiate(&self.offers))
+            .flatten()
+            .map(|(_, ext)| ext)
+    }
+
     /// 101 response; `cb` runs with the stream once hyper hands the connection over.
     /// `compression`: accept a `permessage-deflate` offer (`ws_compression`).
     /// `max_message`: largest incoming message (and frame) in bytes, after inflating.

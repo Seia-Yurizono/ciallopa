@@ -665,6 +665,7 @@ button.pc.sm{height:24px;padding:0 8px;font-size:var(--fs-xs)}
   <h3><span id="dtitle">请求详情</span><button id="dlink" class="xs" type="button">复制链接</button><button id="dcopy" class="xs" type="button">复制 JSON</button><button id="dclose" class="xs" type="button">关闭</button></h3>
   <div class="row" role="group" aria-label="浏览当前列表"><button id="dprev" class="ghost xs" type="button" aria-keyshortcuts="Alt+ArrowUp" title="上一条（Alt + ↑）">↑ 上一条</button><button id="dnext" class="ghost xs" type="button" aria-keyshortcuts="Alt+ArrowDown" title="下一条（Alt + ↓）">下一条 ↓</button><span class="mut xs" id="dposition" role="status"></span><span class="mut xs d-only">Alt + ↑ / ↓</span></div>
   <div class="mut" id="dmeta"></div><div class="concl hide" id="dconcl" role="note"></div><div class="detail-stats" id="dstats"></div><dl class="kv detail-meta" id="dfields"></dl><div id="dmsg"></div>
+  <div class="lab hide" id="dolab">网关下游观测</div><p class="mut xs hide" id="donote">网关侧观测，相对请求开始；非客户端收到时间。</p><dl class="kv detail-meta hide" id="dobs"></dl>
   <div class="detail-load hide" id="dload"><span id="dstatus" role="status" aria-atomic="true"></span><button id="dretry" class="ghost xs hide" type="button">重试详情</button></div>
   <div class="lab" id="dtll">尝试过程</div><ol class="tl" id="dtl"></ol>
   <div class="lab" id="dhlab">响应头</div><pre id="dhdr"></pre>
@@ -1428,6 +1429,7 @@ async function openDetail(r,from,retry=false){if(!/^[0-9a-f]{16}$/.test(r.reques
   $("dretry").setAttribute("aria-disabled","true");$("dretry").textContent=retry?"重试中…":"重试详情";if(!retry)hideDetailRetry();
   renderDetailNav();
   if($("dp").classList.contains("hide"))openModal($("dp"),$("dclose"),from);saveF();
+  loadObservation(r,current);
   if(!r.has_detail)return;$("dblab").textContent="响应体";
   try{const d=await usageGet("/usage/v1/records/"+r.request_id+"/detail",current);if(!current())return;
     for(const id of ["dhlab","dhdr","dblab","dbody"])$(id).classList.remove("hide");
@@ -1437,6 +1439,26 @@ async function openDetail(r,from,retry=false){if(!/^[0-9a-f]{16}$/.test(r.reques
     $("dbody").textContent=d.body?pretty(d.body):"（无）";dtext=JSON.stringify({record:r,detail:d},null,2);$("dstatus").textContent="详情已加载";hideDetailRetry()}
   catch(err){if(!current()||err.message==="401")return;$("dstatus").textContent=err.status===404?"详情已过保留期。请求概要仍可查看。":"详情加载失败："+why(err);if(err.status===404)hideDetailRetry();else $("dretry").classList.remove("hide");dtext=JSON.stringify({record:r,detail_error:err.message},null,2)}
   finally{if(current()){$("dcopy").disabled=false;$("dbody").setAttribute("aria-busy","false");$("dretry").setAttribute("aria-disabled","false");$("dretry").textContent="重试详情"}}}
+// Gateway downstream observation (SSE / WS only). Absent values stay blank, never 0.
+function obsPair(a,b,f){return a==null&&b==null?null:(a==null?"–":f(a))+" / "+(b==null?"–":f(b))}
+function obsUs(v){return fmtMs(Math.round(v/1000))}
+function obsBytes(v){return fmtN(v)+" B"}
+function obsDeflate(on,ext){return on==null?null:on?"已协商"+(ext?" · "+ext:""):"未协商"}
+async function loadObservation(r,current){for(const id of ["dolab","donote","dobs"])$(id).classList.add("hide");clear($("dobs"));if(!streamRecord(r))return;
+  let o;try{o=await usageGet("/usage/v1/records/"+r.request_id+"/observation",current)}catch(_){return}if(!current()||!o)return;
+  const sse=o.sse_first_yield_ms!=null||o.sse_first_queue_ms!=null,
+    main=[["上游首文本",o.up_first_text_ms==null?null:fmtMs(o.up_first_text_ms)],["上游结束",o.up_terminal_ms==null?null:fmtMs(o.up_terminal_ms)],
+      [sse?"交给 HTTP 层 首 / 末":"WS 发送完成 首 / 末",sse?obsPair(o.sse_first_yield_ms,o.sse_last_yield_ms,fmtMs):obsPair(o.ws_first_send_ms,o.ws_last_send_ms,fmtMs)],
+      ["下游阻塞 累计",sse?(o.sse_queue_blocked_us==null?null:obsUs(o.sse_queue_blocked_us)):(o.ws_sink_blocked_us==null?null:obsUs(o.ws_sink_blocked_us))]],
+    more=[["上游首推理 / 首工具",obsPair(o.up_first_reasoning_ms,o.up_first_tool_ms,fmtMs)],["上游末事件",o.up_last_event_ms==null?null:fmtMs(o.up_last_event_ms)],
+      ["SSE 入队 首 / 末",obsPair(o.sse_first_queue_ms,o.sse_last_queue_ms,fmtMs)],["阻塞最大",(sse?o.sse_queue_blocked_max_us:o.ws_sink_blocked_max_us)!=null?obsUs(sse?o.sse_queue_blocked_max_us:o.ws_sink_blocked_max_us):null],
+      ["字节 上游 / 下游",obsPair(o.up_bytes,sse?o.sse_yield_bytes:o.ws_send_bytes,obsBytes)],["下游提前结束",o.down_incomplete==null?null:o.down_incomplete?"是":"否"],
+      ["WS 压缩 客户端侧",obsDeflate(o.ws_deflate_down,o.ws_ext_down)],["WS 压缩 上游侧",obsDeflate(o.ws_deflate_up,o.ws_ext_up)],
+      ["响应 ID",o.response_id],["上游请求 ID",o.upstream_request_id]];
+  const add=(box,rows)=>{for(const [name,value] of rows)if(value!=null&&value!=="")box.append(h("dt",null,name),h("dd",null,String(value)))};
+  add($("dobs"),main);const extra=h("dl","kv");add(extra,more);
+  if(extra.childElementCount)$("dobs").append(h("dt",null,""),h("dd",null,h("details",null,h("summary",null,"更多"),extra)));
+  if($("dobs").childElementCount)for(const id of ["dolab","donote","dobs"])$(id).classList.remove("hide")}
 async function lookupRecord(id,from){id=id.trim().toLowerCase();if(!/^[0-9a-f]{16}$/.test(id)){toast("记录 ID 是 16 位十六进制字符",{kind:"err"});return}
   $("lookupresult").textContent="正在查找 "+id+"…";const seq=++lookupSeq,auth=key(),epoch=authEpoch,current=()=>seq===lookupSeq&&auth===key()&&epoch===authEpoch;try{const d=await usageGet("/usage/v1/records/"+id,current);if(current()){$("lookupresult").textContent="";openDetail(d.record,from)}}
   catch(e){if(!current()||e.message==="401")return;$("lookupresult").textContent=e.status===404?"没有找到记录 "+id+"，可能已过保留期":"查找失败："+e.message;$("lookup").classList.remove("hide");$("lookupshow").setAttribute("aria-expanded","true");$("recordid").value=id}}

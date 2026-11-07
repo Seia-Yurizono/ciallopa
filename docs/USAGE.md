@@ -443,7 +443,8 @@ CREATE TABLE occupancy(minute INTEGER NOT NULL, instance INTEGER NOT NULL, sampl
   lim_inflight INTEGER NOT NULL, lim_ws INTEGER NOT NULL, lim_buffered INTEGER NOT NULL,
   PRIMARY KEY(minute, instance));
 ```
-- Schema is at `user_version = 13` (v13 only adds the `requests_thread` index). Opening an older file upgrades it in place (`ALTER TABLE` /
+- Schema is at `user_version = 14` (v13 only adds the `requests_thread` index; v14 only adds the
+  `request_obs` table, see *Gateway downstream observation*). Opening an older file upgrades it in place (`ALTER TABLE` /
   new tables); columns that did not exist yet stay NULL on old rows.
 - `quota_obs` gets a row only when used % / plan changes or a reset time moves by > 120 s
   (upstream reset times jitter by a few seconds). Purge keeps each account's latest row.
@@ -556,6 +557,8 @@ See [METRICS.md](METRICS.md) for the current outcome, sampling, cursor and bucke
   It does not require captured error detail. Returns 404 if the record is absent and 400 for an invalid ID.
 - `GET /usage/v1/records/{request_id}/detail` → `{request_id, ts_ms, message, body, body_len,
   truncated, headers:{…}}` (404 if none, 400 if the id is not 16 hex chars). See *Error details*.
+- `GET /usage/v1/records/{request_id}/observation` → `{request_id, ts_ms, up_first_text_ms, …}`
+  (404 if none, 400 for an invalid id). See *Gateway downstream observation*.
 - `GET /usage/v1/summary?range=24h&group=key,instance&<filters>` (or `7d`, `30m`, …; or
   `from=<ms>&to=<ms>`). `group` = comma list of `account,model,key,instance,effort,transport,endpoint,tier,response_model,error,err_source`
   (default `account,model`; unknown → 400)
@@ -1034,3 +1037,35 @@ thread):
 
 Anything that would thrash the disk per request is a bug; prefer in-memory + a single coalescing
 writer (see `ciallopa_core::fingerprint`).
+
+## Gateway downstream observation (schema v14)
+
+One optional `request_obs` row per Responses SSE request or WS turn (`id` = `requests.id`),
+aggregated in memory and written in the same transaction as its `requests` row (no per-chunk
+writes); purged with it. Exports and `/records` are unchanged. Every column is nullable:
+NULL means not observed / not applicable / older row, never 0. Times are ms since the record
+start (same zero as `ttft_ms`); `*_us` are microseconds.
+
+These are **gateway** observations only. Nothing here is a client receive, parse or render
+time, a socket flush or a TCP acknowledgement; only the client can measure those.
+
+| field | meaning |
+|---|---|
+| `up_first_text_ms` / `up_first_reasoning_ms` / `up_first_tool_ms` | first `response.output_text.delta`·`refusal.delta` / `response.reasoning*.delta` / `response.*_call*.delta` parsed from the final upstream attempt |
+| `up_last_event_ms`, `up_terminal_ms`, `up_events` | last complete event (any type, also a tail after the terminal one while the record is open), terminal event, event count |
+| `up_bytes` | upstream payload bytes of the final attempt (SSE: body bytes after HTTP content decoding; WS: text/binary payload after inflate) |
+| `response_id`, `upstream_request_id` | `response.id`; upstream `x-request-id`/`x-oai-request-id`/`cf-ray` (≤128 chars of `[A-Za-z0-9._:-]`, else NULL) |
+| `sse_first_queue_ms` / `sse_last_queue_ms`, `sse_queue_chunks`, `sse_queue_bytes` | chunk accepted into the 16-slot body queue |
+| `sse_queue_blocked_us` / `_max_us` | total / longest time a send waited on a full queue |
+| `sse_first_yield_ms` / `sse_last_yield_ms`, `sse_yield_chunks`, `sse_yield_bytes` | chunk handed from the queue to hyper's body poll (not a socket write) |
+| `ws_first_send_ms` / `ws_last_send_ms`, `ws_send_msgs`, `ws_send_bytes` | a turn message's `sink.send` completed: frame written and tungstenite's flush returned (bytes accepted by the OS send buffer); bytes are payload before deflate |
+| `ws_sink_blocked_us` / `_max_us` | total / longest time a `sink.send` stayed Pending |
+| `down_incomplete` | SSE body dropped before its end (client gone, including a normal close right after the terminal event), or a WS send error |
+| `ws_deflate_down` / `ws_ext_down`, `ws_deflate_up` / `ws_ext_up` | permessage-deflate **negotiation** per leg (client↔ciallopa, ciallopa↔upstream) and the normalised answer (`unrecognized` if not a plain RFC 7692 answer). Whether each frame was compressed is not recorded |
+
+Notes: the old `ttft_ms`, `duration_ms` and TPS keep their meaning (an SSE row is written when the
+body ends, but `duration_ms` is still the producer end; a WS turn's `duration_ms` is fixed when
+its terminal frame arrives, before that frame's observed send). On a WS replay (switch /
+wait+retry) the upstream fields restart for the final attempt; times stay relative to the turn
+start. Frames after a WS turn's terminal frame belong to no turn. HTTP (non-stream) rows have
+no observation. No bodies, tokens or headers other than the two ids above are stored.
