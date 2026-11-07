@@ -556,6 +556,43 @@ button.pc.sm{height:24px;padding:0 8px;font-size:var(--fs-xs)}
 @media (max-width:480px){
 .strip{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
+
+/* Duration bar in the request list: real proportion on one page-wide linear scale. */
+#rec td.dur .db{position:relative;display:block;height:6px;margin-top:3px;background:var(--bar);box-shadow:inset 0 0 0 1px var(--line-2);border-radius:3px;overflow:hidden;min-width:56px}
+#hdur .dscale{display:block;font-weight:400;font-size:var(--fs-xs,11px);color:var(--mut);white-space:nowrap}
+#hdur .dkey{display:inline-block;width:10px;height:6px;border-radius:2px;background:var(--focus);vertical-align:1px;margin-right:3px}
+#rec td.dur .db i,#rec td.dur .db b{position:absolute;left:0;top:0;bottom:0;border-radius:2px}
+#rec td.dur .db i{width:calc(var(--d) / var(--dmax) * 100%);background:color-mix(in srgb,var(--fg-2) 55%,transparent)}
+#rec td.dur .db b{width:calc(var(--t) / var(--dmax) * 100%);background:var(--focus)}
+
+/* Detail: parallel upstream / downstream tracks on one axis. */
+.otl{margin:var(--s2,6px) 0}
+.olane{display:grid;grid-template-columns:3em minmax(0,1fr);align-items:center;gap:8px;min-height:22px}
+.oname{display:flex;flex-direction:column;line-height:1.15;font-size:var(--fs-s,13px)}
+.otrack{position:relative;height:18px;background:linear-gradient(var(--line),var(--line)) center/100% 1px no-repeat}
+.os{position:absolute;top:5px;height:8px;border-radius:2px}
+.os.up{background:color-mix(in srgb,var(--fg-2) 35%,transparent)}
+.os.dn{background:var(--focus)}
+.os.q{top:8px;height:2px;background:var(--focus);opacity:.6}
+.om{position:absolute;top:3px;width:10px;height:10px;margin-left:-5px;background:var(--fg);box-shadow:0 0 0 1.5px var(--surface)}
+.om.static,.odur.static{position:static;display:inline-block;margin:0 4px 0 0;vertical-align:-1px;box-shadow:none}
+.om.r{border-radius:50%;background:var(--surface);box-shadow:inset 0 0 0 2px var(--fg)}
+.om.t{border-radius:50%}
+.om.f{transform:rotate(45deg) scale(.85)}
+.om.e{border-radius:1px;background:var(--fg-2)}
+.oaxisrow{height:16px;background:none;border-top:1px solid var(--line-2)}
+.oaxis{display:flex;justify-content:space-between;font-size:var(--fs-xs,11px);color:var(--mut);font-variant-numeric:tabular-nums}
+.ochart{position:relative}
+.ovl{position:absolute;left:calc(3em + 8px);right:0;top:0;bottom:16px;pointer-events:none}
+.odur{position:absolute;top:0;bottom:0;width:0;border-left:1.5px dashed var(--mut)}
+.odur.static{width:10px;height:10px;border:0;border-left:1.5px dashed var(--mut)}
+.olegend,.ofacts{display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:4px}
+.ofacts{margin-top:6px}
+.os.static{position:static;display:inline-block;width:14px;margin-right:4px;vertical-align:1px}
+.os.q.static{height:2px;vertical-align:3px}
+.dmetad{margin-top:var(--s2,6px)}.dmetad>summary{cursor:pointer;font-weight:600;color:var(--mut);font-size:var(--fs-s,13px)}
+.dmetad>summary:focus-visible,.otl summary:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+@media (prefers-reduced-motion:reduce){.otl *,#rec td.dur .db *{transition:none!important;animation:none!important}}
 </style>
 </head>
 <body>
@@ -633,7 +670,7 @@ button.pc.sm{height:24px;padding:0 8px;font-size:var(--fs-xs)}
         <button id="fclear" class="ghost xs hide" type="button">清除请求筛选</button>
       </div>
       <div class="filterchips hide" id="recordchips" role="group" aria-label="已应用请求筛选，仅影响请求列表"></div>
-      <div class="tw" id="rw"><table class="stk" id="rec"><thead><tr><th scope="col">时间</th><th scope="col">状态</th><th scope="col">结果</th><th scope="col">账号</th><th scope="col" class="x">密钥</th><th scope="col">模型</th><th scope="col" class="x">推理</th><th scope="col" class="n x" title="流请求首输出延迟（TTFT）">首输出</th><th scope="col" class="n">耗时</th><th scope="col" class="n x">输入</th><th scope="col" class="n x">输出</th><th scope="col" class="n x" title="按 API 标价估算">估算 $</th></tr></thead><tbody><tr><td colspan="12"><span class="skel"></span><span class="skel"></span></td></tr></tbody></table></div>
+      <div class="tw" id="rw"><table class="stk" id="rec"><thead><tr><th scope="col">时间</th><th scope="col">状态</th><th scope="col">结果</th><th scope="col">账号</th><th scope="col" class="x">密钥</th><th scope="col">模型</th><th scope="col" class="x">推理</th><th scope="col" class="n x" title="流请求首输出延迟（TTFT）">首输出</th><th scope="col" class="n" id="hdur" title="条长 = 耗时 / 本页最长耗时（线性）；深色段 = 首输出">耗时<span class="dscale"><span id="hdurs">本页 0–?</span> · <span class="dkey" aria-hidden="true"></span>首输出</span></th><th scope="col" class="n x">输入</th><th scope="col" class="n x">输出</th><th scope="col" class="n x" title="按 API 标价估算">估算 $</th></tr></thead><tbody><tr><td colspan="12"><span class="skel"></span><span class="skel"></span></td></tr></tbody></table></div>
       <div class="tw hide" id="refw"><table class="stk" id="refrec"><thead><tr><th scope="col">时间</th><th scope="col">原因</th><th scope="col">密钥</th><th scope="col">接口</th><th scope="col" class="x">客户端</th><th scope="col" class="n">次数</th><th scope="col" class="n">上限 / 占用</th></tr></thead><tbody></tbody></table></div>
       <div class="pager"><button id="rmore" class="hide" type="button">加载更多</button><span class="mut sm" id="rpage"></span></div>
     </div>
@@ -664,8 +701,9 @@ button.pc.sm{height:24px;padding:0 8px;font-size:var(--fs-xs)}
 <div id="dp" class="modal hide" role="dialog" aria-modal="true" aria-labelledby="dtitle"><div class="mbox wide">
   <h3><span id="dtitle">请求详情</span><button id="dlink" class="xs" type="button">复制链接</button><button id="dcopy" class="xs" type="button">复制 JSON</button><button id="dclose" class="xs" type="button">关闭</button></h3>
   <div class="row" role="group" aria-label="浏览当前列表"><button id="dprev" class="ghost xs" type="button" aria-keyshortcuts="Alt+ArrowUp" title="上一条（Alt + ↑）">↑ 上一条</button><button id="dnext" class="ghost xs" type="button" aria-keyshortcuts="Alt+ArrowDown" title="下一条（Alt + ↓）">下一条 ↓</button><span class="mut xs" id="dposition" role="status"></span><span class="mut xs d-only">Alt + ↑ / ↓</span></div>
-  <div class="mut" id="dmeta"></div><div class="concl hide" id="dconcl" role="note"></div><div class="detail-stats" id="dstats"></div><dl class="kv detail-meta" id="dfields"></dl><div id="dmsg"></div>
-  <div class="lab hide" id="dolab">网关下游观测</div><p class="mut xs hide" id="donote">网关侧观测，相对请求开始；非客户端收到时间。</p><dl class="kv detail-meta hide" id="dobs"></dl>
+  <div class="mut" id="dmeta"></div><div class="concl hide" id="dconcl" role="note"></div><div class="detail-stats" id="dstats"></div><div id="dmsg"></div>
+  <div class="lab hide" id="dolab">网关下游观测</div><p class="mut xs hide" id="donote">网关侧观测 · 时间从请求开始计 · 不是客户端收到时间</p><div class="otl hide" id="dotl"></div><dl class="kv detail-meta hide" id="dobs"></dl>
+  <details class="dmetad" id="dmetad"><summary>标识与元数据 <span class="mut xs" id="dmetasum"></span></summary><dl class="kv detail-meta" id="dfields"></dl></details>
   <div class="detail-load hide" id="dload"><span id="dstatus" role="status" aria-atomic="true"></span><button id="dretry" class="ghost xs hide" type="button">重试详情</button></div>
   <div class="lab" id="dtll">尝试过程</div><ol class="tl" id="dtl"></ol>
   <div class="lab" id="dhlab">响应头</div><pre id="dhdr"></pre>
@@ -800,9 +838,11 @@ const MODALS=[];
 function openModal(m,focus,opener){if(!m.classList.contains("hide"))return;m.classList.remove("hide");m._opener=opener||document.activeElement;m._at=Date.now();MODALS.push(m);document.documentElement.classList.add("modal-open");(focus||m.querySelector("button")).focus()}
 function closeModal(m){if(m.classList.contains("hide"))return;m.classList.add("hide");const i=MODALS.indexOf(m);if(i>=0)MODALS.splice(i,1);const o=m._opener;m._opener=null;if(m._onclose)m._onclose();document.documentElement.classList.toggle("modal-open",MODALS.length>0);if(o&&document.contains(o))o.focus({preventScroll:true})}
 function closeAllModals(){for(const m of MODALS.slice().reverse())closeModal(m)}
+// Tab order inside a modal: visible, enabled controls, including <summary> toggles; nothing inside a closed <details>.
+function tabbables(m){return Array.from(m.querySelectorAll("button,a[href],input,select,textarea,summary,[tabindex]:not([tabindex='-1'])")).filter(x=>!x.disabled&&x.offsetParent!==null&&!x.closest("details:not([open]) > :not(summary)"))}
 document.addEventListener("keydown",e=>{const m=MODALS[MODALS.length-1];if(!m)return;
   if(e.key==="Escape"){e.preventDefault();closeModal(m);return}
-  if(e.key!=="Tab")return;const f=Array.from(m.querySelectorAll("button,a[href],input,select,textarea,[tabindex]:not([tabindex='-1'])")).filter(x=>!x.disabled&&x.offsetParent!==null);if(!f.length)return;
+  if(e.key!=="Tab")return;const f=tabbables(m);if(!f.length)return;
   const i=f.indexOf(document.activeElement);e.preventDefault();f[i<0?(e.shiftKey?f.length-1:0):(i+(e.shiftKey?f.length-1:1))%f.length].focus()});
 document.addEventListener("click",e=>{const b=e.target.closest&&e.target.closest("[data-arm]");if(!b)return;const m=b.closest(".modal");if(m&&Date.now()-m._at<400){e.preventDefault();e.stopImmediatePropagation()}},true);
 document.addEventListener("click",e=>{const m=MODALS[MODALS.length-1];if(m&&e.target===m)closeModal(m)});
@@ -1340,7 +1380,10 @@ function recRow(r){const outcome=requestOutcome(r),isErr=outcome==="failed",es=s
   const mc=modelCell(r);mc.appendChild(h("span","m-only"," · "+(r.reasoning_effort||r.response_effort||"–")+" · "+fmtN(r.output_tokens)+" 出"));tr.appendChild(h("td",{class:"m",title:mc.dataset.tip+hint},mc));
   const ef=effortCell(r);tr.appendChild(h("td",{class:"x sm",title:ef.dataset.tip+hint},ef));
   tr.appendChild(h("td",{class:"n x",title:streamRecord(r)?"首输出延迟":"非流请求无首输出样本"},fmtMs(streamRecord(r)?r.ttft_ms:null)));
-  tr.appendChild(h("td",{class:"n dur",title:exact(r.duration_ms)+" ms"},fmtMs(r.duration_ms)));
+  // Shared linear scale across the page (--dmax on the table); the darker part is TTFT, which lies inside the duration.
+  const dv=Math.max(0,Number(r.duration_ms)||0),db=h("span",{class:"db","aria-hidden":"true",style:"--d:"+dv},h("i"));
+  if(streamRecord(r)&&r.ttft_ms!=null)db.appendChild(h("b",{style:"--t:"+Math.min(Math.max(0,Number(r.ttft_ms)||0),dv)}));
+  tr.appendChild(h("td",{class:"n dur",title:exact(r.duration_ms)+" ms"},fmtMs(r.duration_ms),db));
   tr.appendChild(h("td",{class:"n x",title:exact(r.input_tokens)+(r.cached_tokens?"（缓存命中 "+exact(r.cached_tokens)+"）":"")},fmtN(r.input_tokens)));
   tr.appendChild(h("td",{class:"n x",title:exact(r.output_tokens)},fmtN(r.output_tokens)));
   tr.appendChild(r.price_status==="unknown_price"?h("td",{class:"n x",title:"模型/档位不在价格表中"},"未定价"):r.price_status==="ignored"?h("td",{class:"n x mut",title:"该模型已在价格设置里忽略，费用按 0 计"},"忽略"):h("td",{class:"n x",title:exactUsd(r.cost_usd)},r.cost_usd===null||r.cost_usd===undefined?"–":r.cost_usd<0.01&&r.cost_usd>0?"<0.01":r.cost_usd.toFixed(2)));
@@ -1348,7 +1391,7 @@ function recRow(r){const outcome=requestOutcome(r),isErr=outcome==="failed",es=s
 const recordRows=new Map();let recordDay="";
 // RecordRow is a flat API snapshot. Preserve identical rows even when JSON supplies new objects.
 function sameRecord(a,b){const keys=Object.keys(a);return keys.length===Object.keys(b).length&&keys.every(k=>a[k]===b[k])}
-function renderRecords(){const tb=$("rec").tBodies[0],dp=$("dp"),opener=!dp.classList.contains("hide")&&dp._opener&&tb.contains(dp._opener)?dp._opener.closest("tr[data-ak]"):null,anchor=opener&&opener.dataset.ak;
+function renderRecords(){const dmx=Math.max(1,...recState.rows.map(x=>x.duration_ms||0));{const rt=$("rec");if(rt.style&&rt.style.setProperty)rt.style.setProperty("--dmax",dmx)}$("hdur").title="条长 = 耗时 / 本页最长耗时 "+(dmx/1000).toFixed(1)+" s（线性）；深色段 = 首输出";$("hdurs").textContent="本页 0–"+(dmx<1000?Math.round(dmx)+" ms":(dmx/1000).toFixed(dmx<1e4?1:0)+" s");const tb=$("rec").tBodies[0],dp=$("dp"),opener=!dp.classList.contains("hide")&&dp._opener&&tb.contains(dp._opener)?dp._opener.closest("tr[data-ak]"):null,anchor=opener&&opener.dataset.ak;
   keepScroll("rw",()=>steady([tb],()=>{
     // Time-only labels become dated labels at midnight, even if the record is unchanged.
     const day=new Date().toDateString();if(recordDay!==day){recordRows.clear();recordDay=day}
@@ -1419,7 +1462,7 @@ async function openDetail(r,from,retry=false){if(!/^[0-9a-f]{16}$/.test(r.reques
   $("dmeta").textContent=fmtTime(r.ts_ms,true)+" · "+(r.status?"HTTP "+r.status:"未记录 HTTP 状态")+" · "+(r.transport||"–").toUpperCase();renderConclusion(r);detailStats(r);clear($("dfields"));
   for(const [name,value] of [["记录 ID",r.request_id],["账号",r.account],["密钥 / 实例",[r.key,r.instance].filter(Boolean).join(" / ")],["端点",r.endpoint],
     ["实际模型",r.response_model],["推理强度",r.reasoning_effort||r.response_effort],["请求 / 实际档位",tierName(normTier(r.requested_service_tier))+" / "+tierName(normTier(r.service_tier))],
-    ["最初账号",r.first_account]])field(name,value);threadField(r);field("轮次",r.turn_id);field("结束原因",r.incomplete&&incompleteCode(r));
+    ["最初账号",r.first_account]])field(name,value);$("dmetasum").textContent=[r.account,r.model,r.request_id].filter(Boolean).join(" · ");threadField(r);field("轮次",r.turn_id);field("结束原因",r.incomplete&&incompleteCode(r));
   $("dmsg").classList.toggle("error",outcome==="failed");
   const message=(es&&SRC[es]?SRC[es][0]+" · ":"")+(r.error?r.error+(error.label?"（"+error.label+"）":""):"")+(error.tip?"\n"+error.tip:"");$("dmsg").textContent=message;
   for(const id of ["dhdr","dbody"])$(id).textContent="";clear($("dtl"));$("dtll").classList.add("hide");
@@ -1439,26 +1482,55 @@ async function openDetail(r,from,retry=false){if(!/^[0-9a-f]{16}$/.test(r.reques
     $("dbody").textContent=d.body?pretty(d.body):"（无）";dtext=JSON.stringify({record:r,detail:d},null,2);$("dstatus").textContent="详情已加载";hideDetailRetry()}
   catch(err){if(!current()||err.message==="401")return;$("dstatus").textContent=err.status===404?"详情已过保留期。请求概要仍可查看。":"详情加载失败："+why(err);if(err.status===404)hideDetailRetry();else $("dretry").classList.remove("hide");dtext=JSON.stringify({record:r,detail_error:err.message},null,2)}
   finally{if(current()){$("dcopy").disabled=false;$("dbody").setAttribute("aria-busy","false");$("dretry").setAttribute("aria-disabled","false");$("dretry").textContent="重试详情"}}}
-// Gateway downstream observation (SSE / WS only). Absent values stay blank, never 0.
+// Two parallel tracks on one axis (upstream receive, downstream hand-off). They overlap in time and are
+// never added up. Blocked time is only a cumulative number: there are no intervals to place on the axis.
+const OMK=[["up_first_reasoning_ms","推理","r"],["up_first_text_ms","文本","t"],["up_first_tool_ms","工具","f"],["up_terminal_ms","结束","e"]];
+function obsDeflate(on,ext){if(on==null)return"未知";if(ext==="unrecognized")return"无法识别";return on?"已协商":"未协商"}
+function obsTimeline(o,r){const sse=o.sse_first_yield_ms!=null||o.sse_first_queue_ms!=null,ws=o.ws_first_send_ms!=null,
+    vals=[r.duration_ms,o.up_last_event_ms,o.up_terminal_ms,o.up_first_text_ms,o.up_first_reasoning_ms,o.up_first_tool_ms,o.sse_last_queue_ms,o.sse_last_yield_ms,o.ws_last_send_ms].filter(v=>v!=null),
+    max=Math.max(1,...vals),pct=v=>(100*v/max).toFixed(2)+"%",box=$("dotl");clear(box);
+  const span=(cls,a,b,label)=>{const e=h("span",{class:"os "+cls,title:label});e.style.left=pct(a);e.style.width="max(2px,"+pct(Math.max(0,b-a))+")";return e};
+  const lane=(name,...kids)=>h("div","olane",h("div","oname",name),h("div","otrack",...kids));
+  // Upstream: receive span from the earliest observed milestone to the terminal (or last) event, plus shaped markers.
+  const ups=OMK.map(([k])=>o[k]).filter(v=>v!=null),upEnd=o.up_terminal_ms!=null?o.up_terminal_ms:o.up_last_event_ms,upKids=[];
+  if(ups.length&&upEnd!=null)upKids.push(span("up",Math.min(...ups),upEnd,"上游事件"));
+  for(const [k,label,c] of OMK)if(o[k]!=null){const m=h("span",{class:"om "+c,title:label+" "+fmtMs(o[k])});m.style.left=pct(o[k]);upKids.push(m)}
+  const rows=[lane("上游",...upKids)];
+  if(sse){const k=[];if(o.sse_first_queue_ms!=null)k.push(span("q",o.sse_first_queue_ms,o.sse_last_queue_ms??o.sse_first_queue_ms,"入队"));
+    if(o.sse_first_yield_ms!=null)k.push(span("dn",o.sse_first_yield_ms,o.sse_last_yield_ms??o.sse_first_yield_ms,"交给 HTTP 层"));
+    rows.push(lane("下游",...k))}
+  if(ws)rows.push(lane("下游",span("dn",o.ws_first_send_ms,o.ws_last_send_ms??o.ws_first_send_ms,"WS 发送完成")));
+  const dl=h("span",{class:"odur",title:"总耗时 "+fmtMs(r.duration_ms)});dl.style.left=pct(r.duration_ms||0);
+  const axis=h("div","oaxis",h("span",null,"0"),h("span",null,fmtMs(max/2)),h("span",null,fmtMs(max)));
+  const legend=h("div","olegend xs");for(const [k,label,c] of OMK)legend.append(h("span","nw",h("span",{class:"om static "+c,"aria-hidden":"true"}),label+" ",h("b","num",o[k]==null?"–":fmtMs(o[k]))));
+  legend.append(h("span","nw",h("span",{class:"odur static","aria-hidden":"true"}),"总耗时 ",h("b","num",fmtMs(r.duration_ms))));
+  const key=h("div","olegend xs mut");key.append(h("span","nw",h("span",{class:"os up static","aria-hidden":"true"}),"上游收到事件"));
+  if(sse)key.append(h("span","nw",h("span",{class:"os q static","aria-hidden":"true"}),"SSE 入队"),h("span","nw",h("span",{class:"os dn static","aria-hidden":"true"}),"SSE 交给 HTTP 层"));
+  if(ws)key.append(h("span","nw",h("span",{class:"os dn static","aria-hidden":"true"}),"WS 发送完成"));
+  const blk=sse?o.sse_queue_blocked_us:o.ws_sink_blocked_us,bmx=sse?o.sse_queue_blocked_max_us:o.ws_sink_blocked_max_us;
+  const facts=h("div","ofacts sm");
+  // null/undefined = not measured on this transport ("–"); a measured 0 stays "0 ms".
+  facts.append(h("span",null,"下游阻塞累计 ",h("b","num",blkText(blk)),blk!=null&&blk>0?h("span","mut"," · 最长 "+blkText(bmx)):null,h("span","mut xs",blk==null?" · 未测":" · 仅累计，无时段")));
+  if(o.down_incomplete)facts.append(h("span","c-err","▲ 下游提前结束"));
+  if(r.transport==="ws")facts.append(h("span",null,"压缩协商 客户端 ",h("b",null,obsDeflate(o.ws_deflate_down,o.ws_ext_down))," · 上游 ",h("b",null,obsDeflate(o.ws_deflate_up,o.ws_ext_up)),h("span","mut xs"," · 不代表每帧都压缩")));
+  const desc="时间轴 0 到 "+fmtMs(max)+"。"+OMK.map(([k,l])=>l+" "+(o[k]==null?"无":fmtMs(o[k]))).join("，")+"。"+(sse?"SSE 交给 HTTP 层 "+fmtMs(o.sse_first_yield_ms)+" 至 "+fmtMs(o.sse_last_yield_ms):ws?"WS 发送完成 "+fmtMs(o.ws_first_send_ms)+" 至 "+fmtMs(o.ws_last_send_ms):"")+"。总耗时 "+fmtMs(r.duration_ms)+"。";
+  box.append(h("div",{class:"ochart",role:"img","aria-label":desc+" 下游阻塞累计 "+blkText(blk)+"。"},...rows,h("div","olane",h("div","oname"),h("div","otrack oaxisrow",axis)),h("div","ovl",dl)),legend,key,facts);box.classList.remove("hide")}
 function obsPair(a,b,f){return a==null&&b==null?null:(a==null?"–":f(a))+" / "+(b==null?"–":f(b))}
 function obsUs(v){return fmtMs(Math.round(v/1000))}
+function blkText(v){if(v==null||v==="")return"–";const n=Number(v);return Number.isFinite(n)&&n>=0?obsUs(n):"–"}
 function obsBytes(v){return fmtN(v)+" B"}
-function obsDeflate(on,ext){return on==null?null:on?"已协商"+(ext?" · "+ext:""):"未协商"}
-async function loadObservation(r,current){for(const id of ["dolab","donote","dobs"])$(id).classList.add("hide");clear($("dobs"));if(!streamRecord(r))return;
-  let o;try{o=await usageGet("/usage/v1/records/"+r.request_id+"/observation",current)}catch(_){return}if(!current()||!o)return;
-  const sse=o.sse_first_yield_ms!=null||o.sse_first_queue_ms!=null,
-    main=[["上游首文本",o.up_first_text_ms==null?null:fmtMs(o.up_first_text_ms)],["上游结束",o.up_terminal_ms==null?null:fmtMs(o.up_terminal_ms)],
-      [sse?"交给 HTTP 层 首 / 末":"WS 发送完成 首 / 末",sse?obsPair(o.sse_first_yield_ms,o.sse_last_yield_ms,fmtMs):obsPair(o.ws_first_send_ms,o.ws_last_send_ms,fmtMs)],
-      ["下游阻塞 累计",sse?(o.sse_queue_blocked_us==null?null:obsUs(o.sse_queue_blocked_us)):(o.ws_sink_blocked_us==null?null:obsUs(o.ws_sink_blocked_us))]],
-    more=[["上游首推理 / 首工具",obsPair(o.up_first_reasoning_ms,o.up_first_tool_ms,fmtMs)],["上游末事件",o.up_last_event_ms==null?null:fmtMs(o.up_last_event_ms)],
-      ["SSE 入队 首 / 末",obsPair(o.sse_first_queue_ms,o.sse_last_queue_ms,fmtMs)],["阻塞最大",(sse?o.sse_queue_blocked_max_us:o.ws_sink_blocked_max_us)!=null?obsUs(sse?o.sse_queue_blocked_max_us:o.ws_sink_blocked_max_us):null],
-      ["字节 上游 / 下游",obsPair(o.up_bytes,sse?o.sse_yield_bytes:o.ws_send_bytes,obsBytes)],["下游提前结束",o.down_incomplete==null?null:o.down_incomplete?"是":"否"],
-      ["WS 压缩 客户端侧",obsDeflate(o.ws_deflate_down,o.ws_ext_down)],["WS 压缩 上游侧",obsDeflate(o.ws_deflate_up,o.ws_ext_up)],
-      ["响应 ID",o.response_id],["上游请求 ID",o.upstream_request_id]];
-  const add=(box,rows)=>{for(const [name,value] of rows)if(value!=null&&value!=="")box.append(h("dt",null,name),h("dd",null,String(value)))};
-  add($("dobs"),main);const extra=h("dl","kv");add(extra,more);
-  if(extra.childElementCount)$("dobs").append(h("dt",null,""),h("dd",null,h("details",null,h("summary",null,"更多"),extra)));
-  if($("dobs").childElementCount)for(const id of ["dolab","donote","dobs"])$(id).classList.remove("hide")}
+async function loadObservation(r,current){for(const id of ["dolab","donote","dobs","dotl"])$(id).classList.add("hide");clear($("dobs"));clear($("dotl"));if(!streamRecord(r))return;
+  let o;try{o=await usageGet("/usage/v1/records/"+r.request_id+"/observation",current)}catch(err){if(current()&&err&&err.status===404){$("dolab").classList.remove("hide");$("dotl").append(h("p","mut sm","无观测数据（旧记录或未记录）"));$("dotl").classList.remove("hide")}return}if(!current()||!o)return;
+  obsTimeline(o,r);
+  // Exact values stay one click away (second and last disclosure level).
+  const more=[["上游首推理 / 首文本",obsPair(o.up_first_reasoning_ms,o.up_first_text_ms,fmtMs)],["上游首工具 / 结束",obsPair(o.up_first_tool_ms,o.up_terminal_ms,fmtMs)],["上游末事件 · 事件数",o.up_last_event_ms==null?null:fmtMs(o.up_last_event_ms)+(o.up_events!=null?" · "+fmtN(o.up_events):"")],
+      ["SSE 入队 首 / 末",obsPair(o.sse_first_queue_ms,o.sse_last_queue_ms,fmtMs)],["SSE 交给 HTTP 层 首 / 末",obsPair(o.sse_first_yield_ms,o.sse_last_yield_ms,fmtMs)],["SSE 队列阻塞 累计 / 最长",obsPair(o.sse_queue_blocked_us,o.sse_queue_blocked_max_us,obsUs)],
+      ["WS 发送完成 首 / 末",obsPair(o.ws_first_send_ms,o.ws_last_send_ms,fmtMs)],["WS 发送阻塞 累计 / 最长",obsPair(o.ws_sink_blocked_us,o.ws_sink_blocked_max_us,obsUs)],
+      ["字节 上游 / 下游",obsPair(o.up_bytes,o.sse_yield_bytes!=null?o.sse_yield_bytes:o.ws_send_bytes,obsBytes)],["下游提前结束",o.down_incomplete==null?null:o.down_incomplete?"是":"否"],
+      ["压缩参数 客户端侧",o.ws_ext_down],["压缩参数 上游侧",o.ws_ext_up],["响应 ID",o.response_id],["上游请求 ID",o.upstream_request_id]];
+  const extra=h("dl","kv");for(const [name,value] of more)if(value!=null&&value!=="")extra.append(h("dt",null,name),h("dd",null,String(value)));
+  if(extra.childElementCount)$("dobs").append(h("dt",null,""),h("dd",null,h("details",null,h("summary",null,"精确值"),extra)));
+  for(const id of ["dolab","donote","dobs"])$(id).classList.remove("hide")}
 async function lookupRecord(id,from){id=id.trim().toLowerCase();if(!/^[0-9a-f]{16}$/.test(id)){toast("记录 ID 是 16 位十六进制字符",{kind:"err"});return}
   $("lookupresult").textContent="正在查找 "+id+"…";const seq=++lookupSeq,auth=key(),epoch=authEpoch,current=()=>seq===lookupSeq&&auth===key()&&epoch===authEpoch;try{const d=await usageGet("/usage/v1/records/"+id,current);if(current()){$("lookupresult").textContent="";openDetail(d.record,from)}}
   catch(e){if(!current()||e.message==="401")return;$("lookupresult").textContent=e.status===404?"没有找到记录 "+id+"，可能已过保留期":"查找失败："+e.message;$("lookup").classList.remove("hide");$("lookupshow").setAttribute("aria-expanded","true");$("recordid").value=id}}
