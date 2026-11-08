@@ -362,8 +362,8 @@ main.noadm>:not(#noadm){display:none!important}
 <body>
 <div id="login" class="hide">
   <h1>ciallopa 管理面板</h1>
-  <div class="mut sm">请输入访问密钥（与代理的 API key 相同）。只保存在本标签页的 sessionStorage 中，三个页面共用，关闭标签页即清除。</div>
-  <form id="lf"><input id="key" type="password" autocomplete="current-password" placeholder="sk-..." required aria-label="访问密钥"><button class="pri" type="submit">进入</button></form>
+  <div class="mut sm">输入访问密钥（即调用 ciallopa 的 API key）。密钥仅保存在当前标签页的 sessionStorage，三个页面共用，关闭标签页后清除。</div>
+  <form id="lf"><input id="key" type="password" autocomplete="current-password" placeholder="sk-..." required aria-label="访问密钥"><button class="pri" type="submit">登录</button></form>
   <div id="lerr" class="sm" role="alert"></div>
 </div>
 <div id="app" class="hide">
@@ -372,7 +372,7 @@ main.noadm>:not(#noadm){display:none!important}
   <nav class="tabs" aria-label="页面"><a href="/ui" data-p="overview" title="概览">概览</a><a href="/ui/accounts" data-p="accounts" title="账号" aria-current="page">账号<span class="cnt"></span></a><a href="/ui/settings" data-p="settings" title="设置">设置</a></nav>
   <h1 class="ptl">账号</h1>
   <div class="hstat"><a id="egress" class="hide" href="/ui/settings#network"></a><span id="upd" class="d-only"></span>
-  <button id="refresh" class="xs" type="button" title="立即刷新">刷新</button><button id="theme" class="xs ghost" type="button"></button><button id="logout" class="xs ghost" type="button" title="清除本标签页保存的密钥（三个页面共用）">退出</button></div>
+  <button id="refresh" class="xs" type="button" title="立即刷新">刷新</button><button id="theme" class="xs ghost" type="button"></button><button id="logout" class="xs ghost" type="button" title="清除当前标签页保存的密钥（三个页面共用）">退出</button></div>
 </header>
 <main id="main" tabindex="-1">
   <div id="msg" class="banner err" role="alert"></div>
@@ -386,12 +386,12 @@ main.noadm>:not(#noadm){display:none!important}
     <div class="sh"><h2>添加账号</h2><span class="sp"></span><button id="addclose" class="ghost xs" type="button">收起</button></div>
     <div class="add">
       <div class="panel device-panel"><h3>设备码登录</h3>
-        <div class="mut sm">在浏览器里打开链接并输入一次性代码，完成后账号自动加入</div>
+        <div class="mut sm">在浏览器中打开链接并输入一次性代码，完成后自动添加账号</div>
         <div><button id="devbtn" class="pri" type="button">开始设备码登录</button></div>
-        <div id="dev" class="devbox hide" role="status"><div id="devsteps" class="hide"><div class="sm">1. 打开 <a id="devurl" class="mono" target="_blank" rel="noopener noreferrer"></a> 并登录</div><div class="row sm">2. 输入代码 <span class="devcode" id="devcode"></span><span class="mut xs num" id="devexp"></span></div></div><div class="row"><span class="mut xs sp" id="devst"></span><button id="devx" class="xs" type="button">停止等待</button></div><div id="devnote" class="mut xs">停止等待后，仍可在浏览器完成授权；账号可能随后加入</div></div>
+        <div id="dev" class="devbox hide" role="status"><div id="devsteps" class="hide"><div class="sm">1. 打开 <a id="devurl" class="mono" target="_blank" rel="noopener noreferrer"></a> 并登录</div><div class="row sm">2. 输入代码 <span class="devcode" id="devcode"></span><span class="mut xs num" id="devexp"></span></div></div><div class="row"><span class="mut xs sp" id="devst"></span><button id="devx" class="xs" type="button">停止等待</button></div><div id="devnote" class="mut xs">停止等待后，仍可在浏览器中完成授权，账号可能稍后加入</div></div>
       </div>
       <details id="paste" class="panel"><summary>粘贴 auth.json</summary>
-        <div class="mut sm">粘贴 Codex CLI 的 <code>~/.codex/auth.json</code> 或 CPA 的 codex 账号文件内容。内容只发送给本服务，用于写入账号目录。有文件可用「导入文件」一次选择多个。</div>
+        <div class="mut sm">粘贴 Codex CLI 的 <code>~/.codex/auth.json</code> 或 CPA 的 codex 账号文件内容。内容仅发送到本服务，用于写入账号目录。如有文件，可通过「导入文件」一次选择多个。</div>
         <form id="imf" class="row"><textarea id="imt" rows="4" aria-label="auth.json 内容" spellcheck="false" autocomplete="off" placeholder="{&quot;tokens&quot;: {…}}"></textarea><button class="pri" type="submit">导入</button></form>
       </details>
     </div>
@@ -409,7 +409,7 @@ main.noadm>:not(#noadm){display:none!important}
 </div>
 <div id="imr" class="modal hide" role="dialog" aria-modal="true" aria-labelledby="imrt"><div class="mbox wide">
   <h3 id="imrt"></h3><div id="imrc" class="sm"></div>
-  <div class="mact"><button id="imrok" class="pri" type="button">知道了</button></div>
+  <div class="mact"><button id="imrok" class="pri" type="button">确定</button></div>
 </div></div>
 <div id="toasts" aria-live="polite"></div>
 <script>
@@ -446,13 +446,13 @@ function ago(ms){const s=Math.max(0,(Date.now()-ms)/1000);if(s<60)return"刚刚"
 setInterval(()=>{for(const e of document.querySelectorAll("[data-until]"))e.textContent=(e.dataset.pre||"")+dur((Number(e.dataset.until)-Date.now())/1000)},1000);
 // ---- access key (sessionStorage of this tab, shared by all three pages) and API calls
 function key(){return sessionStorage.getItem(KS)||""}
-function adminMsg(j){return j&&j.error&&j.error.type==="admin_required"?"当前密钥没有管理权限。请用带 admin = true 的密钥登录，或在配置文件的 [[api_keys]] 里给该密钥加上 admin = true。":null}
+function adminMsg(j){return j&&j.error&&j.error.type==="admin_required"?"当前密钥没有管理权限。请使用 admin = true 的密钥登录，或在配置文件的 [[api_keys]] 中为该密钥设置 admin = true。":null}
 // o.timeout (ms): abort a request that gets no answer (the error then has kind "timeout").
 async function req(method,path,body,extra,o){
   const auth=key(),epoch=authEpoch,current=()=>key()===auth&&epoch===authEpoch&&(!o||!o.current||o.current()),hd={"Authorization":"Bearer "+auth};if(body!==undefined)hd["Content-Type"]="application/json";Object.assign(hd,extra||{});
   const ac=o&&o.timeout?new AbortController():null,tm=ac?setTimeout(()=>ac.abort(),o.timeout):null;let r;
   try{r=await fetch(path,{method,headers:hd,body:body===undefined?undefined:JSON.stringify(body),cache:"no-store",credentials:"same-origin",redirect:"manual",referrerPolicy:"no-referrer",signal:ac?ac.signal:undefined})}
-  catch(e){const x=new Error(ac&&ac.signal.aborted?"请求超时（"+Math.round(o.timeout/1000)+" 秒内没有响应）":"网络错误，连不上 ciallopa（"+e.message+"）");x.kind=ac&&ac.signal.aborted?"timeout":"network";throw x}
+  catch(e){const x=new Error(ac&&ac.signal.aborted?"请求超时（"+Math.round(o.timeout/1000)+" 秒内没有响应）":"网络错误，无法连接 ciallopa（"+e.message+"）");x.kind=ac&&ac.signal.aborted?"timeout":"network";throw x}
   finally{clearTimeout(tm)}
   gate(r);
   if(r.status===401){if(current()){sessionStorage.removeItem(KS);showApp(false,"密钥无效或已过期")}throw new Error("401")}
@@ -483,7 +483,7 @@ function whead(labels,def){const L=[...new Set(labels.map(x=>x==="5h"?"5 小时"
 // 刷新额度 answered "asked moments ago": neutral, not a failure.
 const qskip=r=>!r.ok&&r.error&&r.error.kind==="rate_limited";
 function qsummary(j){const sk=j.skipped!==undefined?j.skipped:j.results.filter(qskip).length,cleared=(j.results||[]).filter(r=>r.cooldown_cleared).length,p=[];if(j.ok)p.push("已刷新 "+j.ok+" 个账号的额度");if(cleared)p.push(cleared+" 个已解除额度冷却");if(sk)p.push(sk+" 个 30 秒内刚查询过，已跳过");return p.join("，")||"没有可刷新的账号"}
-function qerr(e){e=e||{};const m=e.message||"";return{rate_limited:"刚查询过，"+(e.retry_after_s||30)+" 秒后再试",http:"上游 HTTP "+e.status+(m?" · "+m:""),network:"连不上上游（"+m.replace(/^send: /,"")+"）",timeout:"上游 5 秒内没有响应",credentials:"获取令牌失败（"+m.replace(/^credentials: /,"")+"）",token_invalid:"令牌失效，需要重新登录",decode:"上游返回里没有额度数据"}[e.kind]||m||"未知错误"}
+function qerr(e){e=e||{};const m=e.message||"";return{rate_limited:"刚查询过，"+(e.retry_after_s||30)+" 秒后重试",http:"上游 HTTP "+e.status+(m?" · "+m:""),network:"无法连接上游（"+m.replace(/^send: /,"")+"）",timeout:"上游 5 秒内没有响应",credentials:"获取令牌失败（"+m.replace(/^credentials: /,"")+"）",token_invalid:"令牌失效，需要重新登录",decode:"上游响应中没有额度数据"}[e.kind]||m||"未知错误"}
 // The button stays focusable while busy (aria-disabled), so keyboard focus is not dropped.
 async function busyRun(b,name,f,label){if(b.disabled||b._busy)return false;const t=b.textContent;b._busy=true;b.classList.add("busy");b.setAttribute("aria-disabled","true");b.setAttribute("aria-busy","true");if(label)b.textContent=label;
   try{await f();return true}catch(e){if(e&&e.message!=="401")toast(name+(/[\w)]$/.test(name)?" ":"")+"失败："+why(e),{kind:"err"});return false}
@@ -562,17 +562,17 @@ async function egressTag(cfg){const seq=++egressSeq,auth=key(),current=()=>seq==
   try{if(!cfg&&NOADMIN)throw new Error("admin");const c=cfg||await read("/admin/v1/config");if(!current())return;const eg=Object.assign({},c.egress||{},{runtime:c.runtime});
     if(eg.direct){t.className="tag line";t.textContent="直连";t.title="出口：直连（未使用出口代理）· 点击查看出口设置";return eg}
     let n=0;try{const since=Date.now()-36e5;for(const code of ["proxy_connect","proxy_timeout"]){n+=(await read("/usage/v1/records?limit=1&from="+since+"&error="+code)).total||0;if(!current())return}}catch(_){}
-    if(!current())return;t.className="tag proxy dot";t.textContent=n?"代理 · "+n+" 错误":"代理";t.title="出口："+eg.proxy+(n?"；近 1 小时 "+n+" 次代理错误":"；近 1 小时没有代理错误")+" · 点击查看出口设置";return eg}
+    if(!current())return;t.className="tag proxy dot";t.textContent=n?"出口代理 · "+n+" 错误":"出口代理";t.title="出口："+eg.proxy+(n?"；近 1 小时 "+n+" 次出口代理错误":"；近 1 小时没有出口代理错误")+" · 点击查看出口设置";return eg}
   catch(_){if(!current())return;clearEgress();return null}}
 // Accounts / settings need an admin key. A usage-only key (e.g. carried over from the overview in
 // this tab) gets a plain explanation instead of a half-loaded page.
 function needAdmin(e){if(!e||!e.body||!e.body.error||e.body.error.type!=="admin_required")return false;const m=$("main");
-  if(!$("noadm"))m.appendChild(h("div",{class:"empty panel",id:"noadm"},h("b",null,"这个页面需要管理密钥"),adminMsg(e.body),h("div",null,h("button",{type:"button",class:"pri",onclick:()=>{sessionStorage.removeItem(KS);showApp(false)}},"换一个密钥登录"))));
+  if(!$("noadm"))m.appendChild(h("div",{class:"empty panel",id:"noadm"},h("b",null,"此页面需要管理密钥"),adminMsg(e.body),h("div",null,h("button",{type:"button",class:"pri",onclick:()=>{sessionStorage.removeItem(KS);showApp(false)}},"使用其他密钥登录"))));
   m.classList.add("noadm");$("msg").textContent="";return true}
 /* ==== shared:end ==== */
 // ---- accounts
-const CR={usage_limit:"额度用完",rate_limited:"上游限流",auth:"认证失败",transient:"上游连续 5xx",overloaded:"上游过载（overloaded）",challenge:"Cloudflare 拦截",model_unsupported:"模型不可用",not_found:"上游 404",payment_required:"上游 402 付费问题",workspace_deactivated:"工作区已停用（402）"};
-const ST={normal:["正常","ok","可以接收请求"],cooling:["冷却中","cool","上游限流或出错后暂停使用，到时自动恢复"],disabled:["已停用","off","手动停用，不参与选号"],token_invalid:["令牌失效","err","刷新令牌已失效，需要重新登录（设备码登录或导入）"]};
+const CR={usage_limit:"额度用尽",rate_limited:"上游限流",auth:"认证失败",transient:"上游连续 5xx",overloaded:"上游过载（overloaded）",challenge:"Cloudflare 拦截",model_unsupported:"模型不可用",not_found:"上游 404",payment_required:"上游 402 付费问题",workspace_deactivated:"工作区已停用（402）"};
+const ST={normal:["正常","ok","可以接收请求"],cooling:["冷却中","cool","上游限流或出错后暂停使用，到时自动恢复"],disabled:["已停用","off","手动停用，不参与账号选择"],token_invalid:["令牌失效","err","刷新令牌已失效，需要重新登录（设备码登录或导入）"]};
 let W=false,DATA=null,QM={},RCM={},AUTO={},AUTOTOP=null,QAUTO={},poll=null;const OPEN=new Set();
 function fail(e){if(!e||e.message==="401"||(e.isCurrent&&!e.isCurrent()))return;const m=$("msg"),title=e.isCurrent?"账号读取失败":"操作失败",t=(adminMsg(e.body)||e.message||String(e))+(e.isCurrent&&DATA?" · 保留上次账号结果":"");clear(m);m.appendChild(h("b",null,title));m.appendChild(document.createTextNode(t));if(!inView(m))toast(title+"："+t,{kind:"err"})}
 function ok(t,o){$("msg").textContent="";return toast(t,o)}
@@ -591,7 +591,7 @@ function rem(w){return w&&w.used_pct!==null&&w.used_pct!==undefined?(w.resets_at
 function qreset(w){if(!w||!w.resets_at)return null;const s=w.resets_at-Date.now()/1000;if(s<=0)return"已重置";return (s<86400?dur(s)+"后":fmtTime(w.resets_at*1000,true))+" 重置"}
 function qcell(cls,lb,w,stale,known){const td=h("td","qc "+cls),r=rem(w);
   // No observation at all → "未知" with a dashed empty bar (never drawn as 0%); a window the plan does not have stays "–".
-  if(r===null){td.appendChild(known?h("span",{class:"mut sm",title:"这个套餐没有该窗口"},"不适用"):h("div",{class:"q unk","data-l":lb,role:"img","aria-label":lb+" 剩余未知（还没有额度数据）"},h("span","lb",lb),h("div","bar"),h("span","pc","未知")));return td}
+  if(r===null){td.appendChild(known?h("span",{class:"mut sm",title:"该套餐没有该窗口"},"不适用"):h("div",{class:"q unk","data-l":lb,role:"img","aria-label":lb+" 剩余未知（尚无额度数据）"},h("span","lb",lb),h("div","bar"),h("span","pc","未知")));return td}
   const c=r<20?"b":r<50?"w":"",i=h("i",c);i.style.width=Math.min(100,r)+"%";
   td.appendChild(h("div",{class:"q"+(stale?" stale":""),"data-l":lb,title:"剩余 "+r.toFixed(1)+"%（已用 "+w.used_pct.toFixed(1)+"%）"+(w.resets_at?" · 重置 "+fmtTime(w.resets_at*1000,true):"")+(stale?" · 数据较旧":"")},h("span","lb",lb),h("div","bar",i),h("span","pc "+c,stale?h("span",{class:"c-cool",role:"img","aria-label":"数据较旧"},"⚠ "):null,r.toFixed(0)+"%")));
   const rs=qreset(w);if(rs)td.appendChild(h("span",{class:"qrs",title:w.resets_at?"重置 "+fmtTime(w.resets_at*1000,true):""},rs));return td}
@@ -600,23 +600,23 @@ function numIn(v,label,fk){return h("input",{type:"number",step:"1",value:v,"ari
 function toggle(a,b){const off=!a.disabled,name=off?"停用":"启用";
   const run=()=>busyRun(b,name,async()=>{await apatch(path(a),{disabled:off});
     if(off)ok("已停用 "+nm(a),{undo:async()=>{await req("PATCH",path(a),{disabled:false});toast("已恢复启用 "+nm(a));await load()}});else ok("已启用 "+nm(a));await load()},name+"中…");
-  if(off&&lastOne(a))return clickAgain(b,"再点一次：停用后没有可用账号",run);
+  if(off&&lastOne(a))return clickAgain(b,"再次点击确认：停用后将没有可用账号",run);
   return run()}
 // Irreversible account actions share one alertdialog: focus starts on 取消, the danger button is armed.
 function confirmDlg(title,nodes,yes,run,from){const c=$("dlgc");clear(c);$("dlgt").textContent=title;c.append(...nodes);
   $("dyes").textContent=yes;$("dalt").classList.add("hide");$("dlg")._alt=null;$("dlg")._yes=run;openModal($("dlg"),$("dno"),from)}
 function refreshAcct(a,from){confirmDlg("更新 "+nm(a)+" 的令牌？",[h("p","mono",a.email?a.email+"（"+a.id+"）":a.id),
-    h("p",null,"会立即用刷新令牌向上游换一组新令牌。"),
-    h("p","warnp",h("b",null,"此操作不可撤销。"),"旧的刷新令牌随即失效：同一个 auth.json 若也在 Codex CLI 或其他工具里使用，那边会被登出，需要重新登录。"),
+    h("p",null,"将立即使用刷新令牌向上游换取新令牌。"),
+    h("p","warnp",h("b",null,"此操作不可撤销。"),"旧的刷新令牌将立即失效：如果同一个 auth.json 也在 Codex CLI 或其他工具中使用，这些工具会被登出，需要重新登录。"),
     h("p","mut","ciallopa 会在令牌过期前自动更新，通常不需要手动操作。")],
   "更新令牌",async()=>{await apost(path(a)+"/refresh",{confirm:a.id});ok("已更新 "+nm(a)+" 的令牌");await load()},from)}
 function delAcct(a,from){const rc=RCM[a.id],n=rc&&rc.available_count,c=$("dlgc");clear(c);
   $("dlgt").textContent="删除账号 "+nm(a)+"？";$("dyes").textContent="删除账号";
   c.append(h("p","mono",a.email?a.email+"（"+a.id+"）":a.id),
-    h("p",null,"会删除账号目录中的账号文件，并清掉它的连接、cookie 和会话绑定。已绑定到它的会话下一轮会改用其他账号。删除后只能重新登录或导入才能恢复。"));
-  if(n>0)c.appendChild(h("p","hintp","它还有 "+n+" 张未用的重置卡；卡属于上游账号，重新登录同一账号后仍可使用。"));
-  if(lastOne(a))c.appendChild(h("p","warnp","这是最后一个可用账号：删除后代理请求会失败。"));
-  if(!a.disabled&&a.status!=="token_invalid")c.appendChild(h("p","mut","只是暂时不想用它？「改为停用」可以随时再启用。"));
+    h("p",null,"将删除账号目录中的账号文件，并清除其连接、cookie 和会话绑定；已绑定的会话在下一轮改用其他账号。删除后只能重新登录或导入恢复。"));
+  if(n>0)c.appendChild(h("p","hintp","该账号还有 "+n+" 张未使用的重置卡；重置卡属于上游账号，重新登录同一账号后仍可使用。"));
+  if(lastOne(a))c.appendChild(h("p","warnp","这是最后一个可用账号，删除后请求将无法转发。"));
+  if(!a.disabled&&a.status!=="token_invalid")c.appendChild(h("p","mut","如只需暂停使用，可选择「改为停用」，之后可随时启用。"));
   $("dalt").classList.toggle("hide",!!a.disabled||a.status==="token_invalid");
   $("dlg")._yes=async()=>{await req("DELETE",path(a),{confirm:a.id},null,T);ok("已删除 "+nm(a));await load()};
   $("dlg")._alt=async()=>{await apatch(path(a),{disabled:true});ok("已停用 "+nm(a),{undo:async()=>{await req("PATCH",path(a),{disabled:false});toast("已恢复启用 "+nm(a));await load()}});await load()};
@@ -633,7 +633,7 @@ function limitHit(r,qq){return !!(r&&r.limit_reached&&r.usage_observed_ms&&!(qq&
 function readAuto(r){if(r.status!=="fulfilled")return;const j=r.value.j,m={},qm={};for(const x of j.accounts){m[x.account]={on:!!x.auto,next:x.auto_next_ms||null};qm[x.account]=!!x.quota_auto}AUTO=m;QAUTO=qm;AUTOTOP={lead:j.auto_lead_mins,ok:!!j.auto_available,qmins:j.quota_refresh_mins||0,qmax:j.quota_refresh_mins?(j.quota_refresh_max_mins||j.quota_refresh_mins):0}}
 function hhmm(ms){const d=new Date(ms),n=new Date();return d.toDateString()===n.toDateString()?p2(d.getHours())+":"+p2(d.getMinutes()):fmtTime(ms,true)}
 function autoLine(a,cards){const au=AUTO[a.id],t=AUTOTOP;if(!t||!t.ok||!au||(!au.on&&(!W||cards===null)))return null;
-  const tip="开启后，这个账号的重置卡在到期前 "+t.lead+" 分钟内自动用掉一张（最早到期的那张）；提前量在 设置 › 账号与重置卡 修改。账号停用或需要重新登录时跳过";
+  const tip="开启后，该账号的重置卡在到期前 "+t.lead+" 分钟内自动使用一张（最早到期的一张）；提前量在 设置 › 账号与重置卡 修改。账号停用或需要重新登录时跳过";
   const next=au.on&&au.next?h("span",{class:"xs mut num",title:"按当前已知的重置卡和提前量计算，到时会先向上游重新查询"},"下次自动使用 "+hhmm(au.next)):null;
   if(!W)return h("span",{class:"xs mut",title:tip},"快到期时自动使用 已开启",next?" · ":null,next);
   const sw=h("input",{type:"checkbox",class:"sw","aria-label":"快到期时自动使用："+nm(a),"data-fk":a.id+"|auto"});sw.checked=au.on;
@@ -642,7 +642,7 @@ function autoLine(a,cards){const au=AUTO[a.id],t=AUTOTOP;if(!t||!t.ok||!au||(!au
     catch(e){sw.checked=!on;fail(e)}finally{sw.disabled=false}});
   return h("span","row aut",h("label",{class:"row nw xs",title:tip},sw,h("span",null,"快到期时自动使用")),next)}
 function quotaAutoLine(a){const on=QAUTO[a.id],t=AUTOTOP;if(!t||!t.ok||on===undefined||(!on&&!W))return null;
-  const tip=t.qmins?"开启后，每 "+(t.qmax>t.qmins?t.qmins+"–"+t.qmax:t.qmins)+" 分钟向上游查询这个账号的额度（与手动刷新额度相同，含解除额度冷却）"+(t.qmax>t.qmins?"；每个账号各自随机错开":"")+"；间隔在 设置 › 账号与重置卡 修改。需要重新登录时跳过":"开启后，按 设置 › 账号与重置卡 里的「额度自动刷新间隔」定期查询；当前间隔为 0（只手动刷新），开启开关也不会自动查。需要重新登录时跳过";
+  const tip=t.qmins?"开启后，每 "+(t.qmax>t.qmins?t.qmins+"–"+t.qmax:t.qmins)+" 分钟向上游查询该账号的额度（与手动刷新额度相同，含解除额度冷却）"+(t.qmax>t.qmins?"；每个账号各自随机错开":"")+"；间隔在 设置 › 账号与重置卡 修改。需要重新登录时跳过":"开启后，按 设置 › 账号与重置卡 里的「额度自动刷新间隔」定期查询；当前间隔为 0（只手动刷新），开启开关也不会自动查。需要重新登录时跳过";
   if(!W)return on?h("span",{class:"xs mut",title:tip},"自动刷新额度 已开启"):null;
   const sw=h("input",{type:"checkbox",class:"sw","aria-label":"自动刷新额度："+nm(a),"data-fk":a.id+"|qauto"});sw.checked=!!on;
   sw.addEventListener("change",async()=>{const v=sw.checked;sw.disabled=true;
@@ -652,19 +652,19 @@ function quotaAutoLine(a){const on=QAUTO[a.id],t=AUTOTOP;if(!t||!t.ok||on===unde
 function row(a,usage_on){const s=ST[a.status]||[a.status,"off",""],full=a.email?a.email+"（"+a.id+"）":a.id,q=QM[a.id],qq=q&&q.quota,rc=RCM[a.id],cards=cardCount(rc),lim=limitHit(rc,qq);
   const stale=!!(qq&&qq.observed_at_ms&&Date.now()-qq.observed_at_ms>36e5),ws=wslots(qq);
   const dot=h("span","sdot "+s[1]);dot.title=s[0];
-  const who=h("td","who-c",h("div","row nw",h("span","m-only",dot),h("div",{class:"who",title:full},h("b","trunc",nm(a)),h("span","sub row nw",h("span","mut xs trunc",a.id+(a.plan?" · "+a.plan:"")),cards===null?null:h("span",{class:"mut xs num nw",title:"这个账号可用的重置卡数量"+(AUTO[a.id]&&AUTO[a.id].on?"（已开启快到期时自动使用）":"（不会自动使用，可开启快到期时自动使用）")},"重置卡 "+cards+" 张")))));
+  const who=h("td","who-c",h("div","row nw",h("span","m-only",dot),h("div",{class:"who",title:full},h("b","trunc",nm(a)),h("span","sub row nw",h("span","mut xs trunc",a.id+(a.plan?" · "+a.plan:"")),cards===null?null:h("span",{class:"mut xs num nw",title:"该账号可用的重置卡数量"+(AUTO[a.id]&&AUTO[a.id].on?"（已开启快到期时自动使用）":"（不会自动使用，可开启快到期时自动使用）")},"重置卡 "+cards+" 张")))));
   const autc=h("td","aut-c",h("div","auts",autoLine(a,cards),quotaAutoLine(a)));
   const stc=h("div","stack",h("span",{class:"tag dot "+s[1]+" d-only",title:s[2]},s[0]),h("span","m-only sm "+(s[1]==="cool"?"c-cool":s[1]==="err"?"c-err":"mut"),s[0]));
   if(a.status==="cooling"&&a.cooling_until_ms){stc.append(h("span","sm c-cool",CR[a.cooling_reason]||a.cooling_reason||""),h("span",{class:"sm mut num","data-until":a.cooling_until_ms,"data-pre":"还剩 ",title:"至 "+fmtTime(a.cooling_until_ms,true)},"还剩 "+dur((a.cooling_until_ms-Date.now())/1000)));
-    stc.appendChild(act(h("button",{class:"xs",type:"button",title:"清除这个账号的全部冷却以及连续 5xx、overloaded 计数，立即参与选号","data-fk":a.id+"|cc"},"解除冷却"),async()=>{const j=await apost(path(a)+"/clear-cooldown",{});ok(j&&j.cleared?"已解除 "+nm(a)+" 的冷却，立即参与选号":nm(a)+" 已不在冷却中");await load()},"解除冷却","解除中…"))}
+    stc.appendChild(act(h("button",{class:"xs",type:"button",title:"清除该账号的全部冷却以及连续 5xx、overloaded 计数，立即参与账号选择","data-fk":a.id+"|cc"},"解除冷却"),async()=>{const j=await apost(path(a)+"/clear-cooldown",{});ok(j&&j.cleared?"已解除 "+nm(a)+" 的冷却，立即参与账号选择":nm(a)+" 已不在冷却中");await load()},"解除冷却","解除中…"))}
   else if(a.status!=="normal")stc.appendChild(h("span",{class:"sm mut rsn",title:s[2]},s[2]));
-  if(lim)stc.appendChild(h("span",{class:"sm c-err",title:"最近一次刷新额度时上游报告这个账号已达额度上限"},"已达额度上限"));
+  if(lim)stc.appendChild(h("span",{class:"sm c-err",title:"最近一次刷新额度时上游报告该账号已达额度上限"},"已达额度上限"));
   // Recent errors next to the status, so a "正常" account with failures is visible where the eye lands.
   if(a.usage_24h&&a.usage_24h.errors)stc.appendChild(h("span","st-err d-only","▲ 24h "+a.usage_24h.errors+" 次错误"));
   if(QERR[a.id])stc.appendChild(h("span",{class:"sm c-err qerr",title:"最近一次刷新额度失败"},"额度刷新失败："+QERR[a.id]));
   const u=a.usage_24h,use=h("div","use");
   if(u){use.title="近 24 小时业务请求数与 Token"+(pwOn()?"（Token 含预热，跟随概览「含预热」）":"（不含预热，可在概览筛选范围勾选「含预热」）");use.appendChild(h("div","num",NF.format(u.requests)+" 次 · "+fmtN(u.input_tokens+u.output_tokens)));}else use.appendChild(h("span","faint sm",usage_on?"无请求":"–"));
-  const o=a.overload_24h;if(o&&o.overloaded)use.appendChild(h("div",{class:"xs mut",title:"近 24 小时上游回复 overloaded / at capacity 的次数与上游请求总数（内存统计，重启清零）"},"overloaded "+o.overloaded+"/"+o.attempts));
+  const o=a.overload_24h;if(o&&o.overloaded)use.appendChild(h("div",{class:"xs mut",title:"近 24 小时上游返回 overloaded / at capacity 的次数与上游请求总数（内存统计，重启清零）"},"overloaded "+o.overloaded+"/"+o.attempts));
   const r=h("tr",{"data-acc":a.id},who,h("td","st-c"+(a.status==="normal"&&!QERR[a.id]&&!lim?" nrm":""),stc),qcell("q5",ws.s?ws.s[0]:"5h",ws.s&&ws.s[1],stale,!!qq),qcell("qw",ws.l?ws.l[0]:"周",ws.l&&ws.l[1],stale,!!qq));
   // weight / priority: own cells on desktop, inside 操作 on phone
   const wp=(cls)=>{const wi=numIn(a.weight,"权重："+nm(a),a.id+"|w"+cls),pi=numIn(a.priority,"优先级："+nm(a),a.id+"|p"+cls);wi.min="0";
@@ -682,23 +682,23 @@ function row(a,usage_on){const s=ST[a.status]||[a.status,"off",""],full=a.email?
   const ag=h("div","acts");actc.appendChild(ag);
   if(W){const [wi,pi,sv]=wp("m");ag.appendChild(h("span","m-only mrow",h("span","xs mut","权重"),wi,h("span","xs mut","优先级"),pi,sv));
     if(a.status!=="token_invalid"){const tb=h("button",{type:"button",class:"xs","data-fk":a.id+"|tg"},a.disabled?"启用":"停用");tb.addEventListener("click",()=>toggle(a,tb));ag.appendChild(tb)}
-    {const b=h("button",{class:"xs",type:"button","aria-haspopup":"dialog",title:"立即用刷新令牌换新的访问令牌（ciallopa 也会自动更新）。若同一 auth.json 也在 Codex CLI 里用，更新后那边需要重新登录","data-fk":a.id+"|rt"},"更新令牌");b.addEventListener("click",()=>refreshAcct(a,b));ag.appendChild(b)}
+    {const b=h("button",{class:"xs",type:"button","aria-haspopup":"dialog",title:"立即使用刷新令牌换取新的访问令牌（ciallopa 也会自动更新）。如果同一 auth.json 也在 Codex CLI 中使用，更新后 Codex CLI 需要重新登录","data-fk":a.id+"|rt"},"更新令牌");b.addEventListener("click",()=>refreshAcct(a,b));ag.appendChild(b)}
   }
   // read-only upstream query: admin keys, also without allow_config_write
-  ag.appendChild(act(h("button",{class:"xs",type:"button",title:"向上游查询这个账号当前的额度（只读，不消耗额度；同一账号 30 秒内只查一次）","data-fk":a.id+"|rq"},"刷新额度"),()=>quotaOne(a),"刷新额度","查询中…"));
+  ag.appendChild(act(h("button",{class:"xs",type:"button",title:"向上游查询该账号当前的额度（只读，不消耗额度；同一账号 30 秒内只查一次）","data-fk":a.id+"|rq"},"刷新额度"),()=>quotaOne(a),"刷新额度","查询中…"));
   if(W){const db=h("button",{class:"xs danger del",type:"button","aria-haspopup":"dialog","aria-label":"删除账号 "+nm(a),"data-fk":a.id+"|del"},"删除");db.addEventListener("click",()=>delAcct(a,db));ag.appendChild(db)}
   r.appendChild(actc);return r}
 function render(){steady([$("rows"),$("authf")],renderNow)}
 function renderNow(){const j=DATA;W=j.write_enabled;setTabCount(j.accounts.length);
-  $("meta").textContent=j.accounts.length+" 个 · 选号策略 "+j.strategy+" · "+(W?"配置可编辑":"配置只读");
+  $("meta").textContent=j.accounts.length+" 个 · 账号选择策略 "+j.strategy+" · "+(W?"配置可编辑":"配置只读");
   $("write-mode").textContent=W?"":"账号配置只读：无法添加、删除或调整账号。刷新额度、解除冷却等运行操作仍可用。";$("write-mode").classList.toggle("hide",W);
-  $("hint").textContent=W?"权重和优先级保存后立即生效，不影响冷却状态和已绑定的会话":"如需修改账号配置，在配置文件中设置 [ui] allow_config_write = true；此开关不限制额度查询和解除冷却";
+  $("hint").textContent=W?"权重和优先级保存后立即生效，不影响冷却状态和已绑定的会话":"如需修改账号配置，请在配置文件中设置 [ui] allow_config_write = true；此开关不限制额度查询和解除冷却";
   $("hint").classList.toggle("hide",W&&!j.accounts.length);
   setAdd(addOpen);$("addbtn").classList.toggle("hide",!W);$("impbtn").classList.toggle("hide",!W);$("qall").classList.toggle("hide",!j.accounts.length);
   const cn={},cb=$("counts");clear(cb);for(const a of j.accounts)cn[a.status]=(cn[a.status]||0)+1;
   for(const k of ["normal","cooling","disabled","token_invalid"])if(cn[k])cb.appendChild(h("span",{class:"tag dot "+ST[k][1],title:ST[k][2]},ST[k][0]+" "+cn[k]));
   const nu=j.accounts.filter(usable).length,nb=$("noacc");clear(nb);
-  if(!nu){nb.appendChild(h("b",null,"没有可用账号"));nb.appendChild(document.createTextNode(j.accounts.length?"所有账号都已停用或需要重新登录，代理请求会失败。":"还没有添加账号，代理请求会失败。"+(W?"":"用 ciallopa login 添加，或开启写入后在这里添加。")))}
+  if(!nu){nb.appendChild(h("b",null,"没有可用账号"));nb.appendChild(document.createTextNode(j.accounts.length?"所有账号都已停用或需要重新登录，请求无法转发。":"尚未添加账号，请求无法转发。"+(W?"":"使用 ciallopa login 添加，或开启配置写入后在此页添加。")))}
   nb.classList.toggle("hide",!!nu);
   const cool=j.accounts.filter(a=>a.status==="cooling"),ws=cool.filter(a=>a.cooling_reason==="workspace_deactivated").length,cbn=$("coolb");clear(cbn);
   if(cool.length){cbn.appendChild(h("b",null,cool.length+" 个账号冷却中"));cbn.appendChild(h("span","mut",ws?ws+" 个因 402 工作区已停用，不会自动换回；确认处理后可手动解除冷却。":"到时自动恢复；也可以手动解除冷却。"))}
@@ -706,7 +706,7 @@ function renderNow(){const j=DATA;W=j.write_enabled;setTabCount(j.accounts.lengt
   authFiles(j.auth_files);
   const hw=j.accounts.map(a=>wslots(QM[a.id]&&QM[a.id].quota));$("hq5").textContent=whead(hw.filter(o=>o.s).map(o=>o.s[0]),"5 小时");$("hqw").textContent=whead(hw.filter(o=>o.l).map(o=>o.l[0]),"周");
   const tb=$("rows");clear(tb);
-  if(!j.accounts.length)tb.appendChild(h("tr",null,h("td",{colspan:"9"},h("div","empty",h("b",null,"还没有账号"),W?h("button",{id:"emptyadd",class:"pri",type:"button",onclick:()=>setAdd(true,true)},"添加账号"):"用 ciallopa login 添加，或开启写入后在这里添加"))));
+  if(!j.accounts.length)tb.appendChild(h("tr",null,h("td",{colspan:"9"},h("div","empty",h("b",null,"暂无账号"),W?h("button",{id:"emptyadd",class:"pri",type:"button",onclick:()=>setAdd(true,true)},"添加账号"):"使用 ciallopa login 添加，或开启配置写入后在此页添加"))));
   for(const a of j.accounts)tb.appendChild(row(a,j.usage_enabled));
   showReadState();anchor(false);refocus()}
 // /ui/accounts#acc=<id>: highlight that row (and open its 操作 on phone)
@@ -718,7 +718,7 @@ function anchor(scroll){const m=/^#acc=(.+)$/.exec(location.hash);for(const r of
 addEventListener("hashchange",()=>anchor(true));
 // ---- auth directory files that did not load (permission, broken JSON, ...) and import results
 const SKR={permission_denied:"没有读取权限",read_error:"读取失败",invalid_json:"不是有效的 JSON",missing_tokens:"缺少 access_token",unsupported_type:"不是 codex 账号",invalid_name:"文件名不可用",too_large:"文件超过 1 MiB",write_failed:"写入失败"};
-const SKH={invalid_json:"内容不完整或不是 JSON，重新复制原文件",missing_tokens:"Codex CLI 的 auth.json 请用「导入文件」，不要直接放进账号目录",invalid_name:"文件名不能以 . 开头，也不能含 % 或空格，改名后重新扫描",unsupported_type:"ciallopa 只使用 codex 账号，这个文件会被忽略"};
+const SKH={invalid_json:"内容不完整或不是 JSON，请重新复制原文件",missing_tokens:"Codex CLI 的 auth.json 请用「导入文件」，不要直接放进账号目录",invalid_name:"文件名不能以 . 开头，也不能含 % 或空格，改名后重新扫描",unsupported_type:"ciallopa 只使用 codex 账号，该文件将被忽略"};
 const mode=m=>m===undefined||m===null?"?":m.toString(8).padStart(4,"0");
 function skipLine(f,up){const li=h("li",null,h("span","mono",f.file||f.name),h("b",null,(SKR[f.reason]||f.reason)+(f.reason==="unsupported_type"&&f.detail?"（"+f.detail+"）":f.reason==="read_error"&&f.detail?"（"+f.detail+"）":"")));
   if(f.reason==="permission_denied"&&f.uid!==undefined)li.appendChild(h("span","mut","属主 "+f.uid+":"+f.gid+" · 权限 "+mode(f.mode)));
@@ -731,7 +731,7 @@ function authFiles(a){const b=$("authf"),ig=$("ignored");clear(b);if(!a){b.class
     b.appendChild(h("ul",null,bad.map(f=>skipLine(f))));
     if(bad.some(f=>f.reason==="permission_denied")&&a.server_uid!==null&&a.server_uid!==undefined){const d=(a.host_dir||a.dir).replace(/\/$/,""),ids=a.server_uid+":"+a.server_gid;
       const cmd="sudo chown "+ids+" "+d+"/*.json && sudo chmod 600 "+d+"/*.json";
-      b.appendChild(h("div","fix",h("span",null,(a.host_dir?"在主机上":"在服务器上")+"把文件交给服务进程用户（"+ids+"）后点「重新扫描目录」："),h("code",null,cmd),
+      b.appendChild(h("div","fix",h("span",null,(a.host_dir?"在主机上":"在服务器上")+"将文件属主改为服务进程用户（"+ids+"）后点击「重新扫描目录」："),h("code",null,cmd),
         act(h("button",{class:"xs",type:"button"},"复制命令"),async()=>{await navigator.clipboard.writeText(cmd);toast("已复制命令")},"复制")))}}
   ig.classList.toggle("hide",!other.length);
   ig.textContent=other.length?"已忽略 "+other.length+" 个非 codex 账号文件（"+[...new Set(other.map(f=>f.detail||"未知类型"))].join("、")+"）：ciallopa 只使用 codex 账号":""}
@@ -739,7 +739,7 @@ function importResult(j){const c=$("imrc");clear(c);
   $("imrt").textContent="导入 "+j.added+" 个"+(j.exists?" · 已存在 "+j.exists+" 个":"")+(j.skipped?" · 跳过 "+j.skipped+" 个":"");
   const grp=(st,title)=>{const L=j.results.filter(r=>r.status===st);if(!L.length)return null;
     return h("div",null,h("div","mut xs gt",title),h("ul",null,L.map(r=>st==="skipped"?skipLine(r,true):h("li",null,h("span","mono",r.name),h("span",{class:st==="added"?"c-ok":"mut"},st==="added"?"已导入":"已存在，未改动"),h("span","mut mono",r.account)))))};
-  add(c,[grp("added","新增的账号，立即参与选号"),grp("exists","同一账号已在账号目录中（按账号 ID / 邮箱判断）"),grp("skipped","未导入")]);
+  add(c,[grp("added","新增的账号，立即参与账号选择"),grp("exists","同一账号已在账号目录中（按账号 ID / 邮箱判断）"),grp("skipped","未导入")]);
   openModal($("imr"),$("imrok"))}
 $("imrok").addEventListener("click",()=>closeModal($("imr")));
 $("impbtn").addEventListener("click",()=>$("impf").click());
@@ -749,7 +749,7 @@ $("impf").addEventListener("change",async()=>{const fs=Array.from($("impf").file
     const big=files.filter(f=>f._big).map(f=>({name:f.name,status:"skipped",reason:"too_large"}));const send=files.filter(f=>!f._big).map(f=>({name:f.name,content:f.content}));
     const j=send.length?await apost("/admin/v1/accounts/import-files",{files:send}):{added:0,exists:0,skipped:0,results:[]};
     j.results=j.results.concat(big);j.skipped+=big.length;await load();
-    if(!j.exists&&!j.skipped)ok("已导入 "+j.added+" 个账号，立即参与选号");else importResult(j)},"导入中…")});
+    if(!j.exists&&!j.skipped)ok("已导入 "+j.added+" 个账号，立即参与账号选择");else importResult(j)},"导入中…")});
 // ---- active quota query: the answer patches the shown snapshot at once; the stored one follows
 // with the usage writer's next batch. A failure stays on the row until the next success.
 const QERR={};
@@ -816,9 +816,9 @@ $("imf").addEventListener("submit",async e=>{e.preventDefault();let doc;try{doc=
     // Same account already there: importing replaces its tokens (the current ones are not kept).
     const em=typeof doc.email==="string"&&doc.email?doc.email:null;
     confirmDlg("替换 "+(em||t.account)+" 的令牌？",[h("p","mono",em?em+"（"+t.account+"）":t.account),
-      h("p",null,"账号目录里已有这个账号，导入会用粘贴的令牌替换它现有的令牌。"),
+      h("p",null,"账号目录中已有该账号，导入将用粘贴的令牌替换现有令牌。"),
       h("p","warnp",h("b",null,"此操作不可撤销。"),"现有令牌不会保留，也不会备份。"),
-      h("p","mut","粘贴的令牌若已过期或已被更新过，这个账号可能需要重新登录。")],"替换令牌",run,from)}catch(err){fail(err)}});
+      h("p","mut","如果粘贴的令牌已过期或已被更新，该账号可能需要重新登录。")],"替换令牌",run,from)}catch(err){fail(err)}});
 // Device-code login: stopping only ends this page's wait; the server may still finish authorization.
 let deviceSeq=0,deviceAbort=null,deviceBusy=false;
 function devEnd(t){deviceSeq++;if(deviceAbort){deviceAbort.abort();deviceAbort=null}clearInterval(poll);poll=null;deviceBusy=false;
