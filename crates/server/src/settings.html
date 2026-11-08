@@ -405,8 +405,8 @@ fieldset.sc{justify-self:stretch;align-items:flex-start}
 <body>
 <div id="login" class="hide">
   <h1>ciallopa 管理面板</h1>
-  <div class="mut sm">请输入访问密钥（与代理的 API key 相同）。只保存在本标签页的 sessionStorage 中，三个页面共用，关闭标签页即清除。</div>
-  <form id="lf"><input id="key" type="password" autocomplete="current-password" placeholder="sk-..." required aria-label="访问密钥"><button class="pri" type="submit">进入</button></form>
+  <div class="mut sm">输入访问密钥（即调用 ciallopa 的 API key）。密钥仅保存在当前标签页的 sessionStorage，三个页面共用，关闭标签页后清除。</div>
+  <form id="lf"><input id="key" type="password" autocomplete="current-password" placeholder="sk-..." required aria-label="访问密钥"><button class="pri" type="submit">登录</button></form>
   <div id="lerr" class="sm" role="alert"></div>
 </div>
 <div id="app" class="hide">
@@ -415,10 +415,10 @@ fieldset.sc{justify-self:stretch;align-items:flex-start}
   <nav class="tabs" aria-label="页面"><a href="/ui" data-p="overview" title="概览">概览</a><a href="/ui/accounts" data-p="accounts" title="账号">账号<span class="cnt"></span></a><a href="/ui/settings" data-p="settings" title="设置" aria-current="page">设置</a></nav>
   <h1 class="ptl">设置</h1>
   <div class="hstat"><a id="egress" class="hide" href="/ui/settings#network"></a><span id="upd" class="d-only"></span>
-  <button id="refresh" class="xs" type="button" title="立即刷新">刷新</button><button id="theme" class="xs ghost" type="button"></button><button id="logout" class="xs ghost" type="button" title="清除本标签页保存的密钥（三个页面共用）">退出</button></div>
+  <button id="refresh" class="xs" type="button" title="立即刷新">刷新</button><button id="theme" class="xs ghost" type="button"></button><button id="logout" class="xs ghost" type="button" title="清除当前标签页保存的密钥（三个页面共用）">退出</button></div>
 </header>
 <main id="main" tabindex="-1">
-  <div class="sh"><span id="mode" class="tag"></span><span class="mono mut trunc" id="meta"></span><span class="sp"></span><span class="xs mut d-only" id="lastr"></span><button id="reload" class="xs" type="button" title="重新读取配置文件并应用（文件变化会自动应用，这里用于手动触发）">重新加载配置文件</button></div>
+  <div class="sh"><span id="mode" class="tag"></span><span class="mono mut trunc" id="meta"></span><span class="sp"></span><span class="xs mut d-only" id="lastr"></span><button id="reload" class="xs" type="button" title="重新读取配置文件并应用（文件变化会自动应用，此按钮用于手动触发）">重新加载配置文件</button></div>
   <div id="ferr" class="banner err hide" role="alert"></div>
   <div id="msg" class="banner err" role="alert"></div>
   <div id="ro" class="banner hide" role="status"></div>
@@ -434,7 +434,7 @@ fieldset.sc{justify-self:stretch;align-items:flex-start}
   <div class="spane" id="spane">
     <div class="mback"><a href="#" id="back">‹ 设置</a></div>
     <div class="qhd" id="qhd"><div class="phd"><h1 id="qtitle"></h1><div class="sub">结果来自所有分页，按所在页分组，高级项一并列出</div></div><div id="qpg"></div></div>
-    <div id="qnone" class="empty panel hide"><b>没有匹配的设置项</b>换个关键词试试</div>
+    <div id="qnone" class="empty panel hide"><b>没有匹配的设置项</b>尝试其他关键词</div>
     <div id="pages"></div>
     <div class="hide" id="stash">
     <div id="pricebox">
@@ -444,14 +444,14 @@ fieldset.sc{justify-self:stretch;align-items:flex-start}
       </div></div>
       <div class="ssec" id="pmods"><h2>模型<span class="pfil" id="pfil"></span></h2><div class="panel">
         <div class="tw"><table class="stk" id="pmt"><thead><tr><th scope="col">模型</th><th scope="col">价格</th><th scope="col"><span class="hide">操作</span></th></tr></thead><tbody id="pmrows"></tbody></table></div>
-        <div class="mut sm pad">「忽略」不再提示未定价，费用按 0 计，适合 auto 这类免费或本地别名模型；「设置价格」按你填的价格估算，检查更新不会改动它。改动立即生效，历史记录也按新设置计算</div>
+        <div class="mut sm pad">「忽略」：不再提示未定价，费用按 0 计，适用于 auto 等免费或本地别名模型；「设置价格」：按填写的价格估算，检查更新不会覆盖。改动立即生效，历史记录也按新设置计算</div>
       </div></div>
     </div>
     <div id="keybox" class="ssec">
       <div class="panel">
-        <div class="mut sm pad">新密钥由服务端生成，默认只能转发和查看用量，不能管理。要开通管理权限，请在配置文件对应的 [[api_keys]] 条目里加上 admin = true。</div>
+        <div class="mut sm pad">新密钥由服务端生成，默认可转发请求和查看用量，没有管理权限。如需管理权限，请在配置文件对应的 [[api_keys]] 条目中设置 admin = true。</div>
         <div class="tw"><table class="stk" id="keys"><thead><tr><th scope="col">标签</th><th scope="col">密钥</th><th scope="col"><span class="hide">操作</span></th></tr></thead><tbody id="krows"></tbody></table></div>
-        <div id="newkey" class="newkey hide" role="status"><div>新密钥（只显示这一次，请立即保存；默认非管理员，管理权限需在配置文件中设置 admin = true）：</div><code id="nkv"></code><button id="nkc" class="xs" type="button">复制</button><button id="nkx" class="xs pri" type="button">我已保存</button></div>
+        <div id="newkey" class="newkey hide" role="status"><div>新密钥（仅显示一次，请立即保存；默认无管理权限，需在配置文件中设置 admin = true）：</div><code id="nkv"></code><button id="nkc" class="xs" type="button">复制</button><button id="nkx" class="xs pri" type="button">我已保存</button></div>
         <form id="kf" class="sbar kf hide"><input id="klabel" placeholder="新密钥标签，如 phone" maxlength="64" required aria-label="新密钥标签"><button class="pri" type="submit">生成新密钥</button></form>
       </div>
     </div>
@@ -502,13 +502,13 @@ function ago(ms){const s=Math.max(0,(Date.now()-ms)/1000);if(s<60)return"刚刚"
 setInterval(()=>{for(const e of document.querySelectorAll("[data-until]"))e.textContent=(e.dataset.pre||"")+dur((Number(e.dataset.until)-Date.now())/1000)},1000);
 // ---- access key (sessionStorage of this tab, shared by all three pages) and API calls
 function key(){return sessionStorage.getItem(KS)||""}
-function adminMsg(j){return j&&j.error&&j.error.type==="admin_required"?"当前密钥没有管理权限。请用带 admin = true 的密钥登录，或在配置文件的 [[api_keys]] 里给该密钥加上 admin = true。":null}
+function adminMsg(j){return j&&j.error&&j.error.type==="admin_required"?"当前密钥没有管理权限。请使用 admin = true 的密钥登录，或在配置文件的 [[api_keys]] 中为该密钥设置 admin = true。":null}
 // o.timeout (ms): abort a request that gets no answer (the error then has kind "timeout").
 async function req(method,path,body,extra,o){
   const auth=key(),epoch=authEpoch,current=()=>key()===auth&&epoch===authEpoch&&(!o||!o.current||o.current()),hd={"Authorization":"Bearer "+auth};if(body!==undefined)hd["Content-Type"]="application/json";Object.assign(hd,extra||{});
   const ac=o&&o.timeout?new AbortController():null,tm=ac?setTimeout(()=>ac.abort(),o.timeout):null;let r;
   try{r=await fetch(path,{method,headers:hd,body:body===undefined?undefined:JSON.stringify(body),cache:"no-store",credentials:"same-origin",redirect:"manual",referrerPolicy:"no-referrer",signal:ac?ac.signal:undefined})}
-  catch(e){const x=new Error(ac&&ac.signal.aborted?"请求超时（"+Math.round(o.timeout/1000)+" 秒内没有响应）":"网络错误，连不上 ciallopa（"+e.message+"）");x.kind=ac&&ac.signal.aborted?"timeout":"network";throw x}
+  catch(e){const x=new Error(ac&&ac.signal.aborted?"请求超时（"+Math.round(o.timeout/1000)+" 秒内没有响应）":"网络错误，无法连接 ciallopa（"+e.message+"）");x.kind=ac&&ac.signal.aborted?"timeout":"network";throw x}
   finally{clearTimeout(tm)}
   gate(r);
   if(r.status===401){if(current()){sessionStorage.removeItem(KS);showApp(false,"密钥无效或已过期")}throw new Error("401")}
@@ -539,7 +539,7 @@ function whead(labels,def){const L=[...new Set(labels.map(x=>x==="5h"?"5 小时"
 // 刷新额度 answered "asked moments ago": neutral, not a failure.
 const qskip=r=>!r.ok&&r.error&&r.error.kind==="rate_limited";
 function qsummary(j){const sk=j.skipped!==undefined?j.skipped:j.results.filter(qskip).length,cleared=(j.results||[]).filter(r=>r.cooldown_cleared).length,p=[];if(j.ok)p.push("已刷新 "+j.ok+" 个账号的额度");if(cleared)p.push(cleared+" 个已解除额度冷却");if(sk)p.push(sk+" 个 30 秒内刚查询过，已跳过");return p.join("，")||"没有可刷新的账号"}
-function qerr(e){e=e||{};const m=e.message||"";return{rate_limited:"刚查询过，"+(e.retry_after_s||30)+" 秒后再试",http:"上游 HTTP "+e.status+(m?" · "+m:""),network:"连不上上游（"+m.replace(/^send: /,"")+"）",timeout:"上游 5 秒内没有响应",credentials:"获取令牌失败（"+m.replace(/^credentials: /,"")+"）",token_invalid:"令牌失效，需要重新登录",decode:"上游返回里没有额度数据"}[e.kind]||m||"未知错误"}
+function qerr(e){e=e||{};const m=e.message||"";return{rate_limited:"刚查询过，"+(e.retry_after_s||30)+" 秒后重试",http:"上游 HTTP "+e.status+(m?" · "+m:""),network:"无法连接上游（"+m.replace(/^send: /,"")+"）",timeout:"上游 5 秒内没有响应",credentials:"获取令牌失败（"+m.replace(/^credentials: /,"")+"）",token_invalid:"令牌失效，需要重新登录",decode:"上游响应中没有额度数据"}[e.kind]||m||"未知错误"}
 // The button stays focusable while busy (aria-disabled), so keyboard focus is not dropped.
 async function busyRun(b,name,f,label){if(b.disabled||b._busy)return false;const t=b.textContent;b._busy=true;b.classList.add("busy");b.setAttribute("aria-disabled","true");b.setAttribute("aria-busy","true");if(label)b.textContent=label;
   try{await f();return true}catch(e){if(e&&e.message!=="401")toast(name+(/[\w)]$/.test(name)?" ":"")+"失败："+why(e),{kind:"err"});return false}
@@ -618,12 +618,12 @@ async function egressTag(cfg){const seq=++egressSeq,auth=key(),current=()=>seq==
   try{if(!cfg&&NOADMIN)throw new Error("admin");const c=cfg||await read("/admin/v1/config");if(!current())return;const eg=Object.assign({},c.egress||{},{runtime:c.runtime});
     if(eg.direct){t.className="tag line";t.textContent="直连";t.title="出口：直连（未使用出口代理）· 点击查看出口设置";return eg}
     let n=0;try{const since=Date.now()-36e5;for(const code of ["proxy_connect","proxy_timeout"]){n+=(await read("/usage/v1/records?limit=1&from="+since+"&error="+code)).total||0;if(!current())return}}catch(_){}
-    if(!current())return;t.className="tag proxy dot";t.textContent=n?"代理 · "+n+" 错误":"代理";t.title="出口："+eg.proxy+(n?"；近 1 小时 "+n+" 次代理错误":"；近 1 小时没有代理错误")+" · 点击查看出口设置";return eg}
+    if(!current())return;t.className="tag proxy dot";t.textContent=n?"出口代理 · "+n+" 错误":"出口代理";t.title="出口："+eg.proxy+(n?"；近 1 小时 "+n+" 次出口代理错误":"；近 1 小时没有出口代理错误")+" · 点击查看出口设置";return eg}
   catch(_){if(!current())return;clearEgress();return null}}
 // Accounts / settings need an admin key. A usage-only key (e.g. carried over from the overview in
 // this tab) gets a plain explanation instead of a half-loaded page.
 function needAdmin(e){if(!e||!e.body||!e.body.error||e.body.error.type!=="admin_required")return false;const m=$("main");
-  if(!$("noadm"))m.appendChild(h("div",{class:"empty panel",id:"noadm"},h("b",null,"这个页面需要管理密钥"),adminMsg(e.body),h("div",null,h("button",{type:"button",class:"pri",onclick:()=>{sessionStorage.removeItem(KS);showApp(false)}},"换一个密钥登录"))));
+  if(!$("noadm"))m.appendChild(h("div",{class:"empty panel",id:"noadm"},h("b",null,"此页面需要管理密钥"),adminMsg(e.body),h("div",null,h("button",{type:"button",class:"pri",onclick:()=>{sessionStorage.removeItem(KS);showApp(false)}},"使用其他密钥登录"))));
   m.classList.add("noadm");$("msg").textContent="";return true}
 /* ==== shared:end ==== */
 // ---- settings
@@ -674,7 +674,7 @@ function input(f,v,tr){
 const ZO={"routing.quota_avoid_threshold":["关闭",0.9],"routing.cooldown_wait_secs":["不等待",20],
   "max_buffered_body_mb":["不限",256],"max_inflight_requests":["不限",64],"ws_max_connections":["不限",24],
   "upstream_opts.transient_cooldown_secs":["不冷却",15],"upstream_opts.overload_streak":["不冷却",2],"upstream_opts.overload_retry_wait_secs":["不重试",3],
-  "upstream_opts.deactivated_cooldown_secs":["不冷却",86400],"upstream_opts.payment_required_cooldown_secs":["不冷却",1800],"upstream_opts.not_found_cooldown_secs":["只换号不冷却",600],
+  "upstream_opts.deactivated_cooldown_secs":["不冷却",86400],"upstream_opts.payment_required_cooldown_secs":["不冷却",1800],"upstream_opts.not_found_cooldown_secs":["只换账号不冷却",600],
   "usage.retention_days":["永久保留",90],"ui.reset_credits_refresh_mins":["只手动刷新",5],"ui.quota_refresh_mins":["只手动刷新",5]};
 // Background refresh ranges: the shortest key holds the switch (0 = off), the longest sits
 // next to it. A longest of 0 means the same as the shortest (a fixed interval, how a config
@@ -691,7 +691,7 @@ function rinput(f,fx,v,vx,tr){const offt=ZO[f.key][0],omin=Number(v)||0,oraw=Num
   const ed=(k,val,orig)=>{if(BASE_STALE||val!==orig)EDITS[k]=val;else delete EDITS[k]};
   const apply=()=>{const on=sw.checked;a.disabled=b.disabled=!on;st.textContent=on?"分钟":offt;let msg="",mn=0,mx=0;
     if(on){const ok=e=>!e.validity.badInput&&/^\d+$/.test(e.value.trim())&&+e.value>=1&&+e.value<=60;
-      if(!ok(a)||!ok(b))msg="最短和最长都填 1–60 的整数；要关闭请用左侧开关";else{mn=parseInt(a.value,10);mx=parseInt(b.value,10);if(mn>mx)msg="最短不能大于最长"}}
+      if(!ok(a)||!ok(b))msg="最短和最长均需为 1–60 的整数；关闭请使用左侧开关";else{mn=parseInt(a.value,10);mx=parseInt(b.value,10);if(mn>mx)msg="最短不能大于最长"}}
     const bad=!!msg;fe.textContent=msg;fe.classList.toggle("hide",!bad);a.setAttribute("aria-invalid",String(bad));b.setAttribute("aria-invalid",String(bad));
     if(bad)BAD.add(f.key);else BAD.delete(f.key);
     const changed=BASE_STALE||on!==on0||(on&&(mn!==omin||mx!==omax));
@@ -710,7 +710,7 @@ function zinput(f,v,tr){const [offt,fb0]=ZO[f.key],d=CFG&&CFG.defaults?Number(CF
   const st=h("span","unit",on0?u:offt),fe=h("div",{class:"xs c-err hide",id:"fe-"+f.key.replace(/\W/g,"_")});e.setAttribute("aria-describedby",fe.id);
   const apply=()=>{const on=sw.checked;e.disabled=!on;st.textContent=on?u:offt;let val=0,bad=false;
     if(on){const t=e.value.trim();bad=e.validity.badInput||t===""||(f.kind==="int"?!/^\d+$/.test(t):!(Number(t)>=0));val=f.kind==="int"?parseInt(t,10):parseFloat(t);if(!bad&&!(val>0))bad=true}
-    fe.textContent=bad?"需要大于 0 的"+(f.kind==="int"?"整数":"数字")+"；要关闭请用左侧开关":"";fe.classList.toggle("hide",!bad);e.setAttribute("aria-invalid",String(bad));
+    fe.textContent=bad?"需要大于 0 的"+(f.kind==="int"?"整数":"数字")+"；关闭请使用左侧开关":"";fe.classList.toggle("hide",!bad);e.setAttribute("aria-invalid",String(bad));
     if(bad)BAD.add(f.key);else BAD.delete(f.key);const changed=BASE_STALE||val!==orig;
     if(bad||!changed)delete EDITS[f.key];else EDITS[f.key]=val;
     e.classList.toggle("chg",(changed||bad)&&on);const pn=BASE_STALE||on!==on0;if(pn!==sw.classList.contains("pending"))pend(sw,pn);rowChg(tr);upd()};
@@ -718,7 +718,7 @@ function zinput(f,v,tr){const [offt,fb0]=ZO[f.key],d=CFG&&CFG.defaults?Number(CF
   e.addEventListener("input",apply);e.addEventListener("change",apply);
   const set=x=>{const n=Number(x)||0;sw.checked=n>0;if(n>0)e.value=String(x);apply()};
   return {el:h("div",null,h("div","zo",sw,e,st),fe),set}}
-// Options with a description (选号策略 …): a radio list, every option with what it does and
+// Options with a description (账号选择策略 …): a radio list, every option with what it does and
 // when to pick it, visible before choosing (also on touch).
 function choices(f,v,tr){const g=h("div",{class:"chs",role:"radiogroup","aria-label":f.desc});
   for(const c of f.choices){const id="ch-"+(f.key+"-"+c.value).replace(/\W/g,"_"),rb=h("input",{type:"radio",name:"r-"+f.key,value:c.value,id,"data-fk":f.key+"="+c.value,"aria-describedby":id+"-h"});rb.checked=c.value===v;
@@ -734,14 +734,14 @@ const DOCS="https://github.com/Seia-Yurizono/ciallopa#how-an-account-is-chosen";
 // ---- pages: a grouped left nav (a drill-down list on a phone), one page per hash.
 // Every schema key sits on exactly one page; keys not listed here land in 常规 › 高级.
 const PAGES=[
-  {g:"转发",id:"routing",name:"账号调度",sub:"新会话怎么挑账号，同一会话何时固定用一个账号",docs:true,secs:[
-    {t:"选号",rows:["routing.strategy","routing.quota_avoid_threshold","routing.cooldown_wait_secs"]},
+  {g:"转发",id:"routing",name:"账号调度",sub:"新会话如何选择账号，以及同一会话何时固定使用同一账号",docs:true,secs:[
+    {t:"账号选择",rows:["routing.strategy","routing.quota_avoid_threshold","routing.cooldown_wait_secs"]},
     {t:"会话亲和",rows:["routing.session_affinity",{k:"routing.session_affinity_ttl",p:"routing.session_affinity"},{k:"routing.session_affinity_subagents",p:"routing.session_affinity"},{k:"routing.session_affinity_rebind_on",p:"routing.session_affinity"}]}]},
   {g:"转发",id:"network",name:"网络",sub:"出口代理、IPv6 和到上游的连接",secs:[
-    {t:"出口代理",note:"开关立即生效，不用保存",rows:["proxy_enabled","proxy_url"]},
+    {t:"出口代理",note:"开关立即生效，无需保存",rows:["proxy_enabled","proxy_url"]},
     {t:"连接",rows:["ipv6","upstream_opts.connect_timeout_secs"]}],
     adv:["upstream","ws_compression","upstream_opts.compress_requests","upstream_opts.cloudflare_cookies"]},
-  {g:"转发",id:"forward",name:"限流与容错",sub:"资源上限、超时和重试，以及上游出错时账号冷却多久",secs:[
+  {g:"转发",id:"forward",name:"限流与容错",sub:"资源上限、超时和重试，以及上游出错时的账号冷却时长",secs:[
     {t:"资源上限",rows:["max_body_mb","max_buffered_body_mb","max_inflight_requests","ws_max_connections","ws_max_message_mb"]},
     {t:"超时与重试",rows:["upstream_opts.max_attempts","upstream_opts.preparation_timeout_secs"]},
     {t:"出错时冷却",note:"冷却中的账号不接新请求；最后一个可用账号不冷却",cool:true}],
@@ -749,7 +749,7 @@ const PAGES=[
   {g:"转发",id:"images",name:"图片接口",sub:"/v1/images 接口和它使用的模型",secs:[
     {rows:["images.enabled",{k:"images.main_model",p:"images.enabled"}]}],
     adv:[{k:"images.default_originator",p:"images.enabled"},{k:"images.default_user_agent",p:"images.enabled"}]},
-  {g:"数据与账号",id:"usage",name:"用量与价格",sub:"请求明细怎么记录、保留多久，按什么价格估算费用",secs:[
+  {g:"数据与账号",id:"usage",name:"用量与价格",sub:"请求明细的记录与保留方式，以及费用估算所用价格",secs:[
     {t:"用量日志",rows:["usage.enabled",{k:"usage.retention_days",p:"usage.enabled"}]},
     {t:"模型价格",rows:[{fn:priceLink}]}],
     adv:[{k:"usage.quota_weights.input",p:"usage.enabled"},{k:"usage.quota_weights.cached",p:"usage.enabled"},{k:"usage.quota_weights.output",p:"usage.enabled"},{k:"usage.quota_weights.min_delta_pct",p:"usage.enabled"},
@@ -792,7 +792,7 @@ function ctl(f,tr){const c=CFG,run=c.running[f.key],file=c.values?c.values[f.key
   else if(c.write_enabled&&f.editable){b.appendChild(input(f,file,tr));set=v=>setCtl(b,f,v)}
   else{let t=fmt(run);if(f.kind==="bool")t=run?"已开启":"已关闭";else if(RZ[f.key])t=rzText(rzRange(f.key,k=>c.running[k]));else if(ZO[f.key]&&Number(run)===0)t=ZO[f.key][0];else if(typeof run==="number"&&unit(f))t+=" "+unit(f);
     b.appendChild(h("span","mono",t));const ch=choiceOf(f,run);if(ch)b.appendChild(h("div","xs mut",ch.label+"："+ch.help))}
-  if(f.key==="proxy_enabled"&&file!==false&&!(c.values||c.running).proxy_url)b.appendChild(h("div","xs mut","已启用，但还没有填写代理地址：当前直连"));
+  if(f.key==="proxy_enabled"&&file!==false&&!(c.values||c.running).proxy_url)b.appendChild(h("div","xs mut","已启用，但尚未填写出口代理地址：当前直连"));
   if(f.key==="proxy_url")b.appendChild(proxyExtra(c));
   if(f.key==="ipv6")b.appendChild(h("div","xs mut","使用代理时只影响连接代理主机本身；目标域名由代理解析"));
   if(PK.has(f.key))b.appendChild(h("div","xs diffv","运行中："+fmt(run)));
@@ -806,19 +806,19 @@ function rowFor(sp){if(typeof sp==="string")sp={k:sp};if(sp.fn)return sp.fn();co
   const r=h("div",{class:"srow"+(sp.p?" child":""),"data-ak":"cfg|"+f.key}),defs=h("span","defs"),why=h("div","why hide");
   if(f.kind==="enum"&&f.choices&&f.choices.length&&CFG.write_enabled&&f.editable||f.key==="proxy_url")r.classList.add("wide");
   const {b,set}=ctl(f,r),sc=h("fieldset","sc",b);
-  r.append(h("div","sl",h("div","st",h("b",null,f.desc),f.effect==="restart"?eff(f):null,f.key==="ui.allow_reset_consume"?h("span",{class:"tag err",title:"重置卡用掉后不能撤销"},"不可逆"):null),
+  r.append(h("div","sl",h("div","st",h("b",null,f.desc),f.effect==="restart"?eff(f):null,f.key==="ui.allow_reset_consume"?h("span",{class:"tag err",title:"重置卡使用后无法撤销"},"不可逆"):null),
     f.help?h("div","hp",f.help):null,h("div","kd",h("code",null,f.key),RZ[f.key]?h("code",null,RZ[f.key]):null,defs),why),sc);
   r.dataset.q=(f.key+" "+(RZ[f.key]||"")+" "+f.desc+" "+(f.help||"")+" "+(f.choices||[]).map(c=>c.label).join(" ")).toLowerCase();
   reg(f.key,{row:r,set,defs,f,multi:false});
   if(sp.p)DEPS.push({row:r,fs:sc,why,p:sp.p});
   return r}
 function coolTable(){const t=h("table",{class:"stk cdt",id:"cdt"}),tb=h("tbody");
-  t.append(h("thead",null,h("tr",null,["上游错误","何时冷却","冷却多久","说明"].map(x=>h("th",{scope:"col"},x)))),tb);
+  t.append(h("thead",null,h("tr",null,["上游错误","触发条件","冷却时长","说明"].map(x=>h("th",{scope:"col"},x)))),tb);
   for(const row of COOL){const tr=h("tr",{"data-ak":"cool|"+row.ks[0]}),defs=h("div","defs"),hp=h("td",{class:"hc","data-l":"说明"}),all=(row.tk?[row.tk]:[]).concat(row.ks),q=[row.n];
     const one=(k,lbl)=>{const f=fld(k);if(!f)return null;const {b,set}=ctl(f,tr);reg(k,{row:tr,set,defs,f,multi:all.length>1});q.push(k,f.desc,f.help||"");
       hp.appendChild(h("div","hp",all.length>1?h("b",null,f.desc+"："):null,f.help||""));return lbl?h("label",null,h("span","xs mut",lbl),b):b};
-    const trig=h("td",{"data-l":"何时冷却"}),cd=h("fieldset","cv"),cdt=h("td",{"data-l":"冷却多久"},cd);
-    if(row.tk){trig.appendChild(one(row.tk));trig.appendChild(h("div","xs mut","连续这么多次"))}else trig.appendChild(h("span","sm",row.t));
+    const trig=h("td",{"data-l":"触发条件"}),cd=h("fieldset","cv"),cdt=h("td",{"data-l":"冷却时长"},cd);
+    if(row.tk){trig.appendChild(one(row.tk));trig.appendChild(h("div","xs mut","连续出错次数"))}else trig.appendChild(h("span","sm",row.t));
     if(row.ks.length>1){cd.append(one(row.ks[0],"起始"),one(row.ks[1],"每次翻倍，最多"));const why=h("div","why hide");cd.appendChild(why);DEPS.push({row:null,fs:cd,why,p:row.tk})}
     else cd.appendChild(one(row.ks[0]));
     hp.appendChild(defs);tr.dataset.q=q.join(" ").toLowerCase();
@@ -826,19 +826,19 @@ function coolTable(){const t=h("table",{class:"stk cdt",id:"cdt"}),tb=h("tbody")
   return t}
 function infoRow(name,q,help,val){return h("div",{class:"srow","data-q":q.toLowerCase()},h("div","sl",h("div","st",h("b",null,name)),help?h("div","hp",help):null),h("div","sc",val))}
 function priceLink(){PLINK=h("div","sm");priceSum();return infoRow("模型价格","模型价格 价格 定价 未定价 prices","按 API 标价估算费用；可以检查更新、给未定价的模型设置价格或忽略",h("div",null,PLINK,h("a",{href:"#prices"},"管理价格 ›")))}
-function priceSum(){if(!PLINK)return;const p=PST;PLINK.textContent=!p?"":!p.usage_enabled?"用量记录已关闭，不计算费用":(p.models?p.models+" 个模型":"还没有价格表")+((p.unpriced||[]).length?" · "+p.unpriced.length+" 个未定价":"")}
+function priceSum(){if(!PLINK)return;const p=PST;PLINK.textContent=!p?"":!p.usage_enabled?"用量记录已关闭，不计算费用":(p.models?p.models+" 个模型":"尚无价格表")+((p.unpriced||[]).length?" · "+p.unpriced.length+" 个未定价":"")}
 function acctLink(){return infoRow("单个账号的设置","账号 accounts 权重 优先级 代理 重置卡","启用、权重、优先级、单独代理、刷新额度和使用重置卡都在账号页，各账号分别设置",h("div",null,h("div",{class:"sm",id:"accn"},ACCN===null?"":ACCN+" 个账号"),h("a",{href:"/ui/accounts"},"前往账号页 ›")))}
-function fileInfo(){const c=CFG;return infoRow("配置文件","配置文件 版本 config path",c.write_enabled?"可在这里修改，保存时写回这个文件":"只读：在配置文件中设置 [ui] allow_config_write = true 才能在这里修改",h("div",null,h("div","mono sm",c.path||"（未使用配置文件）"),h("div","xs mut","版本 "+c.version)))}
+function fileInfo(){const c=CFG;return infoRow("配置文件","配置文件 版本 config path",c.write_enabled?"可在此修改，保存时写回该文件":"只读：在配置文件中设置 [ui] allow_config_write = true 才能在此修改",h("div",null,h("div","mono sm",c.path||"（未使用配置文件）"),h("div","xs mut","版本 "+c.version)))}
 function tzInfo(){let n="";try{n=Intl.DateTimeFormat().resolvedOptions().timeZone||""}catch(_){}
   return infoRow("时区","时区 timezone utc","页面时间按本浏览器的时区显示；图表按范围结束时的 UTC 偏移分桶",h("span","mono",(n?n+" ":"")+"("+tzOff(new Date())+")"))}
-function fpInfo(){const v=h("div",{id:"fpv"});fpShow(v);return infoRow("内部请求 UA","内部请求 ua user-agent originator 指纹 fingerprint","ciallopa 自己发往上游的请求（刷新 token、额度、重置卡）使用的指纹，从客户端请求中学习",v)}
+function fpInfo(){const v=h("div",{id:"fpv"});fpShow(v);return infoRow("内部请求 UA","内部请求 ua user-agent originator 指纹 fingerprint","ciallopa 自己发往上游的请求（刷新令牌、额度、重置卡）使用的指纹，从客户端请求中学习",v)}
 function fpShow(v=$("fpv")){if(!v)return;clear(v);const f=FP;if(!f){v.textContent="–";return}
   const learned=f.source==="learned";
   v.append(h("div","mono sm",f.user_agent||"–"),h("div","xs mut","originator "+(f.originator||"–")+" · "+(learned&&f.learned_at_ms?"学习于 "+fmtTime(f.learned_at_ms)+"（"+ago(f.learned_at_ms)+"）"+(f.key?" · 密钥 "+f.key:""):"内置默认值")))}
 function buildPage(P,extra){const el=h("div",{class:"spage",id:"pg-"+P.id,"data-pg":P.id}),o={id:P.id,name:P.name,up:P.up,el,keys:[]};CURP=o;
   const up=P.up&&PAGES.find(x=>x.id===P.up),rs=[];
   el.appendChild(h("div","phd",up?h("div","crumb",h("a",{href:"#"+up.id},up.name)," ›"):null,
-    h("h1",null,P.name,h("a",{class:"go",href:"#"+P.id},"打开此页 ›")),h("div","sub",P.sub,P.docs?" · ":null,P.docs?h("a",{href:DOCS,target:"_blank",rel:"noopener noreferrer"},"了解选号规则 ↗"):null)));
+    h("h1",null,P.name,h("a",{class:"go",href:"#"+P.id},"打开此页 ›")),h("div","sub",P.sub,P.docs?" · ":null,P.docs?h("a",{href:DOCS,target:"_blank",rel:"noopener noreferrer"},"了解账号选择规则 ↗"):null)));
   for(const s of P.secs){const sec=h("div","ssec"+(s.box?" boxsec":""));if(s.t)sec.appendChild(h("h2",null,s.t,s.note?h("span","xs mut",s.note):null));
     if(s.box)sec.appendChild(BOXES[s.box]);
     else if(s.cool)sec.appendChild(h("div","panel",h("div","tw",coolTable())));
@@ -871,7 +871,7 @@ function summ(id){const yn=k=>on(k)?"开":"关";
   switch(id){
     case"routing":{const f=fld("routing.strategy"),c=f&&choiceOf(f,cur("routing.strategy"));return (c?c.label:cur("routing.strategy")||"")+" · 会话亲和"+yn("routing.session_affinity")}
     case"network":return (on("proxy_enabled")&&cur("proxy_url")?"出口代理":"直连")+" · IPv6 "+yn("ipv6");
-    case"forward":{const m=Number(cur("max_inflight_requests"))||0;return "在途上限 "+(m?m:"不限")+" · 换号重试 "+cur("upstream_opts.max_attempts")+" 次"}
+    case"forward":{const m=Number(cur("max_inflight_requests"))||0;return "并发上限 "+(m?m:"不限")+" · 换账号重试 "+cur("upstream_opts.max_attempts")+" 次"}
     case"images":return on("images.enabled")?"已开启 · "+(cur("images.main_model")||""):"已关闭";
     case"usage":{const r=Number(cur("usage.retention_days"))||0,u=PST&&(PST.unpriced||[]).length;return on("usage.enabled")?"保留 "+(r?r+" 天":"永久")+(u?" · "+u+" 个未定价":""):"已关闭"}
     case"accounts":{const m=rzRange("ui.reset_credits_refresh_mins",cur),q=rzRange("ui.quota_refresh_mins",cur);return (ACCN===null?"":ACCN+" 个账号 · ")+"重置卡"+(m?rzText(m)+"刷新":"只手动刷新")+" · 额度"+(q?rzText(q)+"刷新":"只手动刷新")+" · 自动使用提前 "+(Number(cur("ui.reset_credits_auto_lead_mins"))||10)+" 分钟"}
@@ -924,7 +924,7 @@ function render(){steady([$("pages"),$("navl")],renderNow);route();filt()}
 function renderNow(){const c=CFG;for(const k in BOXES)$("stash").appendChild(BOXES[k]);clear($("pages"));clear($("navl"));
   EDITS={};BAD.clear();BASE_STALE=false;REG.clear();PAGE_OF.clear();DEPS.length=0;ADVS.length=0;PG.length=0;PLINK=null;for(const k in NAV)delete NAV[k];upd();
   $("mode").textContent=c.write_enabled?"配置可编辑":"配置只读";$("mode").className="tag "+(c.write_enabled?"ok":"off");
-  $("mode").title=c.write_enabled?"配置文件中 [ui] allow_config_write = true":"在配置文件中设置 [ui] allow_config_write = true 才能在这里修改（此开关只能在文件里改）";
+  $("mode").title=c.write_enabled?"配置文件中 [ui] allow_config_write = true":"在配置文件中设置 [ui] allow_config_write = true 才能在此修改（此开关只能在配置文件中修改）";
   $("meta").textContent=(c.path||"（未使用配置文件）")+" · 版本 "+c.version;
   $("ro").textContent=c.write_enabled?"":"配置只读：此页面不能保存配置。配置文件的修改仍会自动应用，也可重新加载；账号页的刷新额度、解除冷却等运行操作仍可用。";$("ro").classList.toggle("hide",!!c.write_enabled);
   const fe=$("ferr");clear(fe);if(c.file_error){fe.append(h("b",null,"配置文件有错误，未应用"),"仍在使用上一次的配置："+c.file_error)}fe.classList.toggle("hide",!c.file_error);
@@ -945,18 +945,18 @@ function renderKeys(c){const kt=$("krows");clear(kt);
   for(const k of (c.running.api_keys||[])){const t=h("td");
     if(c.write_enabled){const b=h("button",{class:"xs danger",type:"button","aria-haspopup":"dialog","aria-label":"删除密钥 "+k.label,"data-fk":"key|"+k.label},"删除");b.addEventListener("click",()=>delKey(k.label,b));t.appendChild(b)}
     kt.appendChild(h("tr",null,h("td",null,k.label+" ",k.admin?h("span",{class:"tag line",title:"admin = true：可使用管理接口"},"管理员"):null),h("td","mono",k.hint),t))}
-  if(!(c.running.api_keys||[]).length)kt.appendChild(h("tr",null,h("td",{colspan:"3",class:"mut"},"没有密钥：所有代理请求都会被拒绝")));
+  if(!(c.running.api_keys||[]).length)kt.appendChild(h("tr",null,h("td",{colspan:"3",class:"mut"},"没有密钥：所有转发请求都会被拒绝")));
   $("kf").classList.toggle("hide",!c.write_enabled)}
 let PPATH="";
 function host(u){try{return new URL(u).host}catch(e){return u}}
 async function loadPrices(){const p=await get("/admin/v1/prices");PPATH=p.path||"";PST=p;priceSum();sync();const info=$("pinfo"),note=$("pnote"),hint=$("phint");clear(info);clear(note);clear(hint);
   if(!p.usage_enabled){info.textContent="用量记录已关闭（usage.enabled = false），不计算费用";$("pcheck").disabled=true;hint.classList.add("hide");return}
-  add(info,[p.models?h("b",null,p.models+" 个模型"):h("b",null,"还没有价格表"),p.updated_ms?" · 更新于 "+fmtTime(p.updated_ms,true):"",p.enabled?" · 来源 ":"",p.enabled?h("span",{class:"mono",title:p.source},host(p.source)):" · 未设置来源（usage.prices_source）"]);
+  add(info,[p.models?h("b",null,p.models+" 个模型"):h("b",null,"尚无价格表"),p.updated_ms?" · 更新于 "+fmtTime(p.updated_ms,true):"",p.enabled?" · 来源 ":"",p.enabled?h("span",{class:"mono",title:p.source},host(p.source)):" · 未设置来源（usage.prices_source）"]);
   $("pcheck").disabled=!p.enabled;$("pcheck").title=p.enabled?"下载最新价格并列出变化，确认后才写入":"usage.prices_source 为空：先在下方「价格来源」设置 usage.prices_source";
   const un=p.unpriced||[];let msg=null;
-  if(!p.models&&!un.length&&!(p.ignored||[]).length)msg="还没有价格表，费用都显示为「未定价」。";
+  if(!p.models&&!un.length&&!(p.ignored||[]).length)msg="尚无价格表，费用均显示为「未定价」。";
   else if(un.length)msg="有 "+un.length+" 个模型未定价："+un.join("、")+"（最近 30 天用过）。";
-  if(msg){add(note,[msg,p.enabled?"点「检查更新」拉取价格":"",un.length?(p.enabled?"，或在下方":"可以在下方")+"设置价格或忽略":""]);add(hint,[h("b",null,"价格"),msg,h("a",{href:"#prices"},un.length?"去定价或忽略":"去检查更新")])}
+  if(msg){add(note,[msg,p.enabled?"点击「检查更新」拉取价格":"",un.length?(p.enabled?"，或在下方":"可以在下方")+"设置价格或忽略":""]);add(hint,[h("b",null,"价格"),msg,h("a",{href:"#prices"},un.length?"设置价格或忽略":"检查更新")])}
   else note.textContent="价格文件："+p.path+"。更新只改动有变化的模型，带日期的促销价、自定价格和已忽略的模型不会被改。";
   hint.classList.toggle("hide",!msg);renderPriceModels(p)}
 // ---- unpriced / ignored / hand-priced models
@@ -983,9 +983,9 @@ $("pmrows").addEventListener("click",e=>{const b=e.target.closest("button[data-a
     await loadPrices()}catch(e){fail(e)}},"处理中…")});
 function priceDlg(m,cur,from){const inp=(id,v,ph)=>h("input",{id,type:"number",min:"0",max:"10000",step:"any",inputmode:"decimal",value:v===null||v===undefined?"":String(v),placeholder:ph||""});
   const err=h("p",{class:"warnp hide",id:"pp-err",role:"alert"});
-  const box=h("div",null,h("p",null,"按 API 标价填写，单位为美元 / 百万 token"),
+  const box=h("div",null,h("p",null,"按 API 标价填写，单位为美元 / 百万 Token"),
     h("div","pgrid",h("label",{for:"pp-in"},"输入"),inp("pp-in",cur&&cur.in),h("label",{for:"pp-cache"},"缓存输入"),inp("pp-cache",cur&&cur.cache,"空 = 同输入"),h("label",{for:"pp-out"},"输出"),inp("pp-out",cur&&cur.out)),
-    err,h("p","mut","保存后立即用于所有费用统计（含历史记录）；检查更新不会改动它"));
+    err,h("p","mut","保存后立即用于所有费用统计（含历史记录）；检查更新不会覆盖"));
   dialog((cur?"修改 ":"设置 ")+m+" 的价格",box,"保存价格","pri",async()=>{
     const num=id=>{const t=$(id).value.trim();if(t==="")return null;const v=Number(t);return Number.isFinite(v)&&v>=0&&v<=10000?v:NaN};
     const i=num("pp-in"),c=num("pp-cache"),o=num("pp-out");
@@ -996,7 +996,7 @@ function priceDlg(m,cur,from){const inp=(id,v,ph)=>h("input",{id,type:"number",m
 $("pcheck").addEventListener("click",()=>busyRun($("pcheck"),"检查更新",async()=>{const b=$("pcheck");
   try{const {j}=await call("POST","/admin/v1/prices/check",{});const act=j.changes.filter(c=>c.kind==="add"||c.kind==="update"),rest=j.changes.filter(c=>c.kind==="skip_dated"||c.kind==="skip_custom"||c.kind==="skip_ignored");
     if(!j.token){toast("价格已是最新（来源里有 "+j.remote_models+" 个模型）");await loadPrices();return}
-    const box=h("div");box.appendChild(h("div","tw",h("table",null,h("thead",null,h("tr",null,["模型","原价","新价（美元 / 百万 token）"].map(x=>h("th",{scope:"col"},x)))),
+    const box=h("div");box.appendChild(h("div","tw",h("table",null,h("thead",null,h("tr",null,["模型","原价","新价（美元 / 百万 Token）"].map(x=>h("th",{scope:"col"},x)))),
       h("tbody",null,act.map(c=>h("tr",null,h("td","mono",(c.kind==="add"?"+ ":"~ ")+c.model),h("td","mono mut",c.old||"（新增）"),h("td","mono",c.new)))))));
     if(rest.length)box.appendChild(h("p","mut","有促销价、自定价格或已忽略的模型不改动："+rest.map(c=>c.model).join("、")));
     box.appendChild(h("p","mut","写入 "+PPATH+" 前会把原文件备份为 .bak；新价格立即用于所有费用统计（含历史记录）。"));
@@ -1016,7 +1016,7 @@ async function loadAudit(){const j=await get("/admin/v1/config/audit?limit=20"),
   for(const e of j.entries)tb.appendChild(h("tr",null,h("td","mono mut",fmtTime(e.ts_ms)),h("td","sm",e.actor||"（文件/信号）"),h("td","sm",e.action+" · "+e.source),h("td","mono c",(e.changes||[]).map(c=>c.key+": "+fmt(c.old)+" → "+fmt(c.new)).join("；"))));
   if(!j.entries.length)tb.appendChild(h("tr",null,h("td",{colspan:"4",class:"empty"},"暂无变更记录")))}
 // o.irrev: the action cannot be undone, shown as 「不可逆」 next to the title.
-function dialog(title,body,yes,cls,cb,from,o){$("dlgt").textContent=title;if(o&&o.irrev)$("dlgt").append(" ",h("span",{class:"tag err",title:"确认后不能撤销"},"不可逆"));clear($("dlgc"));$("dlgc").appendChild(body);$("dyes").textContent=yes;$("dyes").className=cls;$("dyes").toggleAttribute("data-arm",cls.includes("danger"));$("dyes").classList.toggle("hide",!cb);$("dno").textContent=cb?"取消":"知道了";
+function dialog(title,body,yes,cls,cb,from,o){$("dlgt").textContent=title;if(o&&o.irrev)$("dlgt").append(" ",h("span",{class:"tag err",title:"确认后不能撤销"},"不可逆"));clear($("dlgc"));$("dlgc").appendChild(body);$("dyes").textContent=yes;$("dyes").className=cls;$("dyes").toggleAttribute("data-arm",cls.includes("danger"));$("dyes").classList.toggle("hide",!cb);$("dno").textContent=cb?"取消":"确定";
   $("dlgb").classList.toggle("dz",cls.includes("danger"));$("dlgb").classList.toggle("wide",!!body.querySelector("table"));$("dlg")._yes=cb;openModal($("dlg"),$("dno"),from)}
 $("dno").addEventListener("click",()=>closeModal($("dlg")));
 $("dyes").addEventListener("click",()=>{const f=$("dlg")._yes;if(!f)return;const t=$("dyes").textContent;busyRun($("dyes"),t,async()=>{try{if(await f()!==false)closeModal($("dlg"))}catch(e){closeModal($("dlg"));fail(e)}},"处理中…")});
