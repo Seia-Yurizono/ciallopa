@@ -128,9 +128,14 @@ pub(crate) async fn handler(
         headers,
         key: crate::key_label(&key).map(str::to_string),
         preparation_limit,
+        ws_ext_down: None,
     };
     let hs_headers = resp_headers.clone();
     let compression = st.config.load().ws_compression;
+    let ctx = Ctx {
+        ws_ext_down: ws.agreed_ext(compression),
+        ..ctx
+    };
     let drain = st.upstream.drain.clone();
     let mut resp = ws.on_upgrade(compression, max_message, move |socket| async move {
         let _slot = slot;
@@ -493,6 +498,8 @@ struct Ctx {
     /// Client key label (usage log).
     key: Option<String>,
     preparation_limit: Duration,
+    /// permessage-deflate answer sent to the client (None = not agreed).
+    ws_ext_down: Option<String>,
 }
 
 /// Inspect an upstream text frame: (kind, request finished, quota snapshot outcome).
@@ -644,6 +651,7 @@ async fn relay(
     let mut drain_live = true;
     // Latest quota headers on this connection: handshake, then `codex.rate_limits` frames.
     let mut upstream_request_id = crate::errors::request_id(&handshake);
+    let mut ws_ext_up = ext_answer(&handshake);
     let mut quota_h = handshake;
     let mut progress = StreamObservation::new();
     let (mut dtx, mut drx) = down.split();
@@ -769,6 +777,8 @@ async fn relay(
                                         tr.accounts(&[], Some(&account));
                                         tr.quota(&quota_h);
                                         tr.status(200);
+                                        tr.obs_upstream_request_id(upstream_request_id.as_deref());
+                                        tr.obs_ws_negotiation(ctx.ws_ext_down.as_deref(), ws_ext_up.as_deref());
                                         tr
                                     });
                                     if !route.model.is_empty() && st.router.model_cooling_until(&account, &route.model).is_some() {
@@ -790,6 +800,8 @@ async fn relay(
                                         match preparation.run(connect(&st, &ctx.path, &ctx.headers, &mut r, proxy::WS_HOLD_MAX, None)).await {
                                             Ok(Ok((ws, h, id, g))) => {
                                                 upstream_request_id = crate::errors::request_id(&h);
+                                            ws_ext_up = ext_answer(&h);
+                                            if let Some(t) = turn.as_mut() { t.obs_upstream_request_id(upstream_request_id.as_deref()); t.obs_ws_negotiation(ctx.ws_ext_down.as_deref(), ws_ext_up.as_deref()); }
                                                 quota_h = h;
                                                 gen = g;
                                                 tracing::info!(from = %account, to = %id, model = %route.model, "ws turn model cooling on this account; redialed");
@@ -884,7 +896,7 @@ async fn relay(
                         if code != 1000 {
                             st.router.report(&route, &account, &Outcome::Transient { status: None });
                         }
-                        for h in held.drain(..) { let _ = dtx.send(h).await; }
+                        for h in held.drain(..) { let _ = send_down(&mut dtx, h, turn.as_mut()).await; }
                         if let Some(d) = to_down(WsMessage::Close(f)) {
                             let _ = dtx.send(d).await;
                         }
@@ -894,6 +906,18 @@ async fn relay(
                         if awaiting {
                             progress.activity();
                             if let Some(t) = turn.as_mut() { t.upstream_activity(); }
+                        }
+                        if let Some(t) = turn.as_mut() {
+                            match &m {
+                                WsMessage::Text(x) => {
+                                    t.obs_up_bytes(x.len());
+                                    if let Some(ty) = crate::usage::event_type(x.as_str()) {
+                                        t.obs_event(&ty);
+                                    }
+                                }
+                                WsMessage::Binary(b) => t.obs_up_bytes(b.len()),
+                                _ => {}
+                            }
                         }
                         let (kind, done) = match &m {
                             WsMessage::Text(t) => {
@@ -947,6 +971,8 @@ async fn relay(
                                 match redial {
                                     Ok(Ok((ws, h, id, g))) => {
                                         upstream_request_id = crate::errors::request_id(&h);
+                                            ws_ext_up = ext_answer(&h);
+                                            if let Some(t) = turn.as_mut() { t.obs_upstream_request_id(upstream_request_id.as_deref()); t.obs_ws_negotiation(ctx.ws_ext_down.as_deref(), ws_ext_up.as_deref()); }
                                         quota_h = h;
                                         gen = g;
                                         tracing::info!(from = %account, to = %id, code = %code, "ws overloaded before output; replayed");
@@ -1007,6 +1033,8 @@ async fn relay(
                                     match preparation.run(connect(&st, &ctx.path, &ctx.headers, &mut route, Duration::MAX, None)).await {
                                         Ok(Ok((ws, h, id, g))) => {
                                             upstream_request_id = crate::errors::request_id(&h);
+                                            ws_ext_up = ext_answer(&h);
+                                            if let Some(t) = turn.as_mut() { t.obs_upstream_request_id(upstream_request_id.as_deref()); t.obs_ws_negotiation(ctx.ws_ext_down.as_deref(), ws_ext_up.as_deref()); }
                                             quota_h = h;
                                             gen = g;
                                             tracing::info!(from = %account, to = %id, "ws quota error before output; replayed on another account");
@@ -1076,7 +1104,7 @@ async fn relay(
                                     held.push(d);
                                     started = true;
                                     for h in held.drain(..) {
-                                        if dtx.send(h).await.is_err() { break 'outer; }
+                                        if send_down(&mut dtx, h, turn.as_mut()).await.is_err() { break 'outer; }
                                     }
                                     continue;
                                 }
@@ -1091,18 +1119,24 @@ async fn relay(
                             started = true;
                         }
                         for h in held.drain(..) {
-                            if dtx.send(h).await.is_err() { break 'outer; }
+                            if send_down(&mut dtx, h, turn.as_mut()).await.is_err() { break 'outer; }
                         }
+                        // The finished turn's tracker lives until its terminal frame was sent
+                        // downstream (observed send), with `duration_ms` fixed here as before.
+                        let mut finished: Option<Tracker> = None;
                         if done {
                             awaiting = false;
                             drop(turn_slot.take());
                             pending = None;
                             drop(msg_permit.take());
-                            if let (Some(mut t), WsMessage::Text(txt)) = (turn.take(), &m) {
-                                if let Ok(v) = serde_json::from_str::<serde_json::Value>(txt.as_str()) {
-                                    t.terminal_event(&v);
+                            if let Some(mut t) = turn.take() {
+                                if let WsMessage::Text(txt) = &m {
+                                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(txt.as_str()) {
+                                        t.terminal_event(&v);
+                                    }
                                 }
-                                // `t` dropped here → record emitted.
+                                t.freeze_duration();
+                                finished = Some(t);
                             }
                         }
                         // Encrypted-content rejection: same frame, clear message (logged above
@@ -1118,11 +1152,15 @@ async fn relay(
                             (_, m) => m,
                         };
                         if let Some(d) = to_down(m) {
-                            if dtx.send(d).await.is_err() {
+                            let t = finished.as_mut().or(turn.as_mut());
+                            if send_down(&mut dtx, d, t).await.is_err() {
+                                drop(finished);
                                 let _ = utx.send(WsMessage::Close(None)).await;
                                 break;
                             }
                         }
+                        // `finished` dropped here → record emitted.
+                        drop(finished);
                         if done && st.upstream.egress_gen() != gen {
                             close_for_egress(&account, &mut dtx, &mut utx).await;
                             break;
@@ -1192,6 +1230,31 @@ async fn relay(
         let _ = utx.close().await;
     })
     .await;
+}
+
+/// Downstream send of a turn's message, observed on its tracker (`sink.send` completion:
+/// frame written and tungstenite's flush returned; not a client receive).
+async fn send_down<S>(dtx: &mut S, m: Message, t: Option<&mut Tracker>) -> Result<(), S::Error>
+where
+    S: futures::Sink<Message> + Unpin,
+{
+    let n = match &m {
+        Message::Text(x) => Some(x.len()),
+        Message::Binary(b) => Some(b.len()),
+        _ => None,
+    };
+    let (r, blocked) = crate::downstream::timed(dtx.send(m)).await;
+    if let (Some(t), Some(n)) = (t, n) {
+        t.obs_ws_sent(n, blocked, r.is_ok());
+    }
+    r
+}
+
+/// The `Sec-WebSocket-Extensions` value of a handshake response.
+fn ext_answer(h: &HeaderMap) -> Option<String> {
+    h.get(http::header::SEC_WEBSOCKET_EXTENSIONS)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
 }
 
 enum WriteResult<T> {

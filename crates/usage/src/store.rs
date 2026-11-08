@@ -10,7 +10,7 @@ use std::path::Path;
 /// Endpoint label of a Codex WS prewarm turn (`response.create` with `generate:false`).
 pub const PREWARM_ENDPOINT: &str = "prewarm";
 
-pub(crate) const SCHEMA_VERSION: i64 = 13;
+pub(crate) const SCHEMA_VERSION: i64 = 14;
 
 const CREATE_V3: &str = r#"
 CREATE TABLE IF NOT EXISTS labels(
@@ -228,6 +228,7 @@ pub(crate) fn migrate(c: &mut Connection) -> rusqlite::Result<()> {
         tx.execute_batch(MIGRATE_8_TO_9_DETAIL)?;
     }
     tx.execute_batch(CREATE_V3)?;
+    tx.execute_batch(crate::observation::CREATE)?;
     // v12: rewrite account labels to aliases and scrub historical error payloads.
     // Runs for every upgrade into 12 (including fresh DBs, where it only seeds alias_key).
     if v < 12 {
@@ -444,6 +445,11 @@ pub(crate) fn insert_batch(
                     ])?;
                 }
             }
+            if let (1, Some(o)) = (n, r.obs.as_deref()) {
+                if !o.is_empty() {
+                    crate::observation::insert(&tx, r.id, o)?;
+                }
+            }
             if let (1, Some(q), Some(a)) = (n, q, account) {
                 if quota_changed(ws.last_quota.get(&a), q) {
                     qst.execute(params![
@@ -516,6 +522,10 @@ pub(crate) fn purge_before(
     )?;
     c.execute(
         "DELETE FROM error_detail WHERE id IN (SELECT id FROM error_detail WHERE id < ?1 ORDER BY id LIMIT ?2)",
+        params![cut, chunk as i64],
+    )?;
+    c.execute(
+        "DELETE FROM request_obs WHERE id IN (SELECT id FROM request_obs WHERE id < ?1 ORDER BY id LIMIT ?2)",
         params![cut, chunk as i64],
     )?;
     if (n as u64) < chunk {

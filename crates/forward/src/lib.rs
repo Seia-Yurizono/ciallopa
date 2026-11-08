@@ -9,6 +9,7 @@
 mod admission;
 mod budget;
 pub mod codes;
+pub(crate) mod downstream;
 mod egress;
 mod encrypted;
 mod errors;
