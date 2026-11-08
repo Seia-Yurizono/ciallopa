@@ -115,6 +115,14 @@ pub fn routes() -> Router {
 mod tests {
     use super::*;
 
+    /// Page text is served verbatim: no U+FFFD left by a bad edit.
+    #[test]
+    fn pages_have_no_replacement_char() {
+        for page in PAGES {
+            assert!(!page.contains('\u{FFFD}'));
+        }
+    }
+
     #[test]
     fn self_contained_and_hashed() {
         for page in PAGES {
