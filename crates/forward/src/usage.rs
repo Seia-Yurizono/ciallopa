@@ -3,7 +3,10 @@
 //! via a non-blocking `try_send`; forwarding never waits for the persistence queue.
 use crate::AppState;
 use ciallopa_core::AccountId;
-use ciallopa_usage::{detail::keep_header, ErrorDetail, QuotaObs, Record, Recorder, Transport};
+use ciallopa_usage::{
+    detail::keep_header, observation::clean_id, ErrorDetail, Observation, QuotaObs, Record,
+    Recorder, Transport,
+};
 use http::HeaderMap;
 use serde_json::Value;
 use std::borrow::Cow;
@@ -32,6 +35,13 @@ pub(crate) struct Tracker {
     /// recorded with how long the upstream had been silent, so a client-side idle timeout
     /// (Codex: 300 s) is distinguishable from a user cancel.
     last_upstream: Option<Instant>,
+    /// Gateway stream observation, attached to the record when non-empty.
+    obs: Observation,
+    /// `duration_ms` fixed early (WS: before the terminal frame's downstream send, so the
+    /// observed send does not change the existing duration semantics).
+    frozen_ms: Option<u32>,
+    /// SSE: the record waits for the response body (downstream yield fields).
+    link: Option<Arc<crate::downstream::DownLink>>,
 }
 
 /// Capture the record ID and monotonic start together.
@@ -198,6 +208,9 @@ impl Tracker {
             emit: true,
             replays: None,
             last_upstream: None,
+            obs: Observation::default(),
+            frozen_ms: None,
+            link: None,
         })
     }
 
@@ -291,6 +304,101 @@ impl Tracker {
         a.code = Some(code.to_string());
         a.action = action;
         chain.push(a);
+        // Upstream observation describes the final attempt only.
+        self.reset_upstream_obs();
+    }
+
+    fn reset_upstream_obs(&mut self) {
+        let o = &mut self.obs;
+        o.up_first_text_ms = None;
+        o.up_first_reasoning_ms = None;
+        o.up_first_tool_ms = None;
+        o.up_last_event_ms = None;
+        o.up_terminal_ms = None;
+        o.up_events = None;
+        o.up_bytes = None;
+        o.response_id = None;
+    }
+
+    fn obs_now(&self) -> u32 {
+        elapsed_ms(self.start)
+    }
+
+    pub(crate) fn start_instant(&self) -> Instant {
+        self.start
+    }
+
+    /// One complete upstream event / text frame of type `ty` (any type, also after terminal).
+    pub(crate) fn obs_event(&mut self, ty: &str) {
+        let now = self.obs_now();
+        let o = &mut self.obs;
+        o.up_events = Some(o.up_events.unwrap_or(0).saturating_add(1));
+        o.up_last_event_ms = Some(now);
+        if crate::downstream::is_text_type(ty) {
+            o.up_first_text_ms.get_or_insert(now);
+        } else if crate::downstream::is_reasoning_type(ty) {
+            o.up_first_reasoning_ms.get_or_insert(now);
+        } else if crate::downstream::is_tool_type(ty) {
+            o.up_first_tool_ms.get_or_insert(now);
+        }
+        if is_terminal_type(ty) {
+            o.up_terminal_ms.get_or_insert(now);
+        }
+    }
+
+    /// Upstream payload bytes of the final attempt.
+    pub(crate) fn obs_up_bytes(&mut self, n: usize) {
+        let o = &mut self.obs;
+        o.up_bytes = Some(o.up_bytes.unwrap_or(0).saturating_add(n as u64));
+    }
+
+    pub(crate) fn obs_upstream_request_id(&mut self, id: Option<&str>) {
+        self.obs.upstream_request_id = id.and_then(clean_id);
+    }
+
+    fn obs_response_id(&mut self, r: &Value) {
+        if let Some(id) = r.get("id").and_then(|v| v.as_str()).and_then(clean_id) {
+            self.obs.response_id = Some(id);
+        }
+    }
+
+    /// WS: one downstream `sink.send` for this turn finished (`ok`), with its Pending time.
+    pub(crate) fn obs_ws_sent(
+        &mut self,
+        bytes: usize,
+        blocked: Option<std::time::Duration>,
+        ok: bool,
+    ) {
+        if !ok {
+            self.obs.down_incomplete = Some(true);
+            return;
+        }
+        let now = self.obs_now();
+        let b = blocked.map(crate::downstream::us).unwrap_or(0);
+        let o = &mut self.obs;
+        o.ws_first_send_ms.get_or_insert(now);
+        o.ws_last_send_ms = Some(now);
+        o.ws_sink_blocked_us = Some(o.ws_sink_blocked_us.unwrap_or(0).saturating_add(b));
+        o.ws_sink_blocked_max_us = Some(o.ws_sink_blocked_max_us.unwrap_or(0).max(b));
+        o.ws_send_msgs = Some(o.ws_send_msgs.unwrap_or(0).saturating_add(1));
+        o.ws_send_bytes = Some(o.ws_send_bytes.unwrap_or(0).saturating_add(bytes as u64));
+        o.down_incomplete.get_or_insert(false);
+    }
+
+    /// WS: negotiated permessage-deflate per leg (answers; None = not agreed).
+    pub(crate) fn obs_ws_negotiation(&mut self, down: Option<&str>, up: Option<&str>) {
+        (self.obs.ws_deflate_down, self.obs.ws_ext_down) = crate::downstream::negotiation(down);
+        (self.obs.ws_deflate_up, self.obs.ws_ext_up) = crate::downstream::negotiation(up);
+    }
+
+    /// Fix `duration_ms` now (the record is still emitted on drop).
+    pub(crate) fn freeze_duration(&mut self) {
+        self.frozen_ms.get_or_insert_with(|| elapsed_ms(self.start));
+    }
+
+    /// SSE: hand the finished record to the response body's observer.
+    pub(crate) fn defer_to(&mut self, link: Arc<crate::downstream::DownLink>) {
+        self.link = Some(link);
     }
 
     pub(crate) fn switch_to(&mut self, acct: &AccountId) {
@@ -514,6 +622,7 @@ impl Tracker {
         }
         self.created = true;
         if let Some(r) = v.get("response") {
+            self.obs_response_id(r);
             self.response_meta(r, false);
         }
     }
@@ -581,6 +690,7 @@ impl Tracker {
         }
         // The tier actually used (e.g. `priority` may be downgraded) wins over the request's.
         if let Some(r) = resp {
+            self.obs_response_id(r);
             self.response_meta(r, true);
         }
         match ty {
@@ -621,6 +731,9 @@ impl Tracker {
     /// Observe one complete SSE data payload. The forwarding observer owns its bounded
     /// event buffer; only created / terminal events need a full JSON value here.
     pub(crate) fn sse_event(&mut self, text: &str, ty: Option<&str>) {
+        if let Some(ty) = ty {
+            self.obs_event(ty);
+        }
         if self.terminal {
             return;
         }
@@ -734,7 +847,7 @@ impl Drop for Tracker {
         if !self.emit {
             return;
         }
-        self.rec.duration_ms = elapsed_ms(self.start);
+        self.rec.duration_ms = self.frozen_ms.unwrap_or_else(|| elapsed_ms(self.start));
         if !self.terminal && self.rec.error.is_none() && self.rec.status < 400 {
             self.client_gone();
         }
@@ -795,8 +908,20 @@ impl Drop for Tracker {
                 }
             }
         }
-        let rec = std::mem::replace(&mut self.rec, Record::new(0, Transport::Http, ""));
-        self.sink.record(rec);
+        let mut rec = std::mem::replace(&mut self.rec, Record::new(0, Transport::Http, ""));
+        let obs = std::mem::take(&mut self.obs);
+        if !obs.is_empty() {
+            rec.obs = Some(Box::new(obs));
+        }
+        match self.link.take() {
+            Some(link) => {
+                let force = self.drain.phase() == ciallopa_upstream::drain::Phase::Force;
+                link.finish(rec, self.sink.clone(), force);
+            }
+            None => {
+                self.sink.record(rec);
+            }
+        }
     }
 }
 
