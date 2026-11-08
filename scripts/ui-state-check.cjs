@@ -208,6 +208,7 @@ async function queryAndPaging() {
   };
   c.clear = element => {element.children = [];};
   c.exact = c.fmtUsd = c.fmtMs = String;
+  vm.runInContext(section('function costText(', '\n'), c);
   c.RECORDER = null;
   c.REFS = null;c.SUM_PREV = null;c.OCC = null;
   c.activeRecord = null;
@@ -501,7 +502,7 @@ async function accessGateResponses() {
   assert.ok(inits.every(i => i.credentials === 'same-origin' && i.redirect === 'manual' && i.cache === 'no-store' && i.referrerPolicy === 'no-referrer'));
   // a real network failure stays a network error
   reply = async () => {throw new TypeError('Failed to fetch');};
-  await assert.rejects(vm.runInContext('req("GET","/usage/v1/summary")', c), e => e.kind === 'network' && e.message === '网络错误，连不上 ciallopa（Failed to fetch）');
+  await assert.rejects(vm.runInContext('req("GET","/usage/v1/summary")', c), e => e.kind === 'network' && e.message === '网络错误，无法连接 ciallopa（Failed to fetch）');
   // ciallopa's own 401 still clears an invalid key
   reply = async () => ({type: 'basic', status: 401, ok: false, headers: headers({'content-type': 'text/plain; charset=utf-8'}), json: async () => ({error: 'invalid api key'})});
   await assert.rejects(vm.runInContext('req("GET","/usage/v1/summary")', c), /401/);
@@ -695,6 +696,7 @@ function bucketSamplesAndUnknownOutcomes() {
     h: (tag, attrs, ...kids) => ({tag, attrs, kids}),
     p2: String, fmtN: String, fmtTime: String, exact: String, fmtUsd: String, pwText: () => '含预热', // these buckets were fetched with 「含预热」 on
   });
+  vm.runInContext(section('function costText(', '\n'), c);
   vm.runInContext(section('function renderTrend()', 'let lastNarrow='), c);
   vm.runInContext('renderTrend()', c);
   const labels = control('svg').children.filter(e => e.attrs?.role === 'button').map(e => e.attrs['aria-label']);
@@ -832,7 +834,7 @@ async function observationErrorDetails() {
     if (outcome === 'unknown') {
       assert.match(control('dmsg').textContent, /响应已透传.*不计为失败/);
     } else {
-      assert.doesNotMatch(control('dmsg').textContent, /观察不完整|响应已透传|不计为失败/, 'same-named HTTP errors must not claim unknown-result semantics');
+      assert.doesNotMatch(control('dmsg').textContent, /观测不完整|响应已透传|不计为失败/, 'same-named HTTP errors must not claim unknown-result semantics');
       assert.match(control('dmsg').textContent, /observation_incomplete/);
     }
   }
@@ -1251,6 +1253,28 @@ function recordRenderingAndInspectorFocus() {
 }
 
 // Auto-refresh interval: stored choice, fallback to 15 s, and a running timer restarts at once.
+function costDisplay() {
+  // Runs the production fmtUsd / exactUsd / costText / costCell from ui.html (not a copy):
+  // costs show the plain priced amount, no ≥ and no 未定价 chip; nothing priced stays 未定价
+  // (unknown is never shown as $0.00); a missing value stays –.
+  const c = vm.createContext({h: (_t, a, ...k) => ({attrs: a || {}, text: k.join('')})});
+  vm.runInContext([section('function fmtUsd(', '\n'), section('function exactUsd(', '\n'), section('function costText(', '\n'), section('function costCell(', '\n')].join('\n'), c);
+  const run = expr => vm.runInContext(expr, c);
+  assert.equal(run('costText(8.7,31)'), '$8.70');
+  assert.equal(run('costText(8.7,0)'), '$8.70');
+  assert.equal(run('costText(0,5)'), '未定价');
+  assert.equal(run('costText(null,0)'), '–');
+  assert.equal(run('costCell(1.5,2)').text, '1.50');
+  assert.match(run('costCell(1.5,2)').attrs.title, /^\$1\.500000；2 条请求缺少价格，未计入$/);
+  assert.equal(run('costCell(0,3)').text, '未定价');
+  assert.equal(run('costCell(null,0)').text, '–');
+  assert.equal(run('costCell(0.25,0)').text, '0.25');
+  // Both production call sites (KPI and trend tooltip) go through costText.
+  assert.match(section('const cost=t&&t.cost_usd', '\n'), /costV=!t\?"–":costText\(cost,u\)/);
+  assert.match(html, /估算费用 "\+costText\(p\.cost,p\.unknown\)/);
+  assert.doesNotMatch(html, /条未定价 ›|部分未定价|"≥"|不低于此值/);
+  assert.doesNotMatch(html, /\uFFFD/);
+}
 function autoRefreshInterval() {
   const store = new Map();
   const els = new Map();
@@ -1343,7 +1367,7 @@ async function memoryPanel() {
   assert.equal(cells.length, 5);
   assert.deepEqual(cells.slice(0, 4).map(text), [
     '进程 RSS150 MiB峰值 300 MiB', 'jemalloc 已分配40.0 MiB驻留 80.0 MiB',
-    '缓冲请求体220 MiB上限 256 MiB · 86%', 'WebSocket 连接24 / 24缓冲 3.0 MiB']);
+    '请求体缓冲220 MiB上限 256 MiB · 86%', 'WebSocket 连接24 / 24缓冲 3.0 MiB']);
   assert.deepEqual(cells.map(x => x.cls), ['kpi', 'kpi', 'kpi hot', 'kpi hot', 'kpi spark'], 'budget ≥ 80% and WS at cap are highlighted');
   for (const x of cells) assert.ok(x.title && !/[。.]$/.test(x.title), 'every cell has help without a trailing period');
   assert.equal(text(cells[4].kids[0]), '内存趋势 · 近 10 分钟');
@@ -1355,7 +1379,7 @@ async function memoryPanel() {
   reply = {...reply, now: s(10000, null, null), rss_peak_bytes: null, jemalloc: false, ws_max_connections: 0, history: []};
   await vm.runInContext('loadMem()', c);
   assert.deepEqual(el('memstrip').children.slice(0, 4).map(text), [
-    '进程 RSS–此系统不提供', 'jemalloc 已分配不可用未使用 jemalloc 分配器', '缓冲请求体0 B上限 256 MiB · 0%', 'WebSocket 连接0 · 不限缓冲 0 B']);
+    '进程 RSS–此系统不提供', 'jemalloc 已分配不可用未使用 jemalloc 分配器', '请求体缓冲0 B上限 256 MiB · 0%', 'WebSocket 连接0 · 不限缓冲 0 B']);
   assert.equal(text(el('memstrip').children[4].kids[0]), '内存趋势 · 采集中');
   // Failure or a usage-only key hides the panel; NOADMIN skips the request.
   reply = new Error('down');
@@ -1406,10 +1430,10 @@ async function problemChipsAndNextSteps() {
   assert.deepEqual([rf.get('problem'), rf.get('cause'), rf.get('exclude_prewarm')], ['error', 'quota', '1'], '全部 and every chip exclude prewarm by default');
   // Chips: counts, error colouring, pressed state and causes for the active bucket.
   const chips = () => control('pbtns').children, causes = () => control('pcauses').children.filter(e => e.tagName === 'BUTTON');
-  assert.deepEqual(chips().map(flat), ['全部40', '报错6', '上游出错5', '没答完3', '本地拒绝2']);
+  assert.deepEqual(chips().map(flat), ['全部40', '报错6', '上游出错5', '未完成3', '本地拒绝2']);
   assert.deepEqual(chips().map(b => b.getAttribute('aria-pressed')), ['false', 'true', 'false', 'false', 'false']);
   assert.ok(chips()[1].classList.contains('e') && chips()[2].classList.contains('e') && !chips()[3].classList.contains('e'), '报错 and 上游出错 carry the error colour');
-  assert.deepEqual(causes().map(flat), ['全部', '额度2', '限流1', '请求内容0', '上游1', '网络代理1', '网关1', '流中断0']);
+  assert.deepEqual(causes().map(flat), ['全部', '额度2', '限流1', '请求内容0', '上游1', '网络 / 出口代理1', 'ciallopa1', '流中断0']);
   assert.equal(causes()[1].getAttribute('aria-pressed'), 'true');
   assert.match(flat(control('phint')), /报错计入失败率刷新额度 ›/);
   // Picking a bucket resets its cause and the old 结果 / 失败原因 selects.
@@ -1418,15 +1442,15 @@ async function problemChipsAndNextSteps() {
   assert.equal(new URLSearchParams(changes.at(-1)).get('problem'), 'upstream');
   assert.deepEqual([control('fcause').value, control('foutcome').value, control('fclass').value], ['', '', '']);
   vm.runInContext('renderProblems()', c);
-  assert.deepEqual(causes().map(flat), ['全部', '未救回2', '已救回3']);
-  assert.match(flat(control('phint')), /上游出过错的请求已救回 3 · 未救回 2/);
+  assert.deepEqual(causes().map(flat), ['全部', '未恢复2', '已恢复3']);
+  assert.match(flat(control('phint')), /上游曾出错的请求已恢复 3 · 未恢复 2/);
   assert.doesNotMatch(flat(control('phint')), /率/, 'no new rate next to 上游出错');
   causes()[2].events.click();
   assert.equal(new URLSearchParams(changes.at(-1)).get('cause'), 'rescued');
   control('fproblem').value = 'unfinished';control('fcause').value = '';
   vm.runInContext('renderProblems()', c);
   assert.deepEqual(causes().map(flat), ['全部', '客户端断开1', '需重连0', '上游截断1', '内容过滤0', '未确认结束1']);
-  assert.match(flat(control('phint')), /没答完不计入失败率/);
+  assert.match(flat(control('phint')), /未完成不计入失败率/);
   // An account / model / request-only filter has no refusal count: the chip is disabled, not zero.
   counts = {...counts, refused: null};control('fproblem').value = '';
   await vm.runInContext('loadCounts()', c);
@@ -1441,22 +1465,22 @@ async function problemChipsAndNextSteps() {
   assert.deepEqual(control('racct').children.map(o => o.getAttribute('value')), ['alice', 'bob']);
   assert.deepEqual(control('rmodel').children.map(o => o.getAttribute('value')), ['gpt-5', 'typed-model']);
   assert.equal(control('rmodel').value, 'typed-model');
-  // Rows: 已救回 tag, sub-reason tags, next-step buttons; the first one is primary.
+  // Rows: 已恢复 tag, sub-reason tags, next-step buttons; the first one is primary.
   control('fproblem').value = '';
   const base = {request_id: '0000000000000001', ts_ms: 0, account: 'bob', endpoint: 'responses', transport: 'sse'};
   const rescued = vm.runInContext('recRow', c)({...base, status: 200, retries: 0, switches: 1, first_account: 'alice', rescued: true, upstream_fault: true, problem: 'all', next: ['attempts']});
   const ec = rescued.children.find(td => td.getAttribute('class') === 'err');
-  assert.match(flat(ec), /^已救回 换号 alice → bob 后成功尝试链 ›$/);
+  assert.match(flat(ec), /^已恢复 换账号 alice → bob 后成功尝试过程 ›$/);
   const nx = ec.children.filter(e => e.tagName === 'BUTTON');
   assert.equal(nx[0].getAttribute('class'), 'nx p');
   const click = {stopPropagation() {this.stopped = true;}};
   await nx[0].events.click(click);
   assert.ok(click.stopped, 'a next-step button does not also trigger the row');
-  assert.deepEqual(c.opened, ['0000000000000001'], '尝试链 opens the detail');
+  assert.deepEqual(c.opened, ['0000000000000001'], '尝试过程 opens the detail');
   assert.equal(c.scrolled, 'dtll', '… and scrolls to the attempt chain');
   const quota = vm.runInContext('recRow', c)({...base, status: 429, error: 'usage_limit_reached', err_source: 'upstream', problem: 'error', cause: 'quota', next: ['refresh_quota', 'account']});
   const qbtn = quota.children.find(td => td.getAttribute('class') === 'err').children.filter(e => e.tagName === 'BUTTON');
-  assert.deepEqual(qbtn.map(flat), ['刷新额度 ›', '看账号 ›']);
+  assert.deepEqual(qbtn.map(flat), ['刷新额度 ›', '查看账号 ›']);
   // 刷新额度 only moves to the existing button: no API call, never a reset card.
   const before = gets.length;
   control('qall').focus = function () {this.focused = true;};control('sq').scrollIntoView = () => {};
@@ -1473,7 +1497,7 @@ async function problemChipsAndNextSteps() {
   assert.equal(visits.at(-1), '/ui/settings#network');
   // Error cells: the English code is the primary text, the Chinese label is secondary.
   const espans = egress.children.find(td => td.getAttribute('class') === 'err').children.filter(e => e.tagName === 'SPAN');
-  assert.deepEqual(espans.slice(0, 3).map(e => [e.getAttribute('class'), flat(e)]), [['tag proxy', '代理'], ['mono sm', 'proxy_connect'], ['xs mut', '出口代理连接失败']]);
+  assert.deepEqual(espans.slice(0, 3).map(e => [e.getAttribute('class'), flat(e)]), [['tag proxy', '出口代理'], ['mono sm', 'proxy_connect'], ['xs mut', '出口代理连接失败']]);
   const raw = vm.runInContext('recRow', c)({...base, status: 418, error: 'some_new_code', err_source: 'upstream', upstream_status: 418, problem: 'error', next: []});
   assert.deepEqual(raw.children.find(td => td.getAttribute('class') === 'err').children.filter(e => e.tagName === 'SPAN').slice(0, 2).map(flat), ['上游 418', 'some_new_code'], 'an unlabelled code is shown verbatim, without an invented label');
   const truncated = vm.runInContext('recRow', c)({...base, status: 200, incomplete: 'max_output_tokens', problem: 'unfinished', cause: 'truncated', next: ['detail']});
@@ -1488,11 +1512,11 @@ async function problemChipsAndNextSteps() {
   assert.match(flat(filtered.children.find(td => td.getAttribute('class') === 'err')), /^content_filter/);
   // The detail conclusion sits above the attempt chain and has no trailing punctuation.
   const cases = [
-    [{rescued: true, retries: 2, switches: 0, problem: 'all', next: ['attempts']}, '已救回 · 重试 2 次 后成功', /不计入失败率/],
+    [{rescued: true, retries: 2, switches: 0, problem: 'all', next: ['attempts']}, '已恢复 · 重试 2 次 后成功', /不计入失败率/],
     [{problem: 'error', cause: 'quota', next: ['refresh_quota', 'account']}, '报错 · 额度', /额度用尽/],
     [{problem: 'error', cause: 'upstream', upstream_fault: true, next: ['new_session']}, '报错 · 上游', /新开会话/],
-    [{problem: 'unfinished', cause: 'client_closed', next: ['detail']}, '没答完 · 客户端断开', /不计入失败率/],
-    [{problem: 'unfinished', cause: 'unconfirmed', next: ['detail']}, '没答完 · 未确认结束', /结果未确认/],
+    [{problem: 'unfinished', cause: 'client_closed', next: ['detail']}, '未完成 · 客户端断开', /不计入失败率/],
+    [{problem: 'unfinished', cause: 'unconfirmed', next: ['detail']}, '未完成 · 未确认结束', /结果未确认/],
   ];
   for (const [r, title, body] of cases) {
     const [t, text] = vm.runInContext('conclusion', c)(r);
@@ -1501,7 +1525,7 @@ async function problemChipsAndNextSteps() {
   }
   assert.equal(vm.runInContext('conclusion', c)({problem: 'all', next: []}), null, 'a plain success has no conclusion');
   vm.runInContext('renderConclusion', c)({problem: 'error', cause: 'quota', next: ['refresh_quota', 'account', 'detail']});
-  assert.deepEqual(control('dconcl').children.at(-1).children.map(flat), ['刷新额度 ›', '看账号 ›']);
+  assert.deepEqual(control('dconcl').children.at(-1).children.map(flat), ['刷新额度 ›', '查看账号 ›']);
   assert.match(html, /<div class="mut" id="dmeta"><\/div><div class="concl hide" id="dconcl"/, '结论 sits above stats and the attempt chain');
   // Phone: the chip rows scroll sideways instead of wrapping.
   assert.match(html, /@media \(max-width:760px\)\{\.pf\{flex-wrap:nowrap;overflow-x:auto/);
@@ -1587,5 +1611,6 @@ async function problemChipsAndNextSteps() {
   recordRenderingAndInspectorFocus();
   autoRefreshInterval();
   cloudflareEgressBanner();
-  console.log('PASS: status chip colours/contrast, auto-refresh interval, Cloudflare egress banner, query/auth races, Cloudflare Access expiry, shared scope and buckets, ID paging, history/drill-down, usage samples and unknown outcomes, overview snapshots, egress identity/order/logout, scoped filter chips/URL/focus, inspector retry/expiry/stale authorization/keyboard, keyed record updates and inspector focus, memory panel, scope suggestions, Token cache rate, failure classes/upstream rate/deltas/失败原因 filter, problem chips/causes/hint/next steps/conclusion, 会话 filter/fragment/chip/URL');
+  costDisplay();
+  console.log('PASS: cost display, status chip colours/contrast, auto-refresh interval, Cloudflare egress banner, query/auth races, Cloudflare Access expiry, shared scope and buckets, ID paging, history/drill-down, usage samples and unknown outcomes, overview snapshots, egress identity/order/logout, scoped filter chips/URL/focus, inspector retry/expiry/stale authorization/keyboard, keyed record updates and inspector focus, memory panel, scope suggestions, Token cache rate, failure classes/upstream rate/deltas/失败原因 filter, problem chips/causes/hint/next steps/conclusion, 会话 filter/fragment/chip/URL');
 })().catch(error => {console.error(error); process.exitCode = 1;}).finally(() => clearTimeout(watchdog));

@@ -4,7 +4,7 @@
 #![allow(clippy::unwrap_used)]
 use ciallopa_core::Config;
 use ciallopa_forward::AppState;
-use ciallopa_usage::{now_ms, QuotaObs, Record, Recorder, Transport};
+use ciallopa_usage::{now_ms, Observation, QuotaObs, Record, Recorder, Transport};
 use std::sync::Arc;
 
 pub const DEMO_KEY: &str = "sk-demo-0123456789abcdef";
@@ -365,6 +365,7 @@ async fn main() {
         rec.record(r);
     }
     demo_special_rows(&rec, now);
+    demo_obs_rows(&rec, now);
     demo_error_code_rows(&rec, now);
     demo_refusals(&rec, now);
     demo_occupancy(&rec, now, &mut next);
@@ -941,4 +942,170 @@ fn chrono_like_s(delta: i64) -> String {
         s % 3600 / 60,
         s % 60
     )
+}
+
+/// Gateway downstream observation scenarios (all synthetic; thread `demo-obs-thread`,
+/// turn ids `demo-obs-*`). Times are ms since the record start.
+fn demo_obs_rows(rec: &Recorder, now: i64) {
+    let mk = |dt: i64, t: Transport, turn: &str, ttft: u32, dur: u32, out: i64| {
+        let mut r = Record::new(rec.ids.next_at(now - dt), t, "responses");
+        r.account = Some("alice".into());
+        r.model = Some("gpt-5.6-terra".into());
+        r.resp_model = r.model.clone();
+        r.key = Some("laptop".into());
+        r.status = 200;
+        r.thread_id = Some("demo-obs-thread".into());
+        r.turn_id = Some(format!("demo-obs-{turn}"));
+        r.input_tokens = Some(12_000);
+        r.cached_tokens = Some(9_000);
+        r.output_tokens = Some(out);
+        r.ttft_ms = Some(ttft);
+        r.duration_ms = dur;
+        r
+    };
+    let sse = |text: u32, term: u32, yl: u32, blk: u64, blk_max: u64, bytes: u64| Observation {
+        up_first_text_ms: Some(text),
+        up_last_event_ms: Some(term),
+        up_terminal_ms: Some(term),
+        up_events: Some(120),
+        up_bytes: Some(bytes),
+        response_id: Some("resp_demo".into()),
+        upstream_request_id: Some("req-demo".into()),
+        sse_first_queue_ms: Some(text),
+        sse_last_queue_ms: Some(term),
+        sse_queue_blocked_us: Some(blk),
+        sse_queue_blocked_max_us: Some(blk_max),
+        sse_queue_chunks: Some(118),
+        sse_queue_bytes: Some(bytes),
+        sse_first_yield_ms: Some(text),
+        sse_last_yield_ms: Some(yl),
+        sse_yield_chunks: Some(118),
+        sse_yield_bytes: Some(bytes),
+        down_incomplete: Some(false),
+        ..Default::default()
+    };
+    let ws = |text: u32,
+              term: u32,
+              last_send: u32,
+              blk: u64,
+              blk_max: u64,
+              down: bool,
+              up: Option<&str>| Observation {
+        up_first_text_ms: Some(text),
+        up_last_event_ms: Some(term),
+        up_terminal_ms: Some(term),
+        up_events: Some(90),
+        up_bytes: Some(48_000),
+        response_id: Some("resp_demo_ws".into()),
+        upstream_request_id: Some("req-demo-ws".into()),
+        ws_first_send_ms: Some(text),
+        ws_last_send_ms: Some(last_send),
+        ws_sink_blocked_us: Some(blk),
+        ws_sink_blocked_max_us: Some(blk_max),
+        ws_send_msgs: Some(90),
+        ws_send_bytes: Some(48_000),
+        down_incomplete: Some(false),
+        ws_deflate_down: Some(down),
+        ws_ext_down: down.then(|| "permessage-deflate; client_max_window_bits=15".into()),
+        ws_deflate_up: Some(up.is_some() && up != Some("unrecognized")),
+        ws_ext_up: up.map(str::to_string),
+        ..Default::default()
+    };
+    let put = |mut r: Record, o: Option<Observation>| {
+        r.obs = o.map(Box::new);
+        rec.record(r);
+    };
+    // 1 SSE normal
+    put(
+        mk(90_000, Transport::Sse, "sse-normal", 900, 4_200, 600),
+        Some(sse(900, 4_150, 4_160, 0, 0, 52_000)),
+    );
+    // 2 SSE slow upstream (first text at 18 s)
+    put(
+        mk(
+            120_000,
+            Transport::Sse,
+            "sse-slow-upstream",
+            18_200,
+            24_000,
+            800,
+        ),
+        Some(sse(18_200, 23_950, 23_960, 0, 0, 61_000)),
+    );
+    // 3 SSE downstream backpressure: queue blocked 6.2 s total, yields end after upstream
+    put(
+        mk(
+            150_000,
+            Transport::Sse,
+            "sse-backpressure",
+            1_100,
+            9_000,
+            4_000,
+        ),
+        Some(sse(1_100, 8_900, 15_300, 6_200_000, 1_800_000, 410_000)),
+    );
+    // 4 WS normal, deflate both legs
+    put(
+        mk(180_000, Transport::Ws, "ws-normal", 700, 3_800, 500),
+        Some(ws(
+            700,
+            3_780,
+            3_790,
+            0,
+            0,
+            true,
+            Some("permessage-deflate"),
+        )),
+    );
+    // 5 WS sink backpressure
+    put(
+        mk(210_000, Transport::Ws, "ws-backpressure", 800, 7_000, 3_000),
+        Some(ws(
+            800,
+            6_950,
+            11_400,
+            4_300_000,
+            2_100_000,
+            true,
+            Some("permessage-deflate"),
+        )),
+    );
+    // 6 WS no client deflate, upstream answer unrecognized
+    put(
+        mk(240_000, Transport::Ws, "ws-no-deflate", 650, 2_900, 300),
+        Some(ws(650, 2_880, 2_885, 0, 0, false, Some("unrecognized"))),
+    );
+    // 7 old row without observation (pre-v14)
+    put(
+        mk(270_000, Transport::Sse, "old-no-obs", 1_000, 5_000, 700),
+        None,
+    );
+    // 8 single output token
+    put(
+        mk(300_000, Transport::Sse, "single-token", 1_400, 1_450, 1),
+        Some(sse(1_400, 1_440, 1_445, 0, 0, 3_100)),
+    );
+    // 9 incomplete (max_output_tokens) with observation
+    let mut r = mk(330_000, Transport::Sse, "incomplete", 1_200, 30_000, 8_192);
+    r.incomplete = Some("max_output_tokens".into());
+    put(r, Some(sse(1_200, 29_900, 29_910, 0, 0, 900_000)));
+    // 10 reasoning then tool call, no text
+    let mut o = sse(0, 6_000, 6_010, 0, 0, 22_000);
+    o.up_first_text_ms = None;
+    o.up_first_reasoning_ms = Some(1_300);
+    o.up_first_tool_ms = Some(4_800);
+    put(
+        mk(360_000, Transport::Sse, "reasoning-tool", 1_300, 6_100, 900),
+        Some(o),
+    );
+    // 11 client disconnected mid-stream (no terminal)
+    let mut r = mk(390_000, Transport::Sse, "client-gone", 1_000, 7_500, 0);
+    r.output_tokens = None;
+    r.status = 200;
+    r.error = Some("client_closed".into());
+    r.err_source = Some("client");
+    let mut o = sse(1_000, 7_400, 7_400, 0, 0, 30_000);
+    o.up_terminal_ms = None;
+    o.down_incomplete = Some(true);
+    put(r, Some(o));
 }
