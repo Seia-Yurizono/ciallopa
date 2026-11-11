@@ -279,7 +279,7 @@ dependencies = [
 
 [[package]]
 name = "ciallopa"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -318,7 +318,7 @@ dependencies = [
 
 [[package]]
 name = "ciallopa-auth"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -340,7 +340,7 @@ dependencies = [
 
 [[package]]
 name = "ciallopa-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -360,7 +360,7 @@ dependencies = [
 
 [[package]]
 name = "ciallopa-forward"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "axum",
  "base64",
@@ -386,7 +386,7 @@ dependencies = [
 
 [[package]]
 name = "ciallopa-routing"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "arc-swap",
  "ciallopa-core",
@@ -398,7 +398,7 @@ dependencies = [
 
 [[package]]
 name = "ciallopa-upstream"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "arc-swap",
  "bytes",
@@ -420,7 +420,7 @@ dependencies = [
 
 [[package]]
 name = "ciallopa-usage"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "ciallopa-core",
  "rusqlite",
