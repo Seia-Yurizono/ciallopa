@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fingerprint check against the official Codex CLI capture (0.162.1 in fp-survey; 0.164.0 re-captured
-# 2026-10-24, 0.166.0 on 2026-10-30, and 0.167.0 compared 2026-11-10: same JA4, Akamai h2 string,
-# key-share groups, ClientHello size and per-endpoint header order).
+# 2026-10-24, 0.166.0 on 2026-10-30, 0.167.0 compared 2026-11-10, and 0.167.1 compared 2026-11-11:
+# same JA4, Akamai h2 string, key-share groups, ClientHello size and per-endpoint header order).
 # Env: FP_SURVEY = checkout containing server/fpserver and ca.pem.
 #      FP_PROBE = optional prebuilt fp-probe (for example an aarch64 musl build run through
 #                 binfmt/qemu-user) instead of building the host debug binary.
