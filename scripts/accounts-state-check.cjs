@@ -51,7 +51,9 @@ function harness() {
         removeAttribute(name) {delete this[name]; if (name === 'data-until') delete this.dataset.until;},
         addEventListener(type, fn) {events[type] = fn;},
         click() {return events.click?.();},
-        focus() {},
+        fire(type, e) {return events[type]?.(e);},
+        focus() {c.focused = id;},
+        scrollIntoView() {},
         appendChild(child) {this.textContent += child.textContent;},
       });
     }
@@ -77,6 +79,7 @@ function harness() {
     dur: seconds => `${seconds}s`,
     setTabCount() {}, renderCount: 0,
     render() {c.renderCount++; c.showReadState();},
+    loadHistAll() {c.histLoads++;}, histLoads: 0, focused: null, closeModal() {}, matchMedia: () => ({matches: false, addEventListener() {}}),
   });
   vm.runInContext(source, c);
   return {
@@ -354,6 +357,89 @@ async function prewarmFollowsOverview() {
   assert.ok(urls.includes('/admin/v1/accounts'));
 }
 
+
+// One history read for every account (no account parameter), throttled; card listing flags kept.
+async function historyAndCards() {
+  const t = harness();
+  await t.run('load()');
+  assert.equal(t.c.histLoads, 1, 'load() also refreshes the 30-day history (throttled inside)');
+  t.run('readCardTop({status: "fulfilled", value: {j: {can_consume: true, is_admin: true, attempts: [{account: "alice", code: "reset"}]}}})');
+  assert.equal(t.run('JSON.stringify(RCTOP)'), JSON.stringify({can: true, adm: true, attempts: [{account: 'alice', code: 'reset'}]}));
+  t.run('readCardTop({status: "rejected", reason: new Error("x")})');
+  assert.equal(t.run('RCTOP.can'), true, 'a failed read keeps the last answer');
+  t.run('readCardTop({status: "rejected", reason: Object.assign(new Error("x"), {status: 403})})');
+  assert.equal(t.run('RCTOP.can || RCTOP.adm'), false, 'no permission: no card actions');
+  let now = 1000;const paths = [];
+  const c = vm.createContext({key: () => 'k', DATA: {accounts: []}, renders: 0, render() {c.renders++;}, why: e => e.message,
+    Date: class extends Date {static now() {return now;}},
+    req: async (method, p) => {paths.push(method + ' ' + p); return {j: {from_ms: 1, to_ms: 2, accounts: [{account: 'alice', events: [], cycles: [{window: 'primary'}]}]}};}});
+  vm.runInContext(section('let QHA=null', 'function hashAcc('), c);
+  await vm.runInContext('loadHistAll(false)', c);
+  assert.deepEqual(paths, ['GET /usage/v1/quota/history?days=30']);
+  assert.equal(vm.runInContext('qhOf("alice").cycles.length', c), 1);
+  assert.equal(vm.runInContext('qhOf("bob").cycles.length', c), 0, 'accounts without history get an empty row');
+  now += 30e3;await vm.runInContext('loadHistAll(false)', c);
+  assert.equal(paths.length, 1, 'no second read within 60 s');
+  await vm.runInContext('loadHistAll(true)', c);
+  assert.equal(paths.length, 2, 'forced after an action');
+  // Manual card use stays behind the confirm dialog, with the pending-retry path.
+  assert.match(html, /reset-credits\/consume",Object\.assign\(\{confirm:acct\}/);
+  assert.match(html, /e\.status===409&&e\.body&&e\.body\.pending/);
+  assert.match(html, /<div id="cp" class="modal hide" role="alertdialog"/);
+}
+
+// 添加账号 is a real disclosure toggle; Esc and 收起 close it; every panel state shows exactly one solid button.
+function addPanel() {
+  const t = harness();
+  const btn = t.node('addbtn'), add = t.node('add');
+  const isOpen = () => !add.classList.contains('hide');
+  t.run('W=true');
+  btn.click();
+  assert.ok(isOpen());
+  assert.equal(btn['aria-expanded'], 'true');
+  assert.equal(t.c.focused, 'addbtn', 'toggle keeps focus so Tab reaches 收起 next');
+  btn.click();
+  assert.ok(!isOpen(), 'clicking 添加账号 again collapses the panel');
+  assert.equal(btn['aria-expanded'], 'false');
+  btn.click();
+  t.c.focused = 'imt';
+  let prevented = false;
+  const esc = extra => ({key: 'Escape', defaultPrevented: false, preventDefault() {prevented = true;}, ...extra});
+  add.fire('keydown', esc({defaultPrevented: true}));
+  assert.ok(isOpen(), 'an Escape already handled inside the panel is left alone');
+  add.fire('keydown', {key: 'Enter', defaultPrevented: false, preventDefault() {prevented = true;}});
+  assert.ok(isOpen() && !prevented);
+  add.fire('keydown', esc());
+  assert.ok(!isOpen() && prevented, 'Escape closes the panel');
+  assert.equal(btn['aria-expanded'], 'false');
+  assert.equal(t.c.focused, 'addbtn', 'Escape returns focus to 添加账号');
+  prevented = false;
+  btn.fire('keydown', esc());
+  assert.ok(!prevented, 'Escape with the panel closed does nothing');
+  btn.click();
+  t.node('addclose').click();
+  assert.ok(!isOpen());
+  assert.equal(t.c.focused, 'addbtn');
+  t.run('setAdd(true,true)');
+  assert.equal(t.c.focused, 'devbtn', 'the empty-state button jumps straight to 开始设备码登录');
+  t.run('W=false;setAdd(false)');
+  btn.click();
+  assert.ok(!isOpen(), 'cannot open without write access');
+
+  // one solid button per state: toolbar 添加账号 while closed; 开始设备码登录 while open (toolbar steps back)
+  const tb = html.match(/<div class="sh"><h2>全部账号<\/h2>[\s\S]*?<\/div>\n/)[0];
+  assert.equal((tb.match(/class="pri/g) || []).length, 1);
+  assert.match(tb, /<button id="addbtn" class="pri xs hide" type="button" aria-expanded="false" aria-controls="add">添加账号<span class="car" aria-hidden="true"><\/span><\/button>/);
+  const panel = html.slice(html.indexOf('<div id="add" class="hide">'), html.indexOf('<div id="readnote"'));
+  assert.equal((panel.match(/class="pri"/g) || []).length, 1);
+  assert.match(panel, /<button id="devbtn" class="pri" type="button">开始设备码登录<\/button>/);
+  assert.match(panel, /<button type="submit">导入<\/button>/, 'paste 导入 is a default bordered button');
+  assert.match(panel, /<button id="devx" class="xs" type="button">停止等待<\/button>/);
+  assert.match(html, /h\("button",\{id:"emptyadd",type:"button",/, 'empty-state 添加账号 is bordered; the toolbar one stays primary');
+  assert.match(html, /#addbtn\[aria-expanded=true\]\{background:var\(--surface-2\);border-color:var\(--fg\);color:var\(--fg\);box-shadow:inset 0 0 0 1px var\(--fg\)\}/, 'open: pressed, not solid');
+  assert.match(html, /#addbtn \.car\{display:none\}#addbtn\[aria-expanded=true\] \.car\{display:inline\}#addbtn \.car:before\{content:"\\25B4"/, '▴ only while open');
+}
+
 (async () => {
 
 function quotaHistoryRender() {
@@ -361,6 +447,12 @@ function quotaHistoryRender() {
     const e = {tag, className: '', style: {}, children: [], attrs: {}};
     e.appendChild = c => { e.children.push(c); return c; };
     e.setAttribute = (k, v) => { e.attrs[k] = v; };
+    e.on = {};
+    e.addEventListener = (t, f) => { e.on[t] = f; };
+    Object.defineProperty(e, 'firstChild', {get() { return e.children[0] || null; }});
+    e.removeChild = c => { e.children.splice(e.children.indexOf(c), 1); };
+    e.contains = () => false;
+    Object.defineProperty(e, 'textContent', {get() { return e.text || ''; }, set(v) { e.text = String(v); }});
     if (typeof a === 'string') e.className = a;
     else if (a) {
       for (const k of Object.keys(a)) {
@@ -401,120 +493,254 @@ function quotaHistoryRender() {
   }
   const document = {
     createElementNS: (_ns, tag) => makeEl(tag),
+    addEventListener() {},
     createTextNode: s => String(s),
   };
+  const store = {};
   const c = vm.createContext({
     fmtN: n => String(Math.round(Number(n))),
     fmtTime: (ms) => 't' + ms,
     fmtUsd: n => n == null ? '–' : '$' + Number(n).toFixed(2),
     h,
     document,
+    clear: e => { while (e.firstChild) e.removeChild(e.firstChild); },
+    sessionStorage: {getItem: k => store[k] ?? null, setItem: (k, v) => { store[k] = String(v); }},
   });
-  vm.runInContext(section('function qhKindLabel', 'function histRow('), c);
+  vm.runInContext(section('function wlab(', 'function whead(') + section('function qhKindLabel', 'let QHA=null'), c);
   assert.equal(c.qhKindLabel('early_reset'), '提前重置');
   assert.equal(c.qhKindLabel('manual_card'), '手动卡');
   assert.equal(c.qhKindLabel('auto_card'), '自动用卡');
   assert.equal(c.qhKindLabel('external_card'), '外部用卡');
   assert.equal(c.qhKindLabel('natural'), '自然重置');
   assert.equal(c.qhKindLabel('limit_change'), '额度变化');
+  assert.equal(c.qhWinLabel('secondary'), '周');
   assert.equal(c.qhPos(50, 0, 100), 0.5);
   assert.equal(c.qhPos(-10, 0, 100), 0);
   assert.equal(c.qhPos(250, 0, 100), 1);
   const day = 86_400_000;
   const from = 1_791_776_716_136, to = from + 30 * day;
-  assert.equal(c.qhPos(from, from, to), 0);
-  assert.equal(c.qhPos(to, from, to), 1);
   assert.ok(Math.abs(c.qhPos(from + 3 * day, from, to) - 0.1) < 1e-9);
-  assert.ok(Math.abs(c.qhPos(from + 15 * day, from, to) - 0.5) < 1e-9);
-  const ev = [
-    {window: 'primary', kind: 'natural', at_ms: from + 3 * day, prev_pct: 70, next_pct: 2},
-    {window: 'primary', kind: 'manual_card', at_ms: from + 15 * day},
-    {window: 'primary', kind: 'early_reset', at_ms: from + 27 * day},
-    {window: 'secondary', kind: 'natural', at_ms: from + 9 * day},
-  ];
-  const tl = c.qhTimeline(ev, from, to, 'primary');
-  const dots = find(tl, n => n.className && n.className.includes('qh-dot'));
-  assert.equal(dots.length, 3);
-  const trackScale = c.qhPlotW() / c.qhViewW();
-  assert.equal(dots[0].style.left, (10 * trackScale).toFixed(2) + '%');
-  assert.equal(dots[1].style.left, (50 * trackScale).toFixed(2) + '%');
-  assert.equal(dots[2].style.left, (90 * trackScale).toFixed(2) + '%');
-  assert.equal(dots[0].attrs.style, undefined, 'must not set style attribute (CSP blocks it)');
-  const same = c.qhLayout([
-    {window: 'primary', kind: 'natural', at_ms: from + 10 * day},
-    {window: 'primary', kind: 'early_reset', at_ms: from + 10 * day},
-  ], from, to);
-  assert.equal(same.length, 2);
-  assert.notEqual(same[0].dy, same[1].dy, 'overlapping dots must be offset');
   const tip = c.qhCapTip({capacity_credits: 50, capacity_lo: 800, capacity_hi: 1200, api_cost_usd: 8.7, coverage_gap: true, trend: 'up', close_kind: 'natural', ended_ms: 9});
   assert.match(tip, /可能有其他端用量/);
   assert.match(tip, /高于历史中位/);
-  assert.match(tip, /API 价格/);
-  assert.match(tip, /\$8\.70/);
-  assert.match(c.qhEventTip({kind: 'manual_card', card_source: 'manual', prev_pct: 40, next_pct: 1, at_ms: 9}), /手动卡/);
-  const panel = c.histPanel({from_ms: from, to_ms: to, events: ev, cycles: [
-    {window: 'primary', ended_ms: from + 3 * day, capacity_credits: 50, api_cost_usd: 1.44, close_kind: 'natural', confidence: 'ok', coverage_gap: false},
-    {window: 'primary', ended_ms: from + 15 * day, capacity_credits: 80, api_cost_usd: 2, close_kind: 'manual_card', confidence: 'fallback', coverage_gap: true, trend: 'up'},
-  ]});
+  assert.match(tip, /API 价格 \$8\.70/);
+  // Popover lines: reset kind + time first, then only facts that exist; card use and caveats live here.
+  const tl = c.qhTipLines({window: 'primary', ended_ms: 9, capacity_credits: 80, capacity_lo: 70, capacity_hi: 90, api_cost_usd: 2, close_kind: 'manual_card', confidence: 'fallback', coverage_gap: true, trend: 'up'},
+    {kind: 'manual_card', card_source: 'manual', prev_pct: 40, next_pct: 1, at_ms: 9}, 50, false);
+  assert.equal(tl[0], '手动卡 · t9');
+  assert.deepEqual(Array.from(tl.slice(1, 5)), ['容量 ≈ 80 credits（70–90）', 'API 价格 $2.00', '手动使用重置卡', '已用 40% → 1%']);
+  assert.equal(tl[5], '高于历史中位 50 · 可能有其他端用量 · 估算可信度低（相邻斜率回退）');
+  assert.deepEqual(Array.from(c.qhTipLines({window: 'primary', ended_ms: 9, capacity_credits: 50, close_kind: 'natural', confidence: 'ok'}, null, null, true)), ['自然重置 · t9', '容量 ≈ 50 credits', '超出图表上沿']);
+  assert.equal(c.qhEventAt([{window: 'primary', kind: 'early_reset', at_ms: 1e6 + 3e5}, {window: 'secondary', kind: 'natural', at_ms: 1e6}], {window: 'primary', ended_ms: 1e6}).kind, 'early_reset');
+  assert.equal(c.qhEventAt([{window: 'primary', kind: 'early_reset', at_ms: 1e6 + 7e5}], {window: 'primary', ended_ms: 1e6}), null, 'more than 10 min apart: not this reset');
+  const cycles = [
+    {window: 'primary', started_ms: from + 1 * day, ended_ms: from + 3 * day, capacity_credits: 50, capacity_lo: 40, capacity_hi: 60, api_cost_usd: 1.44, close_kind: 'natural', confidence: 'ok', coverage_gap: false},
+    {window: 'primary', started_ms: from + 3 * day, ended_ms: from + 15 * day, capacity_credits: 80, capacity_lo: 70, capacity_hi: 90, api_cost_usd: 2, close_kind: 'manual_card', confidence: 'fallback', coverage_gap: true, trend: 'up'},
+  ];
+  const ev = [
+    {window: 'primary', kind: 'natural', at_ms: from + 3 * day},
+    {window: 'primary', kind: 'manual_card', at_ms: from + 15 * day},
+    {window: 'secondary', kind: 'early_reset', at_ms: from + 9 * day},
+  ];
+  const all = n => find(n, () => true);
+  // Drawn at the measured px width: viewBox == width/height attributes, never stretched, no style="" (CSP).
+  for (const W of [360, 800]) {
+    const g = c.qhGeom(W), svg = c.qhFull(cycles, 'primary', from, to, W, null, ev);
+    const vb = svg.attrs.viewBox.split(' ').map(Number);
+    assert.equal(vb[2], W);assert.equal(Number(svg.attrs.width), W);assert.equal(Number(svg.attrs.height), vb[3]);
+    assert.equal(svg.attrs.preserveAspectRatio, undefined, 'no non-uniform scaling');
+    assert.ok(all(svg).every(n => !n.attrs || n.attrs.style === undefined), 'no style attribute (CSP blocks it)');
+    const pts = find(svg, n => /\bqh-pt\b/.test(n.className));
+    assert.equal(pts.length, 2);
+    assert.ok(Math.abs(parseFloat(pts[0].attrs.cx) - c.qhX(from + 3 * day, from, to, g)) < 0.06, 'marker at the cycle end');
+    assert.ok(pts.every(p => p.className === 'qh-pt' && p.tag === 'circle' && p.attrs.r === '3.5'), 'every reset is the same hollow dot');
+    assert.equal(find(svg, n => n.tag === 'title').length, 0, 'no native titles: details are in the popover');
+    const steps = find(svg, n => /\bqh-step\b/.test(n.className) && !/\b(join|gap)\b/.test(n.className));
+    assert.equal(steps.length, 2, 'one flat segment per cycle');
+    assert.ok(Math.abs(parseFloat(steps[0].attrs.x1) - c.qhX(from + day, from, to, g)) < 0.06, 'segment starts at started_ms');
+    assert.ok(Math.abs(parseFloat(steps[0].attrs.x2) - c.qhX(from + 3 * day, from, to, g)) < 0.06, 'segment ends at ended_ms');
+    assert.ok(steps.every(st => st.className === 'qh-step'), 'low confidence is not drawn (it is in the popover)');
+    assert.equal(find(svg, n => /\bjoin\b/.test(n.className)).length, 1, 'adjacent cycles joined by a riser');
+    assert.equal(find(svg, n => /\bgap\b/.test(n.className)).length, 0, 'touching cycles: no dashed bridge');
+    assert.equal(find(svg, n => /qh-cost-bar|qh-band|qh-median|qh-wl/.test(n.className)).length, 0, 'one line only: no API price bars, band, median or window label');
+    assert.equal(find(svg, n => n.tag === 'pattern' || /qh-ring|qh-med-lbl|qh-hatch|gap/.test(n.className)).length, 0, 'no rings, hatching or labels in the plot');
+    assert.deepEqual(find(svg, n => n.className === 'qh-unit').map(n => n.text), ['credits']);
+    assert.ok(!walk(svg).join(' ').includes('API 价格'), 'API price only in the popover');
+    const dates = find(svg, n => n.className === 'qh-tick' && /^\d+-\d\d$/.test(n.text || ''));
+    assert.equal(dates.length, g.ticks);
+    assert.ok(W - c.qhX(to, from, to, g) >= 8, 'right pad fits the selection ring');
+    assert.equal(Number(svg.attrs.height), g.top + g.capH + g.xh, 'no API price pane');
+  }
+  // Gaps: no observations between two cycles → one dashed bridge from the last known value to the next;
+  // a cycle without an estimate is skipped (no invented value) and named in the next point's popover.
+  {
+    const H = 3600e3;
+    const gc = [
+      {window: 'primary', started_ms: from + 2 * day, ended_ms: from + 2 * day + 3 * H, capacity_credits: 50, close_kind: 'natural', confidence: 'ok'},
+      {window: 'primary', started_ms: from + 5 * day, ended_ms: from + 5 * day + 3 * H, capacity_credits: 40, close_kind: 'natural', confidence: 'ok'},
+      {window: 'primary', started_ms: from + 5 * day + 3 * H, ended_ms: from + 5 * day + 8 * H, capacity_credits: 45, close_kind: 'natural', confidence: 'ok'},
+      {window: 'primary', started_ms: from + 8 * day, ended_ms: from + 8 * day + 4 * H, capacity_credits: null, capacity_lo: null, close_kind: 'natural', confidence: 'insufficient'},
+      {window: 'primary', started_ms: from + 9 * day, ended_ms: from + 9 * day + 5 * H, capacity_credits: 55, close_kind: 'natural', confidence: 'ok'},
+    ];
+    const W = 800, g = c.qhGeom(W), sg = c.qhFull(gc, 'primary', from, to, W, '5h', []);
+    const solid = find(sg, n => n.className === 'qh-step'), gaps = find(sg, n => n.className === 'qh-step gap'), joins = find(sg, n => n.className === 'qh-step join');
+    assert.equal(solid.length, 4, 'a solid segment for every cycle with a value, none for the one without');
+    assert.equal(gaps.length, 2, 'dashed bridge over the idle gap and over the cycle without an estimate');
+    assert.equal(joins.length, 1, 'touching cycles keep a solid riser');
+    const X = t => c.qhX(t, from, to, g);
+    assert.ok(Math.abs(parseFloat(gaps[0].attrs.x1) - X(gc[0].ended_ms)) < 0.06 && Math.abs(parseFloat(gaps[0].attrs.x2) - X(gc[1].started_ms)) < 0.06, 'bridge runs from the last end to the next start');
+    assert.equal(gaps[0].attrs.y1, solid[0].attrs.y1);assert.equal(gaps[0].attrs.y2, solid[1].attrs.y1);
+    assert.ok(Math.abs(parseFloat(gaps[1].attrs.x1) - X(gc[2].ended_ms)) < 0.06 && Math.abs(parseFloat(gaps[1].attrs.x2) - X(gc[4].started_ms)) < 0.06, 'bridge skips the cycle without an estimate');
+    assert.match(Array.from(c.qhTipLines(gc[4], null, null, false, 1)).join('|'), /前面 1 个周期没有容量估算（虚线跳过）/);
+    const mg = c.qhMini({cycles: gc.map(x => Object.assign({}, x, {window: 'secondary'})), events: []}, from, to, 320);
+    assert.equal(find(mg, n => n.className === 'qh-step gap').length, 1, 'row sparkline: one dashed path for the bridges');
+    assert.equal((find(mg, n => n.className === 'qh-step gap')[0].attrs.d.match(/M/g) || []).length, 2);
+    assert.equal((find(mg, n => n.className === 'qh-step')[0].attrs.d.match(/M/g) || []).length, 3, 'solid path restarts after each bridge');
+  }
+  assert.match(html, /\.qh-svg \.qh-step\.gap\{stroke-width:1\.2;stroke-dasharray:3 3;opacity:\.55\}/);
+  assert.match(html, /没有容量估算（图上虚线跳过）/, '明细 names cycles without an estimate');
+  // open cycle: dashed, no dot; dense (5h) histories keep one dot per 8 px, the popover still has every reset
+  const openC = cycles.concat([{window: 'primary', started_ms: from + 15 * day, ended_ms: null, open: true, capacity_credits: 70}]);
+  const so = c.qhFull(openC, 'primary', from, to, 800, null, ev);
+  assert.equal(find(so, n => n.className === 'qh-step open').length, 1);
+  assert.equal(find(so, n => n.className === 'qh-pt').length, 2);
+  const dense5 = Array.from({length: 140}, (_, i) => ({window: 'primary', started_ms: from + i * 5 * 3600e3, ended_ms: from + (i + 1) * 5 * 3600e3, capacity_credits: 45 + (i % 7), close_kind: 'natural', confidence: 'ok'}));
+  const sd = c.qhFull(dense5, 'primary', from, to, 360, '5h', []);
+  const dd = find(sd, n => n.className === 'qh-pt').map(n => parseFloat(n.attrs.cx));
+  assert.ok(dd.length > 10 && dd.length < 140, `dense 5h dots thinned (${dd.length})`);
+  assert.ok(dd.every((x, i) => !i || x - dd[i - 1] >= 16), 'thinned dots at least 16 px apart');
+  assert.ok(find(sd, n => n.className === 'qh-pt').every(n => n.attrs.r === '2.2'), 'dense: smaller dots');
+  assert.ok(c.qhGeom(360).L < c.qhGeom(800).L, 'narrow charts use a narrower axis gutter');
+  // Robust y-domain: far-off cycles no longer flatten the rest; they are pinned to the top edge with a
+  // triangle that carries the real value. The axis keeps 0 (credits are ratio data), so low values show as-is.
+  assert.equal(c.qhFence([1, 2, 3]), Infinity, 'fewer than 4 values: no outliers');
+  assert.ok(c.qhFence([46, 48, 50, 52, 54, 600]) < 600);
+  assert.ok(c.qhFence([50, 50, 50, 50, 55]) >= 65, 'IQR floor: a flat series keeps ordinary noise in range');
+  assert.equal(c.qhTick(146.66), '147');
+  const vals = [52, 48, 55, 50, 47, 53, 600, 51, 49, 3, 54, 50, 46, 52];
+  const outl = vals.map((v, i) => ({window: 'primary', started_ms: from + (2 * i + 0.4) * day, ended_ms: from + (2 * i + 2) * day,
+    capacity_credits: v, capacity_lo: v * 0.85, capacity_hi: v * 1.15, api_cost_usd: v * 0.06, close_kind: 'natural', confidence: 'ok',
+    trend: v > 100 ? 'up' : v < 10 ? 'down' : null}));
+  for (const W of [344, 800]) {
+    const g = c.qhGeom(W), svgO = c.qhFull(outl, 'primary', from, to, W), bot = g.top + g.capH;
+    const yt = find(svgO, n => n.className === 'qh-tick' && /^\d+$/.test(n.text || '') && n.attrs['text-anchor'] === 'end').map(n => Number(n.text));
+    assert.equal(Math.min(...yt), 0, 'axis keeps 0');
+    assert.ok(Math.max(...yt) <= 100, `top follows the inliers, not the 600 outlier (${yt})`);
+    const steps = find(svgO, n => /\bqh-step\b/.test(n.className) && !/\b(join|gap)\b/.test(n.className)).map(n => Number(n.attrs.y1));
+    assert.equal(steps.length, vals.length, 'every cycle is drawn');
+    const inl = steps.filter((_, i) => vals[i] > 10 && vals[i] < 100), med = (bot - inl.sort((a, b) => a - b)[inl.length >> 1]) / g.capH;
+    assert.ok(med > 0.3 && med < 0.7, `inlier median sits mid-plot (${med.toFixed(2)})`);
+    assert.equal(steps[6], g.top, 'outlier step pinned to the top edge');
+    assert.ok(steps[9] > g.top && steps[9] <= bot && steps[9] > steps[0], 'low value drawn at its real height');
+    const overs = find(svgO, n => n.className === 'qh-over');
+    assert.equal(overs.length, 1, 'one ▲ for the capacity; no value labels, no price pane');
+    assert.ok(overs.every(o => o.tag === 'polygon' && !o.children.length));
+    assert.ok(Number(overs.find(o => Number(o.attrs.points.split(/[ ,]/)[1]) < g.top).attrs.points.split(/[ ,]/)[1]) < g.top, '▲ sits on the top edge');
+    assert.equal(find(svgO, n => n.tag === 'text' && /600/.test(n.text || '')).length, 0);
+    assert.ok(all(svgO).every(n => !n.attrs || n.attrs.style === undefined));
+  }
+  // Windows come from upstream window_minutes, not the slot: pro sends its only (weekly) window as
+  // primary, so primary history is labelled 周 and there is no 5h lane, chart or table label.
+  const w = (pct, m) => ({used_pct: pct, window_minutes: m});
+  const proQ = {primary: w(30, 10080), secondary: {used_pct: null, window_minutes: null}};
+  const plusQ = {primary: w(60, 300), secondary: w(20, 10080)};
+  const pro = c.qhWins(proQ), plus = c.qhWins(plusQ);
+  assert.equal(pro.primary.l, '周');assert.equal(pro.secondary, null);
+  assert.equal(plus.primary.l, '5h');assert.equal(plus.secondary.l, '周');
+  assert.equal(c.qhWins(null), null, 'no quota yet: classic layout');
+  assert.equal(c.qhWinLabel('primary', pro), '周');
+  assert.equal(c.qhWinLabel('secondary', pro), '其他窗口', 'history from a slot the account no longer has is not called 5h');
+  assert.equal(c.qhWinLabel('primary', null), '5h');
+  // a slot order that puts the short window first even when upstream swaps them
+  assert.deepEqual(Array.from(c.qhOrder(c.qhWins({primary: w(5, 10080), secondary: w(9, 300)}))), ['secondary', 'primary']);
+  const weekly = [0, 1, 2, 3].map(i => ({window: 'primary', started_ms: from + 7 * i * day, ended_ms: from + 7 * (i + 1) * day, capacity_credits: 2000 + 100 * i, close_kind: 'natural', confidence: 'ok'}));
+  // Row sparkline: the main (long) window only, no 5h lane.
+  assert.equal(c.qhMainWin(pro, weekly), 'primary');assert.equal(c.qhMainWin(plus, []), 'secondary');assert.equal(c.qhMainWin(null, cycles), 'primary');
+  assert.equal(c.qhMainWin(c.qhWins({primary: w(5, 10080), secondary: w(9, 300)}), []), 'primary', 'swapped slots: still the weekly one');
+  const proMini = c.qhMini({cycles: weekly, events: []}, from, to, 320, pro);
+  assert.deepEqual(find(proMini, n => n.className === 'qh-ml').map(n => n.text), ['周']);
+  assert.equal(proMini.attrs.viewBox, '0 0 320 22');
+  assert.deepEqual(find(proMini, n => n.className === 'qh-pt').map(n => n.attrs.r), ['2.2', '2.2', '2.2', '2.2'], 'one hollow dot per closed weekly cycle');
+  const plusCycles = outl.concat(weekly.map(x => Object.assign({}, x, {window: 'secondary'})));
+  const plusMini = c.qhMini({cycles: plusCycles, events: []}, from, to, 320, plus);
+  assert.deepEqual(find(plusMini, n => n.className === 'qh-ml').map(n => n.text), ['周'], 'plus sparkline: 周 only, 5h is not in the row');
+  assert.equal(find(plusMini, n => n.className === 'qh-step').length, 1);
+  const miniO = c.qhMini({cycles: outl.map(x => Object.assign({}, x, {window: 'secondary'})), events: []}, from, to, 320);
+  const mo = find(miniO, n => n.className === 'qh-over');
+  assert.equal(mo.length, 1, 'row sparkline marks the same overflow');
+  assert.equal(mo[0].children.length, 0, 'no title clutter on the sparkline');
+  const miniY = find(miniO, n => n.className === 'qh-step')[0].attrs.d.match(/,([\d.]+)/g).map(t => Number(t.slice(1)));
+  assert.ok(Math.max(...miniY) - Math.min(...miniY.filter(y => y > 1.5)) > 2, 'sparkline inliers are not flattened');
+  assert.equal(c.qhTick(1500), '1.5k');
+  // Pro panel: 周 only, no toggle, no 5h anywhere
+  const proPanel = c.histPanel({from_ms: from, to_ms: to, events: [], cycles: weekly}, pro, 'b|x');
+  assert.equal(find(proPanel, n => n.className === 'seg').length, 0, 'weekly-only: no toggle');
+  assert.deepEqual(find(proPanel, n => /\bqh-fit\b/.test(n.className)).map(n => n.attrs['aria-label']), ['周 周期容量']);
+  assert.ok(walk(proPanel).join(' ').includes('额度记录 · 30 天 · 周'));
+  assert.ok(!/5h/.test(walk(proPanel).join(' ')), 'no 5h anywhere in a pro account panel');
+  // Plus panel: 周 | 5h toggle (button group, aria-pressed), default 周, choice kept for the session
+  const pdata = {from_ms: from, to_ms: to, events: [], cycles: plusCycles};
+  const panel = c.histPanel(pdata, plus, 'a|x');
+  const seg = find(panel, n => n.className === 'seg')[0];
+  assert.equal(seg.attrs.role, 'group');
+  assert.deepEqual(seg.children.map(b => [b.tag, b.text || b.children.join(''), b.attrs['aria-pressed'], b.attrs.type]), [['button', '周', 'true', 'button'], ['button', '5h', 'false', 'button']]);
+  assert.deepEqual(seg.children.map(b => b.attrs['data-fk']), ['a|x|qwl', 'a|x|qws']);
+  const fitOf = p => find(p, n => /\bqh-fit\b/.test(n.className));
+  assert.deepEqual(fitOf(panel).map(n => n.attrs['aria-label']), ['周 周期容量'], 'one chart at a time');
+  seg.children[1].on.click();
+  assert.deepEqual(seg.children.map(b => b.attrs['aria-pressed']), ['false', 'true']);
+  assert.deepEqual(fitOf(panel).map(n => n.attrs['aria-label']), ['5h 周期容量'], '5h on its own chart');
+  assert.equal(store.ciallopa_qh_win, 's');
+  assert.deepEqual(fitOf(c.histPanel(pdata, plus)).map(n => n.attrs['aria-label']), ['5h 周期容量'], 'the choice carries to the next panel');
+  assert.deepEqual(fitOf(c.histPanel({from_ms: from, to_ms: to, events: [], cycles: weekly}, pro)).map(n => n.attrs['aria-label']), ['周 周期容量'], 'pro ignores a 5h choice');
+  seg.children[0].on.click();assert.equal(store.ciallopa_qh_win, 'l');
+  // plus account with only weekly history so far: toggle still there, 5h says there is nothing yet
+  const p2 = c.histPanel({from_ms: from, to_ms: to, events: [], cycles: weekly.map(x => Object.assign({}, x, {window: 'secondary'}))}, plus);
+  find(p2, n => n.className === 'seg')[0].children[1].on.click();
+  assert.ok(walk(p2).join(' ').includes('暂无已记录的周期'));
   const text = walk(panel).join(' ');
-  assert.match(text, /重置记录 · 30 天/);
-  assert.match(html, /\.qh-box\{[^}]*position:sticky;left:var\(--s4\)/, 'panel stays in the visible .tw scrollport');
-  assert.match(text, /周期容量 · credits/);
-  assert.match(text, /明细/);
-  assert.match(text, /历史中位/);
-  assert.match(text, /USD/);
-  assert.ok(!text.includes('API list price'));
-  assert.ok(!text.includes('点的颜色区分类型'));
-  assert.ok(!text.includes('点落在周期结束时刻'));
-  assert.ok(!text.includes('阶梯表示'));
-  const gutters = find(panel, n => n.className === 'qh-gutter');
-  assert.ok(gutters.length >= 2, 'timeline has a y-axis gutter');
-  assert.equal(gutters[0].style.width, c.QH_PLOT.left + 'px');
-  assert.equal(gutters[0].attrs.style, undefined, 'gutter width via CSSOM');
-  const capPts = find(panel, n => n.className && /\bqh-pt\b/.test(n.className));
-  assert.equal(capPts.length, 2);
-  const x0 = c.qhPlotX(from + 3 * day, from, to);
-  const x1 = c.qhPlotX(from + 15 * day, from, to);
-  assert.ok(Math.abs(c.qhPos(from + 3 * day, from, to) - 0.1) < 1e-9);
-  assert.ok(Math.abs(parseFloat(capPts[0].attrs.cx) - x0) < 0.15);
-  assert.ok(Math.abs(parseFloat(capPts[1].attrs.cx) - x1) < 0.15);
-  assert.match(capPts[1].className, /\bgap\b/);
-  const steps = find(panel, n => n.className && /\bqh-step\b/.test(n.className));
-  assert.ok(steps.length >= 1, 'step is drawn as line segments');
-  const horiz = steps.find(s => Math.abs(parseFloat(s.attrs.y1) - parseFloat(s.attrs.y2)) < 1e-6);
-  const vert = steps.find(s => Math.abs(parseFloat(s.attrs.x1) - parseFloat(s.attrs.x2)) < 1e-6);
-  assert.ok(horiz, 'step has a horizontal segment');
-  assert.ok(Math.abs(parseFloat(horiz.attrs.x1) - x0) < 0.15);
-  assert.ok(Math.abs(parseFloat(horiz.attrs.x2) - x1) < 0.15);
-  assert.ok(vert, 'step has a vertical segment');
-  assert.ok(Math.abs(parseFloat(vert.attrs.x1) - x1) < 0.15);
-  const dashed = c.qhChart([
-    {window: 'primary', ended_ms: from + 3 * day, capacity_credits: 50, coverage_gap: true},
-    {window: 'primary', ended_ms: from + 15 * day, capacity_credits: 80},
-  ], from, to);
-  const gapSteps = find(dashed, n => n.className && /\bqh-step\b/.test(n.className));
-  assert.ok(gapSteps.length >= 1);
-  assert.ok(gapSteps.every(s => /\bgap\b/.test(s.className)), 'outgoing step from a low-confidence cycle is dashed');
-  assert.ok(c.qhViewW() - c.qhPlotX(to, from, to) >= 9, 'right pad fits an outlier ring');
-  const medLbl = find(panel, n => n.className && /\bqh-med-lbl\b/.test(n.className));
-  assert.ok(medLbl.length >= 1);
-  assert.ok(parseFloat(medLbl[0].attrs.x) < 40, 'median label sits on the left, not on the last point');
-  const units = find(panel, n => n.className === 'qh-unit').map(n => n.text);
-  assert.ok(units.includes('credits') && units.includes('USD'));
-  const rings = find(panel, n => n.className && /\bqh-ring\b/.test(n.className));
-  assert.equal(rings.length, 1);
-  assert.match(rings[0].className, /\bup\b/);
-  assert.ok(find(panel, n => n.className && /\bqh-median\b/.test(n.className)).length >= 1);
-  assert.equal(find(panel, n => n.className && /\bqh-bar\b/.test(n.className)).length, 0);
+  for (const label of ['额度记录 · 30 天', '明细', '重置（悬停或点按看详情）', 'API 价格']) assert.ok(text.includes(label), label);
+  const leg = find(panel, n => n.className === 'qh-leg')[0];
+  assert.equal(leg.children.length, 1, 'legend: one item');
+  for (const gone of ['历史中位', '估算范围', '手动卡', '可能有其他端用量']) assert.ok(!walk(leg).join('').includes(gone), gone);
+  const fits = fitOf(panel);
+  assert.equal(fits[0].attrs.role, 'group', 'interactive chart is not role=img');
+  // no quota read yet: slots with history decide; only one → no toggle
+  assert.equal(find(c.histPanel({from_ms: from, to_ms: to, events: ev, cycles}), n => n.className === 'seg').length, 0);
+  // keyboard + touch popover: focusable svg, arrow keys, Escape, 22 px hit radius (44 px), 关闭 button
+  assert.match(html, /sv\.setAttribute\("tabindex","0"\)/);
+  assert.match(html, /ArrowRight[\s\S]{0,200}ArrowLeft[\s\S]{0,200}Escape/);
+  assert.match(html, /let b=-1,bd=23;pts\.forEach\(\(p,i\)=>\{const d=Math\.abs\(p\.x-x\)/, 'nearest reset in x within 22 px');
+  assert.match(html, /\.qh-hd \.seg button\{height:44px;min-width:56px\}/, 'toggle is 44 px on touch');
+  assert.match(html, /h\("button",\{class:"xs qh-tx",type:"button"\},"关闭"\)/);
+  assert.match(html, /@media \(pointer:coarse\)\{\.qh-tip \.qh-tx\{min-height:44px;min-width:44px/);
+  assert.match(html, /\.qh-tip:not\(\.pin\)\{pointer-events:none\}/, 'hover tooltip never covers the cursor');
+  assert.match(html, /t\.style\.left=/, 'popover placed via CSSOM, not a style attribute');
+  assert.equal(fits[0]._draw(640).attrs.width, '640');
+  assert.match(walk(c.histPanel(null)).join(''), /加载中/);
+  assert.match(walk(c.histPanel({error: 'x'})).join(''), /读取失败：x/);
+  assert.doesNotMatch(html, /preserveAspectRatio:"none"/);
+  assert.match(html, /\.qh-fit>svg\{position:absolute/, 'svg out of flow so a table cell can shrink');
+  assert.match(html, /if\(r===null&&known\)return h\("td","qc none "\+cls\);/, 'missing window: empty cell, no placeholder');
+  assert.ok(!html.includes('不适用'));
+  assert.match(html, /\.counts \.tag\{height:24px;padding:0 4px;border-radius:0;background:transparent;box-shadow:none/, 'count summary is not a pill (not clickable)');
+  assert.match(html, /\.sh \.counts\{flex-basis:100%\}#rescan,#qall,#impbtn,#addbtn\{flex:1 1 auto\}#impbtn,#rescan,#qall,#addbtn,#addclose,#devx,#emptyadd\{height:44px\}/, 'phone toolbar: one row of 44 px buttons');
+  assert.match(html, /<button id="rescan" class="ghost xs"/);
+  assert.match(html, /button\.ghost\{color:var\(--fg-2\)\}/);
+  assert.match(html, /#paste summary\{min-height:44px/);
+  assert.match(html, /const mw=qhMainWin\(wins,d\.cycles\);\n  if\(!qhRows\(d\.cycles,mw\)\.some\(c=>qhCap\(c\)!=null\)\)\{td\.appendChild\(h\("span","faint xs","暂无记录"\)\)/, 'no weekly history yet: 暂无记录, not an empty lane');
+  assert.match(html, /#acc td\.qc\.none\{display:none\}/);
 }
 
+  addPanel();
   quotaHistoryRender();
   resetCardDisplay();
   await partialReads();
   await prewarmFollowsOverview();
+  await historyAndCards();
   await supersededReads();
   await loginChanges();
   await deviceLoginIsolation();
   await accessGate();
-  console.log('PASS: reset-card display, auto-use and quota-auto switch state, account snapshots, prewarm preference, read/login races, device start/poll cancellation and identity isolation, Cloudflare Access expiry, quota history labels');
+  console.log('PASS: add-panel toggle/Esc/one solid button, reset-card display, auto-use and quota-auto switch state, account snapshots, prewarm preference, read/login races, device start/poll cancellation and identity isolation, Cloudflare Access expiry, quota history charts (px-fitted), single history read, card flags');
 })().catch(error => {console.error(error); process.exitCode = 1;}).finally(() => clearTimeout(watchdog));

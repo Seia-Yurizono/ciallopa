@@ -30,7 +30,7 @@
 --proxy:#b79cff;--proxy-bg:#221a38;--off:#a1a8b3;--off-bg:#20242a;--focus:#7aa2ff;--danger:#b4321f;--shadow:0 8px 28px rgba(0,0,0,.55)}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
-@media (min-width:761px){html{scrollbar-gutter:stable}}
+@media (min-width:761px) and (min-height:501px),(min-width:761px) and (pointer:fine){html{scrollbar-gutter:stable}}
 html.modal-open{overflow:hidden}
 body{margin:0;background:var(--bg);color:var(--fg);font:var(--fs-m)/1.45 var(--font);-webkit-font-smoothing:antialiased}
 a{color:var(--fg)}
@@ -76,8 +76,14 @@ button:disabled{opacity:.45;cursor:not-allowed}
 button.xs,.btn.xs{height:24px;padding:0 var(--s2)}
 button.pri{background:var(--fg);border-color:var(--fg);color:var(--surface)}
 button.pri:hover{background:var(--fg-2)}
-button.ghost{border-color:transparent;background:transparent;color:var(--fg-2)}
-button.ghost:hover{background:var(--surface-2)}
+/* every text action has a border; .ghost is now just the quieter text colour. Borderless only for icon-only
+   buttons (.icon, #theme) and a table row's 详情 disclosure (.det) */
+button.ghost{color:var(--fg-2)}
+button.ghost:hover{background:var(--surface-2);color:var(--fg)}
+button.icon,button#theme,button.det{border-color:transparent;background:transparent}
+button.icon:hover,button#theme:hover,button.det:hover{background:var(--surface-2)}
+/* toggles show their state: pressed / expanded */
+button.ghost[aria-pressed=true],button.ghost[aria-expanded=true]:not(.det){background:var(--surface-2);border-color:var(--ctl);color:var(--fg)}
 button.danger{color:var(--err);border-color:color-mix(in srgb,var(--err) 45%,transparent);background:transparent}
 button.danger:hover{background:var(--err-bg)}
 button.danger.solid{background:var(--danger);border-color:var(--danger);color:#fff}
@@ -169,23 +175,24 @@ tr.hl>td:first-child{box-shadow:inset 2px 0 0 var(--focus)}
 #lerr{margin-top:var(--s2);color:var(--err)}
 .m-only{display:none}
 @media (prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
-@media (max-width:760px){
+@media (max-width:760px),(max-height:500px) and (pointer:coarse){
 :root{--hdr:44px;--tabbar:52px}
-header{padding:0 var(--s3);gap:var(--s2)}
-nav.tabs{position:fixed;left:0;right:0;bottom:0;height:calc(var(--tabbar) + env(safe-area-inset-bottom));z-index:30;background:var(--surface);border-top:1px solid var(--line);gap:0;padding-bottom:env(safe-area-inset-bottom)}
+/* landscape phones keep this layout; content clears the notch / Dynamic Island side (needs viewport-fit=cover) */
+header{padding:0 max(var(--s3),env(safe-area-inset-right)) 0 max(var(--s3),env(safe-area-inset-left));gap:var(--s2)}
+nav.tabs{position:fixed;left:0;right:0;bottom:0;height:calc(var(--tabbar) + env(safe-area-inset-bottom));z-index:30;background:var(--surface);border-top:1px solid var(--line);gap:0;padding:0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
 nav.tabs a{flex:1;flex-direction:column;justify-content:center;gap:2px;border-bottom:0;border-top:2px solid transparent;margin:0;font-size:var(--fs-xs)}
 nav.tabs a:before{width:20px;height:20px;-webkit-mask-size:20px;mask-size:20px}
 nav.tabs a .cnt{display:none}
 nav.tabs a[aria-current]{border-top-color:var(--fg)}
 .hstat{gap:var(--s2)}
-main{padding:var(--s3) var(--s3) calc(var(--tabbar) + var(--s5))}
+main{padding:var(--s3) max(var(--s3),env(safe-area-inset-right)) calc(var(--tabbar) + env(safe-area-inset-bottom) + var(--s5)) max(var(--s3),env(safe-area-inset-left))}
 section{margin-bottom:var(--s5)}
 .d-only{display:none!important}.m-only{display:revert}
-#toasts{left:var(--s3);right:var(--s3);bottom:calc(var(--tabbar) + var(--s2));align-items:stretch;max-width:none}.toast{max-width:none}
+#toasts{left:max(var(--s3),env(safe-area-inset-left));right:max(var(--s3),env(safe-area-inset-right));bottom:calc(var(--tabbar) + env(safe-area-inset-bottom) + var(--s2));align-items:stretch;max-width:none}.toast{max-width:none}
 .modal{align-items:flex-end;padding:var(--s3) var(--s3) calc(var(--s3) + env(safe-area-inset-bottom))}
-select,input:not([type=checkbox]),textarea{font-size:16px}select,input:not([type=checkbox]){height:40px}
-.toast button{height:40px}.toast button.x{width:40px}
-#rmore,#devbtn,#imf button,#kf button,#pcheck{height:40px}
+select,input:not([type=checkbox]),textarea{font-size:16px}select,input:not([type=checkbox]){height:44px}
+.toast button{height:44px}.toast button.x{width:44px}
+#rmore,#devbtn,#imf button,#kf button,#pcheck{height:44px}
 .mbox{max-height:88vh}
 .mact button{flex:1;height:44px;font-size:var(--fs-m)}
 .mact .alt{margin-right:0;flex-basis:100%}
@@ -200,8 +207,8 @@ table.stk tr.hl{background:color-mix(in srgb,var(--focus) 9%,var(--surface));box
 table.stk tr.hl>td{background:none!important;box-shadow:none!important}
 }
 @media (pointer:coarse){
-header button,header a.tag,.cchip,label.chk,.toc a,.pop .pf a,.pop button,#acc .stack button,#acc .meta-c button,.sh button,.ptest button,#reload,#mstrip button,.banner a{position:relative}
-header button:after,header a.tag:after,.cchip:after,label.chk:after,.toc a:after,.pop .pf a:after,.pop button:after,#acc .stack button:after,#acc .meta-c button:after,.sh button:after,.ptest button:after,#reload:after,#mstrip button:after,.banner a:after{content:"";position:absolute;left:-2px;right:-2px;top:50%;height:44px;transform:translateY(-50%)}
+header button,header a.tag,.cchip,label.chk,.toc a,.pop .pf a,.pop button,#acc .stack button,#acc .meta-c button,.sh button,.ptest button,#reload,.qmod,#mstrip button,.banner a{position:relative}
+header button:after,header a.tag:after,.cchip:after,label.chk:after,.toc a:after,.pop .pf a:after,.pop button:after,#acc .stack button:after,#acc .meta-c button:after,.sh button:after,.ptest button:after,#reload:after,.qmod:after,#mstrip button:after,.banner a:after{content:"";position:absolute;left:50%;top:50%;width:max(calc(100% + 4px),44px);height:max(100%,44px);transform:translate(-50%,-50%)}
 }
 /* desktop shell: brand + page links in a left sidebar, page title and global actions in the top bar */
 .ptl{display:none;margin:0;font-size:17px;font-weight:600;letter-spacing:-.1px;white-space:nowrap}
