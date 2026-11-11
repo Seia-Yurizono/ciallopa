@@ -829,6 +829,7 @@ pub(crate) fn quota_obs(h: &HeaderMap) -> Option<QuotaObs> {
         s_pct: s.as_ref().map(|w| w.used_percent),
         s_reset: s.as_ref().and_then(|w| w.resets_at).and_then(secs),
         s_window_min: s.as_ref().and_then(|w| w.window_minutes).map(|m| m as i64),
+        cards: None,
     })
 }
 
