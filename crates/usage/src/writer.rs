@@ -19,6 +19,7 @@ pub(crate) struct Writer {
     pub state: store::WriterState,
     pub refusals: Arc<crate::refusals::Aggregator>,
     pub occupancy: Arc<crate::occupancy::Aggregator>,
+    pub prices: std::sync::Arc<std::sync::RwLock<std::sync::Arc<crate::PriceTable>>>,
 }
 
 impl Writer {
@@ -92,7 +93,12 @@ impl Writer {
             }
             if !batch.is_empty() {
                 let n = batch.len() as u64;
-                match store::insert_batch(&mut self.conn, &mut self.state, &batch) {
+                let prices = self
+                    .prices
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                match store::insert_batch(&mut self.conn, &mut self.state, &batch, &prices) {
                     Ok(()) => {
                         self.counters.written.fetch_add(n, Ordering::Relaxed);
                     }
@@ -106,7 +112,14 @@ impl Writer {
                 batch.clear();
             }
             if !quotas.is_empty() {
-                if let Err(e) = store::insert_quota(&mut self.conn, &mut self.state, &quotas) {
+                let prices = self
+                    .prices
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                if let Err(e) =
+                    store::insert_quota(&mut self.conn, &mut self.state, &quotas, &prices)
+                {
                     self.state.reset();
                     tracing::warn!(error = %e, "quota snapshot write failed");
                 }

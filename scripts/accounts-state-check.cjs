@@ -355,6 +355,160 @@ async function prewarmFollowsOverview() {
 }
 
 (async () => {
+
+function quotaHistoryRender() {
+  function h(tag, a, ...kids) {
+    const e = {tag, className: '', style: {}, children: [], attrs: {}};
+    e.appendChild = c => { e.children.push(c); return c; };
+    e.setAttribute = (k, v) => { e.attrs[k] = v; };
+    if (typeof a === 'string') e.className = a;
+    else if (a) {
+      for (const k of Object.keys(a)) {
+        const v = a[k];
+        if (v == null || v === false) continue;
+        if (k === 'class') e.className = v;
+        else if (k === 'text') e.text = String(v);
+        else if (k === 'style') e.attrs.style = String(v);
+        else e.attrs[k] = v === true ? '' : String(v);
+      }
+    }
+    for (const k of kids) if (k != null && k !== false) e.children.push(k);
+    return e;
+  }
+  function walk(e, acc = []) {
+    if (e == null) return acc;
+    if (typeof e === 'string' || typeof e === 'number') { acc.push(String(e)); return acc; }
+    if (e.text) acc.push(e.text);
+    for (const k of e.children || []) walk(k, acc);
+    return acc;
+  }
+  function find(e, pred, out = []) {
+    if (!e || typeof e !== 'object') return out;
+    if (pred(e)) out.push(e);
+    for (const k of e.children || []) find(k, pred, out);
+    return out;
+  }
+  function makeEl(tag) {
+    const e = {tag, className: '', style: {}, children: [], attrs: {}};
+    e.appendChild = c => { e.children.push(c); return c; };
+    e.setAttribute = (k, v) => { e.attrs[k] = String(v); if (k === 'class') e.className = String(v); };
+    e.getAttribute = k => e.attrs[k];
+    Object.defineProperty(e, 'textContent', {
+      get() { return e.text || ''; },
+      set(v) { e.text = String(v); },
+    });
+    return e;
+  }
+  const document = {
+    createElementNS: (_ns, tag) => makeEl(tag),
+    createTextNode: s => String(s),
+  };
+  const c = vm.createContext({
+    fmtN: n => String(Math.round(Number(n))),
+    fmtTime: (ms) => 't' + ms,
+    fmtUsd: n => n == null ? '–' : '$' + Number(n).toFixed(2),
+    h,
+    document,
+  });
+  vm.runInContext(section('function qhKindLabel', 'function histRow('), c);
+  assert.equal(c.qhKindLabel('early_reset'), '提前重置');
+  assert.equal(c.qhKindLabel('manual_card'), '手动卡');
+  assert.equal(c.qhKindLabel('auto_card'), '自动用卡');
+  assert.equal(c.qhKindLabel('external_card'), '外部用卡');
+  assert.equal(c.qhKindLabel('natural'), '自然重置');
+  assert.equal(c.qhKindLabel('limit_change'), '额度变化');
+  assert.equal(c.qhPos(50, 0, 100), 0.5);
+  assert.equal(c.qhPos(-10, 0, 100), 0);
+  assert.equal(c.qhPos(250, 0, 100), 1);
+  const day = 86_400_000;
+  const from = 1_791_776_716_136, to = from + 30 * day;
+  assert.equal(c.qhPos(from, from, to), 0);
+  assert.equal(c.qhPos(to, from, to), 1);
+  assert.ok(Math.abs(c.qhPos(from + 3 * day, from, to) - 0.1) < 1e-9);
+  assert.ok(Math.abs(c.qhPos(from + 15 * day, from, to) - 0.5) < 1e-9);
+  const ev = [
+    {window: 'primary', kind: 'natural', at_ms: from + 3 * day, prev_pct: 70, next_pct: 2},
+    {window: 'primary', kind: 'manual_card', at_ms: from + 15 * day},
+    {window: 'primary', kind: 'early_reset', at_ms: from + 27 * day},
+    {window: 'secondary', kind: 'natural', at_ms: from + 9 * day},
+  ];
+  const tl = c.qhTimeline(ev, from, to, 'primary');
+  const dots = find(tl, n => n.className && n.className.includes('qh-dot'));
+  assert.equal(dots.length, 3);
+  const trackScale = c.qhPlotW() / c.qhViewW();
+  assert.equal(dots[0].style.left, (10 * trackScale).toFixed(2) + '%');
+  assert.equal(dots[1].style.left, (50 * trackScale).toFixed(2) + '%');
+  assert.equal(dots[2].style.left, (90 * trackScale).toFixed(2) + '%');
+  assert.equal(dots[0].attrs.style, undefined, 'must not set style attribute (CSP blocks it)');
+  const same = c.qhLayout([
+    {window: 'primary', kind: 'natural', at_ms: from + 10 * day},
+    {window: 'primary', kind: 'early_reset', at_ms: from + 10 * day},
+  ], from, to);
+  assert.equal(same.length, 2);
+  assert.notEqual(same[0].dy, same[1].dy, 'overlapping dots must be offset');
+  const tip = c.qhCapTip({capacity_credits: 50, capacity_lo: 800, capacity_hi: 1200, api_cost_usd: 8.7, coverage_gap: true, trend: 'up', close_kind: 'natural', ended_ms: 9});
+  assert.match(tip, /可能有其他端用量/);
+  assert.match(tip, /高于历史中位/);
+  assert.match(tip, /API 价格/);
+  assert.match(tip, /\$8\.70/);
+  assert.match(c.qhEventTip({kind: 'manual_card', card_source: 'manual', prev_pct: 40, next_pct: 1, at_ms: 9}), /手动卡/);
+  const panel = c.histPanel({from_ms: from, to_ms: to, events: ev, cycles: [
+    {window: 'primary', ended_ms: from + 3 * day, capacity_credits: 50, api_cost_usd: 1.44, close_kind: 'natural', confidence: 'ok', coverage_gap: false},
+    {window: 'primary', ended_ms: from + 15 * day, capacity_credits: 80, api_cost_usd: 2, close_kind: 'manual_card', confidence: 'fallback', coverage_gap: true, trend: 'up'},
+  ]});
+  const text = walk(panel).join(' ');
+  assert.match(text, /重置记录 · 30 天/);
+  assert.match(html, /\.qh-box\{[^}]*position:sticky;left:var\(--s4\)/, 'panel stays in the visible .tw scrollport');
+  assert.match(text, /周期容量 · credits/);
+  assert.match(text, /明细/);
+  assert.match(text, /历史中位/);
+  assert.match(text, /USD/);
+  assert.ok(!text.includes('API list price'));
+  assert.ok(!text.includes('点的颜色区分类型'));
+  assert.ok(!text.includes('点落在周期结束时刻'));
+  assert.ok(!text.includes('阶梯表示'));
+  const gutters = find(panel, n => n.className === 'qh-gutter');
+  assert.ok(gutters.length >= 2, 'timeline has a y-axis gutter');
+  assert.equal(gutters[0].style.width, c.QH_PLOT.left + 'px');
+  assert.equal(gutters[0].attrs.style, undefined, 'gutter width via CSSOM');
+  const capPts = find(panel, n => n.className && /\bqh-pt\b/.test(n.className));
+  assert.equal(capPts.length, 2);
+  const x0 = c.qhPlotX(from + 3 * day, from, to);
+  const x1 = c.qhPlotX(from + 15 * day, from, to);
+  assert.ok(Math.abs(c.qhPos(from + 3 * day, from, to) - 0.1) < 1e-9);
+  assert.ok(Math.abs(parseFloat(capPts[0].attrs.cx) - x0) < 0.15);
+  assert.ok(Math.abs(parseFloat(capPts[1].attrs.cx) - x1) < 0.15);
+  assert.match(capPts[1].className, /\bgap\b/);
+  const steps = find(panel, n => n.className && /\bqh-step\b/.test(n.className));
+  assert.ok(steps.length >= 1, 'step is drawn as line segments');
+  const horiz = steps.find(s => Math.abs(parseFloat(s.attrs.y1) - parseFloat(s.attrs.y2)) < 1e-6);
+  const vert = steps.find(s => Math.abs(parseFloat(s.attrs.x1) - parseFloat(s.attrs.x2)) < 1e-6);
+  assert.ok(horiz, 'step has a horizontal segment');
+  assert.ok(Math.abs(parseFloat(horiz.attrs.x1) - x0) < 0.15);
+  assert.ok(Math.abs(parseFloat(horiz.attrs.x2) - x1) < 0.15);
+  assert.ok(vert, 'step has a vertical segment');
+  assert.ok(Math.abs(parseFloat(vert.attrs.x1) - x1) < 0.15);
+  const dashed = c.qhChart([
+    {window: 'primary', ended_ms: from + 3 * day, capacity_credits: 50, coverage_gap: true},
+    {window: 'primary', ended_ms: from + 15 * day, capacity_credits: 80},
+  ], from, to);
+  const gapSteps = find(dashed, n => n.className && /\bqh-step\b/.test(n.className));
+  assert.ok(gapSteps.length >= 1);
+  assert.ok(gapSteps.every(s => /\bgap\b/.test(s.className)), 'outgoing step from a low-confidence cycle is dashed');
+  assert.ok(c.qhViewW() - c.qhPlotX(to, from, to) >= 9, 'right pad fits an outlier ring');
+  const medLbl = find(panel, n => n.className && /\bqh-med-lbl\b/.test(n.className));
+  assert.ok(medLbl.length >= 1);
+  assert.ok(parseFloat(medLbl[0].attrs.x) < 40, 'median label sits on the left, not on the last point');
+  const units = find(panel, n => n.className === 'qh-unit').map(n => n.text);
+  assert.ok(units.includes('credits') && units.includes('USD'));
+  const rings = find(panel, n => n.className && /\bqh-ring\b/.test(n.className));
+  assert.equal(rings.length, 1);
+  assert.match(rings[0].className, /\bup\b/);
+  assert.ok(find(panel, n => n.className && /\bqh-median\b/.test(n.className)).length >= 1);
+  assert.equal(find(panel, n => n.className && /\bqh-bar\b/.test(n.className)).length, 0);
+}
+
+  quotaHistoryRender();
   resetCardDisplay();
   await partialReads();
   await prewarmFollowsOverview();
@@ -362,5 +516,5 @@ async function prewarmFollowsOverview() {
   await loginChanges();
   await deviceLoginIsolation();
   await accessGate();
-  console.log('PASS: reset-card display, auto-use and quota-auto switch state, account snapshots, prewarm preference, read/login races, device start/poll cancellation and identity isolation, Cloudflare Access expiry');
+  console.log('PASS: reset-card display, auto-use and quota-auto switch state, account snapshots, prewarm preference, read/login races, device start/poll cancellation and identity isolation, Cloudflare Access expiry, quota history labels');
 })().catch(error => {console.error(error); process.exitCode = 1;}).finally(() => clearTimeout(watchdog));

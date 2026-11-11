@@ -1,7 +1,11 @@
 //! Per-request usage log. **Never blocks forwarding**: `Recorder::record` is a non-blocking
 //! `try_send` into a bounded queue (full ⇒ drop + count); one dedicated OS thread batch-writes
 //! to SQLite (WAL). Reads open their own read-only connections. Design: docs/USAGE.md.
+pub mod classify;
+pub mod credits;
 pub mod detail;
+pub mod estimate;
+mod history;
 mod migrate_v12;
 pub mod observation;
 pub mod occupancy;
@@ -13,6 +17,7 @@ mod store;
 mod writer;
 
 pub use detail::{DetailRow, ErrorDetail};
+pub use history::{AccountHistory, CycleRow, ResetEvent};
 pub use observation::{Observation, ObservationRow};
 pub use occupancy::{OccupancyRow, Sample as OccupancySample};
 pub use prices::{PriceTable, Tier};
@@ -128,10 +133,12 @@ pub struct QuotaObs {
     pub s_pct: Option<f64>,
     pub s_reset: Option<i64>,
     pub s_window_min: Option<i64>,
+    /// `rate_limit_reset_credits.available_count` when the snapshot came from `/wham/usage`.
+    pub cards: Option<i64>,
 }
 
 /// `gpt-5.5-2026-01-15` → `gpt-5.5` (a dated snapshot is the same model).
-fn strip_snapshot(m: &str) -> &str {
+pub(crate) fn strip_snapshot(m: &str) -> &str {
     let b = m.as_bytes();
     if b.len() > 11 && b[b.len() - 11] == b'-' {
         let d = &b[b.len() - 10..];
@@ -264,7 +271,7 @@ pub struct Recorder {
     path: PathBuf,
     weights: std::sync::RwLock<QuotaWeights>,
     retention_days: Arc<std::sync::atomic::AtomicU32>,
-    prices: std::sync::RwLock<Arc<PriceTable>>,
+    prices: Arc<std::sync::RwLock<Arc<PriceTable>>>,
     pub ids: RequestIds,
     counters: Arc<Counters>,
     refusals: Arc<refusals::Aggregator>,
@@ -291,6 +298,7 @@ impl Recorder {
         let retention_days = Arc::new(std::sync::atomic::AtomicU32::new(cfg.retention_days));
         let refusals = Arc::new(refusals::Aggregator::default());
         let occupancy = Arc::new(occupancy::Aggregator::default());
+        let prices = Arc::new(std::sync::RwLock::new(Arc::new(PriceTable::default())));
         let w = writer::Writer {
             refusals: refusals.clone(),
             occupancy: occupancy.clone(),
@@ -301,6 +309,7 @@ impl Recorder {
             retention_days: retention_days.clone(),
             counters: counters.clone(),
             state: store::WriterState::new(instance.to_string()),
+            prices: prices.clone(),
         };
         let join = std::thread::Builder::new()
             .name("usage-writer".into())
@@ -310,11 +319,11 @@ impl Recorder {
             path: cfg.path.clone(),
             weights: std::sync::RwLock::new(cfg.quota_weights.clone()),
             retention_days,
-            prices: Default::default(),
             ids: RequestIds::default(),
             counters,
             refusals,
             occupancy,
+            prices,
             join: Mutex::new(Some(join)),
             aliaser: Arc::new(OnceLock::new()),
         }))
@@ -598,16 +607,36 @@ impl Recorder {
     /// Latest quota snapshot + capacity estimate per observed account. Snapshots come from
     /// upstream and include usage by *other* clients / instances of the same account.
     pub async fn quota(&self) -> Result<Vec<AccountQuota>, UsageError> {
-        let (p, w) = (
+        let (p, w, pr) = (
             self.path.clone(),
             self.weights
                 .read()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone(),
+            self.prices(),
         );
-        tokio::task::spawn_blocking(move || store::quota(&store::open_ro(&p)?, &w, now_ms()))
+        tokio::task::spawn_blocking(move || store::quota(&store::open_ro(&p)?, &w, &pr, now_ms()))
             .await
             .map_err(|_| UsageError::Gone)?
+    }
+
+    /// Reset timeline and per-cycle capacity/API-cost records (`from_ms`/`to_ms` inclusive).
+    pub async fn quota_history(
+        &self,
+        account: Option<&str>,
+        from_ms: i64,
+        to_ms: i64,
+    ) -> Result<Vec<AccountHistory>, UsageError> {
+        let (p, pr, acct) = (
+            self.path.clone(),
+            self.prices(),
+            account.map(str::to_string),
+        );
+        tokio::task::spawn_blocking(move || {
+            crate::history::history(&store::open_ro(&p)?, &pr, acct.as_deref(), from_ms, to_ms)
+        })
+        .await
+        .map_err(|_| UsageError::Gone)?
     }
 }
 
@@ -744,9 +773,11 @@ mod tests {
                 .count,
             0
         );
-        assert!(store::quota(&reader, &QuotaWeights::default(), now)
-            .unwrap()
-            .is_empty());
+        assert!(
+            store::quota(&reader, &QuotaWeights::default(), &prices, now)
+                .unwrap()
+                .is_empty()
+        );
         drop(reader);
 
         let fresh = store::open_ro(r.path()).unwrap();
@@ -763,7 +794,7 @@ mod tests {
             1
         );
         assert_eq!(
-            store::quota(&fresh, &QuotaWeights::default(), now)
+            store::quota(&fresh, &QuotaWeights::default(), &prices, now)
                 .unwrap()
                 .len(),
             1
