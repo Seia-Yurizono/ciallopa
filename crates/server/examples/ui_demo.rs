@@ -172,6 +172,7 @@ async fn main() {
                 s_pct: Some(w),
                 s_reset: Some(now / 1000 + 2 * 86400),
                 s_window_min: Some(10080),
+                ..Default::default()
             });
             rec2.record(r);
         }
@@ -327,7 +328,8 @@ async fn main() {
             r.turn_id = Some(format!("turn-{:04}", i % 12 + 1));
         }
         let prog = i as f64 / n as f64;
-        if a != "evil" {
+        // alice quota comes from demo_quota_history (multi-cycle 30-day series).
+        if a != "evil" && a != "alice" {
             r.quota = Some(QuotaObs {
                 plan: Some(if a == "alice" { "plus" } else { "pro" }.into()),
                 p_pct: Some(
@@ -338,6 +340,7 @@ async fn main() {
                 s_pct: Some((prog * if a == "alice" { 78.0 } else { 3.0 }).floor()),
                 s_reset: Some(reset_s),
                 s_window_min: Some(10080),
+                ..Default::default()
             });
         }
         rr.record(r);
@@ -361,6 +364,7 @@ async fn main() {
             s_pct: None,
             s_reset: None,
             s_window_min: None,
+            ..Default::default()
         });
         rec.record(r);
     }
@@ -369,6 +373,7 @@ async fn main() {
     demo_error_code_rows(&rec, now);
     demo_refusals(&rec, now);
     demo_occupancy(&rec, now, &mut next);
+    demo_quota_history(&rec, now);
     rec.flush_blocking().unwrap();
     rec2.flush_blocking().unwrap();
     drop(rec2);
@@ -1108,4 +1113,275 @@ fn demo_obs_rows(rec: &Recorder, now: i64) {
     o.up_terminal_ms = None;
     o.down_incomplete = Some(true);
     put(r, Some(o));
+}
+
+/// Multi-cycle 30-day quota history for alice: every reset class plus an open cycle.
+/// IDs use a high sequence so they do not collide with the bulk 14-day traffic.
+fn demo_quota_history(rec: &Recorder, now: i64) {
+    rec.flush_blocking().unwrap();
+    let day = 86_400_000i64;
+    let hour = 3_600_000i64;
+    let primary: &[(&str, i64, f64, Option<&str>)] = &[
+        ("natural", 27, 1.0, None),
+        ("natural", 24, 1.0, None),
+        ("early_reset", 21, 1.0, None),
+        ("manual_card", 18, 1.0, None),
+        ("auto_card", 15, 1.0, None),
+        ("external_card", 12, 1.0, None),
+        ("limit_change", 10, 1.0, None),
+        ("natural", 8, 2.0, None),
+        ("natural", 5, 0.4, None),
+        ("early_reset", 2, 1.0, Some("priority")),
+    ];
+    let mut seq = 0i64;
+    let path = rec.path().to_path_buf();
+    for &(_, days, _, _) in primary {
+        let close = now - days * day;
+        if days == 18 {
+            demo_seed_card(&path, "laptop", close);
+        }
+        if days == 15 {
+            demo_seed_card(&path, "(auto)", close);
+        }
+    }
+
+    let mut cards = 3i64;
+    let mut s_pct = 10.0f64;
+    let mut s_reset = (now - 21 * day) / 1000;
+    let mut p_pct = 8.0f64;
+    let mut p_reset = (now - 27 * day) / 1000 + 300 * 60;
+
+    for &(kind, days, scale, tier) in primary {
+        let close = now - days * day;
+        demo_write_cycle(
+            rec,
+            now,
+            close,
+            kind,
+            scale,
+            tier,
+            &mut seq,
+            &mut p_pct,
+            &mut p_reset,
+            &mut s_pct,
+            &mut s_reset,
+            &mut cards,
+            if days == 21 { Some("natural") } else { None },
+        );
+        if days == 18 {
+            // Secondary-only early reset at -16d (after -18d, before -15d auto card).
+            let t = now - 16 * day;
+            s_pct += 2.0;
+            demo_hist_snap(
+                rec,
+                &mut seq,
+                t - hour,
+                p_pct + 3.0,
+                p_reset,
+                (s_pct + 8.0).min(90.0),
+                s_reset,
+                cards,
+                1.0,
+                None,
+            );
+            s_pct = 4.0;
+            s_reset = t / 1000 + 10_080 * 60;
+            demo_hist_snap(
+                rec,
+                &mut seq,
+                t,
+                p_pct + 4.0,
+                p_reset,
+                s_pct,
+                s_reset,
+                cards,
+                1.0,
+                None,
+            );
+            p_pct += 4.0;
+        }
+        if days == 8 {
+            let t = now - 7 * day;
+            demo_hist_snap(
+                rec,
+                &mut seq,
+                t - hour,
+                p_pct + 2.0,
+                p_reset,
+                (s_pct + 10.0).min(90.0),
+                s_reset,
+                cards,
+                1.0,
+                None,
+            );
+            s_pct = 5.0;
+            s_reset = t / 1000 + 10_080 * 60;
+            demo_hist_snap(
+                rec,
+                &mut seq,
+                t,
+                p_pct + 3.0,
+                p_reset,
+                s_pct,
+                s_reset,
+                cards,
+                1.0,
+                None,
+            );
+            p_pct += 3.0;
+        }
+    }
+
+    let open_p = now / 1000 + 3 * 3600;
+    for &(ago, pct, sp) in &[
+        (18 * hour, 15.0, 22.0),
+        (12 * hour, 32.0, 30.0),
+        (6 * hour, 48.0, 36.0),
+        (hour, 62.0, 42.0),
+    ] {
+        demo_hist_snap(
+            rec,
+            &mut seq,
+            now - ago,
+            pct,
+            open_p,
+            sp,
+            s_reset,
+            cards,
+            1.0,
+            Some("ultrafast"),
+        );
+    }
+}
+
+fn demo_hist_id(seq: &mut i64, ms: i64) -> i64 {
+    *seq += 1;
+    (ms << ciallopa_usage::SEQ_BITS) | (0xC_0000 + *seq)
+}
+
+fn demo_seed_card(path: &std::path::Path, key: &str, at_ms: i64) {
+    let c = rusqlite::Connection::open(path).unwrap();
+    c.execute(
+        "INSERT INTO reset_consume(account, credit_id, redeem_request_id, key, instance, \
+         started_ms, finished_ms, status, http_status, code) \
+         VALUES ('alice', ?1, ?2, ?3, 'demo-vps', ?4, ?5, 'done', 200, 'reset')",
+        rusqlite::params![
+            format!("demo-credit-{at_ms}"),
+            format!("rr-{at_ms}"),
+            key,
+            at_ms - 2_000,
+            at_ms
+        ],
+    )
+    .unwrap();
+}
+
+#[allow(clippy::too_many_arguments)]
+fn demo_hist_snap(
+    rec: &Recorder,
+    seq: &mut i64,
+    ms: i64,
+    p_pct: f64,
+    p_reset: i64,
+    s_pct: f64,
+    s_reset: i64,
+    cards: i64,
+    scale: f64,
+    tier: Option<&str>,
+) {
+    let mut r = Record::new(demo_hist_id(seq, ms), Transport::Sse, "responses");
+    r.account = Some("alice".into());
+    r.model = Some("gpt-5.6-sol".into());
+    r.status = 200;
+    r.key = Some("laptop".into());
+    r.input_tokens = Some((80_000.0 * scale) as i64);
+    r.output_tokens = Some((2_000.0 * scale) as i64);
+    r.cached_tokens = Some(0);
+    r.duration_ms = 4_000;
+    r.service_tier = tier.map(|t| t.into());
+    r.quota = Some(QuotaObs {
+        plan: Some("plus".into()),
+        p_pct: Some(p_pct),
+        p_reset: Some(p_reset),
+        p_window_min: Some(300),
+        s_pct: Some(s_pct),
+        s_reset: Some(s_reset),
+        s_window_min: Some(10_080),
+        cards: Some(cards),
+    });
+    rec.record(r);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn demo_write_cycle(
+    rec: &Recorder,
+    now: i64,
+    close: i64,
+    kind: &str,
+    scale: f64,
+    tier: Option<&str>,
+    seq: &mut i64,
+    p_pct: &mut f64,
+    p_reset: &mut i64,
+    s_pct: &mut f64,
+    s_reset: &mut i64,
+    cards: &mut i64,
+    also_secondary: Option<&str>,
+) {
+    let day = 86_400_000i64;
+    let hour = 3_600_000i64;
+    let old_p = if kind == "natural" {
+        close / 1000 - 60
+    } else if kind == "limit_change" {
+        (now - 8 * day) / 1000
+    } else {
+        close / 1000 + 2 * 3600
+    };
+    let new_p = if kind == "limit_change" {
+        old_p
+    } else {
+        close / 1000 + 300 * 60
+    };
+    // Start at/above the previous close percent so 28% → 12% after a mid-window
+    // limit_change is not itself classified as another limit_change.
+    let start = (*p_pct + 4.0).max(12.0);
+    for &(ago, pct) in &[
+        (3 * hour, start),
+        (2 * hour, (start + 16.0).min(72.0)),
+        (hour, (start + 34.0).min(72.0)),
+        (20 * 60_000, 72.0),
+    ] {
+        demo_hist_snap(
+            rec,
+            seq,
+            close - ago,
+            pct,
+            old_p,
+            *s_pct,
+            *s_reset,
+            *cards,
+            scale,
+            tier,
+        );
+        *s_pct = (*s_pct + 1.2).min(96.0);
+    }
+    let next_p = if kind == "limit_change" { 28.0 } else { 2.0 };
+    let mut next_s = *s_pct;
+    let mut next_sr = *s_reset;
+    let mut next_cards = *cards;
+    if matches!(kind, "manual_card" | "auto_card" | "external_card") {
+        next_cards = (*cards - 1).max(0);
+    }
+    if also_secondary.is_some() {
+        next_s = 3.0;
+        next_sr = close / 1000 + 10_080 * 60;
+    }
+    demo_hist_snap(
+        rec, seq, close, next_p, new_p, next_s, next_sr, next_cards, scale, tier,
+    );
+    *p_pct = next_p;
+    *p_reset = new_p;
+    *s_pct = next_s;
+    *s_reset = next_sr;
+    *cards = next_cards;
 }

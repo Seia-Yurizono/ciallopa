@@ -422,8 +422,26 @@ CREATE TABLE requests(
   err_source INTEGER, up_status INTEGER);                     -- v9
 -- one row per *change* of an account's quota (id = observing request id)
 CREATE TABLE quota_obs(id INTEGER PRIMARY KEY, account INTEGER NOT NULL, instance INTEGER,
-  plan INTEGER, p_pct REAL, p_reset INTEGER, p_win INTEGER, s_pct REAL, s_reset INTEGER, s_win INTEGER);
+  plan INTEGER, p_pct REAL, p_reset INTEGER, p_win INTEGER, s_pct REAL, s_reset INTEGER, s_win INTEGER,
+  cards INTEGER);                                 -- v15, available reset-card count when known
 CREATE INDEX quota_obs_account ON quota_obs(account, id);
+-- v15: reset events and per-cycle capacity / API-cost estimates
+CREATE TABLE quota_reset_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, account INTEGER NOT NULL, window TEXT NOT NULL,
+  kind TEXT NOT NULL, at_ms INTEGER NOT NULL, obs_id INTEGER NOT NULL,
+  prev_pct REAL, next_pct REAL, prev_reset INTEGER, next_reset INTEGER,
+  prev_cards INTEGER, next_cards INTEGER, card_source TEXT, cycle_id INTEGER,
+  UNIQUE(account, window, obs_id));
+CREATE INDEX quota_reset_events_acct ON quota_reset_events(account, at_ms);
+CREATE TABLE quota_cycle_estimates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, account INTEGER NOT NULL, window TEXT NOT NULL,
+  started_ms INTEGER NOT NULL, ended_ms INTEGER NOT NULL, ended_obs_id INTEGER NOT NULL,
+  cycle_reset_at INTEGER, close_kind TEXT NOT NULL,
+  capacity_credits REAL, capacity_lo REAL, capacity_hi REAL, delta_pct REAL,
+  credits_used REAL, api_cost_usd REAL, requests INTEGER, snapshots INTEGER,
+  coverage_gap INTEGER NOT NULL DEFAULT 0, confidence TEXT NOT NULL, card_source TEXT,
+  UNIQUE(account, window, ended_obs_id));
+CREATE INDEX quota_cycle_estimates_acct ON quota_cycle_estimates(account, ended_ms);
 -- failed requests, plus retried / switched successes; id = requests.id
 CREATE TABLE error_detail(id INTEGER PRIMARY KEY, message TEXT, body TEXT,
   body_len INTEGER NOT NULL, truncated INTEGER NOT NULL, headers TEXT NOT NULL,
@@ -443,11 +461,14 @@ CREATE TABLE occupancy(minute INTEGER NOT NULL, instance INTEGER NOT NULL, sampl
   lim_inflight INTEGER NOT NULL, lim_ws INTEGER NOT NULL, lim_buffered INTEGER NOT NULL,
   PRIMARY KEY(minute, instance));
 ```
-- Schema is at `user_version = 14` (v13 only adds the `requests_thread` index; v14 only adds the
-  `request_obs` table, see *Gateway downstream observation*). Opening an older file upgrades it in place (`ALTER TABLE` /
+- Schema is at `user_version = 15` (v13 adds the `requests_thread` index; v14 adds the
+  `request_obs` table, see *Gateway downstream observation*; v15 adds `quota_obs.cards` and the
+  `quota_reset_events` / `quota_cycle_estimates` tables). Opening an older file upgrades it in place (`ALTER TABLE` /
   new tables); columns that did not exist yet stay NULL on old rows.
 - `quota_obs` gets a row only when used % / plan changes or a reset time moves by > 120 s
   (upstream reset times jitter by a few seconds). Purge keeps each account's latest row.
+  A successful reset-card consume also writes the fetched `/wham/usage` snapshot (via the
+  existing writer queue, not a synchronous extra write).
 - **One secondary index on `requests`**: the partial `requests_thread(thread) WHERE thread IS
   NOT NULL`, for the session view. Everything else on `requests` is rowid based: time ranges are
   rowid range scans (`id BETWEEN from<<20 AND to<<20`), purge is a rowid range delete, "recent"
@@ -626,8 +647,15 @@ See [METRICS.md](METRICS.md) for the current outcome, sampling, cursor and bucke
   instance, or `null` when an `account` or `model` filter is set.
 - `GET /usage/v1/quota` → `{"accounts":[{account, email, disabled, needs_relogin, quota:
   {plan, observed_at_ms, observed_by, primary:{used_pct, resets_at, window_minutes, estimate},
-  secondary:{…}}}], "note": …}`. Every configured account is listed (`quota: null` if never
+  secondary:{…}}}], "note": …}`. `estimate` includes the legacy weighted-token fields and
+  `capacity_credits` / `remaining_credits` / `capacity_lo` / `capacity_hi` / `coverage_gap` /
+  `confidence` / `api_cost_usd`. Every configured account is listed (`quota: null` if never
   observed); accounts seen in the log but no longer configured carry `configured: false`.
+- `GET /usage/v1/quota/history?account=<id>&days=30` (optional `from`/`to` ms) →
+  `{from_ms, to_ms, accounts:[{account, events:[{kind, window, at_ms, prev_pct, next_pct,
+  prev_reset, next_reset, card_source}], cycles:[{window, started_ms, ended_ms,
+  cycle_reset_at, close_kind, capacity_credits, capacity_lo, capacity_hi, credits_used,
+  api_cost_usd, coverage_gap, confidence, trend, open}]}]}`. See *Quota estimate*.
 - 404 when `[usage] enabled = false`.
 - `POST /admin/v1/accounts/{id}/quota-refresh` and `POST /admin/v1/accounts/quota-refresh` (all
   accounts, four at a time; admin key, JSON body, same-origin) ask upstream `GET /wham/usage`
@@ -659,23 +687,58 @@ See [METRICS.md](METRICS.md) for the current outcome, sampling, cursor and bucke
 
 ## Quota estimate
 **The used % comes from upstream and includes usage by other clients (Codex app, other
-proxies) and other ciallopa instances on the same account.** The estimate only sees tokens
-this DB recorded, so it is accurate only when this instance is (nearly) the only user, and
-when several instances share one DB path / account it under-counts their share unless they
-write to the same file.
+proxies) and other ciallopa instances on the same account.** Capacity is estimated in
+**included-usage credits** (official Standard credit rates × Fast 2.5 / Ultrafast 8), not
+API dollars. The estimate only sees requests this DB recorded, so it is accurate only when
+this instance is (nearly) the only user, and when several instances share one DB path /
+account it under-counts their share unless they write to the same file.
 
-Per account and window (primary / secondary):
-1. Take the first and last `quota_obs` row in the *current* window (same reset ± 120 s).
-2. Δ% = last − first. Weighted tokens = Σ over this account's requests with
-   `first ≤ id < last` (the snapshot on a response precedes that request's own tokens) of
-   `input·(in − cached) + cached·cached + output·out` (`out` includes reasoning).
-3. Δ% < `min_delta_pct` (default 5) → `status: "insufficient_data"` (1 % steps are too coarse).
-   Otherwise `tokens_per_pct = weighted / Δ%`, `capacity_tokens = ×100`,
-   `remaining_tokens = (100 − used) × tokens_per_pct`, `status: "ok"`.
-4. Reset time already passed → `window_reset`; window not reported → `no_window`.
+Per account and window (primary / secondary), for the current (open) cycle:
+1. Take `quota_obs` rows in the current window (same `resets_at` ± 120 s) and this
+   account's requests `first_id ≤ id < last_id` (the snapshot on a response precedes that
+   request's own tokens). Each request becomes credits via the published Standard rates;
+   Fast ×2.5, Ultrafast ×8. Unknown models contribute nothing (never a fabricated 0).
+2. Δ%-weighted Theil–Sen: slopes of all observation pairs whose percent differs by at
+   least `min_delta_pct` (default 5), weighted by that Δ%. Capacity = slope × 100.
+3. A range is the intersection of integer-quantization bounds (Codex rounds `used_percent`;
+   each observed p means a true value in `[p−0.5, p+0.5]`). An empty intersection is treated
+   as a coverage gap (`coverage_gap`, copy: 可能有其他端用量): fall back to the median of
+   adjacent slopes, or only a lower bound if even that is scattered. Show nothing rather
+   than 0 (`confidence`: `ok` | `fallback` | `lower_only` | `insufficient`).
+4. The older weighted-token fields (`capacity_tokens`, …) are still computed from
+   `[usage.quota_weights]` for compatibility; the UI prefers `capacity_credits`.
+5. Reset time already passed → `window_reset`; window not reported → `no_window`.
 
-Weights (defaults: input 1, cached 0.1, output 4 — output/reasoning cost more, cache hits
-less) are in `[usage.quota_weights]`.
+When a window resets, the event and the just-closed cycle's estimate are written in the
+same SQLite transaction as the triggering `quota_obs` row (no extra writes on the hot
+path). Classes, independently per window:
+
+| `kind` | Meaning |
+|---|---|
+| `natural` | `used_percent` dropped and `resets_at` moved at/after the scheduled time (including the delayed case where `resets_at` jumped first while usage still showed ~100%) |
+| `manual_card` | local `reset_consume` success (`code=reset`) not from the auto-use path |
+| `auto_card` | same, but the consume was the 「快到期时自动使用」 path (`key = "(auto)"`) |
+| `external_card` | available card count dropped, and we did not consume one |
+| `early_reset` | official extra reset and paid instant reset, merged (UI: 「提前重置」) |
+| `limit_change` | percent dropped without `resets_at` moving — not a reset |
+| *(not stored)* | only `resets_at` moved (idle slide / jitter) |
+
+Each cycle row stores `capacity_credits` (and lo/hi), `credits_used`, `api_cost_usd` (sum of
+nominal API list prices for requests in that cycle, the existing `cost_usd` formula),
+`coverage_gap`, `confidence`, and `card_source` (`manual` / `auto`) when a local card was
+used. In-progress cycles are computed at read time and not persisted. Across closed cycles
+there is no smoothing: a cycle whose point estimate is outside 0.7–1.4× of the historical
+median of earlier cycles is flagged `trend: "up"` / `"down"`. Rows older than the usage
+retention (default 90 days) are purged with the rest of the log.
+
+`GET /usage/v1/quota/history?account=<id>&days=30` (or `from`/`to` ms; `days` default 30,
+max 90) returns `{from_ms, to_ms, accounts:[{account, events, cycles}]}`. The account page
+「额度记录」 panel draws a 30-day timeline (one row for 5h, one for 7d) aligned with a
+per-window step chart of cycle capacity (credits, range band, historical median) and a
+separate API 价格 pane in USD; a collapsible 明细 table lists the same numbers.
+
+Weights for the legacy token estimate (defaults: input 1, cached 0.1, output 4) remain in
+`[usage.quota_weights]`.
 
 ## Cost (notional)
 **For subscription (ChatGPT plan) traffic the cost is notional**: what the same tokens would
@@ -687,7 +750,9 @@ Price table: `[usage] prices` (default `~/.ciallopa/prices.toml`; missing ⇒ al
 A new install has none: prices are pulled on request (see "Price updates"). Entries are
 `[[model]]` with `model`, optional `tier` (`standard` | `flex` | `priority-fast` |
 `ultrafast`), `in`, `cache` (cache read), `write` (cache write), `out` in USD per 1M tokens,
-optional `long = {threshold, in_x, out_x}`, `flex_x`, `fast_x`, `ultra_x`,
+optional `long = {threshold, in_x, out_x}`, `flex_x`, `fast_x`, `ultra_x`
+(defaults: Flex ×0.5, Fast ×2, Ultrafast ×6 — the official API list-price multipliers;
+GPT-6 Astra and GPT-6.1 Sol Ultrafast are published at 6× Standard),
 `effective_from` / `effective_until` (`YYYY-MM-DD`, inclusive, UTC), `note`. The file can be
 edited by hand; changes are picked up without a restart.
 
@@ -698,8 +763,8 @@ cost = (in − cached − cache_write)·P_in + cached·P_cache + cache_write·P_
 - Long context: total input (incl. cached) > `long.threshold` ⇒ `P_in`, `P_cache`, `P_write`
   × `in_x`, `P_out` × `out_x` (OpenAI: 272K, ×2 / ×1.5).
 - Tier: an entry with that tier wins; else the standard entry × `flex_x` (default 0.5),
-  `fast_x` (default 2; per model, e.g. gpt-5.5 = 2.5) or `ultra_x` (no default: Ultrafast is
-  unpriced without it). `[defaults]` sets the global multipliers.
+  `fast_x` (default 2; per model, e.g. gpt-5.5 = 2.5) or `ultra_x` (default 6; GPT-6 Astra
+  and GPT-6.1 Sol Ultrafast are published at 6× Standard). `[defaults]` sets the global multipliers.
 - Dates: on the request's UTC date a dated entry wins over an undated one; with no matching
   entry the row is unpriced. Use dated entries for promotional prices.
 - Unknown model / tier / date ⇒ `cost_usd: null`, `price_status: "unknown_price"`; summaries
