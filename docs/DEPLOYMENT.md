@@ -64,17 +64,21 @@ Docker marks an unhealthy container but `restart: unless-stopped` only restarts 
 process; it does not restart one solely for failing health checks.
 
 On SIGTERM/SIGINT the listener stops accepting new connections and forwarding admission
-closes. HTTP/SSE requests and active WebSocket turns have up to 60 seconds to finish; idle
-WebSockets close normally. Remaining work is cancelled, with up to three seconds for closing,
-five seconds for the final usage/fingerprint flush and two seconds for runtime shutdown.
-A second signal skips the normal drain wait. This gives an application budget of about
-70 seconds within the Compose/systemd 75-second stop timeout. It does not guarantee that a
-long generation completes or every queued record reaches disk. A stalled blocking write or
+closes. HTTP/SSE requests and active WebSocket turns have `shutdown_drain_secs` (default 5)
+to finish; idle WebSockets close normally. A Responses stream or WS turn still running then gets
+what upstream already sent and a retryable `response.failed` (`retry-after: 2`), so Codex
+replays it on the restarted gateway instead of failing the turn. Remaining work is cancelled,
+with up to three seconds for closing, five seconds for the final usage/fingerprint flush and two
+seconds for runtime shutdown. A second signal skips the normal drain wait. With the default this
+is about 15 seconds within the Compose/systemd 20-second stop timeout; raise both together.
+The listener is closed while draining, so a long drain makes the gateway unavailable for that
+long. A replayed turn regenerates its unfinished output. It does not guarantee that every
+queued record reaches disk. A stalled blocking write or
 external SIGKILL can still lose in-memory records even if SQLite itself recovers normally.
 
 Before planned replacement, remove the instance from new traffic at the reverse proxy, allow
 active requests to finish, then stop it. Increasing only the external stop timeout does not
-extend the application's 60-second normal drain. Avoid treating a
+extend the application's drain; set `shutdown_drain_secs` as well. Avoid treating a
 global upstream outage as a reason to repeatedly restart otherwise responsive gateway instances.
 
 The image smoke test exercises initialization, health, permissions, a settings write and an

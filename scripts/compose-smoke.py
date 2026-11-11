@@ -643,7 +643,7 @@ class Smoke:
             elapsed = time.monotonic() - started
             state = self.inspect()['State']
             require(not state['Running'] and state['ExitCode'] == 0 and not state['OOMKilled'], f'unclean stop: {state}')
-            require(elapsed < 75, 'application exceeded the Compose stop grace')
+            require(elapsed < 20, 'application exceeded the Compose stop grace')
             for client, flow in zip(clients, flows):
                 client.join(timeout=5)
                 require(not client.is_alive() and not flow.client.get('error'), f'client did not finish: {flow.client}')
@@ -652,6 +652,11 @@ class Smoke:
                 require(completed != force and flow.result['terminal'] != force, f'wrong completion: {flow.client}')
                 if force:
                     require(flow.result['peer_closed'], 'Force did not cancel upstream')
+                    last = flow.client['events'][-1] if flow.client['events'] else {}
+                    error = (last.get('response') or {}).get('error') or {}
+                    require(last.get('type') == 'response.failed' and error.get('code') == 'gateway_restarting'
+                            and (error.get('headers') or {}).get('retry-after') == '2',
+                            f'cut stream did not end with the retryable shutdown event: {flow.client}')
                 if flow.protocol == 'ws':
                     require(flow.client.get('close_code') == (1001 if force else 1000), f'wrong WS close: {flow.client}')
             database = self.active / 'data/usage.db'
@@ -676,7 +681,7 @@ class Smoke:
                 flow.release.set()
         try:
             self.compose('logs', '--no-color', check=False)
-            self.compose('down', '--remove-orphans', '--timeout', '75')
+            self.compose('down', '--remove-orphans', '--timeout', '20')
         except Exception as exc:
             cleanup_error = exc
         if self.mock:

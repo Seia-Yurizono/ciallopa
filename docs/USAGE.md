@@ -1097,16 +1097,22 @@ connection pool, dropped when the account disappears) so these cookies never lin
 
 ## Graceful shutdown
 On SIGTERM / Ctrl-C the listener stops accepting and new forwarding admission closes.
-HTTP/SSE and active WebSocket turns get up to 60 s to finish. An idle WebSocket closes normally
-(1000); an active one closes normally after its current turn, allowing the client to reconnect.
-At the deadline, or on a second stop signal, remaining work is cancelled. HTTP bodies may be
-truncated; WebSockets attempt to close with 1001 (going away). Unfinished tracked work records
-`shutdown` / `local`, rather than a client cancellation.
+HTTP/SSE and active WebSocket turns get `shutdown_drain_secs` (default 5 s, 0–60) to finish.
+An idle WebSocket closes normally (1000); an active one closes normally after its current turn,
+allowing the client to reconnect. At the deadline, or on a second stop signal, remaining work is
+cancelled. A Responses SSE stream or WS turn first receives everything upstream already
+delivered (at most 0.5 s), then a retryable `response.failed` (`gateway_restarting`,
+`error.headers.retry-after: 2`), then the end of the body or a 1001 close; Codex replays the
+turn after 2 s. A WS turn sent while draining gets the same event. Other HTTP bodies may be
+truncated. Unfinished tracked work records `shutdown` / `local`, rather than a client
+cancellation. A keep-alive HTTP request admitted while draining gets 503 `shutdown` with
+`Retry-After: 2`.
 
 The process then allows up to 3 s for closing, 5 s for the final usage/fingerprint flush and
 2 s for runtime shutdown. Queued records are best effort within those bounds; a blocked disk
-write or forced kill can prevent persistence. The application budget is about 70 s, with a
-75 s Docker/systemd stop timeout. See [DEPLOYMENT.md](DEPLOYMENT.md) for traffic draining and
+write or forced kill can prevent persistence. With the default drain the application budget is
+about 15 s, within the packaged 20 s Docker/systemd stop timeout; a longer drain needs a stop
+timeout of at least `shutdown_drain_secs` + 15 s. See [DEPLOYMENT.md](DEPLOYMENT.md) for traffic draining and
 replacement limits.
 
 ## Disk writes

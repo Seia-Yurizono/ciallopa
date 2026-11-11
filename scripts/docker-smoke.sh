@@ -92,7 +92,7 @@ if sudo find "$WORK/config" -name '.config.toml.tmp-*' | grep . >/dev/null; then
 
 # Graceful stop: exit 0 well inside the grace period.
 start=$(date +%s)
-docker stop -t 75 "$CID" >/dev/null
+docker stop -t 20 "$CID" >/dev/null
 test "$(docker inspect -f '{{.State.ExitCode}}' "$CID")" = 0
 test $(( $(date +%s) - start )) -lt 15
 docker logs "$CID" 2>&1 | tail -n 5

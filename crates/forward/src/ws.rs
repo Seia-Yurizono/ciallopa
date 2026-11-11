@@ -679,9 +679,12 @@ async fn relay(
     let mut turn: Option<Tracker> = None;
     let sleep = tokio::time::sleep(idle);
     tokio::pin!(sleep);
+    // Shutdown cut a running turn: forward what upstream already delivered, then end the turn
+    // with a retryable response.failed and close (see `next_upstream`).
+    let mut cut: Option<tokio::time::Instant> = None;
     'outer: loop {
         tokio::select! {
-            m = next_downstream(&mut drx, &mut queued_down) => match m {
+            m = next_downstream(&mut drx, &mut queued_down), if cut.is_none() => match m {
                 Some(Ok(m)) => {
                     let size = match &m {
                         Message::Text(t) => Some(t.len()),
@@ -740,7 +743,8 @@ async fn relay(
                             }
                             Err(ciallopa_upstream::drain::Refused::Draining) => {
                                 drop(msg_permit.take());
-                                close_for_shutdown(&account, 1000, &mut dtx, &mut utx).await;
+                                // The client already sent this turn: ask it to replay later.
+                                close_for_shutdown(&account, ShutdownClose::Refused, &mut dtx, &mut utx).await;
                                 break;
                             }
                         }
@@ -881,7 +885,16 @@ async fn relay(
                     break;
                 }
             },
-            m = urx.next() => {
+            m = next_upstream(&mut urx, cut) => {
+                let Upstream::Next(m) = m else {
+                    // Everything upstream already delivered has been forwarded: end the turn.
+                    if awaiting {
+                        if let Some(t) = turn.as_mut() { t.fail_msg("shutdown", "closed by server shutdown before the turn finished".to_string()); t.source(crate::errors::SRC_LOCAL); }
+                    }
+                    for h in held.drain(..) { let _ = send_down(&mut dtx, h, turn.as_mut()).await; }
+                    close_for_shutdown(&account, ShutdownClose::Cut, &mut dtx, &mut utx).await;
+                    break;
+                };
                 sleep.as_mut().reset(tokio::time::Instant::now() + idle);
                 match m {
                     Some(Ok(WsMessage::Close(f))) => {
@@ -1166,7 +1179,7 @@ async fn relay(
                             break;
                         }
                         if done && st.upstream.drain.phase() != Phase::Running {
-                            close_for_shutdown(&account, 1000, &mut dtx, &mut utx).await;
+                            close_for_shutdown(&account, ShutdownClose::BetweenTurns, &mut dtx, &mut utx).await;
                             break;
                         }
                     }
@@ -1192,15 +1205,15 @@ async fn relay(
                     break;
                 }
             }
-            r = drain.changed(), if drain_live => {
+            r = drain.changed(), if drain_live && cut.is_none() => {
                 let phase = *drain.borrow_and_update();
                 if r.is_err() {
                     drain_live = false;
+                } else if phase == Phase::Force && awaiting {
+                    tracing::warn!(account = %ciallopa_core::a(&account), "shutting down; drain bound reached, cutting the running websocket turn");
+                    cut = Some(tokio::time::Instant::now() + CUT_FLUSH_MAX);
                 } else if phase == Phase::Force || (phase == Phase::Draining && !awaiting) {
-                    if awaiting {
-                        if let Some(t) = turn.as_mut() { t.fail_msg("shutdown", "closed by server shutdown before the turn finished".to_string()); t.source(crate::errors::SRC_LOCAL); }
-                    }
-                    close_for_shutdown(&account, if phase == Phase::Force { 1001 } else { 1000 }, &mut dtx, &mut utx).await;
+                    close_for_shutdown(&account, ShutdownClose::BetweenTurns, &mut dtx, &mut utx).await;
                     break;
                 }
             }
@@ -1349,18 +1362,70 @@ where
     let _ = utx.send(WsMessage::Close(None)).await;
 }
 
-/// Server shutdown: 1000 between turns (after the running one), 1001 when the drain bound
-/// cut a turn short.
-async fn close_for_shutdown<D, U>(account: &AccountId, code: u16, dtx: &mut D, utx: &mut U)
+/// How a session ends on server shutdown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ShutdownClose {
+    /// No turn running (or it just finished): normal close 1000.
+    BetweenTurns,
+    /// The drain bound cut a running turn: retryable `response.failed`, then 1001.
+    Cut,
+    /// A new turn arrived while draining: retryable `response.failed`, then 1001.
+    Refused,
+}
+
+/// How long the cut of a running turn keeps forwarding upstream frames before it ends the
+/// turn. Frames that already reached the gateway's socket are not dropped (a single poll
+/// can miss them until the reactor reports readiness); the Responses SSE cut uses the same
+/// window.
+const CUT_FLUSH_MAX: Duration = Duration::from_millis(500);
+
+/// Next upstream item for the relay loop, or the end of a shutdown cut.
+enum Upstream<T> {
+    Next(Option<T>),
+    /// The flush window of a cut closed: finish the cut.
+    CutDone,
+}
+
+/// Upstream frames for the relay loop. While a turn is being cut (`cut` is its flush
+/// deadline), frames keep coming in order until the deadline, then [`Upstream::CutDone`].
+async fn next_upstream<R>(rx: &mut R, cut: Option<tokio::time::Instant>) -> Upstream<R::Item>
+where
+    R: futures::Stream + Unpin,
+{
+    let Some(deadline) = cut else {
+        return Upstream::Next(rx.next().await);
+    };
+    match tokio::time::timeout_at(deadline, rx.next()).await {
+        Ok(item) => Upstream::Next(item),
+        Err(_) => Upstream::CutDone,
+    }
+}
+
+/// Server shutdown close. A cut or refused turn first gets a retryable `response.failed`:
+/// Codex treats an unknown `response.failed` code as retryable and waits for
+/// `error.headers.retry-after`, so it replays the turn on the restarted gateway.
+async fn close_for_shutdown<D, U>(account: &AccountId, how: ShutdownClose, dtx: &mut D, utx: &mut U)
 where
     D: futures::Sink<Message> + Unpin,
     U: futures::Sink<WsMessage> + Unpin,
 {
-    if code == 1000 {
-        tracing::info!(account = %ciallopa_core::a(account), "shutting down; closing the websocket session between turns");
-    } else {
-        tracing::warn!(account = %ciallopa_core::a(account), "shutting down; drain bound reached, closing the websocket session mid-turn");
-    }
+    let code = match how {
+        ShutdownClose::BetweenTurns => {
+            tracing::info!(account = %ciallopa_core::a(account), "shutting down; closing the websocket session between turns");
+            1000
+        }
+        ShutdownClose::Cut | ShutdownClose::Refused => {
+            if how == ShutdownClose::Refused {
+                tracing::info!(account = %ciallopa_core::a(account), "shutting down; refusing a new websocket turn, client will replay");
+            }
+            let _ = dtx
+                .send(Message::text(
+                    crate::proxy::shutdown_failed_event().to_string(),
+                ))
+                .await;
+            1001
+        }
+    };
     let _ = dtx.send(close(code, "")).await;
     let _ = utx.send(WsMessage::Close(None)).await;
 }
