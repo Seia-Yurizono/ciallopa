@@ -50,6 +50,7 @@ pub fn routes(
         .route("/usage/v1/records/{id}/observation", get(observation))
         .route("/usage/v1/summary", get(summary))
         .route("/usage/v1/quota", get(quota))
+        .route("/usage/v1/quota/history", get(quota_history))
         .route("/usage/v1/refusals", get(refusals))
         .route("/usage/v1/occupancy", get(occupancy))
         .route("/usage/v1/scope-values", get(scope_values))
@@ -885,9 +886,61 @@ async fn quota(
         "accounts": out,
         // Last Cloudflare challenge / block page seen instead of the upstream (null if none).
         "egress_block": egress.snapshot(),
-        "note": "used_percent comes from upstream and includes usage by other clients and other instances of the same account; capacity/remaining are estimates from this instance's weighted token deltas between snapshots",
+        "note": "used_percent comes from upstream and includes usage by other clients and other instances of the same account; capacity_credits is a Theil–Sen estimate from this instance's included-usage credits between snapshots",
     }))
     .into_response()
+}
+
+#[derive(Deserialize)]
+struct HistoryQ {
+    account: Option<String>,
+    /// Default 30, max 90. Ignored when `from` is set.
+    days: Option<u32>,
+    from: Option<i64>,
+    to: Option<i64>,
+}
+
+/// Per-account reset timeline and cycle capacity / API-cost records.
+async fn quota_history(State(St { rec, .. }): State<St>, Query(q): Query<HistoryQ>) -> Response {
+    let Some(rec) = rec else {
+        return err(StatusCode::NOT_FOUND, "usage log disabled");
+    };
+    let to = q.to.unwrap_or_else(now_ms);
+    let from = match q.from {
+        Some(f) => f,
+        None => {
+            let days = q.days.unwrap_or(30).clamp(1, 90);
+            to.saturating_sub(i64::from(days) * 86_400_000)
+        }
+    };
+    if from > to {
+        return err(StatusCode::BAD_REQUEST, "from must be <= to");
+    }
+    let aliased = q.account.as_deref().map(ciallopa_core::a);
+    match rec
+        .quota_history(aliased.as_deref().or(q.account.as_deref()), from, to)
+        .await
+    {
+        Ok(rows) => {
+            // Try the raw id if the alias missed (legacy rows / already-aliased query).
+            let empty = rows
+                .iter()
+                .all(|h| h.events.is_empty() && h.cycles.is_empty());
+            if empty {
+                if let (Some(raw), Some(al)) = (q.account.as_deref(), aliased.as_deref()) {
+                    if raw != al {
+                        if let Ok(rows2) = rec.quota_history(Some(raw), from, to).await {
+                            return Json(serde_json::json!({"from_ms": from, "to_ms": to, "accounts": rows2}))
+                                .into_response();
+                        }
+                    }
+                }
+            }
+            Json(serde_json::json!({"from_ms": from, "to_ms": to, "accounts": rows}))
+                .into_response()
+        }
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    }
 }
 
 #[cfg(test)]

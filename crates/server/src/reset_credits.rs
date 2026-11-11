@@ -1017,6 +1017,12 @@ pub(crate) async fn consume_locked(
                 if let Ok(v) = serde_json::from_str::<Value>(&b) {
                     rc.note_usage(account, &v);
                     extra["rate_limit"] = v.get("rate_limit").cloned().unwrap_or(Value::Null);
+                    if let Some(q) = usage_to_quota(&v, now_ms() / 1000) {
+                        let by = if auto { "auto" } else { QUOTA_MANUAL };
+                        if !rec.observe_quota(account, by, q) {
+                            tracing::warn!(%account, "post-consume quota snapshot dropped (usage queue full)");
+                        }
+                    }
                 }
             }
         }
@@ -1080,6 +1086,7 @@ pub fn usage_to_quota(v: &Value, now_s: i64) -> Option<QuotaObs> {
     if p.is_none() && s.is_none() {
         return None;
     }
+    let (cards, _, _) = usage_extras(v);
     Some(QuotaObs {
         plan: v
             .get("plan_type")
@@ -1092,6 +1099,7 @@ pub fn usage_to_quota(v: &Value, now_s: i64) -> Option<QuotaObs> {
         s_pct: s.map(|w| w.0),
         s_reset: s.and_then(|w| w.1),
         s_window_min: s.and_then(|w| w.2),
+        cards,
     })
 }
 
@@ -1274,6 +1282,70 @@ mod tests {
             (None, Some(false), Some(false))
         );
         assert_eq!(upstream_msg(r#"{"detail":"Unauthorized"}"#), "Unauthorized");
+    }
+
+    #[test]
+    fn usage_to_quota_ignores_card_expires_at() {
+        // openai/codex#60664: a reset-card expires_at must never be read as the
+        // window resets_at. Decoys sit on the payload, the window object, and
+        // the credits listing; only rate_limit.*.reset_at / reset_after_seconds
+        // feed QuotaObs.
+        let card_expiry = 1_699_000_000_i64;
+        let window_reset = 1_700_000_600_i64;
+        let v = json!({
+            "plan_type": "Plus",
+            "expires_at": card_expiry,
+            "rate_limit": {
+                "allowed": true,
+                "limit_reached": false,
+                "expires_at": card_expiry,
+                "primary_window": {
+                    "used_percent": 80.0,
+                    "limit_window_seconds": 18000,
+                    "reset_after_seconds": 600,
+                    "reset_at": window_reset,
+                    "expires_at": card_expiry,
+                },
+                "secondary_window": {
+                    "used_percent": 40.5,
+                    "limit_window_seconds": 604800,
+                    "reset_after_seconds": 3600,
+                    "reset_at": 0,
+                    "expires_at": card_expiry,
+                },
+            },
+            "rate_limit_reset_credits": {
+                "available_count": 1,
+                "credits": [{
+                    "status": "available",
+                    "expires_at": "2023-11-03T12:26:40Z",
+                }],
+            },
+        });
+        let q = usage_to_quota(&v, 1_700_000_000).unwrap();
+        assert_eq!(q.p_reset, Some(window_reset));
+        assert_ne!(q.p_reset, Some(card_expiry));
+        // secondary reset_at is 0 (ignored) so we fall back to now + reset_after_seconds
+        assert_eq!(q.s_reset, Some(1_700_003_600));
+        assert_ne!(q.s_reset, Some(card_expiry));
+        assert_eq!(q.cards, Some(1));
+
+        // A window with only expires_at (no reset_at / reset_after_seconds) must
+        // not invent a resets_at from the card date.
+        let bare = json!({
+            "rate_limit": {
+                "primary_window": {
+                    "used_percent": 80.0,
+                    "limit_window_seconds": 18000,
+                    "expires_at": card_expiry,
+                }
+            },
+            "rate_limit_reset_credits": {"available_count": 1},
+        });
+        let q = usage_to_quota(&bare, 1_700_000_000).unwrap();
+        assert_eq!(q.p_reset, None);
+        assert_eq!(q.p_pct, Some(80.0));
+        assert_eq!(q.cards, Some(1));
     }
 
     #[test]

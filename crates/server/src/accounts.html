@@ -240,6 +240,69 @@ main.noadm>:not(#noadm){display:none!important}
 .seg button:hover{background:transparent;color:var(--fg)}
 .seg button[aria-pressed=true],.seg button[aria-current]{background:var(--surface);color:var(--fg);font-weight:600;box-shadow:0 1px 2px rgba(16,24,40,.08),0 0 0 1px var(--line)}
 /* ==== shared:end ==== */
+/* quota history (30-day reset timeline + per-cycle capacity). Page-local: keep out of the shared block. */
+tr.qh-row>td{background:var(--surface-2);padding:var(--s3) var(--s4);border-bottom:1px solid var(--line)}
+.panel>.tw{container-type:inline-size}
+.qh-box{display:flex;flex-direction:column;gap:var(--s3);width:calc(100cqi - 2 * var(--s4));max-width:100%;box-sizing:border-box;position:sticky;left:var(--s4)}
+.qh-hd{font-size:var(--fs-s);color:var(--mut)}
+.qh-tl,.qh-ch{display:flex;align-items:center;gap:var(--s2);min-height:22px}
+.qh-ch{align-items:stretch}
+.qh-wl{flex:none;width:2.2em;font-size:var(--fs-xs);color:var(--mut)}
+.qh-gutter{flex:none;width:0}
+.qh-track{position:relative;flex:1;min-width:0;height:8px;border-radius:99px;background:var(--bar);overflow:visible}
+.qh-dot,.qh-mark{width:10px;height:10px;border-radius:50%;border:2px solid var(--surface);box-sizing:border-box;background:var(--mut)}
+.qh-dot{position:absolute;top:50%;margin:-5px 0 0 -5px}
+.qh-dot.qh-natural,.qh-mark.qh-natural,.qh-leg i.qh-natural{background:var(--mut)}
+.qh-dot.qh-manual_card,.qh-mark.qh-manual_card,.qh-leg i.qh-manual_card{background:var(--fg)}
+.qh-dot.qh-auto_card,.qh-mark.qh-auto_card,.qh-leg i.qh-auto_card{background:var(--surface);border-color:var(--fg);box-shadow:0 0 0 2px var(--fg)}
+.qh-dot.qh-external_card,.qh-mark.qh-external_card,.qh-leg i.qh-external_card{background:#0f7a6e}
+.qh-svg .qh-pt.qh-external_card{fill:#0f7a6e;stroke:#0f7a6e}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]) .qh-dot.qh-external_card,:root:not([data-theme=light]) .qh-mark.qh-external_card,:root:not([data-theme=light]) .qh-leg i.qh-external_card{background:#2dd4bf}
+:root:not([data-theme=light]) .qh-svg .qh-pt.qh-external_card{fill:#2dd4bf;stroke:#2dd4bf}}
+:root[data-theme=dark] .qh-dot.qh-external_card,:root[data-theme=dark] .qh-mark.qh-external_card,:root[data-theme=dark] .qh-leg i.qh-external_card{background:#2dd4bf}
+:root[data-theme=dark] .qh-svg .qh-pt.qh-external_card{fill:#2dd4bf;stroke:#2dd4bf}
+.qh-dot.qh-early_reset,.qh-mark.qh-early_reset,.qh-leg i.qh-early_reset{background:#7c5cbf}
+.qh-dot.qh-limit_change,.qh-mark.qh-limit_change,.qh-leg i.qh-limit_change{background:#c48a00;border-radius:2px}
+.qh-dot.qh-open,.qh-mark.qh-open{background:transparent;border-style:dashed;border-color:var(--mut)}
+.qh-leg{display:flex;flex-wrap:wrap;gap:var(--s1) var(--s3);font-size:var(--fs-xs);color:var(--mut)}
+.qh-leg i{display:inline-block;width:8px;height:8px;margin-right:4px;border-radius:50%;vertical-align:middle;background:var(--mut);box-sizing:border-box}
+.qh-leg i.qh-gap{border-radius:1px;background:repeating-linear-gradient(-45deg,var(--mut) 0 2px,transparent 2px 4px)}
+.qh-leg i.qh-out{border-radius:50%;background:var(--fg);box-shadow:0 0 0 2px var(--focus)}
+.qh-leg i.qh-cost{width:10px;height:2px;border-radius:1px;background:var(--proxy);vertical-align:middle}
+.qh-leg i.qh-band{width:12px;height:8px;border-radius:1px;background:color-mix(in srgb,var(--fg) 14%,transparent)}
+.qh-leg i.qh-med{width:14px;height:0;border-top:1.5px dashed var(--mut);border-radius:0;background:transparent;vertical-align:middle}
+.qh-plots{flex:1;min-width:0;display:flex;align-items:stretch}
+.qh-tl .qh-plots{align-items:center}
+.qh-axis{flex:none;display:block}
+.qh-svg-wrap{flex:1;min-width:0}
+.qh-svg{display:block;width:100%}
+.qh-svg .qh-grid{stroke:var(--line);stroke-width:1;fill:none}
+.qh-svg .qh-cost-grid{stroke:color-mix(in srgb,var(--proxy) 22%,var(--line));stroke-width:1;fill:none}
+.qh-axis .qh-tick,.qh-axis .qh-unit,.qh-svg .qh-tick,.qh-svg .qh-unit{font-size:10px;fill:var(--mut);font-variant-numeric:tabular-nums}
+.qh-svg .qh-band{fill:color-mix(in srgb,var(--fg) 12%,transparent);stroke:none}
+.qh-svg .qh-median{stroke:var(--mut);stroke-width:1.2;stroke-dasharray:4 3;fill:none}
+.qh-svg .qh-wh{stroke:var(--ctl);fill:none;stroke-width:1}
+.qh-svg .qh-step{fill:none;stroke:var(--fg);stroke-width:1.5;stroke-linecap:butt;vector-effect:non-scaling-stroke;opacity:.85}
+.qh-svg .qh-step.gap{stroke-dasharray:5 4}
+.qh-svg .qh-cost-line{fill:none;stroke:var(--proxy);stroke-width:1.4}
+.qh-svg .qh-cost-pt{fill:var(--proxy);stroke:none}
+.qh-svg .qh-pt{stroke-width:1.6}
+.qh-svg .qh-pt.qh-natural{fill:var(--mut);stroke:var(--mut)}
+.qh-svg .qh-pt.qh-manual_card{fill:var(--fg);stroke:var(--fg)}
+.qh-svg .qh-pt.qh-auto_card{fill:var(--surface);stroke:var(--fg)}
+.qh-svg .qh-pt.qh-early_reset{fill:#7c5cbf;stroke:#7c5cbf}
+.qh-svg .qh-pt.qh-limit_change{fill:#c48a00;stroke:#c48a00}
+.qh-svg .qh-pt.qh-open{fill:var(--surface);stroke:var(--mut);stroke-dasharray:2.5 2}
+.qh-svg .qh-pt.gap{fill:var(--surface)}
+.qh-svg .qh-ring{fill:none;stroke-width:1.6}
+.qh-svg .qh-ring.up{stroke:var(--focus)}
+.qh-svg .qh-ring.down{stroke:var(--err)}
+.qh-details{margin:0}
+.qh-details summary{cursor:pointer;font-size:var(--fs-xs);color:var(--mut);width:max-content}
+.qh-details summary:hover{color:var(--fg)}
+.qh-cycles{width:100%;border-collapse:collapse;font-size:var(--fs-s);font-variant-numeric:tabular-nums;margin-top:var(--s2)}
+.qh-cycles th,.qh-cycles td{text-align:left;padding:var(--s1) var(--s2);border-bottom:1px solid var(--line);vertical-align:top}
+.qh-cycles th{color:var(--mut);font-weight:500}
 /* accounts-only (page-local, outside the shared block): status shapes, quota reset / unknown, errors beside status */
 .tag.dot:before{width:7px;height:7px;flex:none}
 .tag.dot.cool:before,.sdot.cool{background:conic-gradient(currentColor 0 70%,transparent 0);box-shadow:inset 0 0 0 1.5px currentColor}
@@ -589,11 +652,177 @@ const apost=async(p,b)=>(await req("POST",p,b||{},null,T)).j,apatch=(p,b)=>req("
 function rem(w){return w&&w.used_pct!==null&&w.used_pct!==undefined?(w.resets_at&&w.resets_at*1000<=Date.now()?100:Math.max(0,100-w.used_pct)):null}
 // Reset time shown in the cell (not only on hover): relative when within a day, else the date.
 function qreset(w){if(!w||!w.resets_at)return null;const s=w.resets_at-Date.now()/1000;if(s<=0)return"已重置";return (s<86400?dur(s)+"后":fmtTime(w.resets_at*1000,true))+" 重置"}
+
+// ---- quota history (reset timeline + per-cycle capacity / API cost)
+const QH={},QH_LOADING={};
+function qhKindLabel(k){return {natural:"自然重置",manual_card:"手动卡",auto_card:"自动用卡",external_card:"外部用卡",early_reset:"提前重置",limit_change:"额度变化",open:"进行中"}[k]||k}
+function qhWinLabel(w){return w==="secondary"?"7d":"5h"}
+function qhPos(at,from,to){const span=Math.max(1,Number(to)-Number(from));return Math.max(0,Math.min(1,(Number(at)-Number(from))/span))}
+function qhEventTip(e){const p=[qhKindLabel(e.kind)];if(e.card_source==="auto")p.push("自动");if(e.card_source==="manual")p.push("手动");
+  if(e.prev_pct!=null&&e.next_pct!=null)p.push("已用 "+Number(e.prev_pct).toFixed(1)+"% → "+Number(e.next_pct).toFixed(1)+"%");
+  if(e.at_ms)p.push(fmtTime(e.at_ms,true));return p.join(" · ")}
+function qhCapTip(c){const p=[];
+  p.push(c.open?"进行中":qhKindLabel(c.close_kind));
+  if(c.ended_ms)p.push(fmtTime(c.ended_ms,true));
+  if(c.capacity_credits!=null)p.push("容量 "+fmtN(c.capacity_credits)+" credits");
+  else if(c.capacity_lo!=null)p.push("容量至少 "+fmtN(c.capacity_lo)+" credits");
+  if(c.capacity_lo!=null&&c.capacity_hi!=null)p.push("范围 "+fmtN(c.capacity_lo)+"–"+fmtN(c.capacity_hi));
+  else if(c.capacity_lo!=null&&c.capacity_credits==null)p.push("下限 "+fmtN(c.capacity_lo)+" credits");
+  if(c.api_cost_usd!=null)p.push("API 价格 "+fmtUsd(c.api_cost_usd));
+  if(c.credits_used!=null)p.push("已用 "+fmtN(c.credits_used)+" credits");
+  if(c.coverage_gap)p.push("可能有其他端用量");
+  if(c.confidence==="fallback")p.push("相邻斜率回退");
+  if(c.confidence==="lower_only")p.push("仅下限");
+  if(c.confidence==="insufficient")p.push("数据不足");
+  if(c.trend==="up")p.push("高于历史中位（>1.4×）");
+  if(c.trend==="down")p.push("低于历史中位（<0.7×）");
+  return p.join(" · ")}
+// CSP style-src is the hashed <style> only (no unsafe-inline). h() uses setAttribute("style"),
+// which the browser stores but does not apply; set CSSOM properties like the quota bars.
+function qhLayout(ev,from,to){const items=(ev||[]).map(e=>({e,x:qhPos(e.at_ms,from,to),dy:0}));
+  items.sort((a,b)=>a.x-b.x||(a.e.at_ms||0)-(b.e.at_ms||0));
+  const gap=0.012;for(let i=1;i<items.length;i++){if(items[i].x-items[i-1].x<gap){const prev=items[i-1].dy;
+    items[i].dy=prev===0?1:prev>0?-(Math.abs(prev)+1):Math.abs(prev)+1;if(items[i].dy>2)items[i].dy=2;if(items[i].dy<-2)items[i].dy=-2}}
+  return items}
+function qhTimeline(events,from,to,window){
+  const ev=(events||[]).filter(e=>e.window===window);
+  const track=h("div","qh-track");
+  for(const {e,x,dy} of qhLayout(ev,from,to)){const dot=h("span",{class:"qh-dot qh-"+e.kind,title:qhEventTip(e)});
+    dot.style.left=(x*qhPlotW()/qhViewW()*100).toFixed(2)+"%";if(dy)dot.style.top="calc(50% + "+(dy*6)+"px)";track.appendChild(dot)}
+  const pad=h("span","qh-gutter");pad.style.width=QH_PLOT.left+"px";
+  return h("div","qh-tl",h("span","qh-wl",qhWinLabel(window)),h("div","qh-plots",pad,track))}
+var QH_PLOT={w:1200,left:58,right:32,top:22,capH:128,gap:22,costH:50,xh:18};
+function qhPlotW(){return QH_PLOT.w-QH_PLOT.left-QH_PLOT.right}
+function qhViewW(){return qhPlotW()+QH_PLOT.right}
+function qhPlotH(){return QH_PLOT.top+QH_PLOT.capH+QH_PLOT.gap+QH_PLOT.costH+QH_PLOT.xh}
+function qhPlotX(at,from,to){return qhPos(at,from,to)*qhPlotW()}
+function qhY(v,scale,top,h){return top+(1-Number(v)/scale.max)*h}
+function qhLowConf(c){return !!(c.coverage_gap||c.confidence==="fallback"||c.confidence==="lower_only"||c.confidence==="insufficient")}
+function qhMedian(vals){const a=vals.filter(v=>v!=null&&isFinite(v)).slice().sort((x,y)=>x-y);if(!a.length)return null;const m=Math.floor(a.length/2);return a.length%2?a[m]:(a[m-1]+a[m])/2}
+function qhNiceScale(max,tickCount){
+  tickCount=tickCount||4;if(!(max>0))return{max:1,ticks:[0,1],step:1};
+  const rough=max/(tickCount-1),exp=Math.pow(10,Math.floor(Math.log10(rough))),f=rough/exp;
+  const step=(f<=1?1:f<=2?2:f<=5?5:10)*exp,niceMax=Math.ceil(max/step)*step,ticks=[];
+  for(let v=0;v<=niceMax+1e-9;v+=step)ticks.push(v);return{max:niceMax,ticks,step}}
+function qhMD(ms){const d=new Date(Number(ms));return (d.getMonth()+1)+"-"+String(d.getDate()).padStart(2,"0")}
+function svg(tag,a,...kids){
+  const e=document.createElementNS("http://www.w3.org/2000/svg",tag);
+  if(typeof a==="string")e.setAttribute("class",a);
+  else if(a)for(const k in a){const v=a[k];if(v==null||v===false)continue;
+    if(k==="class")e.setAttribute("class",v);else if(k==="text")e.textContent=String(v);
+    else e.setAttribute(k,v===true?"":String(v))}
+  for(const k of kids){if(k==null||k===false)continue;e.appendChild(typeof k==="object"?k:document.createTextNode(String(k)))}
+  return e}
+function qhWinChart(rows,window,from,to){
+  const P=QH_PLOT,L=P.left,PW=qhPlotW(),top=P.top,CH=P.capH,CG=P.gap,CSH=P.costH,H=qhPlotH();
+  let maxCap=0,maxCost=0;
+  for(const c of rows){const bar=c.capacity_credits!=null?c.capacity_credits:c.capacity_lo;
+    if(bar!=null&&bar>maxCap)maxCap=bar;if(c.capacity_hi!=null&&c.capacity_hi>maxCap)maxCap=c.capacity_hi;
+    if(c.api_cost_usd!=null&&c.api_cost_usd>maxCost)maxCost=c.api_cost_usd}
+  const capS=qhNiceScale(maxCap),costS=qhNiceScale(maxCost),capTop=top,costTop=top+CH+CG;
+  const med=qhMedian(rows.filter(c=>!c.open&&c.capacity_credits!=null).map(c=>c.capacity_credits));
+  const pts=rows.map(c=>{const v=c.capacity_credits!=null?c.capacity_credits:c.capacity_lo;return{c,v,x:qhPlotX(c.ended_ms||to,from,to),
+    y:v!=null?qhY(v,capS,capTop,CH):null,yLo:c.capacity_lo!=null?qhY(c.capacity_lo,capS,capTop,CH):null,
+    yHi:c.capacity_hi!=null?qhY(c.capacity_hi,capS,capTop,CH):null,yCost:c.api_cost_usd!=null?qhY(c.api_cost_usd,costS,costTop,CSH):null}});
+  const VW=qhViewW();
+  const axis=svg("svg",{class:"qh-axis",viewBox:"0 0 "+L+" "+H});
+  axis.style.width=L+"px";axis.style.height=H+"px";
+  for(const tk of capS.ticks){const y=qhY(tk,capS,capTop,CH);axis.appendChild(svg("text",{class:"qh-tick",x:L-8,y:y+3,"text-anchor":"end",text:String(tk)}))}
+  for(const tk of costS.ticks){const y=qhY(tk,costS,costTop,CSH);axis.appendChild(svg("text",{class:"qh-tick",x:L-8,y:y+3,"text-anchor":"end",text:String(tk)}))}
+  const plot=svg("svg",{class:"qh-svg",viewBox:"0 0 "+VW+" "+H,preserveAspectRatio:"none",role:"img","aria-label":qhWinLabel(window)+" 周期容量"});
+  plot.style.height=H+"px";
+  for(const tk of capS.ticks){const y=qhY(tk,capS,capTop,CH);plot.appendChild(svg("line",{class:"qh-grid",x1:0,x2:VW,y1:y,y2:y}))}
+  for(const tk of costS.ticks){const y=qhY(tk,costS,costTop,CSH);plot.appendChild(svg("line",{class:"qh-cost-grid",x1:0,x2:VW,y1:y,y2:y}))}
+  plot.appendChild(svg("text",{class:"qh-unit",x:8,y:capTop+12,"text-anchor":"start",text:"credits"}));
+  plot.appendChild(svg("text",{class:"qh-unit",x:8,y:costTop+12,"text-anchor":"start",text:"USD"}));
+  for(let i=0;i<5;i++){const ms=from+(to-from)*i/4,anc=i===0?"start":i===4?"end":"middle";plot.appendChild(svg("text",{class:"qh-tick",x:qhPlotX(ms,from,to),y:H-4,"text-anchor":anc,text:qhMD(ms)}))}
+  if(med!=null){const y=qhY(med,capS,capTop,CH);plot.appendChild(svg("line",{class:"qh-median",x1:0,x2:VW,y1:y,y2:y}));
+    const ly=y-capTop<16?y+12:y-6;plot.appendChild(svg("text",{class:"qh-tick qh-med-lbl",x:8,y:ly,"text-anchor":"start",text:"中位 "+fmtN(med)}))}
+  const bandable=pts.filter(p=>p.yLo!=null&&p.yHi!=null);
+  if(bandable.length>=2){const up=bandable.map((p,i)=>(i?"L":"M")+p.x.toFixed(1)+","+p.yHi.toFixed(1)).join(" ");
+    const dn=[...bandable].reverse().map(p=>"L"+p.x.toFixed(1)+","+p.yLo.toFixed(1)).join(" ");
+    plot.appendChild(svg("path",{class:"qh-band",d:up+" "+dn+" Z"}))}
+  for(const p of bandable){plot.appendChild(svg("line",{class:"qh-wh",x1:p.x,x2:p.x,y1:p.yHi,y2:p.yLo}));
+    plot.appendChild(svg("line",{class:"qh-wh",x1:p.x-4,x2:p.x+4,y1:p.yHi,y2:p.yHi}));
+    plot.appendChild(svg("line",{class:"qh-wh",x1:p.x-4,x2:p.x+4,y1:p.yLo,y2:p.yLo}))}
+  const drawn=pts.filter(p=>p.y!=null);
+  for(let i=1;i<drawn.length;i++){const a=drawn[i-1],b=drawn[i],cls="qh-step"+(qhLowConf(a.c)?" gap":"");
+    plot.appendChild(svg("line",{class:cls,x1:a.x,y1:a.y,x2:b.x,y2:a.y}));
+    if(Math.abs(b.y-a.y)>0.5)plot.appendChild(svg("line",{class:cls,x1:b.x,y1:a.y,x2:b.x,y2:b.y}))}
+  const costs=pts.filter(p=>p.yCost!=null);
+  if(costs.length>1)plot.appendChild(svg("polyline",{class:"qh-cost-line",points:costs.map(p=>p.x.toFixed(1)+","+p.yCost.toFixed(1)).join(" ")}));
+  for(const p of costs)plot.appendChild(svg("circle",{class:"qh-cost-pt",cx:p.x,cy:p.yCost,r:2.2},svg("title",{text:"API 价格 "+fmtUsd(p.c.api_cost_usd)})));
+  for(const p of drawn){const k=p.c.open?"open":(p.c.close_kind||"natural"),gap=qhLowConf(p.c);
+    if(p.c.trend==="up"||p.c.trend==="down")plot.appendChild(svg("circle",{class:"qh-ring "+p.c.trend,cx:p.x,cy:p.y,r:9}));
+    const cls="qh-pt qh-"+k+(gap?" gap":""),tip=qhCapTip(p.c);
+    if(k==="limit_change")plot.appendChild(svg("rect",{class:cls,x:p.x-5,y:p.y-5,width:10,height:10,rx:1},svg("title",{text:tip})));
+    else plot.appendChild(svg("circle",{class:cls,cx:p.x,cy:p.y,r:5},svg("title",{text:tip})))}
+  const wrap=h("div","qh-plots",axis,h("div","qh-svg-wrap",plot));
+  return wrap}
+function qhChart(cycles,from,to){
+  const box=h("div",null);
+  if(!(cycles||[]).length){box.appendChild(h("p","mut xs","暂无已记录的周期"));return box}
+  if(from==null||to==null){const ts=(cycles||[]).map(c=>c.ended_ms).filter(x=>x!=null);from=from!=null?from:(ts.length?Math.min(...ts):0);to=to!=null?to:(ts.length?Math.max(...ts):from+1)}
+  for(const window of ["primary","secondary"]){const rows=cycles.filter(c=>c.window===window).slice().sort((a,b)=>(a.ended_ms||0)-(b.ended_ms||0));
+    if(!rows.length)continue;
+    box.appendChild(h("div","qh-ch",h("span","qh-wl",qhWinLabel(window)),qhWinChart(rows,window,from,to)))}
+  return box}
+function qhCycleTable(cycles){
+  const rows=(cycles||[]).slice().sort((a,b)=>(b.ended_ms||0)-(a.ended_ms||0));
+  if(!rows.length)return h("p","mut xs","暂无已记录的周期");
+  const tb=h("table","qh-cycles"),body=h("tbody");
+  tb.appendChild(h("thead",null,h("tr",null,h("th",null,"窗口"),h("th",null,"容量"),h("th",null,"API 价格"),h("th",null,"结束"),h("th",null,"类型"))));
+  for(const c of rows){
+    let cap="–";if(c.capacity_credits!=null)cap=fmtN(c.capacity_credits);else if(c.capacity_lo!=null)cap="≥"+fmtN(c.capacity_lo);
+    body.appendChild(h("tr",{title:qhCapTip(c)},
+      h("td",null,qhWinLabel(c.window)),
+      h("td",null,cap+(c.open?" · 进行中":"")+(c.trend==="up"?" · 偏高":c.trend==="down"?" · 偏低":"")),
+      h("td",null,fmtUsd(c.api_cost_usd)),
+      h("td","num",c.ended_ms?fmtTime(c.ended_ms,true):"–"),
+      h("td",null,c.open?"进行中":qhKindLabel(c.close_kind))))}
+  tb.appendChild(body);return tb}
+function histPanel(data){
+  if(data.error)return h("div","qh-box",h("p","c-err xs","读取失败："+data.error));
+  const from=data.from_ms,to=data.to_ms,box=h("div","qh-box");
+  box.appendChild(h("div","qh-hd","重置记录 · 30 天"));
+  box.appendChild(qhTimeline(data.events,from,to,"primary"));
+  box.appendChild(qhTimeline(data.events,from,to,"secondary"));
+  box.appendChild(h("div","qh-leg",
+    h("span",null,h("i","qh-natural"),"自然重置"),
+    h("span",null,h("i","qh-manual_card"),"手动卡"),
+    h("span",null,h("i","qh-auto_card"),"自动用卡"),
+    h("span",null,h("i","qh-external_card"),"外部用卡"),
+    h("span",null,h("i","qh-early_reset"),"提前重置"),
+    h("span",null,h("i","qh-limit_change"),"额度变化")));
+  box.appendChild(h("div","qh-hd","周期容量 · credits"));
+  box.appendChild(qhChart(data.cycles,from,to));
+  box.appendChild(h("div","qh-leg",
+    h("span",null,h("i","qh-band"),"估计区间"),
+    h("span",null,h("i","qh-med"),"历史中位"),
+    h("span",null,h("i","qh-gap"),"可能有其他端用量"),
+    h("span",null,h("i","qh-out"),"偏离历史中位"),
+    h("span",null,h("i","qh-cost"),"API 价格")));
+  const det=h("details","qh-details");det.appendChild(h("summary",null,"明细"));det.appendChild(qhCycleTable(data.cycles));
+  box.appendChild(det);
+  return box}
+function histRow(a,data){return h("tr",{class:"qh-row","data-acc":a.id,"data-hist":"1"},h("td",{colspan:"9"},data?histPanel(data):h("p","mut xs","加载中…")))}
+function hashAcc(){const m=/^#acc=(.+)$/.exec(location.hash||"");if(!m)return null;try{return decodeURIComponent(m[1])}catch(_){return null}}
+function histOpen(id){return !!(QH[id]&&QH[id]._open!==false)||hashAcc()===id}
+async function loadHist(id){if(QH_LOADING[id])return;QH_LOADING[id]=1;
+  try{const j=(await req("GET","/usage/v1/quota/history?account="+encodeURIComponent(id)+"&days=30")).j;
+    const row=(j.accounts&&j.accounts[0])||{events:[],cycles:[]};
+    row.from_ms=j.from_ms;row.to_ms=j.to_ms;row._open=true;QH[id]=row;render()}
+  catch(e){QH[id]={events:[],cycles:[],error:why(e),_open:true};render()}
+  finally{delete QH_LOADING[id]}}
+
 function qcell(cls,lb,w,stale,known){const td=h("td","qc "+cls),r=rem(w);
   // No observation at all → "未知" with a dashed empty bar (never drawn as 0%); a window the plan does not have stays "–".
   if(r===null){td.appendChild(known?h("span",{class:"mut sm",title:"该套餐没有该窗口"},"不适用"):h("div",{class:"q unk","data-l":lb,role:"img","aria-label":lb+" 剩余未知（尚无额度数据）"},h("span","lb",lb),h("div","bar"),h("span","pc","未知")));return td}
   const c=r<20?"b":r<50?"w":"",i=h("i",c);i.style.width=Math.min(100,r)+"%";
-  td.appendChild(h("div",{class:"q"+(stale?" stale":""),"data-l":lb,title:"剩余 "+r.toFixed(1)+"%（已用 "+w.used_pct.toFixed(1)+"%）"+(w.resets_at?" · 重置 "+fmtTime(w.resets_at*1000,true):"")+(stale?" · 数据较旧":"")},h("span","lb",lb),h("div","bar",i),h("span","pc "+c,stale?h("span",{class:"c-cool",role:"img","aria-label":"数据较旧"},"⚠ "):null,r.toFixed(0)+"%")));
+  const et=w.estimate||{};let tip="剩余 "+r.toFixed(1)+"%（已用 "+w.used_pct.toFixed(1)+"%）"+(w.resets_at?" · 重置 "+fmtTime(w.resets_at*1000,true):"")+(stale?" · 数据较旧":"");
+  if(et.capacity_credits!=null)tip+=" · 容量≈"+fmtN(et.capacity_credits)+" credits"+(et.capacity_lo!=null&&et.capacity_hi!=null?"（"+fmtN(et.capacity_lo)+"–"+fmtN(et.capacity_hi)+"）":"")+(et.coverage_gap?"；可能有其他端用量":"");
+  else if(et.capacity_lo!=null)tip+=" · 容量至少 "+fmtN(et.capacity_lo)+" credits";
+  td.appendChild(h("div",{class:"q"+(stale?" stale":""),"data-l":lb,title:tip},h("span","lb",lb),h("div","bar",i),h("span","pc "+c,stale?h("span",{class:"c-cool",role:"img","aria-label":"数据较旧"},"⚠ "):null,r.toFixed(0)+"%")));
   const rs=qreset(w);if(rs)td.appendChild(h("span",{class:"qrs",title:w.resets_at?"重置 "+fmtTime(w.resets_at*1000,true):""},rs));return td}
 function numIn(v,label,fk){return h("input",{type:"number",step:"1",value:v,"aria-label":label,"data-fk":fk})}
 // Disabling the last usable account takes every proxied request down: that one click-agains.
@@ -686,6 +915,7 @@ function row(a,usage_on){const s=ST[a.status]||[a.status,"off",""],full=a.email?
   }
   // read-only upstream query: admin keys, also without allow_config_write
   ag.appendChild(act(h("button",{class:"xs",type:"button",title:"向上游查询该账号当前的额度（只读，不消耗额度；同一账号 30 秒内只查一次）","data-fk":a.id+"|rq"},"刷新额度"),()=>quotaOne(a),"刷新额度","查询中…"));
+  ag.appendChild(act(h("button",{class:"xs",type:"button",title:"最近 30 天的重置记录和每周期容量估算","data-fk":a.id+"|qh"},histOpen(a.id)?"收起记录":"额度记录"),async()=>{if(QH[a.id]&&QH[a.id]._open!==false&&hashAcc()!==a.id){QH[a.id]._open=false;render();return}if(QH[a.id]){QH[a.id]._open=true;render();return}await loadHist(a.id)},"额度记录","加载中…"));
   if(W){const db=h("button",{class:"xs danger del",type:"button","aria-haspopup":"dialog","aria-label":"删除账号 "+nm(a),"data-fk":a.id+"|del"},"删除");db.addEventListener("click",()=>delAcct(a,db));ag.appendChild(db)}
   r.appendChild(actc);return r}
 function render(){steady([$("rows"),$("authf")],renderNow)}
@@ -707,7 +937,7 @@ function renderNow(){const j=DATA;W=j.write_enabled;setTabCount(j.accounts.lengt
   const hw=j.accounts.map(a=>wslots(QM[a.id]&&QM[a.id].quota));$("hq5").textContent=whead(hw.filter(o=>o.s).map(o=>o.s[0]),"5 小时");$("hqw").textContent=whead(hw.filter(o=>o.l).map(o=>o.l[0]),"周");
   const tb=$("rows");clear(tb);
   if(!j.accounts.length)tb.appendChild(h("tr",null,h("td",{colspan:"9"},h("div","empty",h("b",null,"暂无账号"),W?h("button",{id:"emptyadd",class:"pri",type:"button",onclick:()=>setAdd(true,true)},"添加账号"):"使用 ciallopa login 添加，或开启配置写入后在此页添加"))));
-  for(const a of j.accounts)tb.appendChild(row(a,j.usage_enabled));
+  for(const a of j.accounts){tb.appendChild(row(a,j.usage_enabled));if(histOpen(a.id)){tb.appendChild(histRow(a,QH[a.id]));if(!QH[a.id]&&!QH_LOADING[a.id])loadHist(a.id)}}
   showReadState();anchor(false);refocus()}
 // /ui/accounts#acc=<id>: highlight that row (and open its 操作 on phone)
 function anchor(scroll){const m=/^#acc=(.+)$/.exec(location.hash);for(const r of document.querySelectorAll("#acc tr.hl"))r.classList.remove("hl");if(!m)return;

@@ -135,13 +135,15 @@ pub struct Defaults {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ultra_x: Option<f64>,
 }
-/// Flex ×0.5, Fast ×2 (the multipliers of current OpenAI models).
+/// Flex ×0.5, Fast ×2, Ultrafast ×6 (official API list prices as of 2026-11:
+/// GPT-6 Astra and GPT-6.1 Sol Ultrafast = 6× Standard; Fast is 2× on current
+/// flagship models, with a per-model `fast_x` where it differs, e.g. GPT-5.5).
 impl Default for Defaults {
     fn default() -> Self {
         Self {
             flex_x: Some(0.5),
             fast_x: Some(2.0),
-            ultra_x: None,
+            ultra_x: Some(6.0),
         }
     }
 }
@@ -1035,10 +1037,7 @@ effective_from = "2026-11-22"
             output: 0,
         };
         close(t.cost(Some("gpt-odd"), Tier::PriorityFast, 0, u), 3.0);
-        assert!(
-            t.cost(Some("gpt-6-sol"), Tier::Ultrafast, 0, u).is_none(),
-            "no ultrafast price"
-        );
+        close(t.cost(Some("gpt-6-sol"), Tier::Ultrafast, 0, u), 24.0);
         assert!(relevant_model("o4-mini") && relevant_model("gpt-5.3-codex"));
         assert!(!relevant_model("omni-moderation-latest") && !relevant_model("gpt-image-2"));
         assert!(parse_source(&serde_json::json!({"x": 1})).is_err());

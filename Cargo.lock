@@ -300,6 +300,7 @@ dependencies = [
  "notify",
  "rand 0.9.3",
  "reqwest",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",

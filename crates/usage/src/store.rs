@@ -10,7 +10,7 @@ use std::path::Path;
 /// Endpoint label of a Codex WS prewarm turn (`response.create` with `generate:false`).
 pub const PREWARM_ENDPOINT: &str = "prewarm";
 
-pub(crate) const SCHEMA_VERSION: i64 = 14;
+pub(crate) const SCHEMA_VERSION: i64 = 15;
 
 const CREATE_V3: &str = r#"
 CREATE TABLE IF NOT EXISTS labels(
@@ -235,6 +235,7 @@ pub(crate) fn migrate(c: &mut Connection) -> rusqlite::Result<()> {
         tx.execute_batch("PRAGMA secure_delete = ON;")?;
         crate::migrate_v12::rewrite(&tx)?;
     }
+    crate::history::migrate_v15(&tx, v)?;
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
     tx.commit()?;
     if v < 12 {
@@ -308,7 +309,7 @@ impl WriterState {
         }
         let mut st = c.prepare(
             "SELECT q.account, (SELECT name FROM labels WHERE id=q.plan), q.p_pct, q.p_reset, q.p_win, \
-             q.s_pct, q.s_reset, q.s_win FROM quota_obs q \
+             q.s_pct, q.s_reset, q.s_win, q.cards FROM quota_obs q \
              WHERE q.id = (SELECT max(id) FROM quota_obs WHERE account = q.account)",
         )?;
         let rows = st.query_map([], |r| {
@@ -322,6 +323,7 @@ impl WriterState {
                     s_pct: r.get(5)?,
                     s_reset: r.get(6)?,
                     s_window_min: r.get(7)?,
+                    cards: r.get(8)?,
                 },
             ))
         })?;
@@ -358,9 +360,11 @@ pub(crate) fn insert_batch(
     c: &mut Connection,
     ws: &mut WriterState,
     rows: &[Record],
+    prices: &crate::prices::PriceTable,
 ) -> rusqlite::Result<()> {
     let tx = c.transaction()?;
     ws.load_quota(&tx)?;
+    let mut pending: Vec<(i64, String, i64, Option<QuotaObs>, QuotaObs)> = Vec::new();
     {
         let mut st = tx.prepare_cached(
             "INSERT OR IGNORE INTO requests(id,account,first_account,model,effort,transport,endpoint,\
@@ -369,8 +373,8 @@ pub(crate) fn insert_batch(
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,?34)",
         )?;
         let mut qst = tx.prepare_cached(
-            "INSERT OR IGNORE INTO quota_obs(id,account,instance,plan,p_pct,p_reset,p_win,s_pct,s_reset,s_win) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            "INSERT OR IGNORE INTO quota_obs(id,account,instance,plan,p_pct,p_reset,p_win,s_pct,s_reset,s_win,cards) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
         )?;
         let mut dst = tx.prepare_cached(
             "INSERT OR IGNORE INTO error_detail(id,message,body,body_len,truncated,headers,up_req_id,attempts) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
@@ -452,6 +456,7 @@ pub(crate) fn insert_batch(
             }
             if let (1, Some(q), Some(a)) = (n, q, account) {
                 if quota_changed(ws.last_quota.get(&a), q) {
+                    let old = ws.last_quota.get(&a).cloned();
                     qst.execute(params![
                         r.id,
                         a,
@@ -462,12 +467,19 @@ pub(crate) fn insert_batch(
                         q.p_window_min,
                         q.s_pct,
                         q.s_reset,
-                        q.s_window_min
+                        q.s_window_min,
+                        q.cards
                     ])?;
+                    if let Some(name) = r.account.as_deref() {
+                        pending.push((a, name.to_string(), r.id, old, q.clone()));
+                    }
                     ws.last_quota.insert(a, q.clone());
                 }
             }
         }
+    }
+    for (a, name, id, old, new) in &pending {
+        crate::history::on_new_obs(&tx, prices, *a, name, *id, old.as_ref(), new)?;
     }
     tx.commit()
 }
@@ -477,13 +489,15 @@ pub(crate) fn insert_quota(
     c: &mut Connection,
     ws: &mut WriterState,
     rows: &[(i64, String, String, QuotaObs)],
+    prices: &crate::prices::PriceTable,
 ) -> rusqlite::Result<()> {
     let tx = c.transaction()?;
     ws.load_quota(&tx)?;
+    let mut pending: Vec<(i64, String, i64, Option<QuotaObs>, QuotaObs)> = Vec::new();
     {
         let mut qst = tx.prepare_cached(
-            "INSERT OR IGNORE INTO quota_obs(id,account,instance,plan,p_pct,p_reset,p_win,s_pct,s_reset,s_win) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            "INSERT OR IGNORE INTO quota_obs(id,account,instance,plan,p_pct,p_reset,p_win,s_pct,s_reset,s_win,cards) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
         )?;
         for (id, account, by, q) in rows {
             let Some(a) = ws.label(&tx, Some(account))? else {
@@ -491,6 +505,7 @@ pub(crate) fn insert_quota(
             };
             let by = ws.label(&tx, Some(by))?;
             let plan = ws.label(&tx, q.plan.as_deref())?;
+            let old = ws.last_quota.get(&a).cloned();
             qst.execute(params![
                 id,
                 a,
@@ -501,10 +516,15 @@ pub(crate) fn insert_quota(
                 q.p_window_min,
                 q.s_pct,
                 q.s_reset,
-                q.s_window_min
+                q.s_window_min,
+                q.cards
             ])?;
+            pending.push((a, account.clone(), *id, old, q.clone()));
             ws.last_quota.insert(a, q.clone());
         }
+    }
+    for (a, name, id, old, new) in &pending {
+        crate::history::on_new_obs(&tx, prices, *a, name, *id, old.as_ref(), new)?;
     }
     tx.commit()
 }
@@ -535,6 +555,7 @@ pub(crate) fn purge_before(
             [cut],
         )?;
     }
+    crate::history::purge(c, cutoff_ms)?;
     Ok(n as u64)
 }
 
@@ -561,7 +582,7 @@ pub(crate) fn purge_refusals_before(c: &Connection, cutoff_ms: i64) -> rusqlite:
         .is_some())
 }
 
-fn label_map(c: &Connection) -> rusqlite::Result<HashMap<i64, String>> {
+pub(crate) fn label_map(c: &Connection) -> rusqlite::Result<HashMap<i64, String>> {
     let mut st = c.prepare_cached("SELECT id, name FROM labels")?;
     let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
     rows.collect()
@@ -2013,6 +2034,23 @@ pub struct Estimate {
     pub sample_from_ms: Option<i64>,
     pub sample_to_ms: Option<i64>,
     pub requests: Option<i64>,
+    /// Δ%-weighted Theil–Sen capacity in included-usage credits. None = show nothing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capacity_credits: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remaining_credits: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credits_used: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capacity_lo: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capacity_hi: Option<f64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub coverage_gap: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_cost_usd: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -2045,6 +2083,14 @@ fn empty_estimate(status: &'static str) -> Estimate {
         sample_from_ms: None,
         sample_to_ms: None,
         requests: None,
+        capacity_credits: None,
+        remaining_credits: None,
+        credits_used: None,
+        capacity_lo: None,
+        capacity_hi: None,
+        coverage_gap: false,
+        confidence: None,
+        api_cost_usd: None,
     }
 }
 
@@ -2052,6 +2098,7 @@ fn empty_estimate(status: &'static str) -> Estimate {
 pub(crate) fn quota(
     c: &Connection,
     w: &QuotaWeights,
+    prices: &crate::prices::PriceTable,
     now_ms: i64,
 ) -> Result<Vec<AccountQuota>, UsageError> {
     let names = label_map(c)?;
@@ -2088,7 +2135,7 @@ pub(crate) fn quota(
             let estimate = match (used, reset) {
                 (None, _) => empty_estimate("no_window"),
                 (Some(_), Some(r)) if r * 1000 <= now_ms => empty_estimate("window_reset"),
-                (Some(_), r) => estimate(c, w, account, i, r)?,
+                (Some(_), r) => estimate(c, w, prices, account, i, r)?,
             };
             Ok(WindowQuota {
                 used_pct: used,
@@ -2114,6 +2161,7 @@ pub(crate) fn quota(
 fn estimate(
     c: &Connection,
     w: &QuotaWeights,
+    prices: &crate::prices::PriceTable,
     account: i64,
     which: usize,
     reset: Option<i64>,
@@ -2162,6 +2210,21 @@ fn estimate(
     let weighted = w.input * inp + w.cached * cached + w.output * out;
     e.requests = Some(n);
     e.weighted_tokens = Some(weighted);
+    if let Ok((cap, api_cost, _)) =
+        crate::history::live_capacity(c, prices, account, which, reset, l)
+    {
+        e.capacity_credits = cap.capacity;
+        e.credits_used = Some(cap.credits_used);
+        e.capacity_lo = cap.lo;
+        e.capacity_hi = cap.hi;
+        e.coverage_gap = cap.coverage_gap;
+        e.confidence = Some(cap.confidence.as_str());
+        e.api_cost_usd = api_cost;
+        if let Some(cap_c) = cap.capacity {
+            let used = pct_at(l)?;
+            e.remaining_credits = Some((100.0 - used).max(0.0) / 100.0 * cap_c);
+        }
+    }
     if delta < w.min_delta_pct || weighted <= 0.0 {
         return Ok(e);
     }
