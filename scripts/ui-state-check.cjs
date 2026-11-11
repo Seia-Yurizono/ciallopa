@@ -417,6 +417,39 @@ async function scopeSuggestions() {
   document.activeElement = null; key.fire('blur');
   assert.equal($('lfkey').hidden, true);
   assert.equal(fetches, 1, 'suggestions are fetched once and cached for 60 s');
+  // Run the production candidate matcher and submitted-filter serializer together.
+  // Keep these cases paired with usage_api::scope_contains_is_literal_and_shared_by_all_consumers.
+  c.scopeWindow = {from: 1, to: 2}; c.URLSearchParams = URLSearchParams;
+  vm.runInContext(section('function scopeFilters()', 'function scopeLabel('), c);
+  vm.runInContext(html.match(/^function qs\(o\).*$/m)[0], c);
+  const labels = ['gpt-5.6-terra', 'gpt-5.6-terra-plus', 'gpt-5.6-sol', 'ÜBER-İ-ΟΣ-Σ',
+    String.raw`literal%_\path`, 'literalXXYpath', 'Straße-é', 'café'];
+  c.scopeValues = labels.map(value => ({value, count: 1}));
+  vm.runInContext('SV={model:scopeValues,key:scopeValues,instance:scopeValues}', c);
+  for (const [q, n] of [['terra', 2], ['5.6', 3], ['GPT-5.6-TERRA', 2], ['absent', 0],
+    ['%', 1], ['_', 1], ['\\', 1], ['%_\\', 1], ["' OR 1=1 --", 0],
+    ['über', 1], ['İ', 1], ['i', 3], ['ος', 1], ['σ', 1],
+    ['STRASSE', 0], ['STRAẞE', 1], ['é', 2], ['e\u0301', 0]]) {
+    for (const [id, field] of [['fmodel', 'model'], ['fkey', 'key'], ['finstance', 'instance']]) {
+      $(id).value = '  ' + q + '  ';
+      const params = new URLSearchParams(vm.runInContext('qs(scopeFilters())', c));
+      assert.equal(params.get(field), q, 'literal fragment survives URL encoding unchanged');
+      c.inputId = id;
+      const suggestions = Array.from(vm.runInContext('cbxOptions(inputId)', c), v => v.value);
+      // Exact value is hidden in suggestions but remains in the actual contains result.
+      const exact = labels.filter(v => v.toLowerCase() === q.toLowerCase());
+      assert.equal(suggestions.length + exact.length, n, field + '=' + q);
+      assert.ok(suggestions.concat(exact).every(v => v.toLowerCase().includes(params.get(field).toLowerCase())));
+    }
+  }
+  model.value = 'gpt-5.6-terra';
+  assert.equal(Array.from(vm.runInContext('cbxOptions("fmodel")', c))[0].value,
+    'gpt-5.6-terra-plus', 'selecting a full name retains contains semantics');
+  for (const id of ['fmodel', 'fkey', 'finstance']) {
+    const markup = html.match(new RegExp('<input id="' + id + '"[^>]*>'))[0];
+    assert.match(markup, /title="包含匹配，不区分大小写；%、_ 和反斜杠均按普通字符匹配"/,
+      'scope input explains the actual query semantics');
+  }
   // Logout clears the cache, so a different key never sees the old values.
   assert.ok(section('onLogout=()=>{stopAuto', '};').includes('SV=null;svAt=0'));
 }

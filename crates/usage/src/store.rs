@@ -2,7 +2,7 @@
 use crate::problem::{Outcome, Preds, Problem};
 use crate::{QuotaObs, Record, Transport, UsageError, SEQ_BITS};
 use ciallopa_core::config::QuotaWeights;
-use rusqlite::{params, params_from_iter, Connection, OpenFlags, OptionalExtension};
+use rusqlite::{params, params_from_iter, types::Value, Connection, OpenFlags, OptionalExtension};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
@@ -574,7 +574,52 @@ pub(crate) fn label_id(c: &Connection, name: &str) -> rusqlite::Result<Option<i6
     .optional()
 }
 
-/// Filter on label-valued columns. `Err(())` = a requested label is unknown ⇒ nothing matches.
+/// Resolve literal, Unicode-lowercased substrings against the label dictionary, not
+/// every request row. This matches the UI's `toLowerCase().includes()` semantics
+/// (not locale-specific case folding or Unicode normalization). `%`, `_`, `\` and
+/// SQL punctuation have no special meaning; user text never enters SQL.
+///
+/// Scan the distinct labels once for all active fields. Bind each matching-id set as
+/// one JSON parameter so broad filters cannot exceed SQLite's bind-variable limit.
+/// No UDF, schema change or search-index writes are needed. `col` is internal only.
+fn contains_filters(
+    c: &Connection,
+    sql: &mut String,
+    params: &mut Vec<Value>,
+    fields: &[(&str, &Option<String>)],
+) -> rusqlite::Result<bool> {
+    let mut active: Vec<_> = fields
+        .iter()
+        .filter_map(|(col, v)| {
+            v.as_ref()
+                .map(|v| (*col, v.to_lowercase(), Vec::<i64>::new()))
+        })
+        .collect();
+    if active.is_empty() {
+        return Ok(true);
+    }
+    let mut st = c.prepare("SELECT id, name FROM labels")?;
+    let mut rows = st.query([])?;
+    while let Some(row) = rows.next()? {
+        let name = row.get::<_, String>(1)?.to_lowercase();
+        for (_, needle, ids) in &mut active {
+            if name.contains(needle.as_str()) {
+                ids.push(row.get::<_, i64>(0)?);
+            }
+        }
+    }
+    for (col, _, ids) in active {
+        if ids.is_empty() {
+            return Ok(false);
+        }
+        sql.push_str(&format!(" AND {col} IN (SELECT value FROM json_each(?))"));
+        params.push(serde_json::json!(ids).to_string().into());
+    }
+    Ok(true)
+}
+
+/// Account is exact; model, key label and instance are literal, case-insensitive
+/// substrings. An unknown exact account or a substring with no labels matches nothing.
 #[derive(Debug, Clone, Default)]
 pub struct Filters {
     pub account: Option<String>,
@@ -583,25 +628,27 @@ pub struct Filters {
     pub instance: Option<String>,
 }
 impl Filters {
-    /// SQL fragment (" AND col = ?") + params, resolved to label ids.
-    fn sql(&self, c: &Connection) -> rusqlite::Result<Option<(String, Vec<i64>)>> {
+    fn sql(&self, c: &Connection) -> rusqlite::Result<Option<(String, Vec<Value>)>> {
         let mut s = String::new();
         let mut p = vec![];
-        for (col, v) in [
-            ("account", &self.account),
-            ("model", &self.model),
-            ("key", &self.key),
-            ("instance", &self.instance),
-        ] {
-            if let Some(v) = v {
-                match label_id(c, v)? {
-                    Some(id) => {
-                        s.push_str(&format!(" AND {col} = ?"));
-                        p.push(id);
-                    }
-                    None => return Ok(None),
-                }
-            }
+        if let Some(v) = &self.account {
+            let Some(id) = label_id(c, v)? else {
+                return Ok(None);
+            };
+            s.push_str(" AND account = ?");
+            p.push(id.into());
+        }
+        if !contains_filters(
+            c,
+            &mut s,
+            &mut p,
+            &[
+                ("model", &self.model),
+                ("key", &self.key),
+                ("instance", &self.instance),
+            ],
+        )? {
+            return Ok(None);
         }
         Ok(Some((s, p)))
     }
@@ -646,28 +693,28 @@ pub struct RecentQuery {
 
 /// WHERE clause (without ORDER/LIMIT) + params for [`recent`] / [`recent_count`].
 /// `None` ⇒ nothing can match.
-fn recent_where(c: &Connection, q: &RecentQuery) -> rusqlite::Result<Option<(String, Vec<i64>)>> {
+fn recent_where(c: &Connection, q: &RecentQuery) -> rusqlite::Result<Option<(String, Vec<Value>)>> {
     let Some((fsql, fparams)) = q.filters.sql(c)? else {
         return Ok(None);
     };
     let hi = q.before_ms.map(|b| (b << SEQ_BITS) - 1).unwrap_or(i64::MAX);
     let lo = q.since_ms.map(|s| s << SEQ_BITS).unwrap_or(0);
     let mut s = format!("id BETWEEN ? AND ?{fsql}");
-    let mut ps: Vec<i64> = vec![lo, hi];
+    let mut ps: Vec<Value> = vec![lo.into(), hi.into()];
     ps.extend(fparams);
     if let Some(t) = q.thread.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
         // Served by the partial `requests_thread` index.
         match label_id(c, t)? {
             Some(id) => {
                 s.push_str(" AND thread = ?");
-                ps.push(id);
+                ps.push(id.into());
             }
             None => return Ok(None),
         }
     }
     if let Some(id) = q.before_id {
         s.push_str(" AND id < ?");
-        ps.push(id);
+        ps.push(id.into());
     }
     if q.errors_only {
         s.push_str(" AND (error IS NOT NULL OR status >= 400)");
@@ -680,20 +727,20 @@ fn recent_where(c: &Connection, q: &RecentQuery) -> rusqlite::Result<Option<(Str
         Some(t) if t.is_empty() => {}
         Some(t) if t == "priority" || t == "fast" => {
             s.push_str(" AND tier = ?");
-            ps.push(prio);
+            ps.push(prio.into());
         }
         Some(t) if t == "flex" => {
             s.push_str(" AND tier = ?");
-            ps.push(flex);
+            ps.push(flex.into());
         }
         Some(_) => {
             s.push_str(" AND (tier IS NULL OR tier NOT IN (?, ?))");
-            ps.extend([prio, flex]);
+            ps.extend([Value::from(prio), Value::from(flex)]);
         }
     }
     if q.downgraded {
         s.push_str(" AND req_tier IN (?, ?) AND (tier IS NULL OR tier != req_tier)");
-        ps.extend([prio, flex]);
+        ps.extend([Value::from(prio), Value::from(flex)]);
     }
     if !q.sources.is_empty() {
         let ids: Vec<i64> = q
@@ -706,18 +753,18 @@ fn recent_where(c: &Connection, q: &RecentQuery) -> rusqlite::Result<Option<(Str
             " AND err_source IN ({})",
             vec!["?"; ids.len()].join(",")
         ));
-        ps.extend(ids);
+        ps.extend(ids.into_iter().map(Value::from));
     }
     if let Some(e) = q.error.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
         s.push_str(" AND error = ?");
-        ps.push(label_id(c, e)?.unwrap_or(-1));
+        ps.push(label_id(c, e)?.unwrap_or(-1).into());
     }
     if q.retried {
         s.push_str(" AND (retries > 0 OR switches > 0)");
     }
     if q.exclude_prewarm {
         s.push_str(" AND (endpoint IS NULL OR endpoint != ?)");
-        ps.push(label_id(c, PREWARM_ENDPOINT)?.unwrap_or(-1));
+        ps.push(label_id(c, PREWARM_ENDPOINT)?.unwrap_or(-1).into());
     }
     let outcome = match (q.failure_class.as_deref(), q.outcome) {
         (None, o) => o,
@@ -1034,13 +1081,13 @@ pub(crate) fn record(
     id: i64,
     prices: &crate::PriceTable,
 ) -> Result<Option<RecordRow>, UsageError> {
-    Ok(record_rows(c, "id = ?", vec![id], 1, 0, prices)?.pop())
+    Ok(record_rows(c, "id = ?", vec![id.into()], 1, 0, prices)?.pop())
 }
 
 fn record_rows(
     c: &Connection,
     w: &str,
-    mut ps: Vec<i64>,
+    mut ps: Vec<Value>,
     limit: usize,
     offset: usize,
     prices: &crate::PriceTable,
@@ -1054,8 +1101,8 @@ fn record_rows(
          FROM requests WHERE {w} ORDER BY id DESC LIMIT ? OFFSET ?"
     );
     // One extra row lets the public API detect a next page without another count query.
-    ps.push(limit.clamp(1, 1001) as i64);
-    ps.push(offset.min(1_000_000) as i64);
+    ps.push((limit.clamp(1, 1001) as i64).into());
+    ps.push((offset.min(1_000_000) as i64).into());
     let mut st = c.prepare(&sql)?;
     let name = |id: Option<i64>| id.and_then(|i| names.get(&i).cloned());
     let rows = st.query_map(params_from_iter(ps), |r| {
@@ -1740,7 +1787,7 @@ pub(crate) fn summary(
     };
     if q.exclude_prewarm {
         fsql.push_str(" AND (endpoint IS NULL OR endpoint != ?)");
-        fparams.push(label_id(c, PREWARM_ENDPOINT)?.unwrap_or(-1));
+        fparams.push(label_id(c, PREWARM_ENDPOINT)?.unwrap_or(-1).into());
     }
     let dim_cols: String = dims.iter().map(|d| format!(",{}", d.col())).collect();
     const DIM0: usize = 20;
@@ -1751,13 +1798,14 @@ pub(crate) fn summary(
     let prio = label_id(c, "priority")?;
     let flex = label_id(c, "flex")?;
     let interrupted = label_id(c, crate::problem::INCOMPLETE_INTERRUPTED)?;
-    let mut ps: Vec<i64> = vec![
-        q.from_ms << SEQ_BITS,
+    let mut ps: Vec<Value> = vec![
+        (q.from_ms << SEQ_BITS).into(),
         if q.to_ms >= i64::MAX >> SEQ_BITS {
             i64::MAX
         } else {
             ((q.to_ms + 1) << SEQ_BITS) - 1
-        },
+        }
+        .into(),
     ];
     ps.extend(fparams);
     let mut st = c.prepare(&sql)?;
@@ -2228,24 +2276,24 @@ pub struct RefusalQuery {
     pub offset: usize,
 }
 
-fn refusal_where(c: &Connection, q: &RefusalQuery) -> rusqlite::Result<Option<(String, Vec<i64>)>> {
+fn refusal_where(
+    c: &Connection,
+    q: &RefusalQuery,
+) -> rusqlite::Result<Option<(String, Vec<Value>)>> {
     // A row covers [minute, minute + 60 s); keep minutes overlapping the range.
     let mut s = String::from(" WHERE minute > ? AND minute <= ?");
-    let mut p = vec![q.from_ms - 60_000, q.to_ms];
-    for (col, v) in [("key", &q.key), ("instance", &q.instance)] {
-        if let Some(v) = v {
-            match label_id(c, v)? {
-                Some(id) => {
-                    s.push_str(&format!(" AND {col} = ?"));
-                    p.push(id);
-                }
-                None => return Ok(None),
-            }
-        }
+    let mut p = vec![(q.from_ms - 60_000).into(), q.to_ms.into()];
+    if !contains_filters(
+        c,
+        &mut s,
+        &mut p,
+        &[("key", &q.key), ("instance", &q.instance)],
+    )? {
+        return Ok(None);
     }
     if let Some(r) = q.reason {
         s.push_str(" AND reason = ?");
-        p.push(r.code());
+        p.push(r.code().into());
     }
     Ok(Some((s, p)))
 }
@@ -2311,8 +2359,8 @@ pub(crate) fn refusal_rows(
     };
     let labels = label_map(c)?;
     let name = |id: i64| (id != 0).then(|| labels.get(&id).cloned()).flatten();
-    p.push(q.limit.clamp(1, 500) as i64);
-    p.push(q.offset as i64);
+    p.push((q.limit.clamp(1, 500) as i64).into());
+    p.push((q.offset as i64).into());
     let mut st = c.prepare(&format!(
         "SELECT minute,reason,transport,key,route,ua,model,account,instance,lim,count,first_ms,last_ms,\
          max_inflight,max_ws,max_buffered,max_bytes,sum_bytes FROM refusals{w} \
@@ -2453,15 +2501,9 @@ pub(crate) fn occupancy_rows(
     // Non-negative offset modulo the step keeps the integer division floor-like.
     let off = (i64::from(q.tz_min) * 60_000).rem_euclid(step);
     let mut w = String::from(" WHERE minute > ? AND minute <= ?");
-    let mut p = vec![q.from_ms - 60_000, q.to_ms];
-    if let Some(i) = &q.instance {
-        match label_id(c, i)? {
-            Some(id) => {
-                w.push_str(" AND instance = ?");
-                p.push(id);
-            }
-            None => return Ok(vec![]),
-        }
+    let mut p = vec![(q.from_ms - 60_000).into(), q.to_ms.into()];
+    if !contains_filters(c, &mut w, &mut p, &[("instance", &q.instance)])? {
+        return Ok(vec![]);
     }
     let labels = label_map(c)?;
     let mut st = c.prepare(&format!(

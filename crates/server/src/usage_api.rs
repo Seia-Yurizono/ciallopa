@@ -1013,6 +1013,163 @@ mod tests {
             .collect()
     }
 
+    // Real router + temporary recorder/database: suggestions and every scope consumer
+    // must agree on literal Unicode-lowercase substring matching.
+    #[tokio::test]
+    async fn scope_contains_is_literal_and_shared_by_all_consumers() {
+        let temp = tempfile::tempdir().unwrap();
+        let cfg = ciallopa_core::config::UsageConfig {
+            path: temp.path().join("usage.db"),
+            retention_days: 0,
+            ..Default::default()
+        };
+        let base = now_ms() / 60_000 * 60_000;
+        let labels = [
+            "gpt-5.6-terra",
+            "gpt-5.6-terra-plus",
+            "gpt-5.6-sol",
+            "ÜBER-İ-ΟΣ-Σ",
+            r"literal%_\path",
+            "literalXXYpath",
+            "Straße-é",
+            "café",
+        ];
+        for (i, name) in labels.iter().enumerate() {
+            let r = Recorder::open_as(&cfg, name).unwrap();
+            let mut row = Record::new(r.ids.next_at(base + i as i64), Transport::Sse, "responses");
+            row.status = 200;
+            row.account = Some("Account-A".into());
+            row.model = Some((*name).into());
+            row.key = Some((*name).into());
+            row.thread_id = Some(format!("019abcdef-1234-1234-1234-{i:012}"));
+            assert!(r.record(row));
+            r.refuse(ciallopa_usage::Refusal {
+                ts_ms: base + i as i64,
+                reason: Some(ciallopa_usage::RefusalReason::Inflight),
+                key: Some((*name).into()),
+                ..Default::default()
+            });
+            r.occupancy(ciallopa_usage::OccupancySample {
+                ts_ms: base,
+                inflight: 1,
+                ..Default::default()
+            });
+            r.shutdown();
+        }
+        let rec = Recorder::open_as(&cfg, "reader").unwrap();
+        let app = routes(
+            Some(rec.clone()),
+            Arc::new(NoAccounts),
+            Default::default(),
+            None,
+        );
+        let range = format!("from={base}&to={}", base + 59_999);
+        // Full values also use contains (terra matches terra-plus); punctuation is literal.
+        for (needle, expected) in [
+            ("terra", 2),
+            ("5.6", 3),
+            ("GPT-5.6-TERRA", 2),
+            ("absent", 0),
+            ("%", 1),
+            ("_", 1),
+            (r"\", 1),
+            (r"%_\", 1),
+            ("' OR 1=1 --", 0),
+            ("über", 1),
+            ("İ", 1),
+            ("i", 3),
+            ("ος", 1),
+            ("σ", 1),
+            ("STRASSE", 0),
+            ("STRAẞE", 1),
+            ("é", 2),
+            ("e\u{301}", 0),
+        ] {
+            for field in ["model", "key", "instance"] {
+                let scope = format!("{range}&{field}={}", urlencoding(needle));
+                let (status, rows) = query(&app, &format!("/usage/v1/records?{scope}")).await;
+                assert_eq!(status, StatusCode::OK);
+                assert_eq!(rows["total"], expected, "{field}={needle}: records");
+                let (_, sums) = query(
+                    &app,
+                    &format!("/usage/v1/summary?{scope}&bucket=hour&group=model,key,instance"),
+                )
+                .await;
+                assert_eq!(
+                    sums["summary"]["total"]["count"], expected,
+                    "{field}={needle}: summary"
+                );
+                for part in ["groups", "buckets"] {
+                    let n: u64 = sums["summary"][part]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|g| g["count"].as_u64().unwrap())
+                        .sum();
+                    assert_eq!(n, expected, "{field}={needle}: {part}");
+                }
+                let (_, counts) = query(&app, &format!("/usage/v1/records/counts?{scope}")).await;
+                assert_eq!(counts["all"], expected);
+                if field != "model" {
+                    let (_, refusals) = query(&app, &format!("/usage/v1/refusals?{scope}")).await;
+                    assert_eq!(
+                        refusals["totals"]["count"], expected,
+                        "{field}={needle}: refusals"
+                    );
+                    let row_n: u64 = refusals["rows"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|r| r["count"].as_u64().unwrap())
+                        .sum();
+                    assert_eq!(row_n, expected, "{field}={needle}: refusal rows");
+                    assert_eq!(sums["refusals"]["count"], expected);
+                    assert_eq!(counts["refused"], expected);
+                    let bucket_n: u64 = sums["summary"]["buckets"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|b| b["refusals"]["inflight"].as_u64().unwrap_or(0))
+                        .sum();
+                    assert_eq!(bucket_n, expected, "{field}={needle}: refusal buckets");
+                }
+                if field == "instance" {
+                    let (_, occ) = query(&app, &format!("/usage/v1/occupancy?{scope}")).await;
+                    assert_eq!(
+                        occ["rows"].as_array().unwrap().len() as u64,
+                        expected,
+                        "instance={needle}: occupancy"
+                    );
+                }
+            }
+        }
+        for (scope, expected) in [
+            ("model=terra&key=TERRA&instance=Terra", 2),
+            ("model=terra&key=sol", 0),
+            ("model=terra&account=Account-A", 2),
+            ("account=Account", 0),
+            ("account=account-a", 0),
+        ] {
+            let (_, rows) = query(&app, &format!("/usage/v1/records?{range}&{scope}")).await;
+            assert_eq!(rows["total"], expected, "AND / exact account: {scope}");
+        }
+        let (_, refusals) = query(
+            &app,
+            &format!("/usage/v1/refusals?{range}&key=terra&instance=sol"),
+        )
+        .await;
+        assert_eq!(
+            refusals["totals"]["count"], 0,
+            "refusal conditions AND together"
+        );
+        let (_, rows) = query(&app, &format!("/usage/v1/records?{range}&model=terra&thread=019abcdef-1234-1234-1234-000000000000")).await;
+        assert_eq!(
+            rows["total"], 1,
+            "thread remains exact after fragment resolution"
+        );
+        rec.shutdown();
+    }
+
     #[tokio::test]
     async fn metadata_and_keyset_share_scope_and_keep_offset_compatibility() {
         let temp = tempfile::tempdir().unwrap();
