@@ -668,6 +668,19 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
 
+    /// RUSTSEC-2026-0459 / CVE-2026-119375: the bundled SQLite must be 3.54.0 or newer.
+    #[test]
+    fn bundled_sqlite_has_wal_page_size_fix() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = store::open_rw(&dir.path().join("u.db")).unwrap();
+        let v: String = c
+            .query_row("SELECT sqlite_version()", [], |r| r.get(0))
+            .unwrap();
+        let n: Vec<u32> = v.split('.').map(|p| p.parse().unwrap()).collect();
+        assert!(n[0] > 3 || (n[0] == 3 && n[1] >= 54), "SQLite {v} < 3.54.0");
+        assert_eq!(v, rusqlite::version());
+    }
+
     fn cfg(dir: &Path) -> UsageConfig {
         UsageConfig {
             path: dir.join("u.db"),
