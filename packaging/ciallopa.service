@@ -17,9 +17,10 @@ ExecStart=/usr/bin/ciallopa --config /etc/ciallopa/config.toml serve
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
-# SIGTERM drains HTTP/SSE and WebSocket turns for up to 60 s, then closes and flushes.
+# SIGTERM drains HTTP/SSE and WebSocket turns for shutdown_drain_secs (default 5 s), then
+# closes and flushes (at most 10 s more). Keep this >= shutdown_drain_secs + 15 s.
 KillSignal=SIGTERM
-TimeoutStopSec=75
+TimeoutStopSec=20
 UMask=0077
 StateDirectory=ciallopa
 StateDirectoryMode=0750

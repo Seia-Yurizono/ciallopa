@@ -33,9 +33,10 @@ services:
         target: /var/lib/ciallopa/.ciallopa
         bind:
           create_host_path: false
-    # HTTP/SSE and WebSocket turns drain for 60 s, then bounded close/flush/runtime shutdown.
-    # Keep 75 s for the ~70 s application budget; remove traffic before a rolling restart.
-    stop_grace_period: 75s
+    # Budget: shutdown_drain_secs (default 5 s) for running responses, then up to 3 s close,
+    # 5 s usage flush and 2 s runtime shutdown = 15 s. Cut turns get a retryable error and Codex
+    # replays them after the restart. If you raise shutdown_drain_secs, keep this >= drain + 15 s.
+    stop_grace_period: 20s
     read_only: true
     cap_drop: [ALL]
     security_opt:

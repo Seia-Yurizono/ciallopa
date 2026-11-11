@@ -858,6 +858,13 @@ fn stream_body(
         _ => None,
     };
     let drain = st.upstream.drain.clone();
+    // A Responses SSE cut by shutdown ends with a retryable response.failed (see ws.rs).
+    let on_force = sse.then(|| {
+        Bytes::from(format!(
+            "\n\nevent: response.failed\ndata: {}\n\n",
+            shutdown_failed_event()
+        ))
+    });
     let body = crate::downstream::observed(drain, link, move |tx| async move {
         let mut image_events = image_headers
             .as_ref()
@@ -1172,6 +1179,9 @@ fn stream_body(
     // The SSE body may differ from the upstream's (rewritten or appended terminal events).
     if sse {
         r.headers_mut().remove(http::header::CONTENT_LENGTH);
+    }
+    if let Some(b) = on_force {
+        r.extensions_mut().insert(crate::admission::OnForce(b));
     }
     r
 }
@@ -2002,6 +2012,25 @@ pub(crate) async fn send_streaming(
             false,
         );
     }
+}
+
+/// Seconds a client should wait before replaying a turn cut by shutdown (restart time).
+pub(crate) const SHUTDOWN_RETRY_AFTER_SECS: u64 = 2;
+
+/// Terminal event for a turn cut by shutdown: an unknown `response.failed` code is retryable
+/// in Codex (sse/responses_error.rs), with `error.headers.retry-after` as the delay.
+pub(crate) fn shutdown_failed_event() -> serde_json::Value {
+    serde_json::json!({
+        "type": "response.failed",
+        "response": {
+            "status": "failed",
+            "error": {
+                "code": "gateway_restarting",
+                "message": "ciallopa is restarting; retrying shortly.",
+                "headers": {"retry-after": SHUTDOWN_RETRY_AFTER_SECS.to_string()}
+            }
+        }
+    })
 }
 
 /// Tiny channel-backed body stream (avoids an async-stream dependency).

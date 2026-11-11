@@ -744,6 +744,7 @@ const PAGES=[
   {g:"转发",id:"forward",name:"限流与容错",sub:"资源上限、超时和重试，以及上游出错时的账号冷却时长",secs:[
     {t:"资源上限",rows:["max_body_mb","max_buffered_body_mb","max_inflight_requests","ws_max_connections","ws_max_message_mb"]},
     {t:"超时与重试",rows:["upstream_opts.max_attempts","upstream_opts.preparation_timeout_secs"]},
+    {t:"停止与重启",rows:["shutdown_drain_secs"]},
     {t:"出错时冷却",note:"冷却中的账号不接新请求；最后一个可用账号不冷却",cool:true}],
     adv:["upstream_opts.response_header_timeout_secs","upstream_opts.stream_idle_timeout_secs","upstream_opts.overload_retry_wait_secs"]},
   {g:"转发",id:"images",name:"图片接口",sub:"/v1/images 接口和它使用的模型",secs:[
