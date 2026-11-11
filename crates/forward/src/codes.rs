@@ -68,6 +68,14 @@ pub const UPSTREAM: &[&str] = &[
     "server_is_overloaded",
     "policy_capacity_unavailable",
     "turn_rate_limit_exceeded",
+    "inference_hook_denied",
+    "content_policy_violation",
+    "invalid_access_program",
+    "unsupported_access_program",
+    "access_program_not_enabled",
+    "invalid_workspace_selected",
+    "codex_workspace_access_denied",
+    "budget_reached",
 ];
 
 /// No longer produced, still present in older rows.
