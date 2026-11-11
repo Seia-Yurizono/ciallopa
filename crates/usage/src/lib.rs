@@ -664,6 +664,53 @@ mod tests {
     }
 
     #[test]
+    fn broad_scope_contains_has_no_bind_variable_limit() {
+        // A broad fragment can match more names than SQLite's variable limit.
+        // Keep user text in bound data, not generated SQL placeholders or literals.
+        let mut db = rusqlite::Connection::open_in_memory().unwrap();
+        store::migrate(&mut db).unwrap();
+        let tx = db.transaction().unwrap();
+        {
+            let mut label = tx
+                .prepare("INSERT INTO labels(id,name) VALUES (?,?)")
+                .unwrap();
+            let mut row = tx.prepare("INSERT INTO requests(id,model,transport,status,retries,switches,duration_ms) VALUES (?,?,1,200,0,0,1)").unwrap();
+            for i in 1..=33_000i64 {
+                label
+                    .execute(rusqlite::params![i, format!("model-{i}")])
+                    .unwrap();
+                row.execute(rusqlite::params![(1000 << SEQ_BITS) + i, i])
+                    .unwrap();
+            }
+        }
+        tx.commit().unwrap();
+        let filters = Filters {
+            model: Some("MODEL-".into()),
+            ..Default::default()
+        };
+        let q = RecentQuery {
+            filters: filters.clone(),
+            ..Default::default()
+        };
+        assert_eq!(store::recent_count(&db, &q).unwrap(), 33_000);
+        let sum = store::summary(
+            &db,
+            &SummaryQuery {
+                filters,
+                total_only: true,
+                ..Default::default()
+            },
+            &PriceTable::default(),
+        )
+        .unwrap();
+        assert_eq!(sum.total.count, 33_000);
+        // Exact internal lookups (errors, sessions, prices etc.) were not broadened.
+        assert_eq!(store::label_id(&db, "model-1").unwrap(), Some(1));
+        assert_eq!(store::label_id(&db, "MODEL-1").unwrap(), None);
+        assert_eq!(store::label_id(&db, "model-").unwrap(), None);
+    }
+
+    #[test]
     fn ids_are_time_ordered_and_unique() {
         let g = RequestIds::default();
         let a = g.next_at(1000);

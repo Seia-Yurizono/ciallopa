@@ -512,7 +512,30 @@ from the moment of a refusal:
 | client disconnects mid-stream | dropping the downstream Body cancels its producer, including while the upstream is silent; before a terminal event it records `client_closed` (source `client`), after it the completed result is retained |
 
 ## API (behind the same client key)
-Filters on both list endpoints: `account=`, `model=`, `key=<label>`, `instance=`.
+Scope filters: `account=`, `model=`, `key=<label>`, `instance=`. `account` remains an exact,
+case-sensitive account alias. `model`, key **label** (not the secret key), and `instance` match
+literal substrings after Unicode lowercase conversion, like the dashboard suggestions
+(`toLowerCase().includes()`). All supplied conditions are ANDed. Selecting a complete name
+still means contains: `model=gpt-5.6-terra` also matches `gpt-5.6-terra-plus`.
+
+The same scope applies to records/counts, summary totals/groups/trend buckets, and key/instance
+refusal totals/rows/buckets. Occupancy history uses the same instance matching; account/model
+filters do not apply to refusals or occupancy. Thread-id resolution and exact internal label
+lookups are unchanged.
+
+`%`, `_` and backslash are ordinary characters, not SQL wildcards (URL-encode parameter values,
+e.g. `key=%25` searches for a literal `%`). Unicode lowercase is locale-independent, using
+Rust's Unicode tables on the server and the browser's on the client; very new characters can
+differ with Unicode-version support. It is not accent stripping, normalization or full case
+folding: `ÜBER` matches `über`, `İ` lowers to `i` + combining dot, `ß` does not equal `ss`, and
+precomposed `é` is not decomposed `e` + combining acute. Absent parameters leave that dimension
+unrestricted. Suggestions remain bounded recent/configured names, not an exhaustive result set;
+a free-text query searches the stored labels, not just the cached suggestions.
+
+Matching scans the distinct label dictionary once per filtered query (not the request rows and
+not an SQL UDF). Matching ids are bound as JSON arrays for SQL membership tests, avoiding the
+bind-variable limit even for broad fragments. This is read-only: no schema change, index
+backfill, dependency addition or per-request disk writes.
 See [METRICS.md](METRICS.md) for the current outcome, sampling, cursor and bucket contracts.
 - `GET /usage/v1/summary?…&exclude_prewarm=1` drops prewarm rows from every aggregate in the
   answer (total, groups, buckets, tokens and estimated cost). Default: tokens and cost include
