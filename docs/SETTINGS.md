@@ -43,6 +43,7 @@ streaming, including Images; a reload cannot shorten an already-running stream's
 | `max_buffered_body_mb` | Default 256 MiB; `0` = unlimited, otherwise at least `max_body_mb` (max 65536). Total request bytes buffered at once across all forwarding routes: HTTP request bodies and client WebSocket messages. A body reserves its declared `Content-Length` before any byte is read (chunked bodies reserve as they arrive) and keeps it until every copy is freed (retries, in-stream replay, the zstd-compressed copy). Without room a request waits at most 1 s, then gets the same 503 `gateway_busy` with `Retry-After: 3`; the rest of its body is read and discarded first (at most 10 s) so the client sees the response, not a reset. The next body reads the new value. A client WebSocket message reserves its size (at most the whole budget) when it arrives and keeps it until its turn ends, because it is held for replay; without room it waits at most 1 s, then the client gets an error frame with status 503 `gateway_busy` and `retry-after: 3`, and the connection stays open. Process memory is about 1.4–2× this budget for HTTP (the parsed JSON and the compressed copy exist at the same time). For WebSocket the budget does not bound peak memory: per-connection receive and inflate buffers exist before a message can be counted, so `ws_max_connections` × `ws_max_message_mb` is the bound. Responses are not counted. `runtime.buffered_body_bytes` reports the current reservation. |
 | `ws_max_connections` | Default 24; `0` = unlimited. Client WebSockets open at once, idle ones included. Over the cap the handshake gets 503 `gateway_busy` with `Retry-After: 3` / `retry-after-ms: 3000` and Codex falls back to HTTP for that turn. Lowering it never closes open connections; the next handshake reads the new value. |
 | `ws_max_message_mb` | Default 16 MiB (1–4096). Largest client WebSocket message (and frame) after permessage-deflate inflation; a larger one closes the connection with 1009 *message too big*. Applies to new connections. Together with `ws_max_connections` this bounds WS receive memory: the defaults (24 × 16 MiB) peaked at 1026 MiB RSS in the worst-case test, fitting a 2 GB host. |
+| `shutdown_drain_secs` | Default 5 (0–60). Read when SIGTERM/SIGINT arrives, so a saved value applies to the next stop. See the shutdown paragraph below. |
 | `max_body_mb` | The next request reads the new limit, on forwarding and management routes. A request already reading its body keeps the limit it started with. |
 | `proxy_url`, `proxy_enabled`, `ipv6` | Per-account clients (and token-refresh clients) are dropped and rebuilt on next use. An already-issued HTTP attempt keeps its client and uses that client's egress when classifying connection errors; the next attempt, including a retry of the same request, can use the new egress. When the effective egress changes (`proxy_enabled` and a non-empty `proxy_url`), open client WebSockets finish the running turn on the old connection and are then closed normally (1000) on both legs; Codex reconnects on its next request through the new egress. Not counted as an error, no cooldown. A change of `ipv6` counts as an egress change. |
 | `upstream_opts.connect_timeout_secs` | Model-upstream HTTP clients are rebuilt on next use; the next WS handshake reads the new value. Already-issued attempts retain their clients. OAuth token refresh keeps its separate fixed 10-second connect limit and 30-second whole-request limit. |
@@ -84,10 +85,15 @@ buffers its body (plus the zstd copy), so lower this on memory-constrained hosts
 The in-flight limit bounds operation count; it is not a memory or throughput guarantee.
 
 On SIGTERM/SIGINT the listener stops accepting connections and existing forwarding work
-gets up to 60 seconds to finish. Idle WS connections close normally; active turns close
-after their terminal event. Remaining HTTP work and WS relays are then cancelled, with
-3 seconds for closing, 5 seconds for usage/fingerprint flush and 2 seconds for runtime
-shutdown. A second signal skips the 60-second wait. Flush is best effort: the process does
+gets `shutdown_drain_secs` (default 5) to finish. Idle WS connections close normally; active
+turns close after their terminal event. A Responses SSE stream or WS turn still running at the
+deadline is cut in a fixed order: chunks/frames upstream already delivered are forwarded first
+(at most 0.5 s), then a `response.failed` with code `gateway_restarting` and
+`error.headers.retry-after: 2`, then the end of the body or a 1001 close. Codex treats that
+code as retryable and replays the turn after 2 s; tool calls that already completed are not
+run again. A WS turn sent while draining gets the same event and 1001. Other HTTP work is
+cancelled. Then 3 seconds for closing, 5 seconds for usage/fingerprint flush and 2 seconds for
+runtime shutdown. A second signal skips the remaining wait. Flush is best effort: the process does
 not wait indefinitely for a blocked writer, and recent records can be lost on forced exit.
 Interrupted unfinished streams use `shutdown` / `local` rather than `client_closed`.
 

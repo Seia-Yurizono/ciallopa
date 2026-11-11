@@ -30,10 +30,10 @@ pub(crate) fn refused(reason: Refused) -> Response {
     let mut r = crate::proxy::json_error(StatusCode::SERVICE_UNAVAILABLE, code, message);
     // Outside the Retry-After filter: set both headers here.
     // Busy: 3 s so Codex's fast 5xx retries space out instead of hammering the cap.
-    // Draining keeps a short hint; the process is going away either way.
+    // Draining: the same wait as the shutdown event (about one container restart).
     let ra = match reason {
         Refused::Busy => BUSY_RETRY_AFTER_SECS,
-        Refused::Draining => 1,
+        Refused::Draining => crate::proxy::SHUTDOWN_RETRY_AFTER_SECS,
     };
     errors::set_retry_after(r.headers_mut(), ra);
     r.extensions_mut().insert(errors::ErrMeta {
@@ -74,11 +74,15 @@ pub(crate) async fn admit(
         _ = drain.forced() => return refused(Refused::Draining),
         response = next.run(req) => response,
     };
-    let (parts, body) = response.into_parts();
+    let (mut parts, body) = response.into_parts();
+    let on_force = parts.extensions.remove::<OnForce>().map(|o| o.0);
     Response::from_parts(
         parts,
         Body::new(LeasedBody {
             inner: Some(body),
+            on_force,
+            flush_deadline: None,
+            cut: false,
             lease: Some(lease),
             forced: Box::pin(async move { drain.forced().await }),
         }),
@@ -127,8 +131,20 @@ fn note_inflight(st: &AppState, req: &Request<Body>, limit: usize) {
     );
 }
 
+/// Last frame for a body cut by shutdown (a retryable Responses `response.failed`), set by
+/// the Responses SSE forwarder as a response extension.
+#[derive(Clone)]
+pub(crate) struct OnForce(pub(crate) Bytes);
+
+/// Longest a cut SSE body keeps passing on already-queued chunks before its terminal event.
+const CUT_FLUSH_MAX: std::time::Duration = std::time::Duration::from_millis(500);
+
 struct LeasedBody {
     inner: Option<Body>,
+    on_force: Option<Bytes>,
+    flush_deadline: Option<Pin<Box<tokio::time::Sleep>>>,
+    /// Shutdown force was observed.
+    cut: bool,
     lease: Option<Lease>,
     forced: Pin<Box<dyn Future<Output = ()> + Send>>,
 }
@@ -144,7 +160,29 @@ impl HttpBody for LeasedBody {
         if self.inner.is_none() {
             return Poll::Ready(None);
         }
-        if self.forced.as_mut().poll(cx).is_ready() {
+        // `forced` completes once and must not be polled again after that.
+        if self.cut || self.forced.as_mut().poll(cx).is_ready() {
+            self.cut = true;
+            if self.on_force.is_some() {
+                // A Responses SSE cut by shutdown: pass on everything the producer already
+                // queued (it stops on force, so the queue ends), then the retryable
+                // terminal event, then a clean end of body.
+                let deadline = self
+                    .flush_deadline
+                    .get_or_insert_with(|| Box::pin(tokio::time::sleep(CUT_FLUSH_MAX)));
+                let timed_out = deadline.as_mut().poll(cx).is_ready();
+                if !timed_out {
+                    let inner = self.inner.as_mut().expect("body present");
+                    match Pin::new(inner).poll_frame(cx) {
+                        Poll::Ready(Some(Ok(frame))) => return Poll::Ready(Some(Ok(frame))),
+                        Poll::Pending => return Poll::Pending,
+                        Poll::Ready(None | Some(Err(_))) => {}
+                    }
+                }
+                self.inner.take();
+                let event = self.on_force.take().expect("checked above");
+                return Poll::Ready(Some(Ok(Frame::data(event))));
+            }
             self.inner.take();
             self.lease.take();
             return Poll::Ready(Some(Err(axum::Error::new(std::io::Error::new(
