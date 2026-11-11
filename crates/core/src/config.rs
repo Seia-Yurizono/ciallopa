@@ -441,6 +441,13 @@ pub struct Config {
     /// A larger message closes the connection with 1009; Codex retries, then uses HTTP,
     /// where `max_body_mb` applies. Read at each handshake.
     pub ws_max_message_mb: u64,
+    /// Seconds running HTTP/SSE responses and WebSocket turns may still finish after
+    /// SIGTERM (default 5, 0..=60; read when the signal arrives). Idle WebSockets and
+    /// keep-alive connections close at once. A Responses stream or WS turn still running at
+    /// the deadline gets what upstream already sent, then a retryable `response.failed`
+    /// (`gateway_restarting`, `retry-after: 2`) so Codex replays it on the restarted gateway.
+    /// The listener is closed meanwhile, so a restart is unavailable for up to this long.
+    pub shutdown_drain_secs: u64,
     pub routing: RoutingConfig,
     pub upstream_opts: UpstreamOpts,
     pub images: ImagesConfig,
@@ -465,6 +472,7 @@ impl Default for Config {
             ws_compression: true,
             ws_max_connections: 24,
             ws_max_message_mb: 16,
+            shutdown_drain_secs: 5,
             routing: RoutingConfig::default(),
             upstream_opts: UpstreamOpts::default(),
             images: ImagesConfig::default(),
@@ -519,6 +527,11 @@ impl Config {
         if budget != 0 && !(self.max_body_mb..=65536).contains(&budget) {
             return Err(ConfigError::Invalid(
                 "max_buffered_body_mb must be 0 or in max_body_mb..=65536".into(),
+            ));
+        }
+        if self.shutdown_drain_secs > 60 {
+            return Err(ConfigError::Invalid(
+                "shutdown_drain_secs must be in 0..=60".into(),
             ));
         }
         if !(1..=4096).contains(&self.ws_max_message_mb) {
@@ -775,6 +788,23 @@ mod tests {
         assert!(a[0].contains("stream_idle_timeout_secs (301s)"), "{a:?}");
         assert!(a[0].contains("300s"), "{a:?}");
         assert!(a[0].contains("client_closed"), "{a:?}");
+    }
+
+    #[test]
+    fn shutdown_drain_defaults_to_five_seconds_and_is_bounded() {
+        assert_eq!(Config::default().shutdown_drain_secs, 5);
+        assert_eq!(Config::parse("").unwrap().shutdown_drain_secs, 5);
+        for ok in [0, 60] {
+            let c = Config::parse(&format!("shutdown_drain_secs = {ok}")).unwrap();
+            assert_eq!(c.shutdown_drain_secs, ok);
+        }
+        let e = Config::parse("shutdown_drain_secs = 61").unwrap_err();
+        assert!(e.to_string().contains("shutdown_drain_secs"), "{e}");
+        let f = crate::settings::SCHEMA
+            .iter()
+            .find(|f| f.key == "shutdown_drain_secs")
+            .expect("in the settings schema");
+        assert!(f.editable && matches!(f.effect, crate::settings::Effect::Hot));
     }
 
     #[test]

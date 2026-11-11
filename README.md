@@ -201,9 +201,11 @@ Things the compose file sets on purpose:
   beside it. A rename cannot replace a single-file bind mount, so with one the save fails with
   `Device or resource busy` (or `Read-only file system`) and the error says to mount the
   directory; an editor that saves by rename would also leave the container on the old file.
-- **`stop_grace_period: 75s`.** On `SIGTERM`, HTTP/SSE requests and active WebSocket turns get
-  up to 60 s to finish, followed by bounded close, flush and runtime shutdown. Docker's
-  default 10 s can kill active work before that drain completes.
+- **`stop_grace_period: 20s`.** On `SIGTERM`, idle connections close at once and running HTTP/SSE
+  responses and WebSocket turns get `shutdown_drain_secs` (default 5 s) to finish. A turn still
+  running then receives what upstream already sent and a retryable `response.failed`; Codex
+  replays it about 2 s later on the restarted gateway. Close, flush and runtime shutdown add at
+  most 10 s. Raise the grace period together with `shutdown_drain_secs` (drain + 15 s).
 - **`hostname: ciallopa`.** `instance_id` in usage records defaults to the hostname, which in a
   container is otherwise a new random ID on every recreate.
 
@@ -330,6 +332,8 @@ ws_compression = true                   # permessage-deflate on the client WebSo
 ws_max_connections = 24                 # client WebSockets open at once (idle too); over: handshake 503,
                                         # Codex then uses HTTP; 0 = unlimited; new connections
 ws_max_message_mb = 16                  # largest client WS message after inflating; over: close 1009
+shutdown_drain_secs = 5                 # on SIGTERM, running responses/turns get this long (0-60), then
+                                        # a retryable response.failed that Codex replays; hot-reloadable
 
 [routing]
 strategy = "round-robin"                # | weighted-round-robin | fill-first
@@ -599,8 +603,8 @@ everywhere. Details: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#behind-cloudflare-t
 The `.deb` installs `packaging/ciallopa.service` (see Install): `User=ciallopa`,
 `HOME=/var/lib/ciallopa` (`StateDirectory`), `ProtectSystem=strict` with `/etc/ciallopa` and
 `/var/lib/ciallopa` writable, `ProtectHome`, `NoNewPrivileges`, an empty capability set, a
-`@system-service` syscall filter and `TimeoutStopSec=75` for the bounded HTTP/SSE/WebSocket drain
-and final flush on stop.
+`@system-service` syscall filter and `TimeoutStopSec=20` for the bounded HTTP/SSE/WebSocket drain
+(`shutdown_drain_secs`, default 5 s) and final flush on stop.
 For a tarball install, copy the binary to `/usr/bin`, create the user and directories the package
 would (`useradd --system --home-dir /var/lib/ciallopa --shell /usr/sbin/nologin ciallopa`,
 `/etc/ciallopa` and `/var/lib/ciallopa` as `ciallopa:ciallopa` 0750), install the unit to

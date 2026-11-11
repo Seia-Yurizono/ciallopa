@@ -307,6 +307,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     let listen = state.config.load().listen;
     let drain = state.upstream.drain.clone();
+    let live_config = state.config.clone();
     // Live settings: file watch (debounced) + SIGHUP + admin API share one apply pipeline.
     let settings = ciallopa::settings::Settings::new(state, Some(config_path), oauth_pools);
     // Historical audit rows may still say account:<raw-id>; rewrite once (no-op if clean).
@@ -338,12 +339,37 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 _ = interrupt.recv() => {}
             }
             drain.start();
-            let close_deadline = tokio::time::Instant::now() + DRAIN_BOUND + CLOSE_GRACE;
+            let bound = std::time::Duration::from_secs(
+                live_config
+                    .load()
+                    .shutdown_drain_secs
+                    .min(DRAIN_MAX.as_secs()),
+            );
+            let close_deadline = tokio::time::Instant::now() + bound + CLOSE_GRACE;
             tracing::info!(
                 inflight = drain.inflight(),
                 ws_connections = drain.active(),
+                drain_secs = bound.as_secs(),
                 "shutting down; draining forwarded requests"
             );
+            // Say what a long stop is waiting for (the listener is already closed).
+            let progress = {
+                let drain = drain.clone();
+                tokio::spawn(async move {
+                    let started = tokio::time::Instant::now();
+                    let mut tick =
+                        tokio::time::interval_at(started + DRAIN_PROGRESS, DRAIN_PROGRESS);
+                    loop {
+                        tick.tick().await;
+                        tracing::info!(
+                            elapsed_secs = started.elapsed().as_secs(),
+                            inflight = drain.inflight(),
+                            ws_connections = drain.active(),
+                            "still draining"
+                        );
+                    }
+                })
+            };
             let _ = stop_tx.send(());
             let second_signal = async {
                 tokio::select! {
@@ -359,12 +385,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     let left = close_deadline.saturating_duration_since(tokio::time::Instant::now());
                     drain.wait_idle(CLOSE_GRACE.min(left)).await;
                 }
-                cut = drain.shutdown(DRAIN_BOUND, CLOSE_GRACE) => {
+                cut = drain.shutdown(bound, CLOSE_GRACE) => {
                     if cut > 0 {
                         tracing::warn!(inflight = drain.inflight(), ws_connections = drain.active(), "drain bound reached; remaining requests cancelled");
                     }
                 }
             }
+            progress.abort();
         })
     };
     use std::future::IntoFuture;
@@ -408,8 +435,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// 60 + 3 + 5 + 2(runtime) stays below the packaged 75 s stop grace.
-const DRAIN_BOUND: std::time::Duration = std::time::Duration::from_secs(60);
+/// Upper bound of `shutdown_drain_secs`. The default 5 + 3 (close) + 5 (flush) + 2 (runtime)
+/// stays below the packaged 20 s stop grace; a longer drain needs a longer external timeout.
+const DRAIN_MAX: std::time::Duration = std::time::Duration::from_secs(60);
+/// Interval of the "still draining" log while a stop waits for running responses.
+const DRAIN_PROGRESS: std::time::Duration = std::time::Duration::from_secs(10);
 const FLUSH_BOUND: std::time::Duration = std::time::Duration::from_secs(5);
 fn absolute(p: &std::path::Path) -> PathBuf {
     if p.is_absolute() {
