@@ -98,6 +98,24 @@ fn reveal_row(r: &mut ciallopa_usage::RecordRow) {
     reveal(&mut r.first_account);
 }
 
+/// History rows carry the stored alias; map each back to the live id (same as the record list),
+/// so a single unfiltered fetch can be matched to accounts by the UI.
+fn reveal_history(rows: &mut [ciallopa_usage::AccountHistory]) {
+    reveal_history_with(rows, ciallopa_core::current().as_deref());
+}
+
+fn reveal_history_with(
+    rows: &mut [ciallopa_usage::AccountHistory],
+    al: Option<&ciallopa_core::Aliaser>,
+) {
+    let Some(al) = al else { return };
+    for h in rows {
+        if let Some(id) = al.resolve(&h.account) {
+            h.account = id;
+        }
+    }
+}
+
 fn reveal_attempts(v: &mut serde_json::Value) {
     let Some(list) = v.as_array_mut() else { return };
     for x in list {
@@ -921,7 +939,8 @@ async fn quota_history(State(St { rec, .. }): State<St>, Query(q): Query<History
         .quota_history(aliased.as_deref().or(q.account.as_deref()), from, to)
         .await
     {
-        Ok(rows) => {
+        Ok(mut rows) => {
+            reveal_history(&mut rows);
             // Try the raw id if the alias missed (legacy rows / already-aliased query).
             let empty = rows
                 .iter()
@@ -929,7 +948,8 @@ async fn quota_history(State(St { rec, .. }): State<St>, Query(q): Query<History
             if empty {
                 if let (Some(raw), Some(al)) = (q.account.as_deref(), aliased.as_deref()) {
                     if raw != al {
-                        if let Ok(rows2) = rec.quota_history(Some(raw), from, to).await {
+                        if let Ok(mut rows2) = rec.quota_history(Some(raw), from, to).await {
+                            reveal_history(&mut rows2);
                             return Json(serde_json::json!({"from_ms": from, "to_ms": to, "accounts": rows2}))
                                 .into_response();
                         }
@@ -1055,6 +1075,26 @@ mod tests {
         let (_, c) = query(&app, "/usage/v1/records/counts").await;
         assert_eq!(c["all"], 3);
         assert!(!c["refused"].is_null());
+    }
+
+    #[test]
+    fn history_rows_reveal_live_account_ids() {
+        // a local aliaser: installing the process-wide one would alias every other test's rows
+        let al = ciallopa_core::Aliaser::from_key([7u8; 32]);
+        let id = "codex-demo-alice@example.com-plus";
+        let alias = al.alias(id);
+        assert_ne!(alias, id);
+        let row = |account: &str| ciallopa_usage::AccountHistory {
+            account: account.into(),
+            from_ms: 0,
+            to_ms: 1,
+            events: vec![],
+            cycles: vec![],
+        };
+        let mut rows = vec![row(&alias), row("unknown-label")];
+        reveal_history_with(&mut rows, Some(&al));
+        assert_eq!(rows[0].account, id);
+        assert_eq!(rows[1].account, "unknown-label");
     }
 
     fn urlencoding(s: &str) -> String {

@@ -30,7 +30,7 @@
 --proxy:#b79cff;--proxy-bg:#221a38;--off:#a1a8b3;--off-bg:#20242a;--focus:#7aa2ff;--danger:#b4321f;--shadow:0 8px 28px rgba(0,0,0,.55)}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
-@media (min-width:761px){html{scrollbar-gutter:stable}}
+@media (min-width:761px) and (min-height:501px),(min-width:761px) and (pointer:fine){html{scrollbar-gutter:stable}}
 html.modal-open{overflow:hidden}
 body{margin:0;background:var(--bg);color:var(--fg);font:var(--fs-m)/1.45 var(--font);-webkit-font-smoothing:antialiased}
 a{color:var(--fg)}
@@ -76,8 +76,14 @@ button:disabled{opacity:.45;cursor:not-allowed}
 button.xs,.btn.xs{height:24px;padding:0 var(--s2)}
 button.pri{background:var(--fg);border-color:var(--fg);color:var(--surface)}
 button.pri:hover{background:var(--fg-2)}
-button.ghost{border-color:transparent;background:transparent;color:var(--fg-2)}
-button.ghost:hover{background:var(--surface-2)}
+/* every text action has a border; .ghost is now just the quieter text colour. Borderless only for icon-only
+   buttons (.icon, #theme) and a table row's 详情 disclosure (.det) */
+button.ghost{color:var(--fg-2)}
+button.ghost:hover{background:var(--surface-2);color:var(--fg)}
+button.icon,button#theme,button.det{border-color:transparent;background:transparent}
+button.icon:hover,button#theme:hover,button.det:hover{background:var(--surface-2)}
+/* toggles show their state: pressed / expanded */
+button.ghost[aria-pressed=true],button.ghost[aria-expanded=true]:not(.det){background:var(--surface-2);border-color:var(--ctl);color:var(--fg)}
 button.danger{color:var(--err);border-color:color-mix(in srgb,var(--err) 45%,transparent);background:transparent}
 button.danger:hover{background:var(--err-bg)}
 button.danger.solid{background:var(--danger);border-color:var(--danger);color:#fff}
@@ -169,23 +175,24 @@ tr.hl>td:first-child{box-shadow:inset 2px 0 0 var(--focus)}
 #lerr{margin-top:var(--s2);color:var(--err)}
 .m-only{display:none}
 @media (prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
-@media (max-width:760px){
+@media (max-width:760px),(max-height:500px) and (pointer:coarse){
 :root{--hdr:44px;--tabbar:52px}
-header{padding:0 var(--s3);gap:var(--s2)}
-nav.tabs{position:fixed;left:0;right:0;bottom:0;height:calc(var(--tabbar) + env(safe-area-inset-bottom));z-index:30;background:var(--surface);border-top:1px solid var(--line);gap:0;padding-bottom:env(safe-area-inset-bottom)}
+/* landscape phones keep this layout; content clears the notch / Dynamic Island side (needs viewport-fit=cover) */
+header{padding:0 max(var(--s3),env(safe-area-inset-right)) 0 max(var(--s3),env(safe-area-inset-left));gap:var(--s2)}
+nav.tabs{position:fixed;left:0;right:0;bottom:0;height:calc(var(--tabbar) + env(safe-area-inset-bottom));z-index:30;background:var(--surface);border-top:1px solid var(--line);gap:0;padding:0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
 nav.tabs a{flex:1;flex-direction:column;justify-content:center;gap:2px;border-bottom:0;border-top:2px solid transparent;margin:0;font-size:var(--fs-xs)}
 nav.tabs a:before{width:20px;height:20px;-webkit-mask-size:20px;mask-size:20px}
 nav.tabs a .cnt{display:none}
 nav.tabs a[aria-current]{border-top-color:var(--fg)}
 .hstat{gap:var(--s2)}
-main{padding:var(--s3) var(--s3) calc(var(--tabbar) + var(--s5))}
+main{padding:var(--s3) max(var(--s3),env(safe-area-inset-right)) calc(var(--tabbar) + env(safe-area-inset-bottom) + var(--s5)) max(var(--s3),env(safe-area-inset-left))}
 section{margin-bottom:var(--s5)}
 .d-only{display:none!important}.m-only{display:revert}
-#toasts{left:var(--s3);right:var(--s3);bottom:calc(var(--tabbar) + var(--s2));align-items:stretch;max-width:none}.toast{max-width:none}
+#toasts{left:max(var(--s3),env(safe-area-inset-left));right:max(var(--s3),env(safe-area-inset-right));bottom:calc(var(--tabbar) + env(safe-area-inset-bottom) + var(--s2));align-items:stretch;max-width:none}.toast{max-width:none}
 .modal{align-items:flex-end;padding:var(--s3) var(--s3) calc(var(--s3) + env(safe-area-inset-bottom))}
-select,input:not([type=checkbox]),textarea{font-size:16px}select,input:not([type=checkbox]){height:40px}
-.toast button{height:40px}.toast button.x{width:40px}
-#rmore,#devbtn,#imf button,#kf button,#pcheck{height:40px}
+select,input:not([type=checkbox]),textarea{font-size:16px}select,input:not([type=checkbox]){height:44px}
+.toast button{height:44px}.toast button.x{width:44px}
+#rmore,#devbtn,#imf button,#kf button,#pcheck{height:44px}
 .mbox{max-height:88vh}
 .mact button{flex:1;height:44px;font-size:var(--fs-m)}
 .mact .alt{margin-right:0;flex-basis:100%}
@@ -200,8 +207,8 @@ table.stk tr.hl{background:color-mix(in srgb,var(--focus) 9%,var(--surface));box
 table.stk tr.hl>td{background:none!important;box-shadow:none!important}
 }
 @media (pointer:coarse){
-header button,header a.tag,.cchip,label.chk,.toc a,.pop .pf a,.pop button,#acc .stack button,#acc .meta-c button,.sh button,.ptest button,#reload,#mstrip button,.banner a{position:relative}
-header button:after,header a.tag:after,.cchip:after,label.chk:after,.toc a:after,.pop .pf a:after,.pop button:after,#acc .stack button:after,#acc .meta-c button:after,.sh button:after,.ptest button:after,#reload:after,#mstrip button:after,.banner a:after{content:"";position:absolute;left:-2px;right:-2px;top:50%;height:44px;transform:translateY(-50%)}
+header button,header a.tag,.cchip,label.chk,.toc a,.pop .pf a,.pop button,#acc .stack button,#acc .meta-c button,.sh button,.ptest button,#reload,.qmod,#mstrip button,.banner a{position:relative}
+header button:after,header a.tag:after,.cchip:after,label.chk:after,.toc a:after,.pop .pf a:after,.pop button:after,#acc .stack button:after,#acc .meta-c button:after,.sh button:after,.ptest button:after,#reload:after,.qmod:after,#mstrip button:after,.banner a:after{content:"";position:absolute;left:50%;top:50%;width:max(calc(100% + 4px),44px);height:max(100%,44px);transform:translate(-50%,-50%)}
 }
 /* desktop shell: brand + page links in a left sidebar, page title and global actions in the top bar */
 .ptl{display:none;margin:0;font-size:17px;font-weight:600;letter-spacing:-.1px;white-space:nowrap}
@@ -247,6 +254,27 @@ select.ivl{height:24px;padding:0 20px 0 var(--s2);font-size:var(--fs-xs);backgro
 .fbar{position:sticky;top:var(--hdr);z-index:15;display:flex;align-items:center;gap:var(--s3);margin:calc(-1 * var(--s5)) 0 var(--s3);padding:var(--s3) 0 var(--s2);background:var(--bg);border-bottom:1px solid var(--line)}
 .fbar .fl{display:inline-flex;align-items:center;gap:var(--s2);font-size:var(--fs-s);color:var(--mut);white-space:nowrap}
 .fbar .fl.m-only{display:none}
+/* overview view tabs (用量 | 系统情况) */
+.otabs{display:flex;gap:var(--s4);margin:calc(-1 * var(--s5)) 0 0;padding-top:var(--s2);border-bottom:1px solid var(--line)}
+.otabs button{height:40px;padding:0 2px;border:0;border-radius:0;background:transparent!important;color:var(--mut);font-size:var(--fs-m);font-weight:500;border-bottom:2px solid transparent;margin-bottom:-1px;gap:6px}
+.otabs button:hover{color:var(--fg)}
+.otabs button[aria-selected=true]{color:var(--fg);font-weight:600;border-bottom-color:var(--fg)}
+.tbadge{min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--err);color:#fff;font-size:11px;font-weight:600;line-height:18px;text-align:center}
+.otabs+.fbar{margin-top:0}
+main[data-tab=sys] .use-only{display:none!important}
+main:not([data-tab=sys]) .sys-only{display:none!important}
+main[data-tab=sys] #mem{margin-top:var(--s4)}
+#sysempty{margin:var(--s5) 0}
+/* pooled quota on the realtime row: one segment per enabled account, fill = remaining */
+.pool{display:inline-flex;align-items:center;flex-wrap:wrap;gap:var(--s1) var(--s4);margin-left:auto;font-size:var(--fs-s)}
+.pool .pl{display:inline-flex;align-items:center;gap:6px}.pool .pl>.mut{white-space:nowrap}
+.pool .pb{display:flex;gap:2px;width:104px}
+.pool .pb .bar{flex:1;min-width:0;height:8px;border-radius:2px}
+.pool .pb .bar>i{border-radius:0}
+.pool .pb .bar.unk{background:repeating-linear-gradient(90deg,var(--bar) 0 3px,transparent 3px 5px);box-shadow:inset 0 0 0 1px var(--bar)}
+.pool .pl b{min-width:2.6em;text-align:right;font-weight:600}
+.pool .acclink{font-weight:500;text-decoration:none;white-space:nowrap}
+.pool .acclink:hover{text-decoration:underline}
 .strip{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:var(--s3);margin-bottom:var(--s6)}
 .kpi{background:var(--surface);border:1px solid var(--line);border-radius:var(--r2);box-shadow:var(--card);padding:var(--s3) var(--s4);min-width:0}
 .kpi .k{font-size:var(--fs-s);color:var(--mut);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -295,6 +323,9 @@ select.ivl{height:24px;padding:0 20px 0 var(--s2);font-size:var(--fs-xs);backgro
 .kpi.hot .v{color:var(--cool)}
 .statlink{padding:0;border:0;height:auto;background:transparent!important;font:inherit;color:inherit;text-align:left}
 .statlink:hover{text-decoration:underline;text-underline-offset:3px}
+/* small drill-down numbers in the cards: a faint dotted underline at rest, solid on hover / focus; the big KPI values stay clean */
+.kpi .s .statlink,.kpi .fcls .statlink,.livepk .statlink{text-decoration:underline dotted;text-decoration-color:color-mix(in srgb,currentColor 50%,transparent);text-underline-offset:3px}
+.kpi .s .statlink:hover,.kpi .s .statlink:focus-visible,.kpi .fcls .statlink:hover,.kpi .fcls .statlink:focus-visible,.livepk .statlink:hover,.livepk .statlink:focus-visible{text-decoration-style:solid;text-decoration-color:currentColor}
 .kpi .k,.kpi .s{white-space:normal}
 .kpi .s{min-height:32px}
 .kpi .v{margin:var(--s1) 0}
@@ -351,8 +382,8 @@ button.pc.sm{height:24px;padding:0 8px;font-size:var(--fs-xs)}
 .concl .acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
 .concl .acts button{height:28px;padding:0 10px;font-size:var(--fs-s)}
 .concl .acts button.p{border-color:var(--focus);color:var(--focus)}
-@media (max-width:760px){.pf{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}.pf::-webkit-scrollbar{display:none}.pf .lbl{display:none}.pf>.sp{display:none}.hb{font-size:var(--fs-xs)}#rec td.err .nx:not(.p){display:none}}
-@media (max-width:760px){
+@media (max-width:760px),(max-height:500px) and (pointer:coarse){.pf{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}.pf::-webkit-scrollbar{display:none}.pf .lbl{display:none}.pf>.sp{display:none}.hb{font-size:var(--fs-xs)}#rec td.err .nx:not(.p){display:none}}
+@media (max-width:760px),(max-height:500px) and (pointer:coarse){
 #pchips{display:grid;grid-template-columns:minmax(0,1fr);overflow:visible;gap:var(--s2)}
 #pchips .pbtns{display:flex;gap:6px;min-width:0;overflow-x:auto;padding:2px;scrollbar-width:thin}
 #pchips .request-scope{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
@@ -366,41 +397,9 @@ button.pc.sm{height:24px;padding:0 8px;font-size:var(--fs-xs)}
 .detail-stats .v{font-size:var(--fs-l);font-variant-numeric:tabular-nums;margin-top:var(--s1)}
 .detail-meta{padding:var(--s2) 0}
 .tid{display:inline-flex;align-items:center;flex-wrap:wrap;gap:var(--s1) var(--s2)}
-.rowA{display:grid;grid-template-columns:auto minmax(0,1fr);gap:var(--s5);align-items:start;margin-bottom:var(--s6)}
-.rowA>section{margin-bottom:0;min-width:0}
-@media (max-width:1180px){.rowA{grid-template-columns:minmax(0,1fr)}}
-#quota td{padding-top:var(--s1);padding-bottom:var(--s1)}
-#quota td.qc{width:150px}
-#quota .rt{display:block;font-size:var(--fs-xs);color:var(--mut);line-height:16px;font-variant-numeric:tabular-nums;white-space:nowrap}
-#quota .q{margin-top:var(--s1)}
-#quota .who{max-width:220px}
-#quota .who a{color:var(--fg);font-weight:600;text-decoration:none}
-#quota .who a:hover{text-decoration:underline}
-#quota .sub{font-size:var(--fs-xs);line-height:16px}
-#quota .sdot{margin-top:var(--s1);align-self:flex-start}
-#quota .nod{font-size:var(--fs-xs);color:var(--faint)}
-.cchip{height:24px;padding:0 var(--s2);font-size:var(--fs-xs);font-weight:600;font-variant-numeric:tabular-nums}
-.cchip[aria-expanded=true]{background:var(--surface-2);border-color:var(--fg-2)}
-.cchip.soon{color:var(--cool);border-color:color-mix(in srgb,var(--cool) 50%,transparent)}
-.cchip.none{color:var(--faint);border-style:dashed}
 /* reset-card popover: hover = read-only preview; click = pinned, non-modal */
 .pop{position:absolute;z-index:35;width:320px;background:var(--surface);border:1px solid var(--line-2);border-radius:var(--r2);box-shadow:var(--shadow);padding:var(--s3);display:flex;flex-direction:column;gap:var(--s2);font-size:var(--fs-s)}
 .pop:focus{outline:none}
-.pop .ph{display:flex;align-items:baseline;gap:var(--s2);min-width:0}
-.pop .ph b{font-size:var(--fs-m);flex:none}
-.pop ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--s1);max-height:40vh;overflow:auto}
-.pop li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:0 var(--s2);align-items:center;padding:var(--s1) var(--s2);border-radius:var(--r1);border:1px solid var(--line)}
-.pop li .ex{font-variant-numeric:tabular-nums}
-.pop li.near{background:var(--surface-2);border-color:var(--fg-2)}
-.pop li.near.soon{background:var(--cool-bg);border-color:color-mix(in srgb,var(--cool) 50%,transparent)}
-.pop li.used{opacity:.65}
-.pop li .tt{grid-column:1/-1;font-size:var(--fs-xs);color:var(--mut)}
-.pop .pf{display:flex;gap:var(--s2);align-items:center;border-top:1px solid var(--line);padding-top:var(--s2)}
-.pop .pf a{font-size:var(--fs-s)}
-.pop:not(.pinned) .pin-only{display:none}
-.pop.pinned .prev-only{display:none}
-.pop .x{width:24px;padding:0}
-.pop-bg{position:fixed;inset:0;z-index:34;background:rgba(10,12,16,.3)}
 /* charts, summary */
 .chart{padding:var(--s4) var(--s4) var(--s3);position:relative}
 .chart svg{display:block;width:100%;height:auto}
@@ -495,7 +494,7 @@ button.pc.sm{height:24px;padding:0 8px;font-size:var(--fs-xs)}
 .memstrip{grid-template-columns:repeat(2,minmax(0,1fr))}
 .memstrip .spark{grid-column:1/-1}
 }
-@media (max-width:760px){
+@media (max-width:760px),(max-height:500px) and (pointer:coarse){
 .strip{gap:var(--s2);margin-bottom:var(--s5)}
 .strip .kpi{padding:var(--s2)}
 .strip .kpi .s{min-height:0}
@@ -508,32 +507,25 @@ button.pc.sm{height:24px;padding:0 8px;font-size:var(--fs-xs)}
 .cbl{max-width:none;width:100%}
 .cbl li{min-height:44px}
 .quiet{margin-top:-12px}
-.lookup{width:100%;margin-left:0}.lookup input{flex:1;width:auto}.lookup button{height:40px}
+.lookup{width:100%;margin-left:0}.lookup input{flex:1;width:auto}.lookup button{height:44px}
 .detail-stats{grid-template-columns:repeat(2,minmax(0,1fr))}
 #dp h3{flex-wrap:wrap}#dp h3 span{flex:1 0 100%}
-#dp h3 button,#dp .row>button,#dretry,.filterchip{min-height:40px}
+#dp h3 button,#dp .row>button,#dretry,.filterchip{min-height:44px}
 .filters input[type=text]{flex:1 1 40%;width:auto}
-.fbar{margin:calc(-1 * var(--s3)) 0 var(--s3);padding:var(--s2) 0;gap:var(--s2);flex-wrap:wrap}
+/* sticky = header 44 + view tabs 44; the range bar scrolls away */
+.otabs{position:sticky;top:var(--hdr);z-index:16;background:var(--bg);margin:calc(-1 * var(--s3)) calc(-1 * max(var(--s3),env(safe-area-inset-right))) 0 calc(-1 * max(var(--s3),env(safe-area-inset-left)));padding:0 max(var(--s3),env(safe-area-inset-right)) 0 max(var(--s3),env(safe-area-inset-left))}
+.otabs button{height:44px}
+.fbar{position:static;margin:0 0 var(--s3);padding:var(--s2) 0;gap:var(--s2);flex-wrap:wrap}
+.kpi.live{position:relative}.pool .acclink{position:absolute;top:0;right:var(--s3)}
+.pool{margin-left:0;flex-basis:100%;justify-content:space-between}.pool .pb{width:auto;flex:1;min-width:56px}.pool .pl{flex:1}
+.pool .acclink{min-height:44px;display:inline-flex;align-items:center}
 .fbar .fl.m-only{display:inline-flex}.fbar .fl{flex:0 0 auto;min-width:0}.fbar select{width:132px;min-width:0}
 .fbar>.sp{display:none}#scopewhen{flex:1;white-space:nowrap}
 #scopewhen[data-fixed=true]{order:3;flex-basis:100%;white-space:normal}
 .fbar .chk{min-height:40px}.fbar select.ivl{width:auto;height:44px;font-size:16px}.fbar>.m-only{display:inline-flex;align-items:center;gap:var(--s2)}
-.rowA{grid-template-columns:minmax(0,1fr);gap:var(--s5);margin-bottom:var(--s5)}
 /* quota: line 1 = dot + name + card chip; line 2 = both bars with reset text */
-#quota tr{grid-template-columns:repeat(4,minmax(0,1fr));grid-template-areas:"who who who rc" "q5 q5 qw qw";gap:var(--s1) var(--s3)}
-#quota td.who-c{grid-area:who}#quota td.q5{grid-area:q5}#quota td.qw{grid-area:qw}#quota td.rc-c{grid-area:rc;text-align:right}
-#quota td{padding:0}
-#quota .who{max-width:none}
-#quota .sub:empty,#quota .sub:has(>.d-only:only-child){display:none}
-#quota td.qc{width:auto;display:grid;grid-template-columns:auto auto minmax(0,1fr);grid-template-areas:"lb pc rt" "bar bar bar";gap:0 var(--s1);align-items:baseline}
-#quota td.qc .q{display:contents}
-#quota td.qc .lb{grid-area:lb;min-width:0}#quota td.qc .pc{grid-area:pc;min-width:0;text-align:left}
-#quota td.qc .bar{grid-area:bar;margin-top:var(--s1);min-width:0}
-#quota td.qc .rt{grid-area:rt;text-align:right;overflow:hidden;text-overflow:ellipsis}
-#quota td.qc .nod{grid-column:1/-1}
 .pop{position:fixed;left:var(--s2)!important;right:var(--s2);top:auto!important;bottom:calc(var(--tabbar) + var(--s2));width:auto;padding:var(--s4)}
 .pop button{height:40px;font-size:var(--fs-m)}
-.pop .x{width:40px}
 #sum th.x,#sum td.x{display:none}
 /* recent requests: line 1 = time · status · error · duration; line 2 = account · model */
 #rec tr{grid-template-columns:auto auto minmax(0,1fr) auto;grid-template-areas:"t s er d" "a a m m"}
@@ -543,6 +535,7 @@ button.pc.sm{height:24px;padding:0 8px;font-size:var(--fs-xs)}
 #rec td.err .nx.p{height:40px;margin:2px 0 2px 6px;vertical-align:middle}
 #rec td.dur{grid-area:d}#rec td.a{grid-area:a;color:var(--mut);font-size:var(--fs-s);overflow:hidden;text-overflow:ellipsis}#rec td.m{grid-area:m;text-align:right;color:var(--mut);font-size:var(--fs-s);overflow:hidden;text-overflow:ellipsis}
 #rec td.x{display:none}
+#rec tbody tr{position:relative}#rec td.t .statlink:after{content:"";position:absolute;inset:0}#rec td button:not(.statlink),#rec td a{position:relative;z-index:1}
 #rec .more,#rec .rm{display:none}
 #rec tr.e{box-shadow:inset 2px 0 0 var(--err)}#rec tr.e.px{box-shadow:inset 2px 0 0 var(--proxy)}#rec tr.e.rl{box-shadow:inset 2px 0 0 var(--cool)}
 #rec tr.e>td:first-child{box-shadow:none}
@@ -593,6 +586,15 @@ button.pc.sm{height:24px;padding:0 8px;font-size:var(--fs-xs)}
 .dmetad{margin-top:var(--s2,6px)}.dmetad>summary{cursor:pointer;font-weight:600;color:var(--mut);font-size:var(--fs-s,13px)}
 .dmetad>summary:focus-visible,.otl summary:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
 @media (prefers-reduced-motion:reduce){.otl *,#rec td.dur .db *{transition:none!important;animation:none!important}}
+@media (pointer:coarse){
+.kpi .statlink{min-height:44px;min-width:44px;display:inline-flex;align-items:center;justify-content:flex-start}
+.otabs button{min-width:44px;height:44px}
+#scopefreeze{min-height:28px;position:relative}#scopefreeze:after{content:"";position:absolute;left:50%;top:50%;width:max(calc(100% + 4px),44px);height:44px;transform:translate(-50%,-50%)}
+.pool .acclink{min-height:44px;display:inline-flex;align-items:center}
+#sum td .statlink{min-height:44px;min-width:44px;display:inline-flex;align-items:center}
+.dt .t .statlink{position:relative}.dt .t .statlink:after{content:"";position:absolute;left:50%;top:50%;width:max(calc(100% + 4px),44px);height:44px;transform:translate(-50%,-50%)}
+main select,main .nx,main .pc,main button.xs,main button.p,#rmore,main summary,main input:not([type=checkbox]):not([type=radio]){min-height:44px}
+}
 </style>
 </head>
 <body>
@@ -611,15 +613,16 @@ button.pc.sm{height:24px;padding:0 8px;font-size:var(--fs-xs)}
   <button id="refresh" class="xs" type="button" title="立即刷新">刷新</button><button id="theme" class="xs ghost" type="button"></button><button id="logout" class="xs ghost" type="button" title="清除当前标签页保存的密钥（三个页面共用）">退出</button></div>
 </header>
 <main id="main" tabindex="-1">
+  <div class="otabs" role="tablist" aria-label="概览视图"><button type="button" role="tab" id="tabuse" aria-selected="true" aria-controls="main">用量</button><button type="button" role="tab" id="tabsys" aria-selected="false" aria-controls="main" tabindex="-1">系统情况<span id="sysbadge" class="tbadge hide"></span></button></div>
   <div class="fbar" role="group" aria-label="时间范围">
-    <label class="fl m-only"><select id="range" aria-label="时间段"><option value="1h">最近 1 小时</option><option value="24h" selected>最近 24 小时</option><option value="7d">最近 7 天</option><option value="30d">最近 30 天</option></select></label>
-    <span class="fl d-only">范围<span id="rangeseg" class="seg" role="group" aria-label="时间段"><button type="button" data-v="1h" aria-pressed="false">最近 1 小时</button><button type="button" data-v="24h" aria-pressed="true">最近 24 小时</button><button type="button" data-v="7d" aria-pressed="false">最近 7 天</button><button type="button" data-v="30d" aria-pressed="false">最近 30 天</button></span></span>
-    <span class="xs mut" id="scopewhen"></span><span class="sp"></span><span class="m-only"><label class="chk" id="mautol" title="每 15 秒自动刷新"><input id="mauto" type="checkbox" class="sw" aria-label="每 15 秒自动刷新"><span>自动</span></label><select id="mivl" class="ivl" aria-label="自动刷新间隔"><option value="5">5 秒</option><option value="15" selected>15 秒</option><option value="30">30 秒</option><option value="60">60 秒</option></select></span><button id="scopefreeze" class="ghost xs" type="button" title="固定当前时间范围，方便比较和分享">固定时间</button>
+    <label class="fl m-only use-only"><select id="range" aria-label="时间段"><option value="1h">最近 1 小时</option><option value="24h" selected>最近 24 小时</option><option value="7d">最近 7 天</option><option value="30d">最近 30 天</option></select></label>
+    <span class="fl d-only use-only">范围<span id="rangeseg" class="seg" role="group" aria-label="时间段"><button type="button" data-v="1h" aria-pressed="false">最近 1 小时</button><button type="button" data-v="24h" aria-pressed="true">最近 24 小时</button><button type="button" data-v="7d" aria-pressed="false">最近 7 天</button><button type="button" data-v="30d" aria-pressed="false">最近 30 天</button></span></span>
+    <span class="xs mut use-only" id="scopewhen"></span><span class="sp"></span><span class="m-only"><label class="chk" id="mautol" title="每 15 秒自动刷新"><input id="mauto" type="checkbox" class="sw" aria-label="每 15 秒自动刷新"><span>自动</span></label><select id="mivl" class="ivl" aria-label="自动刷新间隔"><option value="5">5 秒</option><option value="15" selected>15 秒</option><option value="30">30 秒</option><option value="60">60 秒</option></select></span><button id="scopefreeze" class="ghost xs use-only" type="button" title="固定当前时间范围，方便比较和分享">固定时间</button>
   </div>
   <div id="msg" class="banner err" role="alert"></div>
   <div id="noacc" class="banner err hide" role="status"></div>
   <div id="egressblk" class="banner err hide" role="status"></div>
-  <div class="scope panel"><details id="scopefilters"><summary id="scopetoggle"><strong>筛选范围</strong><span id="scopesummary"> · 所有模型与账号</span></summary>
+  <div class="scope panel use-only"><details id="scopefilters"><summary id="scopetoggle"><strong>筛选范围</strong><span id="scopesummary"> · 所有模型与账号</span></summary>
     <div class="filters" aria-label="筛选概况、趋势和请求">
       <label>账号<select id="facct" aria-label="按账号筛选"><option value="">全部账号</option></select></label>
       <label>模型<span class="cbx"><input id="fmodel" type="text" title="包含匹配，不区分大小写；%、_ 和反斜杠均按普通字符匹配" placeholder="模型名称" aria-label="按请求模型筛选" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="lfmodel" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"><ul id="lfmodel" class="cbl hide" role="listbox" aria-label="模型候选"></ul></span></label>
@@ -629,21 +632,22 @@ button.pc.sm{height:24px;padding:0 8px;font-size:var(--fs-xs)}
       <button id="scopeclear" class="ghost xs hide" type="button">清除范围筛选</button>
     </div>
   </details><div class="filterchips hide" id="scopechips" role="group" aria-label="已应用范围筛选，影响概况、趋势和请求"></div></div>
-  <div id="gapban" class="banner err hide" role="status" title="进程启动以来的记录器计数，不受时间范围影响；用量记录是尽力写入"></div>
-  <div class="strip" id="strip" aria-label="所选时间段概况"></div>
-  <section id="mem" class="hide" aria-label="内存">
+  <div id="gapban" class="banner err hide sys-only" role="status" title="进程启动以来的记录器计数，不受时间范围影响；用量记录是尽力写入"></div>
+  <div class="strip use-only" id="strip" aria-label="所选时间段概况"></div>
+  <section id="mem" class="hide sys-only" aria-label="内存">
     <div class="sh"><h2>内存</h2><span class="sp"></span><span class="mut sm" id="memwhen"></span></div>
     <details id="memdetails">
       <summary id="memtoggle"><span id="memrss"></span><span id="membuffer"></span><span id="memws"></span><span class="memaction"><span class="memshow">展开指标与趋势</span><span class="memhide">收起指标与趋势</span></span><span id="memalert" class="hide" role="status"></span></summary>
       <div class="strip memstrip" id="memstrip"></div>
     </details>
   </section>
-  <section id="st" aria-busy="true">
+  <p id="sysempty" class="sys-only mut sm hide">当前密钥不能读取进程状态（需要 admin 密钥）。</p>
+  <section id="st" class="use-only" aria-busy="true">
     <div class="sh"><h2>调用趋势</h2><select id="tmetric" aria-label="趋势指标"><option value="requests">请求</option><option value="tokens">Token</option><option value="cost">估算费用</option><option value="fail">失败原因</option><option value="lat">延迟分位</option><option value="cap">占用与拒绝</option></select><select id="tmode" aria-label="趋势粒度"><option value="auto">自动粒度</option><option value="day">按天</option><option value="hour">按小时</option></select><label class="chk" title="与等长的上一周期对比"><input type="checkbox" class="sw" id="fcompare"> 对比上一周期</label><span class="sp"></span><span class="mut sm" id="trange"></span></div>
     <div class="panel chart" id="chart"><svg id="svg" viewBox="0 0 1200 200" role="group" aria-label="时间趋势；选择时间桶查看请求"></svg><div id="ctip" class="hide" role="tooltip"></div></div>
     <div class="foot legend" id="chartlegend"></div>
   </section>
-  <section id="sr" aria-busy="true">
+  <section id="sr" class="use-only" aria-busy="true">
     <div class="sh"><h2>请求</h2><span class="mut sm" id="rcount"></span><span class="sp"></span><button id="rextra" class="ghost xs" type="button" aria-expanded="false" aria-controls="recordextra">更多筛选<span id="fsummary"></span></button><button id="lookupshow" class="ghost xs" type="button" aria-expanded="false" aria-controls="lookup">按 ID 查找</button><form class="lookup hide" id="lookup"><input id="recordid" type="text" placeholder="16 位记录 ID" aria-label="16 位记录 ID" maxlength="16" pattern="[0-9a-fA-F]{16}" required><button class="ghost xs" type="submit">查找</button></form><div id="lookupresult" role="status"></div></div>
     <div class="panel">
       <div class="scope-note hide" id="rwindow"><span id="rwindowtext"></span><button id="rwindowclear" class="ghost xs" type="button">返回整个范围</button></div>
@@ -676,28 +680,13 @@ button.pc.sm{height:24px;padding:0 8px;font-size:var(--fs-xs)}
     </div>
     <div class="legend foot"><details id="rlegend"><summary>图例</summary><span><span class="chip fast">⚡Fast</span> 实际以 Fast 处理</span><span><span class="chip dg">Fast</span> 请求 Fast 但被降级</span><span>↳ 上游实际值，与请求不同</span><span><span class="tag line">预热</span> WS 预热，不计入请求数</span></details></div>
   </section>
-  <div class="rowA">
-  <section id="sq" aria-busy="true">
-    <div class="sh"><h2 title="剩余百分比来自上游当前快照，包含其他客户端和其他实例的用量，不受时间范围影响">账号额度</h2><span class="sp"></span><button id="qall" class="ghost xs hide" type="button" title="向上游查询全部账号当前的额度（只读，不消耗额度；同一账号 30 秒内只查一次）">刷新全部额度</button></div>
-    <div class="panel"><div class="tw"><table class="stk" id="quota"><thead><tr><th scope="col">账号</th><th scope="col" id="hq5">5 小时剩余</th><th scope="col" id="hqw">周剩余</th><th scope="col" class="n" title="可用重置卡">卡</th></tr></thead><tbody><tr><td colspan="4"><span class="skel"></span><span class="skel"></span><span class="skel"></span></td></tr></tbody></table></div></div>
-    <div id="qnote" class="foot" role="status"></div>
-  </section>
-  <section id="ss" aria-busy="true">
+  <section id="ss" class="use-only" aria-busy="true">
     <div class="sh"><h2>分布</h2><select id="group" aria-label="汇总分组"><option value="account">按账号</option><option value="key">按密钥</option><option value="instance">按实例</option><option value="model">按模型</option><option value="response_model">按实际模型</option><option value="endpoint">按接口</option><option value="reasoning_effort">按推理</option><option value="transport">按传输</option><option value="service_tier">按档位</option><option value="error">按错误码</option><option value="err_source">按错误来源</option></select></div>
     <div class="panel"><div class="tw" id="sw"><table id="sum"><thead><tr><th scope="col" id="gh">账号</th><th scope="col" class="n">请求</th><th scope="col" class="n" title="失败数 / 非预热请求数；客户端取消、incomplete 与未知结果单列">失败率</th><th scope="col" class="n x" title="上游返回的失败 / 业务请求">上游</th><th scope="col" class="n x" title="流请求的首输出延迟（TTFT），包括文本或推理输出">首输出 p50</th><th scope="col" class="n x">耗时 p50</th><th scope="col" class="n x" title="重试过或换过账号的请求">重试</th><th scope="col" class="n x" title="请求 Fast 或 Flex 但实际档位不同">降级</th><th scope="col" class="n">Token</th><th scope="col" class="n" title="按 API 标价估算，订阅实际费用不同">估算 $</th></tr></thead><tbody></tbody></table></div></div>
     <div class="foot" id="unk"></div>
   </section>
-  </div>
 </main>
 <div id="tt" class="hide" role="tooltip"></div>
-<div id="cp" class="modal hide" role="alertdialog" aria-modal="true" aria-labelledby="cpt" aria-describedby="cpdesc"><div class="mbox dz">
-  <h3 id="cpt">使用重置卡？</h3>
-  <dl class="kv" id="cpdesc"><dt>账号</dt><dd id="cpacct"></dd><dt>当前可用</dt><dd id="cpn"></dd><dt>将使用</dt><dd id="cpwhich"></dd><dt>当前剩余</dt><dd id="cpq"></dd></dl>
-  <p id="cphint" class="hintp sm hide"></p>
-  <p class="warnp sm"><b>此操作不可撤销。</b>确认后将消耗该账号的 1 张重置卡并重置其额度窗口，使用后无法退回。</p>
-  <div id="cpres" class="res" role="status"></div>
-  <div class="mact"><button id="cpno" type="button">取消</button><button id="cpyes" class="danger solid" type="button" data-arm>确认使用 1 张</button></div>
-</div></div>
 <div id="dp" class="modal hide" role="dialog" aria-modal="true" aria-labelledby="dtitle"><div class="mbox wide">
   <h3><span id="dtitle">请求详情</span><button id="dlink" class="xs" type="button">复制链接</button><button id="dcopy" class="xs" type="button">复制 JSON</button><button id="dclose" class="xs" type="button">关闭</button></h3>
   <div class="row" role="group" aria-label="浏览当前列表"><button id="dprev" class="ghost xs" type="button" aria-keyshortcuts="Alt+ArrowUp" title="上一条（Alt + ↑）">↑ 上一条</button><button id="dnext" class="ghost xs" type="button" aria-keyshortcuts="Alt+ArrowDown" title="下一条（Alt + ↓）">下一条 ↓</button><span class="mut xs" id="dposition" role="status"></span><span class="mut xs d-only">Alt + ↑ / ↓</span></div>
@@ -887,7 +876,7 @@ function showScope(){const count=SF.filter(id=>fval(id).trim()).length;for(const
   $("scopefreeze").textContent=scopeWindow.fixed?"返回最近":"固定时间";$("scopefreeze").title=scopeWindow.fixed?"恢复随刷新滚动的时间范围":scopeLabel();
   $("rwindow").classList.toggle("hide",!recordWindow);$("rwindowtext").textContent=recordWindow?"选中时段 · "+fmtTime(recordWindow.from,true)+" – "+fmtTime(recordWindow.to,true):""}
 async function usageGet(path,current){return (await req("GET",path,undefined,undefined,{timeout:30000,current})).j}
-const narrow=()=>matchMedia("(max-width:760px)").matches;
+const narrow=()=>matchMedia("(max-width:760px),(max-height:500px) and (pointer:coarse)").matches;
 function winName(m){if(!m)return"窗口";if(m===300)return"5 小时窗口";if(m===10080)return"周窗口";if(m>=1440)return Math.round(m/1440)+" 天窗口";return Math.round(m/60)+" 小时窗口"}
 function fail(e){if(!e||e.message==="401"||(e.isCurrent&&!e.isCurrent()))return;const m=$("msg"),t=e.message||String(e);clear(m);m.appendChild(h("b",null,"更新失败"));m.appendChild(document.createTextNode(t+" · 保留最近一次结果"));if(!inView(m))toast("更新失败："+t,{kind:"err"})}
 async function busy(id,f){$(id).setAttribute("aria-busy","true");try{return await f()}finally{$(id).setAttribute("aria-busy","false")}}
@@ -912,40 +901,14 @@ function mergeAccts(){const acm={},rcm={};if(AC)for(const a of AC.accounts)acm[a
   return src.map(x=>{const a=acm[x.account];const st=x.configured===false?"unconfigured":a?a.status:x.needs_relogin?"token_invalid":x.disabled?"disabled":"normal";
     return {id:x.account,email:x.email||(a&&a.email)||null,plan:(x.quota&&x.quota.plan)||(a&&a.plan)||null,status:st,cooling_reason:a?a.cooling_reason:null,cooling_until_ms:a?a.cooling_until_ms:null,q:x.quota||null,rc:rcm[x.account],configured:x.configured!==false}})}
 function acctById(id){return ACCTS.find(a=>a.id===id)}
-function minRem(a){if(!a.configured)return 1e9;const r=wins(a).map(x=>rem(x[1]));return r.length?Math.min(...r):1e3}
-function staleAge(a){const o=a.q&&a.q.observed_at_ms;if(!o||Date.now()-o<=36e5)return"";const hh=Math.floor((Date.now()-o)/36e5);return hh<48?hh+" 小时前":Math.floor(hh/24)+" 天前"}
-function estTxt(e){e=e||{};if(e.capacity_credits!=null){let t="\n容量≈"+fmtN(e.capacity_credits)+" credits";if(e.capacity_lo!=null&&e.capacity_hi!=null)t+="（"+fmtN(e.capacity_lo)+"–"+fmtN(e.capacity_hi)+"）";if(e.remaining_credits!=null)t+="，剩余≈"+fmtN(e.remaining_credits);if(e.api_cost_usd!=null)t+="\n本周期 API 价格 ≈ "+fmtUsd(e.api_cost_usd);if(e.coverage_gap)t+="；可能有其他端用量";return t+"（估算）"}if(e.capacity_lo!=null)return"\n容量至少 "+fmtN(e.capacity_lo)+" credits"+(e.coverage_gap?"；可能有其他端用量":"")+"（估算下限）";if(e.status==="ok")return"\n容量≈"+fmtN(e.capacity_tokens)+" 加权 Token，剩余≈"+fmtN(e.remaining_tokens)+"（估算）";if(e.status==="insufficient_data")return"\n容量估算：数据不足（两次额度快照之间本实例用量太少）";if(e.status==="window_reset")return"\n窗口已重置，等待新快照";return""}
-function qbar(lb,w,stale){const r=rem(w),c=r<20?"b":r<50?"w":"",i=h("i",c);i.style.width=Math.min(100,r)+"%";
-  const d=h("div","q"+(stale?" stale":""),h("span","lb",lb),h("div","bar",i),h("span","pc "+c,r.toFixed(0)+"%"));
-  d.title=winName(w.window_minutes)+"：剩余 "+r.toFixed(1)+"%"+(r===100&&w.used_pct>0?"（上次快照后窗口已重置）":"（已用 "+w.used_pct.toFixed(1)+"%）")+(w.resets_at?" · 重置 "+fmtTime(w.resets_at*1000,true):"")+estTxt(w.estimate);return d}
-function rt(w,a,stale){if(stale){const s=h("span","rt c-cool","⚠ 数据 "+stale);s.title="额度数据更新于 "+fmtTime(a.q.observed_at_ms)+"（"+ago(a.q.observed_at_ms)+"）"+(a.q.observed_by?" · "+a.q.observed_by:"")+"；该账号有新请求或手动刷新后更新";return s}
-  if(!w.resets_at)return h("span","rt faint","无重置时间");const t=w.resets_at*1000;if(t<Date.now())return h("span","rt faint","已过重置时间");
-  return h("span",{class:"rt",title:isoLocal(t),"data-until":t,"data-pre":"重置 "},"重置 "+dur((t-Date.now())/1000))}
-function chip(a){const r=a.rc;
-  if(!r||r.available_count===null||r.available_count===undefined){const b=h("button",{class:"cchip none",type:"button","data-pop":a.id,"data-fk":"rc|"+a.id,"aria-haspopup":"dialog","aria-expanded":"false","aria-label":r&&r.error?"重置卡获取失败":"重置卡尚未获取"},"卡 ?");return b}
-  const t=r.nearest_expires_at?Date.parse(r.nearest_expires_at):NaN,soon=!isNaN(t)&&t-Date.now()<864e5,n=r.available_count;
-  return h("button",{class:"cchip"+(n?"":" none")+(soon&&n?" soon":""),type:"button","data-pop":a.id,"data-fk":"rc|"+a.id,"aria-haspopup":"dialog","aria-expanded":"false","aria-label":"重置卡 "+n+" 张"+(soon&&n?"，有一张 24 小时内到期":"")},"卡 "+n)}
-function quotaRow(a){const s=ST[a.status],dot=h("span","sdot "+s[1]);dot.title=s[0];
-  const full=a.email?a.email+"（"+a.id+"）":a.id;
-  const link=a.configured?h("a",{class:"trunc",href:"/ui/accounts#acc="+encodeURIComponent(a.id),title:full+" · 在账号页查看"},a.email||a.id):h("b",{class:"trunc",title:full},a.email||a.id);
-  const sub=h("span","sub trunc");
-  if(a.status==="normal"){if(a.plan)sub.appendChild(h("span","mut d-only",a.plan))}
-  else{sub.classList.add(s[1]==="cool"?"c-cool":s[1]==="err"?"c-err":"mut");sub.appendChild(document.createTextNode(s[0]+(a.cooling_reason?" · "+(CR[a.cooling_reason]||a.cooling_reason):"")+(a.status==="unconfigured"?" · 只在用量记录中":"")));
-    if(a.status==="cooling"&&a.cooling_until_ms){sub.appendChild(document.createTextNode(" · "));sub.appendChild(h("span",{class:"num","data-until":a.cooling_until_ms},dur((a.cooling_until_ms-Date.now())/1000)))}}
-  const stale=staleAge(a),w=wins(a),q5=h("td","qc q5"),qw=h("td","qc qw");
-  const p=w.find(x=>x[2]==="s"),wk=w.find(x=>x[2]==="l");
-  if(!w.length){q5.appendChild(h("span",{class:"nod",title:"该账号尚无经过 ciallopa 的请求，或上游未返回额度"},"尚无额度数据"));qw.appendChild(h("span","nod","–"))}
-  else{for(const [cell,x,st] of [[q5,p,stale],[qw,wk,p?"":stale]]){if(!x){cell.appendChild(h("span","nod","–"));continue}cell.appendChild(qbar(x[0],x[1],!!stale));cell.appendChild(rt(x[1],a,st))}}
-  return h("tr",{"data-acc":a.id},h("td","who-c",h("div","row nw",dot,h("div","who",link,sub))),q5,qw,h("td","rc-c n",RC&&a.configured?chip(a):""))}
 // Cloudflare challenge / block page instead of the upstream: the host's egress, not an account.
 function renderEgressBlock(){const b=Q&&Q.egress_block,e=$("egressblk"),on=!!(b&&b.active);clear(e);e.classList.toggle("hide",!on);if(!on){e.removeAttribute("title");return}
   e.appendChild(h("b",null,b.code==="challenge"?"上游 Cloudflare 质询本机出口":"上游 Cloudflare 拦截本机出口"));
   e.appendChild(document.createTextNode((b.cf_code?"错误 "+b.cf_code+" · ":"")+"最近 "+fmtTime(b.last_at_ms)+"（"+ago(b.last_at_ms)+"）· 共 "+exact(b.count)+" 次 · 请求直接失败，不换账号、不冷却账号；检查出口 IP、出口代理或客户端指纹"));
   e.title="首次 "+fmtTime(b.first_at_ms)+" · 账号 "+b.account+" · 上游 HTTP "+b.upstream_status+(b.cf_ray?" · cf-ray "+b.cf_ray:"")+"\n下一次正常的上游响应后提示消失"}
-function renderQuota(){steady([$("quota").tBodies[0]],renderQuotaNow)}
-function renderQuotaNow(){queueMicrotask(refocus);ACCTS=mergeAccts();syncMini();const tb=$("quota").tBodies[0];clear(tb);
-  const rows=ACCTS.slice().sort((x,y)=>minRem(x)-minRem(y)),hw=rows.map(a=>wslots(a.q));$("hq5").textContent=whead(hw.filter(o=>o.s).map(o=>o.s[0]),"5 小时");$("hqw").textContent=whead(hw.filter(o=>o.l).map(o=>o.l[0]),"周");for(const a of rows)tb.appendChild(quotaRow(a));
-  if(!rows.length)emptyRow(tb,4,Q||AC?"没有账号":"暂无账号额度数据",Q||AC?"在「账号」页或使用 ciallopa login 添加账号":"查看下方读取状态，或刷新重试");
+// The overview keeps only the pooled 5h / 周 bars (one segment per enabled account); the per-account
+// quota, history, cards and actions live on the accounts page.
+function renderQuota(){ACCTS=mergeAccts();syncMini();
   const conf=ACCTS.filter(a=>a.configured);setTabCount(conf.length);
   const usable=conf.filter(a=>a.status==="normal"||a.status==="cooling").length,nb=$("noacc");clear(nb);
   if(!usable&&(Q||AC)){nb.appendChild(h("b",null,"没有可用账号"));nb.appendChild(document.createTextNode(conf.length?"所有账号都已停用或需要重新登录，请求无法转发。":"请求无法转发。在「账号」页或使用 ciallopa login 添加账号。"))}
@@ -953,7 +916,21 @@ function renderQuotaNow(){queueMicrotask(refocus);ACCTS=mergeAccts();syncMini();
   renderEgressBlock();
   const sel=$("facct"),cur=sel.value;while(sel.options.length>1)sel.remove(1);for(const a of ACCTS)sel.appendChild(h("option",{value:a.id},a.id));
   if(Array.from(sel.options).some(o=>o.value===cur))sel.value=cur;else if(cur){sel.appendChild(h("option",{value:cur},cur));sel.value=cur}
-  renderKpis();refreshPop()}
+  renderKpis()}
+function poolSeg(a,slot){const x=wslots(a.q)[slot],r=x?rem(x[1]):null,s=h("span","bar"+(r===null?" unk":""));
+  if(r!==null){const i=h("i",r<20?"b":r<50?"w":"");i.style.width=Math.min(100,r)+"%";s.appendChild(i)}
+  s.title=(a.email||a.id)+"："+(r===null?(a.status==="token_invalid"?"需要重新登录":"额度未知"):"剩余 "+r.toFixed(0)+"%");return s}
+// A bar covers the accounts that have that window (by window_minutes; pro has no 5h) plus those with no
+// quota yet (dashed, unknown); the label says how many. No account with the window → no bar.
+function poolBar(all,slot,label){const list=all.filter(a=>!a.q||wslots(a.q)[slot]);if(!list.length)return null;const known=list.map(a=>{const x=wslots(a.q)[slot];return x?rem(x[1]):null}).filter(r=>r!==null);
+  const avg=known.length?known.reduce((p,r)=>p+r,0)/known.length:null,pb=h("span","pb");for(const a of list)pb.appendChild(poolSeg(a,slot));
+  return h("span",{class:"pl",role:"img","aria-label":label+" 剩余（"+list.length+" 个账号）："+list.map(a=>poolSeg(a,slot).title).join("，")},h("span","mut",label+" · "+list.length+" 个"),pb,h("b","num",avg===null?"–":avg.toFixed(0)+"%"))}
+function renderPool(row){let p=$("pool");if(p)p.remove();
+  const list=ACCTS.filter(a=>a.configured&&a.status!=="disabled");if(!list.length&&!POOL_NOTE)return;
+  p=h("span",{class:"pool",id:"pool",title:"每段一个有该窗口的启用账号，填充 = 剩余额度（上游当前快照，不受时间范围影响）；百分比为已知账号的平均剩余"});
+  if(list.length)p.append(...[poolBar(list,"s","5h"),poolBar(list,"l","周")].filter(Boolean));
+  if(POOL_NOTE)p.appendChild(h("span","xs c-cool",POOL_NOTE));
+  p.appendChild(h("a",{class:"acclink",href:"/ui/accounts"},"账号 ›"));row.appendChild(p)}
 
 // ---- A small overview; every number has a population, and unknown is not zero.
 function pct(n){return n===null||n===undefined?"–":(n*100).toFixed(1)+"%"}
@@ -998,7 +975,7 @@ function renderKpis(){const t=SUM&&SUM.total,span=SUM?Math.max(1,SUM.to_ms-SUM.f
   for(const [k,v,sub,tip,red] of cells)st.appendChild(h("div",{class:"kpi",title:tip},h("div","k",k),h("div",red?"v bad":"v",v),h("div","s",sub)));
   renderRuntime();
   const g=$("gapban"),R=RECORDER,gap=!!R&&!!(R.dropped||R.write_errors);clear(g);g.classList.toggle("hide",!gap);
-  if(gap)g.append(h("b",null,"用量记录有缺口"),h("span",null,"丢弃 "+exact(R.dropped)+" · 写入失败 "+exact(R.write_errors)))}
+  if(gap)g.append(h("b",null,"用量记录有缺口"),h("span",null,"丢弃 "+exact(R.dropped)+" · 写入失败 "+exact(R.write_errors)));if(typeof renderSys==="function")renderSys()}
 // ---- Local-limit refusals (503 gateway_busy): per-minute rows from /usage/v1/refusals. They follow
 // the range, key and instance scope only; under an account or model filter the server sends null.
 const REASON={inflight:["并发上限","达到 max_inflight_requests"],ws:["WS 上限","达到 WebSocket 连接上限"],body:["请求体缓冲","请求体缓冲预算已满"],ws_msg:["WS 消息缓冲","WebSocket 消息缓冲预算已满"]};
@@ -1044,110 +1021,11 @@ function drillOutcome(outcome,cls){if(!summaryCurrent())return;recordWindow=null
 const DRILL={failed:"error",cancelled:"unfinished",unknown:"unfinished",refused:"refused"},DRILL_CAUSE={cancelled:"client_closed",unknown:"unconfirmed"};
 function errorCause(c){return c?({quota:"quota",rate_limit:"rate_limit",request:"request",upstream:"upstream",network:"network",stream:"stream"}[c]||"gateway"):""}
 function clearRecordFilters(){for(const k of RF){const e=$(k);if(e.type==="checkbox")e.checked=false;else e.value=""}}
-function revealRecords(){const bar=document.querySelector(".fbar"),section=$("sr");
-  section.style.scrollMarginTop=(parseFloat(getComputedStyle(bar).top)+bar.offsetHeight+12)+"px";
+// Sticky chrome above a section: header + the view tabs (phone) or the range bar (desktop).
+function stickyTop(){let y=document.querySelector("header").offsetHeight;for(const e of document.querySelectorAll(".otabs,.fbar"))if(getComputedStyle(e).position==="sticky")y=Math.max(y,parseFloat(getComputedStyle(e).top)+e.offsetHeight);return y}
+function revealRecords(){const section=$("sr");
+  section.style.scrollMarginTop=(stickyTop()+12)+"px";
   section.scrollIntoView({block:"start"});const chipOn=document.querySelector('#pbtns .pc[aria-pressed="true"]');(chipOn&&chipOn.focus?chipOn:$("rextra")).focus({preventScroll:true})}
-
-// ---- reset-card popover: hover / keyboard focus = read-only preview after 150 ms;
-// click / tap / Enter = pinned non-modal dialog with the actions; phone = bottom sheet.
-const pop=h("div",{class:"pop hide",id:"rcpop",role:"dialog","aria-labelledby":"rcpt"});document.body.appendChild(pop);
-const popBg=h("div","pop-bg hide");document.body.appendChild(popBg);
-let popFor=null,popTrig=null,hoverT=null,leaveT=null,noPrev=false,showUsed=localStorage.getItem("ciallopa_rc_used")==="1";
-const RCST={available:"可用",redeemed:"已使用",consumed:"已使用",used:"已使用",expired:"已过期"};
-const CODEN={reset:"已重置",nothing_to_reset:"无需重置（未扣卡）",no_credit:"没有可用的卡",already_redeemed:"该请求已兑换过（未重复扣卡）"};
-const isUsed=c=>["redeemed","consumed","used"].includes(c.status);
-const expOf=c=>{const t=c.expires_at?Date.parse(c.expires_at):NaN;return isNaN(t)?Infinity:t};
-function fullDate(ms){const d=new Date(ms);return d.getFullYear()+"-"+p2(d.getMonth()+1)+"-"+p2(d.getDate())+" "+p2(d.getHours())+":"+p2(d.getMinutes())}
-function fillPop(a){clear(pop);const r=a.rc,can=RC&&RC.can_consume,adm=RC&&RC.is_admin,acct=h("a",{href:"/ui/accounts#acc="+encodeURIComponent(a.id)},"账号页 ›");
-  pop.appendChild(h("div","ph",h("b",{id:"rcpt"},"重置卡"),h("span","mut trunc",a.email||a.id),h("span","sp"),h("button",{class:"ghost xs x pin-only",type:"button","data-popclose":"","aria-label":"关闭"},"✕")));
-  const refresh=adm?[h("button",{class:"xs",type:"button","data-rcref":a.id,title:"从上游重新获取该账号的重置卡列表（只读）"},"刷新卡"),a.configured?h("button",{class:"xs",type:"button","data-qref":a.id,title:"向上游查询该账号当前的额度（只读，不消耗额度；同一账号 30 秒内只查一次）"},"刷新额度"):null]:null;
-  if(!r||r.available_count===null||r.available_count===undefined){
-    pop.appendChild(h("div","mut",r&&r.error?"获取失败："+r.error:"尚未从上游获取该账号的重置卡"));
-    pop.appendChild(h("div","pf pin-only",refresh,acct));pop.appendChild(h("div","xs faint prev-only","点击「卡」固定此面板"+(adm?"后可刷新":"")));return}
-  const cs=(r.credits||[]).slice().sort((x,y)=>expOf(x)-expOf(y)),now=Date.now();
-  const av=cs.filter(c=>(!c.status||c.status==="available")&&expOf(c)>now),used=cs.filter(c=>!av.includes(c));
-  const near=r.nearest_expires_at?Date.parse(r.nearest_expires_at):NaN;
-  pop.appendChild(h("div","sm",["可用 ",h("b","num",String(r.available_count))," 张",!isNaN(near)?[" · 最近到期 ",h("span","num"+(near-now<864e5?" c-cool":""),fullDate(near))]:null,used.length?h("span","faint"," · 已使用/过期 "+used.length):null]));
-  if(r.error)pop.appendChild(h("div","xs c-cool","⚠ 最近一次刷新失败，显示的是上次数据："+r.error));
-  const ul=h("ul",{"aria-label":"重置卡列表"});
-  for(const c of av.concat(showUsed?used:[])){const t=expOf(c),u=!av.includes(c),isNear=!u&&t===near,soon=isNear&&t-now<864e5;
-    const ex=h("span","ex",t===Infinity?h("b",null,"永不过期"):[u?"":"到期 ",h("b",null,fullDate(t)),u?"":h("span",soon?"c-cool":"mut","（"+dur((t-now)/1000)+"后）")]);
-    const li=h("li",(isNear?"near":"")+(soon?" soon":"")+(u?" used":""),ex);
-    if(u)li.appendChild(h("span","tag off",RCST[c.status]||c.status||"未知"));
-    else if(can)li.appendChild(h("button",{class:"xs pin-only",type:"button","data-consume":a.id,"data-credit":c.id,"aria-label":"使用这张重置卡，"+(t===Infinity?"永不过期":"到期 "+fullDate(t))},"使用"));
-    else li.appendChild(h("span"));
-    li.appendChild(h("span","tt",[(c.title||"重置卡")+(c.granted_at&&!isNaN(Date.parse(c.granted_at))?" · 发放 "+fmtTime(Date.parse(c.granted_at),true):"")+(isNear?" · 最近到期":"")]));if(c.description)li.title=c.description;ul.appendChild(li)}
-  if(ul.children.length)pop.appendChild(ul);else pop.appendChild(h("div","mut","没有可用的重置卡"));
-  if(used.length)pop.appendChild(h("button",{class:"ghost xs pin-only",type:"button","data-rcused":"","aria-pressed":String(showUsed)},showUsed?"隐藏已使用":"显示已使用（"+used.length+"）"));
-  const last=(RC.attempts||[]).find(x=>x.account===a.id);
-  if(last)pop.appendChild(h("div",{class:"xs mut",title:isoLocal(last.started_ms)+" · redeem_request_id "+last.redeem_request_id},"上次使用："+fmtTime(last.started_ms,true)+" "+(last.code?CODEN[last.code]||last.code:last.status)));
-  pop.appendChild(h("div","pf pin-only",refresh,acct,h("span","sp"),can&&r.available_count>0?h("button",{class:"xs",type:"button","data-consume":a.id,title:"由上游选择一张使用"},"使用…"):null));
-  pop.appendChild(h("div","xs faint prev-only",can?"点击「卡」固定此面板后可使用或刷新":adm?"点击「卡」固定此面板后可刷新":"只读：当前密钥不能使用重置卡"))}
-function place(t){if(narrow()){pop.style.left="";pop.style.top="";return}
-  const r=t.getBoundingClientRect(),w=pop.offsetWidth,hh=pop.offsetHeight,vw=document.documentElement.clientWidth,vh=innerHeight;
-  const left=Math.min(Math.max(8,r.right-w),vw-w-8);let top=r.bottom+8;if(top+hh>vh-8&&r.top-hh-8>0)top=r.top-hh-8;
-  pop.style.left=(left+scrollX)+"px";pop.style.top=(top+scrollY)+"px"}
-function openPop(t,pinned){const a=acctById(t.dataset.pop);if(!a)return;if(popFor&&popTrig!==t)closePop(false);
-  popFor=a.id;popTrig=t;fillPop(a);pop.classList.toggle("pinned",!!pinned);pop.classList.remove("hide");t.setAttribute("aria-expanded",pinned?"true":"false");
-  if(!pinned){pop.setAttribute("role","tooltip");t.setAttribute("aria-describedby","rcpop")}else{pop.setAttribute("role","dialog");t.removeAttribute("aria-describedby")}
-  popBg.classList.toggle("hide",!(pinned&&narrow()));place(t);if(pinned){pop.tabIndex=-1;pop.focus()}}
-function closePop(ret=true){if(!popFor)return;pop.classList.add("hide");popBg.classList.add("hide");
-  const t=popTrig;popFor=null;popTrig=null;if(t){t.setAttribute("aria-expanded","false");t.removeAttribute("aria-describedby");if(ret&&document.contains(t)){noPrev=true;t.focus();noPrev=false}}}
-const pinned=()=>!!popFor&&pop.classList.contains("pinned");
-// After a data refresh the rows are rebuilt: re-anchor an open popover to the new chip.
-function refreshPop(){if(!popFor)return;const t=document.querySelector('[data-pop="'+CSS.escape(popFor)+'"]'),a=acctById(popFor);if(!t||!a){closePop(false);return}
-  const had=pop.contains(document.activeElement),pin=pinned();popTrig=t;t.setAttribute("aria-expanded",pin?"true":"false");fillPop(a);place(t);if(had&&pin)pop.focus()}
-document.addEventListener("pointerover",e=>{if(e.pointerType!=="mouse")return;const t=e.target.closest("[data-pop]");
-  if(t){clearTimeout(leaveT);if(!pinned()&&popTrig!==t){clearTimeout(hoverT);hoverT=setTimeout(()=>openPop(t,false),150)}return}
-  if(e.target.closest("#rcpop")){clearTimeout(leaveT);return}
-  clearTimeout(hoverT);if(popFor&&!pinned()){clearTimeout(leaveT);leaveT=setTimeout(()=>closePop(false),200)}});
-document.addEventListener("focusin",e=>{const t=e.target.closest&&e.target.closest("[data-pop]");if(t&&!noPrev&&!pinned()&&e.target.matches(":focus-visible"))openPop(t,false)});
-document.addEventListener("focusout",e=>{const t=e.target.closest&&e.target.closest("[data-pop]");if(t&&!pinned())setTimeout(()=>{if(!pinned()&&popTrig===t&&document.activeElement!==t)closePop(false)},0)});
-document.addEventListener("click",async e=>{const t=e.target.closest("[data-pop]");
-  if(t){e.preventDefault();clearTimeout(hoverT);if(pinned()&&popTrig===t)closePop();else openPop(t,true);return}
-  if(e.target.closest("[data-popclose]")){closePop();return}
-  if(e.target.closest("[data-rcused]")){showUsed=!showUsed;localStorage.setItem("ciallopa_rc_used",showUsed?"1":"0");refreshPop();const b=pop.querySelector("[data-rcused]");if(b)b.focus();return}
-  const rb=e.target.closest("[data-rcref]");if(rb){const id=rb.dataset.rcref;await busyRun(rb,"刷新重置卡",async()=>{RC=(await req("POST","/usage/v1/reset-credits/refresh",{account:id},null,T)).j;renderQuota();toast("已刷新 "+nmOf(id)+" 的重置卡")},"刷新中…");return}
-  const qb=e.target.closest("[data-qref]");if(qb){const id=qb.dataset.qref;await busyRun(qb,"刷新额度",async()=>{const r=(await req("POST","/admin/v1/accounts/"+encodeURIComponent(id)+"/quota-refresh",{},null,T)).j;applyQuota(r);renderQuota();
-    if(qskip(r)){toast(qerr(r.error));return}
-    if(!r.ok)throw Object.assign(new Error(qerr(r.error)),{kind:r.error.kind});toast("已刷新 "+nmOf(id)+" 的额度"+(r.cooldown_cleared?"，已解除额度冷却":""))},"查询中…");return}
-  const cb=e.target.closest("[data-consume]");if(cb){const a=acctById(cb.dataset.consume);if(a){const c=cb.dataset.credit?(a.rc.credits||[]).find(x=>x.id===cb.dataset.credit):null;openConsume(a,c,cb)}return}
-  if(e.target.closest("#rcpop a")){closePop(false);return}
-  if(popFor&&!e.target.closest("#rcpop")&&!e.target.closest(".modal"))closePop(false)});
-document.addEventListener("keydown",e=>{if(e.key==="Escape"&&!e.defaultPrevented&&popFor){closePop();e.preventDefault()}});
-addEventListener("resize",()=>{if(popTrig)place(popTrig)});
-
-// ---- reset-card confirm dialog (the manual button; the server also requires {confirm: <account>}).
-// Automatic use is the per-account 快到期时自动使用 switch on the accounts page
-let cpFor=null,cpCredit=null,cpRid=null;
-function openConsume(a,c,from){const r=a.rc,now=Date.now();cpFor=a.id;cpCredit=c?c.id:null;cpRid=null;
-  $("cpt").textContent="为 "+(a.email||a.id)+" 使用 1 张重置卡？";
-  $("cpacct").textContent=(a.email?a.email+"（"+a.id+"）":a.id)+(a.status==="disabled"?" · 已停用":"");
-  const near=r.nearest_expires_at?Date.parse(r.nearest_expires_at):NaN;
-  $("cpn").textContent=r.available_count+" 张"+(!isNaN(near)?"，最近一张 "+fullDate(near)+" 到期":"");
-  const t=c?expOf(c):null;$("cpwhich").textContent=c?((c.title?c.title+"，":"")+(t===Infinity?"永不过期":"到期 "+fullDate(t)+"（"+dur((t-now)/1000)+"后）")):"由上游选择";
-  const w=wins(a),cq=$("cpq");clear(cq);
-  if(!w.length)cq.textContent="未知（尚无额度数据）";
-  else w.forEach(([lb,x],i)=>{if(i)cq.appendChild(document.createTextNode(" · "));cq.appendChild(document.createTextNode(lb+" "));cq.appendChild(h("b",null,rem(x).toFixed(0)+"%"));
-    if(x.resets_at&&x.resets_at*1000>now)cq.appendChild(document.createTextNode("（"+dur(x.resets_at-now/1000)+"后自然重置）"))});
-  const st=staleAge(a);if(st)cq.appendChild(h("span","c-cool"," · 数据 "+st));
-  // Non-blocking hint: the card may be wasted when no window is low, or a low one resets soon.
-  const low=w.filter(x=>rem(x[1])<20),soon=low.find(x=>x[1].resets_at&&x[1].resets_at*1000>now&&x[1].resets_at*1000-now<30*6e4),hp=$("cphint");clear(hp);
-  if(w.length&&!low.length)hp.append(h("b",null,"额度尚未用尽。"),"各额度窗口剩余均在 20% 以上，此时使用可能浪费。");
-  else if(soon)hp.append(h("b",null,"很快会自然重置。"),soon[0]+" 窗口 "+dur(soon[1].resets_at-now/1000)+"后自然重置，此时使用可能浪费。");
-  hp.classList.toggle("hide",!hp.textContent);
-  $("cpres").textContent="";$("cpyes").textContent="确认使用 1 张";$("cpyes").disabled=false;$("cpyes").classList.remove("hide");$("cpno").textContent="取消";
-  openModal($("cp"),$("cpno"),from)}
-$("cp")._onclose=()=>{cpFor=null;cpCredit=null;cpRid=null};
-$("cpno").addEventListener("click",()=>closeModal($("cp")));
-$("cpyes").addEventListener("click",async()=>{const acct=cpFor;if(!acct)return;$("cpyes").disabled=true;$("cpres").textContent="正在提交…";
-  try{const j=await post("/admin/v1/accounts/"+encodeURIComponent(acct)+"/reset-credits/consume",Object.assign({confirm:acct},cpCredit?{credit_id:cpCredit}:{},cpRid?{redeem_request_id:cpRid}:{}));
-    $("cpres").textContent="结果："+(CODEN[j.code]||j.code)+(j.code==="reset"?"，重置了 "+j.windows_reset+" 个窗口"+(j.cooldown_cleared?"，已解除额度冷却":""):"")+"\nredeem_request_id: "+j.redeem_request_id;
-    $("cpyes").classList.add("hide");$("cpno").textContent="关闭";$("cpno").focus();toast("重置卡："+(CODEN[j.code]||j.code));loadQuota().catch(fail)}
-  catch(e){if(e.message==="401")return;const pend=e.body&&e.body.status==="pending";
-    if(e.status===409&&e.body&&e.body.pending){const p=e.body.pending;cpCredit=p.credit_id||null;cpRid=p.redeem_request_id;
-      $("cpres").textContent="该账号上次使用重置卡的结果未知"+(p.credit_id?"（卡 "+p.credit_id+"）":"（由上游选卡）")+"，为避免重复扣卡，只能重试该次请求。\nredeem_request_id: "+p.redeem_request_id;$("cpyes").disabled=false;$("cpyes").textContent="重试上一次";return}
-    $("cpres").textContent="失败："+e.message+(pend?"\n结果未知；再次点击会用同一个 redeem_request_id 重试，不会重复扣卡。":"");$("cpyes").disabled=false;if(pend)$("cpyes").textContent="用同一请求重试"}});
 
 // ---- summary
 const GN={account:"账号",key:"密钥",instance:"实例",model:"模型",response_model:"实际模型",endpoint:"接口",reasoning_effort:"推理",transport:"传输",service_tier:"档位",error:"错误码",err_source:"错误来源"};
@@ -1336,9 +1214,8 @@ function causeName(p,c){const x=(CAUSES[p]||[]).find(([k])=>k===c);return x?x[1]
 function rescueText(r){return (r.switches&&r.first_account?"换账号 "+r.first_account+" → "+(r.account||""):"重试 "+exact(r.retries)+" 次")+" 后成功"}
 function go(url){location.assign(url)}
 function accountUrl(a){return "/ui/accounts"+(a?"#acc="+encodeURIComponent(a):"")}
-function goQuota(a){const all=$("qall");if(all&&!all.classList.contains("hide")&&!$("sq").classList.contains("hide")){const bar=document.querySelector(".fbar"),section=$("sq");
-  section.style.scrollMarginTop=(parseFloat(getComputedStyle(bar).top)+bar.offsetHeight+12)+"px";section.scrollIntoView({block:"start"});
-  all.focus({preventScroll:true})}else go(accountUrl(a))}
+// 刷新额度 lives with the account (accounts page row / sheet).
+function goQuota(a){go(accountUrl(a))}
 async function nextAct(r,k,from){
   if(["refresh_quota","account","cooldown","accounts","egress"].includes(k))closeModal($("dp"));
   if(k==="refresh_quota")return goQuota(r.account);
@@ -1382,8 +1259,9 @@ function recRow(r){const outcome=requestOutcome(r),isErr=outcome==="failed",es=s
   const ef=effortCell(r);tr.appendChild(h("td",{class:"x sm",title:ef.dataset.tip+hint},ef));
   tr.appendChild(h("td",{class:"n x",title:streamRecord(r)?"首输出延迟":"非流请求无首输出样本"},fmtMs(streamRecord(r)?r.ttft_ms:null)));
   // Shared linear scale across the page (--dmax on the table); the darker part is TTFT, which lies inside the duration.
-  const dv=Math.max(0,Number(r.duration_ms)||0),db=h("span",{class:"db","aria-hidden":"true",style:"--d:"+dv},h("i"));
-  if(streamRecord(r)&&r.ttft_ms!=null)db.appendChild(h("b",{style:"--t:"+Math.min(Math.max(0,Number(r.ttft_ms)||0),dv)}));
+  // CSSOM custom properties: an inline style attribute is blocked by the CSP (style-src is hash-only).
+  const dv=Math.max(0,Number(r.duration_ms)||0),db=h("span",{class:"db","aria-hidden":"true"},h("i"));if(db.style&&db.style.setProperty)db.style.setProperty("--d",dv);
+  if(streamRecord(r)&&r.ttft_ms!=null){const tb=h("b");if(tb.style&&tb.style.setProperty)tb.style.setProperty("--t",Math.min(Math.max(0,Number(r.ttft_ms)||0),dv));db.appendChild(tb)}
   tr.appendChild(h("td",{class:"n dur",title:exact(r.duration_ms)+" ms"},fmtMs(r.duration_ms),db));
   tr.appendChild(h("td",{class:"n x",title:exact(r.input_tokens)+(r.cached_tokens?"（缓存命中 "+exact(r.cached_tokens)+"）":"")},fmtN(r.input_tokens)));
   tr.appendChild(h("td",{class:"n x",title:exact(r.output_tokens)},fmtN(r.output_tokens)));
@@ -1553,23 +1431,15 @@ $("dclose").addEventListener("click",()=>closeModal($("dp")));
 $("dcopy").addEventListener("click",async()=>{if(!dtext)return;try{await navigator.clipboard.writeText(dtext);toast("已复制请求 JSON")}catch(_){toast("复制失败，请检查浏览器剪贴板权限",{kind:"err"})}});
 $("dlink").addEventListener("click",async()=>{try{const u=new URL(location.href);u.searchParams.set("record",activeRecord);u.searchParams.set("from",scopeWindow.from);u.searchParams.set("to",scopeWindow.to);await navigator.clipboard.writeText(u.href);toast("已复制固定时间范围的请求链接")}catch(_){toast("复制链接失败",{kind:"err"})}});
 
-// ---- active quota query (admin): the answer patches the shown snapshot at once
-const nmOf=id=>(acctById(id)||{}).email||id;
-function applyQuota(r){if(!r.ok||!Q)return;const q=r.quota||{},x=Q.accounts.find(y=>y.account===r.account);if(!x)return;
-  x.quota=Object.assign({},x.quota||{},{account:r.account,plan:q.plan,observed_at_ms:r.observed_at_ms,observed_by:"manual",primary:Object.assign({estimate:{}},q.primary||{}),secondary:Object.assign({estimate:{}},q.secondary||{})})}
-$("qall").addEventListener("click",()=>busyRun($("qall"),"刷新额度",async()=>{const j=(await req("POST","/admin/v1/accounts/quota-refresh",{},null,T)).j;for(const r of j.results)applyQuota(r);renderQuota();
-  const bad=j.results.filter(r=>!r.ok&&r.error.kind!=="rate_limited"),sk=j.skipped!==undefined?j.skipped:j.results.filter(qskip).length,skt=sk?"，"+sk+" 个 30 秒内刚查询过，已跳过":"";if(!bad.length){toast(qsummary(j));return}
-  toast("刷新额度："+j.ok+" 个成功，"+bad.length+" 个失败"+skt+"\n"+bad.slice(0,4).map(r=>nmOf(r.account)+"："+qerr(r.error)).join("\n")+(bad.length>4?"\n…另外 "+(bad.length-4)+" 个":""),{kind:"err"})},"查询中…"));
 // ---- loading
-async function loadQuota(){await currentLoad("sq",key,(_q,current)=>Promise.allSettled([usageGet("/usage/v1/quota",current),usageGet("/usage/v1/reset-credits",current),NOADMIN?Promise.resolve(null):usageGet("/admin/v1/accounts",current)]),results=>{
-  const [q,r,a]=results;Q=quotaPart(q,Q,QUOTA_READ.quota,"额度");RC=quotaPart(r,RC,QUOTA_READ.credits,"重置卡");AC=quotaPart(a,AC,QUOTA_READ.accounts,"账号状态");
-  const notes=Object.values(QUOTA_READ).map(x=>x.note).filter(Boolean);$("qnote").textContent=notes.join("；");
-  $("qall").classList.toggle("hide",!AC||!AC.accounts.length);renderQuota()})}
-const QUOTA_READ={quota:{at:0,note:""},credits:{at:0,note:""},accounts:{at:0,note:""}};
+async function loadQuota(){await currentLoad("strip",key,(_q,current)=>Promise.allSettled([usageGet("/usage/v1/quota",current),NOADMIN?Promise.resolve(null):usageGet("/admin/v1/accounts",current)]),results=>{
+  const [q,a]=results;Q=quotaPart(q,Q,QUOTA_READ.quota,"额度");AC=quotaPart(a,AC,QUOTA_READ.accounts,"账号状态");
+  POOL_NOTE=Object.values(QUOTA_READ).map(x=>x.note).filter(Boolean).join("；");renderQuota();renderRuntime()})}
+const QUOTA_READ={quota:{at:0,note:""},accounts:{at:0,note:""}};let POOL_NOTE="";
 function quotaPart(result,previous,state,label){if(result.status==="fulfilled"){state.at=result.value?Date.now():0;state.note=result.value?"":label+"无读取权限";return result.value}
   const e=result.reason;if(e.status===403||e.status===404){state.at=0;state.note=label+(e.status===403?"无读取权限（HTTP 403）":"接口不可用（HTTP 404）");return null}
   state.note=label+"读取失败："+why(e)+(state.at?" · 保留已有数据（上次读取 "+fmtTime(state.at)+"）":" · 暂无成功数据");return previous}
-function resetQuotaReads(){for(const state of Object.values(QUOTA_READ)){state.at=0;state.note=""}$("qnote").textContent=""}
+function resetQuotaReads(){for(const state of Object.values(QUOTA_READ)){state.at=0;state.note=""}POOL_NOTE=""}
 function summaryQuery(){const q=new URLSearchParams(trendQuery());q.set("group",$("group").value);return q.toString()}
 // The API returns both grouped metrics and buckets. One scan serves the whole overview.
 // The previous period only changes with the scope and the window length, so a rolling window
@@ -1590,13 +1460,15 @@ function occPeak(){const rows=OCC&&OCC.rows||[];if(!rows.length)return null;cons
   for(const r of rows){o.inf=Math.max(o.inf,r.inflight_peak);o.ws=Math.max(o.ws,r.ws_peak);o.li=Math.max(o.li,r.max_inflight_requests);o.lw=Math.max(o.lw,r.ws_max_connections);o.full+=r.full_minutes||0}return o}
 // Live process state, not range-scoped: a full-width row at the end of the KPI strip.
 function renderRuntime(){const st=$("strip"),r=EG&&EG.runtime;let row=$("liverow");
-  if(!r){if(row)row.remove();return}
+  if(!r&&!ACCTS.length&&!POOL_NOTE){if(row)row.remove();return}
   if(!row){row=h("div",{class:"kpi live",id:"liverow"},h("span","k","实时"),h("span",{id:"live"}))}
-  st.appendChild(row);const e=$("live"),near=!!r.limit&&r.inflight/r.limit>=0.8;clear(e);
+  st.appendChild(row);renderPool(row);const e=$("live");clear(e);
+  if(!r){e.className="hide";const pk0=$("livepk");if(pk0)clear(pk0);row.removeAttribute("title");return}
+  const near=!!r.limit&&r.inflight/r.limit>=0.8;
   if(r.draining){e.className="tag dot err";e.textContent="正在关闭"}
   else{e.className="tag dot "+(near?"cool":r.inflight||r.ws_connections?"ok":"off");
     e.textContent="并发 "+exact(r.inflight)+(near?" / "+exact(r.limit):"")+" · WS "+exact(r.ws_connections)}
-  let pk=$("livepk");if(!pk){pk=h("span",{class:"livepk",id:"livepk"});row.appendChild(pk)}clear(pk);const o=occPeak();
+  let pk=$("livepk");if(!pk){pk=h("span",{class:"livepk",id:"livepk"});row.insertBefore(pk,$("pool"))}clear(pk);const o=occPeak();
   if(o){const b=h("button",{class:"statlink",type:"button",title:"所选时间段的占用峰值；满载 = 并发或 WS 达到上限的分钟数（按实例累计）。查看占用趋势"},"峰值 并发 "+exact(o.inf)+(o.li?"/"+exact(o.li):"")+" · WS "+exact(o.ws)+(o.lw?"/"+exact(o.lw):""),o.full?[sep(),h("span","w","满载 "+exact(o.full)+" 分钟")]:null);
     b.addEventListener("click",()=>{$("tmetric").value="cap";saveF();renderTrend();$("st").scrollIntoView({block:"start",behavior:"smooth"})});pk.append(b)}
   row.title="进程状态，读取于 "+hms(new Date())+"，不受时间范围影响。上限 "+(r.limit?exact(r.limit):"不限")+"；HTTP 占用到响应结束，WS 只在 turn 进行中占用，空闲连接不占用；达到上限立即返回 503，不排队"}
@@ -1632,7 +1504,7 @@ function spark(hist,key,key2){const W=300,H=44,pts=hist.filter(s=>s[key]!==null&
   if(pts.length<2)return svg;const max=Math.max(1,...pts.map(s=>Math.max(s[key],key2&&s[key2]!=null?s[key2]:0))),t0=pts[0].at_ms,span=Math.max(1,pts[pts.length-1].at_ms-t0);
   const path=k=>pts.filter(s=>s[k]!==null&&s[k]!==undefined).map((s,i)=>(i?"L":"M")+((s.at_ms-t0)/span*W).toFixed(1)+" "+(H-2-(s[k]/max)*(H-4)).toFixed(1)).join("");
   if(key2)svg.appendChild(sv("path",{class:"ln2",d:path(key2)}));svg.appendChild(sv("path",{class:"ln",d:path(key)}));return svg}
-function renderMem(){const sec=$("mem"),m=MEM;sec.classList.toggle("hide",!m);const st=$("memstrip");clear(st);if(!m){for(const id of ["memwhen","memrss","membuffer","memws","memalert"])$(id).textContent="";$("memalert").classList.toggle("hide",true);return}
+function renderMem(){const sec=$("mem"),m=MEM;sec.classList.toggle("hide",!m);const st=$("memstrip");clear(st);if(!m){for(const id of ["memwhen","memrss","membuffer","memws","memalert"])$(id).textContent="";$("memalert").classList.toggle("hide",true);if(typeof renderSys==="function")renderSys();return}
   const n=m.now,lim=m.buffered_body_limit_bytes,used=n.buffered_body_bytes,pctB=lim?used/lim:0,wsCap=m.ws_max_connections;
   // Keep the native disclosure and its focus stable; refresh only the values, never open/close it.
   $("memrss").textContent="RSS "+(n.rss_bytes==null?"未知":fmtB(n.rss_bytes));
@@ -1651,7 +1523,7 @@ function renderMem(){const sec=$("mem"),m=MEM;sec.classList.toggle("hide",!m);co
   const hist=m.history.concat([n]),mins=Math.round((hist[hist.length-1].at_ms-hist[0].at_ms)/60000);
   const key=hist.some(s=>s.rss_bytes!=null)?"rss_bytes":"allocated_bytes",key2=m.jemalloc&&key==="rss_bytes"?"allocated_bytes":null;
   st.appendChild(h("div",{class:"kpi spark",title:"每 "+m.sample_every_secs+" 秒采样一次，只保存在内存里（最近 15 分钟，重启后清空）；实线为 RSS，虚线为 jemalloc 已分配"},h("div","k",hist.length<2?"内存趋势 · 采集中":"内存趋势 · 近 "+Math.max(1,mins)+" 分钟"),spark(hist,key,key2)));
-  $("memwhen").textContent="读取于 "+hms(new Date(n.at_ms))}
+  $("memwhen").textContent="读取于 "+hms(new Date(n.at_ms));if(typeof renderSys==="function")renderSys()}
 async function loadMem(){if(NOADMIN){MEM=null;renderMem();return}const auth=key();
   try{const m=await get("/admin/v1/memory",{timeout:15000});if(key()===auth){MEM=m;renderMem()}}catch(_){if(key()===auth){MEM=null;renderMem()}}}
 let allPending=0;
@@ -1666,7 +1538,7 @@ async function loadAll(automatic=false){if(automatic&&allPending)return;allPendi
   if(ok&&key()===auth)$("upd").textContent="更新于 "+hms(new Date())}finally{allPending--}}
 function stopAuto(){if(timer){clearInterval(timer);timer=null}}
 function startAuto(){stopAuto();timer=setInterval(()=>{if(!document.hidden&&!MODALS.length)loadAll(true)},autoSecs()*1000)}
-onLogout=()=>{stopAuto();closePop(false);for(const id of Object.keys(loadSeq))loadSeq[id]++;resetQuotaReads();Q=RC=AC=EG=SUM=TREND=RECORDER=MEM=SV=null;svAt=0;ACCTS=[];recState={cursor:null,total:0,rows:[]};renderKpis();renderRuntime();renderMem();renderRecords();clear($("svg"));clear($("sum").tBodies[0]);clear($("quota").tBodies[0])};
+onLogout=()=>{stopAuto();for(const id of Object.keys(loadSeq))loadSeq[id]++;resetQuotaReads();Q=RC=AC=EG=SUM=TREND=RECORDER=MEM=SV=null;svAt=0;ACCTS=[];recState={cursor:null,total:0,rows:[]};renderKpis();renderRuntime();renderMem();renderRecords();clear($("svg"));clear($("sum").tBodies[0])};
 for(const id of ["auto","mauto"])$(id).addEventListener("change",e=>{const on=e.target.checked;$("auto").checked=$("mauto").checked=on;localStorage.setItem(AS,on?"1":"0");if(on)startAuto();else stopAuto()});
 // Auto-refresh interval (5/15/30/60 s, default 15), kept per browser; a change restarts a running timer.
 const AIV="ciallopa_auto_secs",AUTO_SECS=[5,15,30,60];
@@ -1675,6 +1547,23 @@ function showAutoSecs(){const n=autoSecs(),t="每 "+n+" 秒自动刷新";$("ivl"
 for(const id of ["ivl","mivl"])$(id).addEventListener("change",e=>{const n=Number(e.target.value);if(!AUTO_SECS.includes(n))return;localStorage.setItem(AIV,String(n));showAutoSecs();if(timer)startAuto()});
 showAutoSecs();
 $("refresh").addEventListener("click",()=>loadAll());
+// ---- view tabs: 用量 (range-scoped) | 系统情况 (live process state). #system keeps the tab on reload.
+let sysSeen=false;SYS_READY=true;
+function setTab(t,focus){const sys=t==="sys";$("main").dataset.tab=sys?"sys":"use";
+  for(const [id,on] of [["tabuse",!sys],["tabsys",sys]]){const b=$(id);b.setAttribute("aria-selected",String(on));b.tabIndex=on?0:-1}
+  if(focus)$(sys?"tabsys":"tabuse").focus();
+  if(sys&&!sysSeen){sysSeen=true;$("memdetails").open=true}
+  const want=sys?"#system":"";if((location.hash||"")!==want)history.replaceState(null,"",location.pathname+location.search+want);renderSys()}
+// var: callers (renderMem / the recorder banner) may run before this block initialises.
+var SYS_READY;
+function renderSys(){if(!SYS_READY)return;const n=(MEM&&!$("memalert").classList.contains("hide")?1:0)+($("gapban").classList.contains("hide")?0:1)+(EG&&EG.runtime&&EG.runtime.draining?1:0),b=$("sysbadge");
+  b.textContent=n?String(n):"";b.classList.toggle("hide",!n);$("tabsys").setAttribute("aria-label",n?"系统情况，"+n+" 项需要注意":"系统情况");
+  $("sysempty").classList.toggle("hide",!!MEM||!$("gapban").classList.contains("hide"))}
+$("tabuse").addEventListener("click",()=>setTab("use"));$("tabsys").addEventListener("click",()=>setTab("sys"));
+$("tabuse").parentElement.addEventListener("keydown",e=>{const k=e.key;if(k!=="ArrowLeft"&&k!=="ArrowRight"&&k!=="Home"&&k!=="End")return;e.preventDefault();
+  const sys=$("main").dataset.tab==="sys";setTab(k==="Home"?"use":k==="End"?"sys":sys?"use":"sys",true)});
+addEventListener("hashchange",()=>setTab(location.hash==="#system"?"sys":"use"));
+setTab(location.hash==="#system"?"sys":"use");
 function changeScope(){clearTimeout(kt);saveF();showScope();renderKpis();renderTrend();loadSummary().catch(fail);loadRecords(false).catch(fail)}
 function changeRecords(){saveF();loadRecords(false).catch(fail)}
 $("range").addEventListener("change",()=>{recordWindow=null;rollWindow();changeScope()});

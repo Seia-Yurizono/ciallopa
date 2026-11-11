@@ -52,7 +52,7 @@ async function queryAndPaging() {
   let rolls = 0;
   const c = vm.createContext({
     $: input, key: () => 'demo', URLSearchParams, Map, Date, Math, Number, Promise,
-    document: {querySelector: () => ({offsetHeight: 49})}, getComputedStyle: () => ({top: '48px'}),
+    document: {querySelector: () => ({offsetHeight: 49}), querySelectorAll: () => [{offsetHeight: 49}]}, getComputedStyle: () => ({top: '48px', position: 'sticky'}),
     scopeWindow: {from: 9000000, to: 95400000, fixed: false}, recordWindow: null,
     recState: {rows: [], cursor: null, total: 0},
     usageGet: async url => {
@@ -71,7 +71,7 @@ async function queryAndPaging() {
     section('function trendQuery()', 'function renderRuntime('),
     section('function trendPoints(', 'function selectBucket('),
     section('function summaryCurrent()', 'function statLink('),
-    section('function drillOutcome(', '// ---- reset-card popover:'),
+    section('function drillOutcome(', '// ---- summary\n'),
     section('function selectBucket(', 'function renderTrend('),
     section('let allPending=0;', 'function stopAuto('),
   ].join('\n'), c);
@@ -554,14 +554,14 @@ async function overviewSnapshots() {
   const c = vm.createContext({
     $: control, key: () => auth, Q: null, RC: null, AC: null, NOADMIN: false,
     usageGet: path => reply(path), renderQuota() {},
-    stopAuto() {}, closePop() {}, renderKpis() {}, renderRuntime() {}, renderMem() {}, renderRecords() {}, clear() {},
+    stopAuto() {}, renderKpis() {}, renderRuntime() {}, renderMem() {}, renderRecords() {}, clear() {},
     why: e => e.message, fmtTime: value => 't' + value,
     Date: class extends Date {static now() {return now;}},
   });
   vm.runInContext(section('const loadSeq={},loading={};', 'function emptyRow(') + '\n' +
     section('async function loadQuota()', 'function summaryQuery()') + '\n' +
     section('onLogout=()=>{stopAuto()', 'for(const id of ["auto","mauto"])'), c);
-  const load = () => vm.runInContext('loadQuota()', c);
+  const load = () => vm.runInContext('loadQuota()', c), note = () => vm.runInContext('POOL_NOTE', c);
   await load();
   assert.equal(c.Q.version, 'v1');
   now = 2000;
@@ -571,25 +571,23 @@ async function overviewSnapshots() {
   };
   await load();
   assert.equal(c.Q.version, 'v1');
-  assert.equal(c.RC.version, 'v1');
   assert.equal(c.AC.version, 'v2');
-  assert.match(control('qnote').textContent, /额度.*保留.*t1000/);
-  assert.match(control('qnote').textContent, /重置卡.*保留.*t1000/);
-  reply = async path => {throw Object.assign(new Error('unavailable'), {status: path.includes('reset') ? 404 : 403});};
+  assert.match(note(), /额度.*保留.*t1000/);
+  // The overview no longer reads reset cards (they live on the accounts page).
+  reply = async path => {if (path.includes('reset')) throw new Error('overview must not read reset cards');throw Object.assign(new Error('unavailable'), {status: path.startsWith('/admin/') ? 404 : 403});};
   await load();
   assert.equal(c.Q, null, 'permission loss clears the quota snapshot');
-  assert.equal(c.RC, null, 'unavailable cards do not keep looking current');
-  assert.equal(c.AC, null, 'permission loss clears admin metadata');
-  assert.match(control('qnote').textContent, /额度.*403/);
-  assert.match(control('qnote').textContent, /重置卡.*404/);
+  assert.equal(c.AC, null, 'unavailable admin metadata does not keep looking current');
+  assert.match(note(), /额度.*403/);
+  assert.match(note(), /账号状态.*404/);
   reply = async () => {throw Object.assign(new Error('synthetic 503'), {status: 503});};
   await load();
-  assert.match(control('qnote').textContent, /暂无成功数据/);
-  assert.doesNotMatch(control('qnote').textContent, /保留/);
+  assert.match(note(), /暂无成功数据/);
+  assert.doesNotMatch(note(), /保留/);
   reply = async () => ({accounts: [], version: 'recovered'});
   await load();
   assert.equal(c.Q.version, 'recovered');
-  assert.doesNotMatch(control('qnote').textContent, /失败|403|404/);
+  assert.equal(note(), '');
   const slow = deferred();
   reply = () => slow.promise;
   const old = load();
@@ -609,8 +607,8 @@ async function overviewSnapshots() {
   assert.equal(c.Q, null);
   reply = async () => {throw Object.assign(new Error('synthetic 503'), {status: 503});};
   await load();
-  assert.match(control('qnote').textContent, /暂无成功数据/);
-  assert.doesNotMatch(control('qnote').textContent, /保留/);
+  assert.match(note(), /暂无成功数据/);
+  assert.doesNotMatch(note(), /保留/);
 }
 
 async function egressResponses() {
@@ -674,7 +672,7 @@ async function currentReadsProtectAuthorization() {
     const response = (body, code = 200) => ({ok: code < 400, status: code, json: async () => body});
     const c = vm.createContext({
       $: control, key: () => auth, authEpoch: 0, KS: 'key', NOADMIN: false,
-      Q: null, RC: null, AC: null, renderQuota() {},
+      Q: null, RC: null, AC: null, renderQuota() {}, renderRuntime() {},
       why: e => e.message, fmtTime: String, adminMsg: () => 'admin required',
       AbortController, setTimeout, clearTimeout,
       sessionStorage: {removeItem() {auth = '';}},
@@ -1114,7 +1112,7 @@ async function inspectorRetryAndNavigation() {
   vm.runInContext([
     section('async function req(', 'async function get('), section('async function usageGet(', 'const narrow='),
     section('const MODALS=[];', '// ---- inline click-again:'), section('const PROB=', 'function fval('), section('const SRC=', 'function recRow('),
-    section('let dtext=', '// ---- active quota query'),
+    section('let dtext=', '// ---- loading'),
   ].join('\n'), c);
   vm.runInContext('recState.rows=records', c);
   control('dp').classList.add('hide');control('dretry').classList.add('hide');
@@ -1514,15 +1512,11 @@ async function problemChipsAndNextSteps() {
   const quota = vm.runInContext('recRow', c)({...base, status: 429, error: 'usage_limit_reached', err_source: 'upstream', problem: 'error', cause: 'quota', next: ['refresh_quota', 'account']});
   const qbtn = quota.children.find(td => td.getAttribute('class') === 'err').children.filter(e => e.tagName === 'BUTTON');
   assert.deepEqual(qbtn.map(flat), ['刷新额度 ›', '查看账号 ›']);
-  // 刷新额度 only moves to the existing button: no API call, never a reset card.
+  // 刷新额度 opens the account on the accounts page (row / sheet): no API call, never a reset card.
   const before = gets.length;
-  control('qall').focus = function () {this.focused = true;};control('sq').scrollIntoView = () => {};
-  control('sq').style = {};dom.document.querySelector = () => ({offsetHeight: 109});c.getComputedStyle = () => ({top: '44px'});
   await qbtn[0].events.click(click);
-  assert.equal(gets.length, before);assert.ok(control('qall').focused);assert.deepEqual(visits, []);
-  control('qall').classList.add('hide');
-  await qbtn[0].events.click(click);
-  assert.deepEqual(visits, ['/ui/accounts#acc=bob'], 'usage-only keys go to the account row instead');
+  assert.equal(gets.length, before);
+  assert.deepEqual(visits, ['/ui/accounts#acc=bob'], '刷新额度 goes to the account row');
   await qbtn[1].events.click(click);
   assert.equal(visits.at(-1), '/ui/accounts#acc=bob');
   const egress = vm.runInContext('recRow', c)({...base, status: 502, error: 'proxy_connect', err_source: 'network', problem: 'error', cause: 'network', next: ['egress']});
@@ -1561,11 +1555,65 @@ async function problemChipsAndNextSteps() {
   assert.deepEqual(control('dconcl').children.at(-1).children.map(flat), ['刷新额度 ›', '查看账号 ›']);
   assert.match(html, /<div class="mut" id="dmeta"><\/div><div class="concl hide" id="dconcl"/, '结论 sits above stats and the attempt chain');
   // Phone: the chip rows scroll sideways instead of wrapping.
-  assert.match(html, /@media \(max-width:760px\)\{\.pf\{flex-wrap:nowrap;overflow-x:auto/);
+  assert.match(html, /@media \(max-width:760px\),\(max-height:500px\) and \(pointer:coarse\)\{\.pf\{flex-wrap:nowrap;overflow-x:auto/);
   assert.match(html, /#rec td\.err \.nx:not\(\.p\)\{display:none\}/);
 }
 
+
+// Pooled bars follow the windows upstream returns (window_minutes), not the plan or slot: a pro account
+// whose only (weekly) window arrives as primary is left out of the 5h bar; no-quota accounts stay dashed.
+function poolWindows() {
+  const el = (tag, a, ...kids) => {
+    const e = {tag, cls: typeof a === 'string' ? a : a && a.class || '', attrs: typeof a === 'object' && a ? a : {}, kids: kids.flat().filter(k => k != null), style: {}};
+    Object.defineProperty(e, 'text', {get: () => e.kids.map(k => typeof k === 'object' ? k.text : String(k)).join('')});
+    e.appendChild = k => e.kids.push(k);
+    return e;
+  };
+  const c = vm.createContext({h: el, Date});
+  vm.runInContext([section('function wlab(', 'function whead('), section('function rem(w)', 'function mergeAccts('),
+    section('function poolSeg(', 'function renderPool(')].join('\n'), c);
+  const win = (pct, m) => ({used_pct: pct, resets_at: null, window_minutes: m});
+  const accts = [
+    {id: 'plus', q: {primary: win(60, 300), secondary: win(20, 10080)}},
+    {id: 'pro', q: {primary: win(30, 10080), secondary: {used_pct: null, window_minutes: null}}},
+    {id: 'free', q: {primary: win(10, 43200), secondary: {used_pct: null}}},
+    {id: 'new', q: null},
+  ];
+  c.accts = accts;
+  const five = vm.runInContext('poolBar(accts,"s","5h")', c), week = vm.runInContext('poolBar(accts,"l","周")', c);
+  assert.equal(five.kids[0].text, '5h · 2 个', '5h bar: the plus account and the one with no quota yet');
+  assert.deepEqual(five.kids[1].kids.map(k => k.cls), ['bar', 'bar unk']);
+  assert.equal(five.kids[2].text, '40%', 'average over known 5h windows only (the pro weekly 70% is not mixed in)');
+  assert.equal(week.kids[0].text, '周 · 4 个');
+  assert.equal(vm.runInContext('poolBar([accts[1]],"s","5h")', c), null, 'only pro accounts: no 5h bar at all');
+  assert.equal(vm.runInContext('wslots(accts[1].q).s', c), null, 'pro primary weekly window is never the 5h slot');
+  assert.equal(vm.runInContext('wslots(accts[1].q).l[0]', c), '周');
+}
+
+// Button / affordance rules (shared block + overview): text actions are bordered, borderless only for
+// icon-only buttons and the row disclosure, toggles show their state, touch targets reach 44 px.
+function affordanceRules() {
+  const settings = fs.readFileSync(path.join(__dirname, '../crates/server/src/settings.html'), 'utf8');
+  for (const [name, src] of [['ui', html], ['settings', settings]]) {
+    assert.match(src, /button\.ghost\{color:var\(--fg-2\)\}/, `${name}: ghost keeps the border`);
+    assert.doesNotMatch(src, /button\.ghost\{border-color:transparent/, `${name}: no borderless text buttons`);
+    assert.match(src, /button\.icon,button#theme,button\.det\{border-color:transparent;background:transparent\}/);
+    assert.match(src, /button\.ghost\[aria-pressed=true\],button\.ghost\[aria-expanded=true\]:not\(\.det\)\{background:var\(--surface-2\);border-color:var\(--ctl\)/, `${name}: pressed / expanded state`);
+    assert.match(src, /select,input:not\(\[type=checkbox\]\)\{height:44px\}/, `${name}: phone inputs 44 px`);
+    assert.match(src, /width:max\(calc\(100% \+ 4px\),44px\);height:max\(100%,44px\)/, `${name}: compact controls get a 44 px hit area`);
+    assert.match(src, /\.qmod:after/, `${name}: 只看已修改 in the hit-area list`);
+  }
+  assert.match(html, /\.kpi \.s \.statlink,\.kpi \.fcls \.statlink,\.livepk \.statlink\{text-decoration:underline dotted/, 'small card numbers: dotted underline at rest');
+  assert.match(html, /\.livepk \.statlink:focus-visible\{text-decoration-style:solid/, 'solid on hover / focus');
+  assert.match(html, /\.otabs button\{min-width:44px;height:44px\}/);
+  assert.match(html, /\.kpi\.live\{position:relative\}\.pool \.acclink\{position:absolute;top:0;right:var\(--s3\)\}/, 'phone: 账号 › sits on the card header, no wrap');
+  assert.match(html, /#scopefreeze:after\{content:""/);
+  assert.match(html, /\.dt \.t \.statlink:after\{content:""/, 'request time link: 44 px hit area');
+}
+
 (async () => {
+  affordanceRules();
+  poolWindows();
   // A rejects while current; loadAll cannot present it until the slow quota job settles.
   const oldRound = vm.runInContext('loadAll()', context);
   await new Promise(setImmediate);

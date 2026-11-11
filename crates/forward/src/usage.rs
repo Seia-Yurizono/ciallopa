@@ -1076,5 +1076,23 @@ mod tests {
             "free plan's empty secondary dropped"
         );
         assert!(quota_obs(&HeaderMap::new()).is_none());
+        // pro: no 5-hour window. The weekly one arrives in the primary slot; the slot is kept as
+        // sent and `window_minutes` (not the position) tells the UI it is the weekly window.
+        let mut h = HeaderMap::new();
+        for (k, v) in [
+            ("x-codex-plan-type", "pro"),
+            ("x-codex-primary-used-percent", "30"),
+            ("x-codex-primary-window-minutes", "10080"),
+            ("x-codex-primary-reset-at", "1794464253"),
+        ] {
+            h.insert(k, v.parse().unwrap());
+        }
+        let q = quota_obs(&h).unwrap();
+        assert_eq!((q.p_pct, q.p_window_min), (Some(30.0), Some(10080)));
+        assert_eq!(
+            (q.s_pct, q.s_window_min),
+            (None, None),
+            "no invented 5h window"
+        );
     }
 }

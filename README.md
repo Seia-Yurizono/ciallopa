@@ -486,11 +486,13 @@ Web pages: `GET /ui` overview (`/` redirects), `/ui/settings` and `/ui/accounts`
 tab's `sessionStorage`, sent as `Authorization: Bearer` and never put in the URL. The overview
 has a time-range / grouping bar (24h/7d/30d; by account/key/instance/model) that drives the KPI
 strip, the summary table, the trend chart (requests, errors, tokens) and the recent requests.
-Its quota table shows the 5-hour and weekly remaining % per account, the reset time, a warning
-when the quota data is more than an hour old, and the reset-card count. The 账号 page shows each account's card count and 「已达额度上限」 when
-the last 刷新额度 reported it. Quota data comes from
+The overview has two tabs, 用量 and 系统情况 (memory, Cloudflare block banner; a badge counts
+alerts); 用量 shows pooled 5h / 周 remaining bars with a link to the 账号 page. Per-account quota
+lives on the 账号 page: 5-hour and weekly remaining %, a 30-day weekly capacity sparkline, the card
+count and 「已达额度上限」 when the last 刷新额度 reported it; clicking a row (a bottom sheet on
+phones) shows the history chart (周 | 5h toggle, one window at a time), scheduling, reset cards and actions. Quota data comes from
 upstream response headers whenever an account serves a request; 刷新额度 (per account, in the
-reset-card panel of the overview and in the account's actions) and 刷新全部额度 ask upstream
+account's expanded row) and 刷新全部额度 ask upstream
 directly instead (`GET /wham/usage`, which the Codex backend client reads rate limits from: read-only, spends no
 usage), at most once per account every 30 s and four accounts at a time. Optional background
 刷新额度 (`[ui] quota_refresh_mins`–`quota_refresh_max_mins`, default off) runs the same path for accounts whose
@@ -553,7 +555,7 @@ pending until the next restart.
 
 `/ui/settings` shows every setting with its running value and a 热更新 / 需重启 badge, the
 pending-restart list, the client keys (label + last 4 characters) and the audit log.
-`/ui/accounts` lists accounts with status, weight, priority and last-24h usage. Both pages are
+`/ui/accounts` lists accounts with status, quota, last-24h usage, weight and priority. Both pages are
 read-only unless the file says:
 
 ```toml
