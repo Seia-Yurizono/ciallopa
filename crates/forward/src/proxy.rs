@@ -2388,6 +2388,56 @@ mod quota_tests {
         );
     }
     #[test]
+    fn new_codex_terminal_codes_stay_content() {
+        // Codex marks these as terminal (retry_delay = None). ciallopa does not
+        // classify them as quota or overload: the in-stream event stays Content,
+        // the attempt is committed, and the code is forwarded as-is (no switch).
+        const CODES: &[&str] = &[
+            "inference_hook_denied",
+            "content_policy_violation",
+            "invalid_access_program",
+            "unsupported_access_program",
+            "access_program_not_enabled",
+            "invalid_workspace_selected",
+            "codex_workspace_access_denied",
+            "budget_reached",
+        ];
+        for code in CODES {
+            for ev in [
+                format!(
+                    r#"{{"type":"response.failed","response":{{"error":{{"code":"{code}","message":"x"}}}}}}"#
+                ),
+                format!(r#"{{"type":"error","error":{{"code":"{code}","message":"x"}}}}"#),
+            ] {
+                assert!(matches!(event_kind(&ev), EventKind::Content), "{ev}");
+            }
+            let body = format!(r#"{{"error":{{"code":"{code}","message":"x"}}}}"#);
+            assert_eq!(overload_body(400, body.as_bytes()), None, "{code}");
+        }
+    }
+    #[test]
+    fn new_codex_workspace_403_still_auth_failed() {
+        // HTTP 403 (including workspace / access-program / inference-hook codes)
+        // stays AuthFailed: cool the account and switch. Do not mark needs_relogin.
+        let o = ciallopa_core::config::UpstreamOpts::default();
+        let h = HeaderMap::new();
+        for code in [
+            "invalid_workspace_selected",
+            "codex_workspace_access_denied",
+            "access_program_not_enabled",
+            "inference_hook_denied",
+        ] {
+            let body = format!(r#"{{"error":{{"code":"{code}","message":"x"}}}}"#);
+            assert!(
+                matches!(
+                    classify_error(403, &h, body.as_bytes(), &o),
+                    Outcome::AuthFailed
+                ),
+                "{code}"
+            );
+        }
+    }
+    #[test]
     fn sse_types_survive_fragmented_crlf_and_multiline_data() {
         let wire = concat!(
             ": comment\r\nevent: response.failed\r\n",
