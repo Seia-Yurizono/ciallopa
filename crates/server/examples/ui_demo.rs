@@ -99,8 +99,6 @@ async fn main() {
     );
     // 14 days of fake traffic
     let now = now_ms();
-    let reset_p = now / 1000 + 3 * 3600;
-    let reset_s = now / 1000 + 4 * 86400;
     let mut rng = 7u64;
     let mut next = || {
         rng ^= rng << 13;
@@ -327,22 +325,7 @@ async fn main() {
             ));
             r.turn_id = Some(format!("turn-{:04}", i % 12 + 1));
         }
-        let prog = i as f64 / n as f64;
-        // alice quota comes from demo_quota_history (multi-cycle 30-day series).
-        if a != "evil" && a != "alice" {
-            r.quota = Some(QuotaObs {
-                plan: Some(if a == "alice" { "plus" } else { "pro" }.into()),
-                p_pct: Some(
-                    ((prog * 1000.0) as i64 % 100) as f64 * if a == "alice" { 0.9 } else { 0.4 },
-                ),
-                p_reset: Some(reset_p),
-                p_window_min: Some(300),
-                s_pct: Some((prog * if a == "alice" { 78.0 } else { 3.0 }).floor()),
-                s_reset: Some(reset_s),
-                s_window_min: Some(10080),
-                ..Default::default()
-            });
-        }
+        // alice (plus) and bob (pro) quota come from demo_quota_history / demo_pro_history.
         rr.record(r);
     }
     for &(at, kind) in &busy[bj..] {
@@ -374,6 +357,7 @@ async fn main() {
     demo_refusals(&rec, now);
     demo_occupancy(&rec, now, &mut next);
     demo_quota_history(&rec, now);
+    demo_pro_history(&rec, now);
     rec.flush_blocking().unwrap();
     rec2.flush_blocking().unwrap();
     drop(rec2);
@@ -899,9 +883,9 @@ async fn fake_upstream() -> std::net::SocketAddr {
                         "primary_window": w(3.0, 2_592_000, 27 * 86_400), "secondary_window": null},
                         "rate_limit_reset_credits": {"available_count": 0}})
                 } else if who.ends_with("bob") {
+                    // pro: no 5-hour window; the weekly one comes in the primary slot
                     json!({"plan_type": "pro", "rate_limit": {"allowed": false, "limit_reached": true,
-                        "primary_window": w(100.0, 18_000, 3600),
-                        "secondary_window": w(71.0, 604_800, 4 * 86_400)},
+                        "primary_window": w(100.0, 604_800, 4 * 86_400), "secondary_window": null},
                         "rate_limit_reset_credits": {"available_count": 3}})
                 } else {
                     json!({"plan_type": "plus", "rate_limit": {"allowed": true, "limit_reached": false,
@@ -1251,6 +1235,49 @@ fn demo_quota_history(rec: &Recorder, now: i64) {
             1.0,
             Some("ultrafast"),
         );
+    }
+}
+
+/// Pro plan (bob): one weekly window and no 5-hour one. Upstream sends it in the primary slot
+/// (`x-codex-primary-window-minutes: 10080`), so history rows carry `window: "primary"`; only
+/// `window_minutes` says it is the weekly window.
+fn demo_pro_history(rec: &Recorder, now: i64) {
+    rec.flush_blocking().unwrap();
+    let (hour, week) = (3_600_000i64, 7 * 86_400_000i64);
+    let mut seq = 0x8000i64;
+    let mut reset = now - 30 * 86_400_000 + 2 * 86_400_000;
+    let mut t = reset - week + hour;
+    // capacity per week (scale of tokens per snapshot): one heavy week, the rest steady
+    let scales = [1.0, 1.15, 0.9, 1.05, 1.0, 1.1];
+    let mut k = 0usize;
+    while t < now - hour {
+        if t >= reset {
+            reset += week;
+            k += 1;
+        }
+        let into = (t - (reset - week)) as f64 / week as f64;
+        let mut r = Record::new(demo_hist_id(&mut seq, t), Transport::Sse, "responses");
+        r.account = Some("bob".into());
+        r.model = Some("gpt-5.6-sol".into());
+        r.status = 200;
+        r.key = Some("laptop".into());
+        let sc = scales[k.min(scales.len() - 1)];
+        r.input_tokens = Some((600_000.0 * sc) as i64);
+        r.output_tokens = Some((15_000.0 * sc) as i64);
+        r.cached_tokens = Some(0);
+        r.duration_ms = 4_000;
+        r.quota = Some(QuotaObs {
+            plan: Some("pro".into()),
+            p_pct: Some((into * 70.0 / sc).min(99.0).floor()),
+            p_reset: Some(reset / 1000),
+            p_window_min: Some(10_080),
+            s_pct: None,
+            s_reset: None,
+            s_window_min: None,
+            cards: Some(3),
+        });
+        rec.record(r);
+        t += 8 * hour;
     }
 }
 

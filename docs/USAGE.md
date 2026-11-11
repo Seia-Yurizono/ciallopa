@@ -651,7 +651,8 @@ See [METRICS.md](METRICS.md) for the current outcome, sampling, cursor and bucke
   `capacity_credits` / `remaining_credits` / `capacity_lo` / `capacity_hi` / `coverage_gap` /
   `confidence` / `api_cost_usd`. Every configured account is listed (`quota: null` if never
   observed); accounts seen in the log but no longer configured carry `configured: false`.
-- `GET /usage/v1/quota/history?account=<id>&days=30` (optional `from`/`to` ms) →
+- `GET /usage/v1/quota/history?days=30` (optional `account=<id>`, `from`/`to` ms; without
+  `account`, every account with history) →
   `{from_ms, to_ms, accounts:[{account, events:[{kind, window, at_ms, prev_pct, next_pct,
   prev_reset, next_reset, card_source}], cycles:[{window, started_ms, ended_ms,
   cycle_reset_at, close_kind, capacity_credits, capacity_lo, capacity_hi, credits_used,
@@ -731,11 +732,33 @@ there is no smoothing: a cycle whose point estimate is outside 0.7–1.4× of th
 median of earlier cycles is flagged `trend: "up"` / `"down"`. Rows older than the usage
 retention (default 90 days) are purged with the rest of the log.
 
-`GET /usage/v1/quota/history?account=<id>&days=30` (or `from`/`to` ms; `days` default 30,
-max 90) returns `{from_ms, to_ms, accounts:[{account, events, cycles}]}`. The account page
-「额度记录」 panel draws a 30-day timeline (one row for 5h, one for 7d) aligned with a
-per-window step chart of cycle capacity (credits, range band, historical median) and a
-separate API 价格 pane in USD; a collapsible 明细 table lists the same numbers.
+`GET /usage/v1/quota/history?days=30` (optional `account=<id>`, or `from`/`to` ms; `days`
+default 30, max 90) returns `{from_ms, to_ms, accounts:[{account, events, cycles}]}`. Account
+ids in the result are the live ids, also for history recorded under an older alias. The
+accounts page reads it once for all accounts (no `account`, at most once a minute, again after
+a card is used) and draws each row's 30-day sparkline from it (the long window only, 周 on plus and
+pro: step line and a hollow dot per reset). Expanding a row shows 「额度记录 · 30 天」 for one window
+at a time: accounts with both windows (by `window_minutes`) get a 周 | 5h toggle (default 周, kept
+for the browser session), weekly-only accounts just show 周. Each chart has its own y axis and
+draws the cycle capacity in credits as one step line with a hollow dot per reset (the open cycle
+dashed). Where there is no data between two cycles (idle, ciallopa not running, or a cycle
+without a capacity estimate, which is skipped rather than invented), a fainter dashed segment
+bridges the last known value to the next; the row sparkline does the same. Dense 5h histories get
+smaller, thinned dots. Hover, arrow keys or a tap opens the
+details: reset kind, time, capacity and range, API price, card use, used % change and caveats.
+There is no API price pane; a collapsible 明细 table lists the same numbers. Charts are drawn at
+the measured pixel width (never stretched) and redrawn on resize. The y axis starts at 0 and its
+top follows the typical cycles (Tukey upper fence on the estimates, IQR floored at 20% of the
+median, plus 10% headroom; with fewer than 4 cycles nothing is treated as an outlier), so one
+far-off cycle does not flatten the rest. A cycle above the top is pinned to the edge with an
+unlabeled ▲ marker; the real value is in that reset's details (also in 明细); the row sparklines use the same rule.
+
+`primary` / `secondary` are the upstream header slots, stored as sent; they are not "5h" and
+"weekly". Upstream fills them by position: Plus sends 5h as primary and weekly as secondary, while a
+plan with a single window (Pro: weekly only; free: 30 days) sends it as primary. The UI labels and
+groups windows by `window_minutes` (300 → 5h, 10080 → 周), so a Pro account shows only a weekly
+bar and chart (no 周 | 5h toggle), and the overview's pooled 5h bar leaves it out (each bar shows how
+many accounts it covers; accounts with no quota yet stay in as dashed unknowns).
 
 Weights for the legacy token estimate (defaults: input 1, cached 0.1, output 4) remain in
 `[usage.quota_weights]`.
