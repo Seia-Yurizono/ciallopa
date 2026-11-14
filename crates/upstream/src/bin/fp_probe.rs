@@ -28,10 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Responses WebSocket handshake through the same dialer the proxy uses.
     let up = ciallopa_upstream::UpstreamClient {
         base_url: base.trim_end_matches('/').to_string(),
-        http: c,
-        opts: std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(ClientOptions::default())),
         pools: std::sync::Arc::new(ciallopa_upstream::ClientPool::new(ClientOptions::default())),
-        egress: std::sync::Arc::new(tokio::sync::watch::Sender::new(0)),
         drain: Default::default(),
     };
     let mut h = http::HeaderMap::new();

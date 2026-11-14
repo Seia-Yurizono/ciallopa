@@ -267,10 +267,9 @@ impl Settings {
             .reconfigure(&eff)
             .map_err(|e| ApplyError::invalid(format!("proxy_url: {e}")))?;
         if let Some(p) = &self.oauth_pools {
-            let mut o = p.options();
-            o.proxy_url = eff.effective_proxy();
-            o.ipv6 = eff.ipv6;
-            let _ = p.reconfigure(o);
+            if let Err(e) = p.reconfigure_egress(&eff) {
+                tracing::warn!(error = %e, "OAuth egress not applied");
+            }
         }
         self.st.router.update_config(&eff.routing);
         if let Err(e) = ciallopa_core::logging::set_level(&eff.log.level) {
