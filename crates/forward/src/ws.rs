@@ -379,8 +379,17 @@ async fn connect(
                         s if s == 408 || is_retryable_status(s) => {
                             let others = proxy::others_usable(st, &accounts, route, &id);
                             let secs = st.config.load().upstream_opts.transient_cooldown_secs;
-                            let cooldown =
-                                (others && secs > 0).then(|| std::time::Duration::from_secs(secs));
+                            let ra = h
+                                .get(http::header::RETRY_AFTER)
+                                .and_then(|v| v.to_str().ok())
+                                .and_then(|v| {
+                                    ciallopa_routing::parse_retry_after_header(
+                                        v,
+                                        std::time::SystemTime::now(),
+                                    )
+                                });
+                            let cooldown = (others && secs > 0)
+                                .then(|| ra.unwrap_or(Duration::from_secs(secs)));
                             st.router.report(
                                 route,
                                 &id,
@@ -756,6 +765,7 @@ async fn relay(
                             held.clear();
                             started = false;
                             overload_waited = false;
+                            switches = 0;
                             preparation = PreparationBudget::new(ctx.preparation_limit);
                         }
                         pending = match &m {

@@ -6,6 +6,7 @@ mod compaction_concurrency;
 mod cooling;
 mod fingerprint;
 mod forward;
+mod forward_policy;
 mod http;
 mod prices;
 mod reset_credits;
