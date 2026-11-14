@@ -146,7 +146,10 @@ async fn ws_ttft_and_prewarm() {
     assert_eq!(warm["endpoint"], "prewarm", "{warm}");
     assert_eq!(turn["endpoint"], "responses", "{turn}");
     assert!(turn["error"].is_null(), "{turn}");
-    assert!(turn["ttft_ms"].as_u64().unwrap() >= 250, "{turn}");
+    assert!(
+        turn["ttft_ms"].as_u64().unwrap() >= millis(250).as_millis() as u64,
+        "{turn}"
+    );
     let s: serde_json::Value = e
         .http
         .get(format!("http://{}/usage/v1/summary?range=1h", e.proxy))
@@ -363,7 +366,7 @@ async fn ws_preparation_budget_cancels_a_credential_lock_wait() {
     let rows = wait_rows(&e, 1).await;
     assert_eq!(rows[0]["error"], "preparation_timeout", "{rows:?}");
     assert_eq!(rows[0]["err_source"], "local", "{rows:?}");
-    assert!(rows[0]["duration_ms"].as_u64().unwrap() >= 1000);
+    assert!(rows[0]["duration_ms"].as_u64().unwrap() >= millis(1000).as_millis() as u64);
     assert_eq!(rows[0]["account"], "acct", "{rows:?}");
     assert_eq!(rows[0]["switches"], 0);
     assert_eq!(e.mock.hits.load(Ordering::SeqCst), 0);
@@ -413,13 +416,13 @@ async fn ws_preparation_budget_is_shared_across_handshake_retries() {
     tokio::time::timeout(Duration::from_secs(2), e.mock.ready.notified())
         .await
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(650)).await;
+    tokio::time::sleep(millis(650)).await;
     e.mock.release.notify_one();
     tokio::time::timeout(Duration::from_secs(2), e.mock.ready.notified())
         .await
         .unwrap();
     // A fresh one-second budget for the second attempt would miss this bound.
-    let result = tokio::time::timeout(Duration::from_millis(700), &mut request).await;
+    let result = tokio::time::timeout(millis(700), &mut request).await;
     e.mock.release.notify_waiters();
     if result.is_err() {
         request.abort();
@@ -540,12 +543,12 @@ async fn ws_preparation_budget_is_shared_across_turn_replays() {
         tokio::time::timeout(Duration::from_secs(2), e.mock.ready.notified())
             .await
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(650)).await;
+        tokio::time::sleep(millis(650)).await;
         e.mock.release.notify_one();
         tokio::time::timeout(Duration::from_secs(2), e.mock.ready.notified())
             .await
             .unwrap();
-        let result = tokio::time::timeout(Duration::from_millis(700), ws.next()).await;
+        let result = tokio::time::timeout(millis(700), ws.next()).await;
         e.mock.release.notify_waiters();
         assert!(
             result.is_ok(),
@@ -607,7 +610,10 @@ async fn ws_preparation_budget_resets_each_turn_and_excludes_generation() {
     assert_eq!(rows.len(), 2, "successful handshakes are not business rows");
     for row in rows {
         assert!(row["error"].is_null(), "{row}");
-        assert!(row["duration_ms"].as_u64().unwrap() > 1900, "{row}");
+        assert!(
+            row["duration_ms"].as_u64().unwrap() > millis(1900).as_millis() as u64,
+            "{row}"
+        );
     }
     assert_eq!(e.mock.hits.load(Ordering::SeqCst), 3);
     ws.close(None).await.unwrap();
@@ -629,7 +635,7 @@ async fn ws_failed_handshake_records_the_wait_before_failure() {
             for _ in 0..attempts {
                 e.mock.ready.notified().await;
                 first_ready_ms.get_or_insert_with(ciallopa_usage::now_ms);
-                tokio::time::sleep(Duration::from_millis(200)).await;
+                tokio::time::sleep(millis(200)).await;
                 e.mock.release.notify_one();
             }
             assert!(request.await.unwrap().is_err());
@@ -647,7 +653,7 @@ async fn ws_failed_handshake_records_the_wait_before_failure() {
                 assert_eq!(row["first_account"], "a");
             }
             assert!(
-                row["duration_ms"].as_u64().unwrap() >= 200 * attempts,
+                row["duration_ms"].as_u64().unwrap() >= millis(200).as_millis() as u64 * attempts,
                 "handshake preparation/retries must count: {mode}: {row}"
             );
             let started = row["ts_ms"].as_i64().unwrap();
@@ -866,7 +872,7 @@ async fn ws_stream_diagnostics_count_ping_as_activity_and_hide_unknown_event_typ
         assert_eq!(log["terminal_received"], false);
         assert!(
             log["event_idle_ms"].as_u64().unwrap()
-                >= log["activity_idle_ms"].as_u64().unwrap() + 80,
+                >= log["activity_idle_ms"].as_u64().unwrap() + millis(80).as_millis() as u64,
             "{log}"
         );
         assert!(!log.to_string().contains("private-"), "{log}");
@@ -924,6 +930,7 @@ async fn ws_client_close_records_upstream_silent_duration() {
             other => panic!("{other:?}"),
         }
     }
+    // The diagnostic rounds physical silence to tenths of a second.
     tokio::time::sleep(Duration::from_millis(300)).await;
     ws.close(None).await.unwrap();
     let rows = wait_rows(&e, 1).await;

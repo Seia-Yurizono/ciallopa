@@ -5,6 +5,7 @@
 //! reserve as they arrive), waiting at most [`BUDGET_WAIT`] for room. The returned bytes own
 //! the reservation, so it lasts as long as any clone (retries, in-stream replay) or a
 //! compressed copy made with [`ReqBody::wrap`]; the JSON inspected from it lives inside it.
+use crate::timing;
 use crate::AppState;
 use axum::extract::{FromRequest, Request};
 use axum::response::Response;
@@ -112,7 +113,7 @@ pub(crate) async fn reserve_message(st: &AppState, n: usize) -> Option<BodyPermi
     let n = n as u64;
     let want = if budget == 0 { n } else { n.min(budget) };
     drain
-        .reserve_body(&mut permit, want, budget, BUDGET_WAIT)
+        .reserve_body(&mut permit, want, budget, timing::scale(st, BUDGET_WAIT))
         .await
         .ok()
         .map(|()| permit)
@@ -162,7 +163,7 @@ impl FromRequest<AppState> for ReqBody {
         let mut permit = drain.body_permit();
         if let Some(n) = declared {
             if let Err(r) = drain
-                .reserve_body(&mut permit, n, budget, BUDGET_WAIT)
+                .reserve_body(&mut permit, n, budget, timing::scale(st, BUDGET_WAIT))
                 .await
             {
                 note(n);
@@ -180,7 +181,7 @@ impl FromRequest<AppState> for ReqBody {
             if len > permit.held() {
                 let more = len - permit.held();
                 if let Err(r) = drain
-                    .reserve_body(&mut permit, more, budget, BUDGET_WAIT)
+                    .reserve_body(&mut permit, more, budget, timing::scale(st, BUDGET_WAIT))
                     .await
                 {
                     drop(buf);

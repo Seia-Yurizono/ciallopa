@@ -43,10 +43,7 @@ async fn buffered_body_budget_waits_briefly_then_refuses_without_upstream() {
     let json = busy_json(r).await;
     assert_eq!(json["error"]["type"], "gateway_busy");
     assert_eq!(json["error"]["message"], "Gateway is busy; retry shortly.");
-    assert!(
-        waited >= Duration::from_millis(900),
-        "bounded wait first: {waited:?}"
-    );
+    assert!(waited >= millis(900), "bounded wait first: {waited:?}");
     assert_eq!(e.mock.hits.load(Ordering::SeqCst), 0);
     assert_eq!(e.drain.inflight(), 0);
 
@@ -73,7 +70,7 @@ async fn buffered_body_budget_waits_briefly_then_refuses_without_upstream() {
         .unwrap();
     let app = e.app.clone();
     let pending = tokio::spawn(async move { app.oneshot(sized_post(200 * 1024, false)).await });
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(millis(200)).await;
     drop(other);
     let r = pending.await.unwrap().unwrap();
     assert_eq!(r.status(), 200);
@@ -521,11 +518,7 @@ async fn websocket_messages_share_the_buffered_body_budget() {
     let t = std::time::Instant::now();
     ws.send(msg("refused", 200 * 1024)).await.unwrap();
     let busy: serde_json::Value = serde_json::from_str(&text(&mut ws).await).unwrap();
-    assert!(
-        t.elapsed() >= Duration::from_millis(900),
-        "{:?}",
-        t.elapsed()
-    );
+    assert!(t.elapsed() >= millis(900), "{:?}", t.elapsed());
     assert_eq!(
         busy,
         serde_json::json!({

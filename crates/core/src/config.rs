@@ -87,6 +87,9 @@ pub const CODEX_STREAM_IDLE_SECS: u64 = 300;
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct UpstreamOpts {
+    /// Internal clock scale for socket-based tests; never accepted or emitted by serde.
+    #[serde(skip, default = "default_time_unit")]
+    pub time_unit: Duration,
     pub stream_idle_timeout_secs: u64,
     /// Per HTTP attempt: sending the request and waiting for response headers. Successful
     /// streaming bodies keep their separate idle timeout, without an absolute generation limit.
@@ -143,9 +146,14 @@ pub struct UpstreamOpts {
     /// 0 = never cool on such a 404.
     pub not_found_cooldown_secs: u64,
 }
+fn default_time_unit() -> Duration {
+    Duration::from_secs(1)
+}
+
 impl Default for UpstreamOpts {
     fn default() -> Self {
         Self {
+            time_unit: default_time_unit(),
             stream_idle_timeout_secs: 300,
             response_header_timeout_secs: 300,
             preparation_timeout_secs: 600,

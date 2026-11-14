@@ -3,6 +3,7 @@ use super::frames::{busy_frame, error_event, replayable, to_down, to_up, Head, M
 use super::Ctx;
 use crate::budget::PreparationBudget;
 use crate::classify::classify_observed;
+use crate::timing;
 use crate::usage::{endpoint_of, StreamObservation, Tracker};
 use crate::ws_upgrade::DownWs;
 use crate::{proxy, AppState};
@@ -651,7 +652,7 @@ pub(super) async fn relay(
                     drain_live = false;
                 } else if phase == Phase::Force && awaiting {
                     tracing::warn!(account = %ciallopa_core::a(&account), "shutting down; drain bound reached, cutting the running websocket turn");
-                    cut = Some(tokio::time::Instant::now() + CUT_FLUSH_MAX);
+                    cut = Some(tokio::time::Instant::now() + timing::scale(&st, CUT_FLUSH_MAX));
                 } else if phase == Phase::Force || (phase == Phase::Draining && !awaiting) {
                     close_for_shutdown(&account, ShutdownClose::BetweenTurns, &mut dtx, &mut utx).await;
                     break;

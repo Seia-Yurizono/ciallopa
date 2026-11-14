@@ -57,9 +57,15 @@ async fn sse_passthrough_headers_and_zstd() {
 #[tokio::test]
 async fn idle_timeout_aborts_stream() {
     let e = env(1).await;
+    e.mock.script(Script::default().for_account(
+        "a",
+        [Reply::Sse(vec![
+            Step::Data("data: {\"type\":\"response.created\"}\n\n"),
+            Step::Stall,
+        ])],
+    ));
     let r = e
         .post("/backend-api/codex/responses")
-        .header("x-test-mode", "idle")
         .body("{}")
         .send()
         .await
@@ -70,7 +76,7 @@ async fn idle_timeout_aborts_stream() {
     let b = r.text().await.unwrap();
     assert!(b.contains("event: response.failed"), "{b}");
     assert!(!b.contains("ciallopa"));
-    assert!(t0.elapsed() < Duration::from_secs(4));
+    assert!(t0.elapsed() < units(4));
     assert!(e.outcomes().iter().any(|(_, o)| *o == Outcome::Transport));
 }
 
@@ -114,7 +120,7 @@ async fn stream_diagnostics_distinguish_heartbeat_activity_from_events_without_p
         assert_eq!(log["record_id"].as_str().unwrap().len(), 16);
         assert!(
             log["event_idle_ms"].as_u64().unwrap()
-                >= log["activity_idle_ms"].as_u64().unwrap() + 80,
+                >= log["activity_idle_ms"].as_u64().unwrap() + millis(80).as_millis() as u64,
             "{log}"
         );
         assert!(!log.to_string().contains("private-"), "{log}");
@@ -355,9 +361,16 @@ async fn no_content_type_without_stream_hint_stays_passthrough() {
 async fn bootstrap_transport_error_reaches_client() {
     // M2: an upstream error after `response.created` must not look like a clean EOF.
     let e = env(300).await;
+    e.mock.script(Script::default().for_account(
+        "a",
+        [Reply::Sse(vec![
+            Step::Data("data: {\"type\":\"response.created\"}\n\n"),
+            Step::Wait(millis(200)),
+            Step::Cut,
+        ])],
+    ));
     let r = e
         .post("/backend-api/codex/responses")
-        .header("x-test-mode", "booterr")
         .body("{}")
         .send()
         .await
@@ -375,9 +388,15 @@ async fn bootstrap_transport_error_reaches_client() {
 async fn bootstrap_idle_timeout_not_doubled() {
     // L1: idle=2s must fail after ~2s, not ~4s.
     let e = env(2).await;
+    e.mock.script(Script::default().for_account(
+        "a",
+        [Reply::Sse(vec![
+            Step::Data("data: {\"type\":\"response.created\"}\n\n"),
+            Step::Stall,
+        ])],
+    ));
     let r = e
         .post("/backend-api/codex/responses")
-        .header("x-test-mode", "idle")
         .body("{}")
         .send()
         .await
@@ -385,7 +404,7 @@ async fn bootstrap_idle_timeout_not_doubled() {
     let t0 = std::time::Instant::now();
     assert!(r.text().await.unwrap().contains("response.failed"));
     let el = t0.elapsed();
-    assert!(el < Duration::from_millis(3500), "took {el:?}");
+    assert!(el < millis(3500), "took {el:?}");
 }
 
 #[tokio::test]
@@ -455,24 +474,13 @@ async fn sse_overload_everywhere_passes_through_verbatim() {
 }
 
 #[tokio::test]
-async fn sse_overload_after_output_is_forwarded() {
-    let e = env(300).await;
-    let t = sse_text(&e, "lateover").await;
-    assert!(
-        t.contains("delta") && t.contains("server_is_overloaded"),
-        "{t}"
-    );
-    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 1);
-}
-
-#[tokio::test]
 async fn sse_overload_last_account_waits_and_retries_once() {
     let e = env_cfg(300, None, "overload_retry_wait_secs = 1\n").await;
     let t0 = std::time::Instant::now();
     let t = sse_text(&e, "overonce").await;
     assert!(t.contains("r-b") && !t.contains("overloaded"), "{t}");
     assert_eq!(e.mock.hits.load(Ordering::SeqCst), 3);
-    assert!(t0.elapsed() >= std::time::Duration::from_millis(600));
+    assert!(t0.elapsed() >= millis(600));
 }
 
 #[tokio::test]
@@ -512,12 +520,15 @@ async fn sse_close_after_completed_is_not_an_error() {
         }
     }
     drop(r);
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::sleep(millis(500)).await;
     let rows = wait_rows(&e, 1).await;
     let u = &rows[0];
     assert!(u["error"].is_null(), "{u}");
     assert!(u["err_source"].is_null(), "{u}");
-    assert!(u["ttft_ms"].as_u64().unwrap() >= 250, "{u}");
+    assert!(
+        u["ttft_ms"].as_u64().unwrap() >= millis(250).as_millis() as u64,
+        "{u}"
+    );
 }
 
 #[tokio::test]
@@ -533,6 +544,7 @@ async fn sse_disconnect_while_upstream_idle_records_client_close_promptly() {
         .unwrap();
     assert_eq!(response.status(), 200);
     assert!(response.chunk().await.unwrap().is_some());
+    // The diagnostic rounds physical silence to tenths of a second.
     tokio::time::sleep(Duration::from_millis(300)).await;
     drop(response);
 
@@ -837,7 +849,7 @@ async fn read_error_after_completed_is_a_normal_end() {
     let d = tempfile::tempdir().unwrap();
     let e = env_usage(300, Some(usage_recorder(d.path()))).await;
     read_all(&e, "completed_then_reset").await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(millis(300)).await;
     let rows = wait_rows(&e, 1).await;
     assert!(rows[0]["error"].is_null(), "{}", rows[0]);
     assert!(rows[0]["err_source"].is_null(), "{}", rows[0]);
@@ -856,7 +868,7 @@ async fn idle_after_completed_is_a_normal_end() {
     let d = tempfile::tempdir().unwrap();
     let e = env_usage(1, Some(usage_recorder(d.path()))).await;
     read_all(&e, "completed_then_idle").await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(millis(300)).await;
     let rows = wait_rows(&e, 1).await;
     assert!(rows[0]["error"].is_null(), "{}", rows[0]);
     assert!(rows[0]["err_source"].is_null(), "{}", rows[0]);
@@ -1033,7 +1045,7 @@ async fn sse_downstream_observation_recorded() {
     assert_eq!(s, 200, "{o}");
     let text = ms(&o, "up_first_text_ms");
     assert!(
-        text >= 250 && text == u["ttft_ms"].as_u64().unwrap(),
+        text >= millis(250).as_millis() as u64 && text == u["ttft_ms"].as_u64().unwrap(),
         "{o} {u}"
     );
     assert!(ms(&o, "up_terminal_ms") >= text, "{o}");

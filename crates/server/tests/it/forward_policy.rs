@@ -314,7 +314,7 @@ impl Env {
     }
 
     async fn with_upstream(mock: Mock, upstream: &str, options: &str) -> Self {
-        let config = Config::parse(&format!(
+        let mut config = Config::parse(&format!(
             r#"
 api_keys = ["{KEY}"]
 upstream = "http://{upstream}/backend-api"
@@ -327,6 +327,10 @@ overload_retry_wait_secs = 0
 "#
         ))
         .unwrap();
+        config.upstream_opts.time_unit = super::support::TIME_UNIT;
+        // This fixture tests policy, so keep its original physical two-second budget.
+        config.upstream_opts.preparation_timeout_secs =
+            (Duration::from_secs(2).as_nanos() / super::support::TIME_UNIT.as_nanos()) as u64;
         let dir = tempfile::tempdir().unwrap();
         let usage = matches!(
             mock.scenario,
@@ -363,7 +367,7 @@ overload_retry_wait_secs = 0
     }
 
     async fn post(&self) -> reqwest::Response {
-        reqwest::Client::new()
+        super::support::http_client()
             .post(format!("http://{}/v1/responses", self.address))
             .timeout(Duration::from_secs(2))
             .bearer_auth(KEY)

@@ -77,7 +77,7 @@ async fn shutdown_cut_sse_flushes_queued_events_then_retryable_error_then_clean_
         .unwrap();
     assert_eq!(resp.status(), 200);
     // The producer queues all three events; nothing has been read by the client yet.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(millis(200)).await;
     let drain = e.drain.clone();
     let stopped =
         tokio::spawn(async move { drain.shutdown(Duration::ZERO, Duration::from_secs(2)).await });

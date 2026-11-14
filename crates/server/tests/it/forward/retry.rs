@@ -72,13 +72,17 @@ async fn pending_connect_keeps_its_egress_classification_across_reload() {
 #[tokio::test]
 async fn retries_5xx_then_succeeds() {
     let e = env(300).await;
-    let r = e
-        .post("/v1/responses")
-        .header("x-test-mode", "retry")
-        .body("{}")
-        .send()
-        .await
-        .unwrap();
+    e.mock.script(
+        Script::default()
+            .for_account("a", [Reply::Status(503, "busy")])
+            .for_account(
+                "b",
+                [Reply::Sse(vec![Step::Data(
+                    "data: {\"type\":\"response.completed\"}\n\n",
+                )])],
+            ),
+    );
+    let r = e.post("/v1/responses").body("{}").send().await.unwrap();
     assert_eq!(r.status(), 200);
     // One 503, then a failover to another account succeeds.
     assert_eq!(e.mock.hits.load(Ordering::SeqCst), 2);
@@ -131,6 +135,7 @@ async fn bounded_header_wait_can_fail_over_without_cooling_the_account() {
         "response_header_timeout_secs = 1\npreparation_timeout_secs = 3\n",
     )
     .await;
+    e.warm_http().await;
     let request = e
         .post("/v1/responses")
         .header("x-test-mode", "header_stall_a")
@@ -172,6 +177,7 @@ async fn bounded_preparation_budget_is_shared_across_sse_replay() {
         "response_header_timeout_secs = 3\npreparation_timeout_secs = 2\n",
     )
     .await;
+    e.warm_http().await;
     let request = tokio::spawn(
         e.post("/v1/responses")
             .header("x-test-mode", "preparation_shared")
@@ -181,8 +187,8 @@ async fn bounded_preparation_budget_is_shared_across_sse_replay() {
     tokio::time::timeout(Duration::from_secs(2), e.mock.ready.notified())
         .await
         .unwrap();
-    // About half a second remains. Resetting the budget on replay would take two seconds.
-    let response = tokio::time::timeout(Duration::from_secs(1), request)
+    // Half a unit remains. Resetting the budget would take another two units.
+    let response = tokio::time::timeout(units(1), request)
         .await
         .unwrap()
         .unwrap()
@@ -205,6 +211,7 @@ async fn bounded_preparation_does_not_count_valid_sse_bootstrap_time() {
         "response_header_timeout_secs = 1\npreparation_timeout_secs = 1\n",
     )
     .await;
+    e.warm_http().await;
     let response = tokio::time::timeout(
         Duration::from_secs(4),
         e.post("/v1/responses")
@@ -233,6 +240,7 @@ async fn bounded_header_wait_preserves_nonstream_json_and_http_timing() {
         "response_header_timeout_secs = 2\npreparation_timeout_secs = 2\n",
     )
     .await;
+    e.warm_http().await;
     let request = tokio::spawn(
         e.post("/v1/responses")
             .header("x-test-mode", "json_headers")
@@ -268,6 +276,7 @@ async fn bounded_header_wait_preserves_nonstream_json_and_http_timing() {
 async fn bounded_error_body_keeps_upstream_identity_without_forwarding_a_partial_body() {
     let d = tempfile::tempdir().unwrap();
     let e = env_usage(30, Some(usage_recorder(d.path()))).await;
+    e.warm_http().await;
     let response = e
         .post("/v1/responses")
         .header("x-test-mode", "error_too_large")
@@ -313,6 +322,7 @@ async fn bounded_preparation_preserves_error_headers_when_it_interrupts_body_rea
         "preparation_timeout_secs = 1\n",
     )
     .await;
+    e.warm_http().await;
     let response = tokio::time::timeout(
         Duration::from_secs(3),
         e.post("/v1/responses")

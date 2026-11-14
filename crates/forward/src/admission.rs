@@ -1,6 +1,7 @@
 //! One slot from before body extraction through HTTP EOF/drop. A WebSocket handshake is
 //! admitted outside the inflight cap (`ws_max_connections` bounds connections); each WS turn
 //! takes its own slot in the relay.
+use crate::timing;
 use crate::{errors, AppState};
 use axum::{
     body::{Body, Bytes},
@@ -82,6 +83,7 @@ pub(crate) async fn admit(
             inner: Some(body),
             on_force,
             flush_deadline: None,
+            cut_flush: timing::scale(&st, CUT_FLUSH_MAX),
             cut: false,
             lease: Some(lease),
             forced: Box::pin(async move { drain.forced().await }),
@@ -143,6 +145,7 @@ struct LeasedBody {
     inner: Option<Body>,
     on_force: Option<Bytes>,
     flush_deadline: Option<Pin<Box<tokio::time::Sleep>>>,
+    cut_flush: std::time::Duration,
     /// Shutdown force was observed.
     cut: bool,
     lease: Option<Lease>,
@@ -167,9 +170,10 @@ impl HttpBody for LeasedBody {
                 // A Responses SSE cut by shutdown: pass on everything the producer already
                 // queued (it stops on force, so the queue ends), then the retryable
                 // terminal event, then a clean end of body.
+                let cut_flush = self.cut_flush;
                 let deadline = self
                     .flush_deadline
-                    .get_or_insert_with(|| Box::pin(tokio::time::sleep(CUT_FLUSH_MAX)));
+                    .get_or_insert_with(|| Box::pin(tokio::time::sleep(cut_flush)));
                 let timed_out = deadline.as_mut().poll(cx).is_ready();
                 if !timed_out {
                     let inner = self.inner.as_mut().expect("body present");

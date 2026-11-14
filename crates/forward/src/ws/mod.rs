@@ -1,4 +1,5 @@
 //! Responses WebSocket: one downstream WS ↔ one upstream WS pinned to one account.
+use crate::timing;
 mod connect;
 pub(crate) mod frames;
 mod session;
@@ -66,8 +67,8 @@ pub(crate) async fn handler(
     let (preparation_limit, idle) = {
         let cfg = st.config.load();
         (
-            Duration::from_secs(cfg.upstream_opts.preparation_timeout_secs),
-            Duration::from_secs(cfg.upstream_opts.stream_idle_timeout_secs.max(1)),
+            timing::Timing::capture(&cfg).preparation,
+            timing::Timing::capture(&cfg).idle,
         )
     };
     let mut budget = PreparationBudget::new(preparation_limit);

@@ -2,6 +2,7 @@ use crate::classify::{classify_error, log_account_error, overload_body};
 use crate::errors;
 use crate::headers::{downstream_headers, upstream_headers};
 use crate::limits::{read_body, BODY_TIMEOUT, ERROR_BODY_LIMIT};
+use crate::timing;
 use crate::usage::Tracker;
 use crate::AppState;
 use axum::body::Body;
@@ -9,7 +10,7 @@ use axum::response::Response;
 use bytes::Bytes;
 use ciallopa_core::{AccountId, AuthError, Outcome, RouteError, RouteRequest};
 use ciallopa_routing::{is_usage_limit, parse_quota};
-use ciallopa_upstream::retry::{is_retryable_status, switch_jitter};
+use ciallopa_upstream::retry::is_retryable_status;
 use http::{HeaderMap, Method, StatusCode};
 use std::time::{Duration, SystemTime};
 
@@ -76,13 +77,11 @@ pub(crate) struct Preparation {
 
 impl Preparation {
     pub(crate) fn new(st: &AppState) -> Self {
-        let cfg = st.config.load();
+        let timing = timing::Timing::capture(&st.config.load());
         Self {
-            budget: crate::budget::PreparationBudget::new(Duration::from_secs(
-                cfg.upstream_opts.preparation_timeout_secs,
-            )),
-            header_timeout: Duration::from_secs(cfg.upstream_opts.response_header_timeout_secs),
-            idle: Duration::from_secs(cfg.upstream_opts.stream_idle_timeout_secs.max(1)),
+            budget: crate::budget::PreparationBudget::new(timing.preparation),
+            header_timeout: timing.header,
+            idle: timing.idle,
         }
     }
 
@@ -119,7 +118,7 @@ impl Cooling {
         held: Duration,
         hold_cap: Duration,
     ) -> Self {
-        let budget = Duration::from_secs(st.config.load().routing.cooldown_wait_secs);
+        let budget = timing::Timing::capture(&st.config.load()).cooldown_wait;
         let remaining = budget.saturating_sub(held);
         if !budget.is_zero() && recovers_in <= remaining.min(hold_cap) {
             // A little past the recovery instant so the next selection finds the account free.
@@ -456,7 +455,7 @@ async fn send_inner(
                     info.retries = transient as u32;
                     info.attempts.act("switch");
                     route.exclude.push(id.clone());
-                    tokio::time::sleep(switch_jitter()).await;
+                    tokio::time::sleep(timing::switch_jitter(st)).await;
                     break;
                 }
             };
@@ -532,7 +531,7 @@ async fn send_inner(
                     }
                     info.attempts.act(format!("{tag}switch"));
                     route.exclude.push(id.clone());
-                    tokio::time::sleep(switch_jitter()).await;
+                    tokio::time::sleep(timing::switch_jitter(st)).await;
                     break;
                 }
                 rebuild(status, &h, b)
@@ -656,7 +655,7 @@ async fn send_inner(
                     info.retries = transient as u32;
                     info.attempts.act(format!("{cool_tag}switch"));
                     route.exclude.push(id.clone());
-                    tokio::time::sleep(switch_jitter()).await;
+                    tokio::time::sleep(timing::switch_jitter(st)).await;
                     break;
                 }
                 s => {
@@ -709,7 +708,7 @@ pub(crate) fn overload_retry_wait(st: &AppState, waited: bool, h: &HeaderMap) ->
         return None;
     }
     let base = st.config.load().upstream_opts.overload_retry_wait_secs;
-    ciallopa_upstream::retry::overload_wait(base, Some(h))
+    timing::overload_wait(st, base, h)
 }
 
 /// The router outcome for one overloaded answer on `id` (cooling never hits the last usable

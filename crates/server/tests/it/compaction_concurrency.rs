@@ -3,21 +3,19 @@
 //! session headers. With the real router (round-robin + session affinity) both must land on the
 //! same account, and concurrency alone must never cool an account down.
 #![allow(clippy::unwrap_used)]
-use super::support::{serve, FixedStore as Store};
+use super::support::{proxy_state, serve, FixedStore as Store};
 use axum::{body::Body, http::HeaderMap, response::Response, routing::post, Router};
 use bytes::Bytes;
 use ciallopa_core::Router as _;
 use ciallopa_core::*;
-use ciallopa_forward::AppState;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 const KEY: &str = "sk-cpa-0123456789abcdef";
 
 type Hits = Arc<Mutex<Vec<(String, String, bool)>>>;
 
 async fn up(
-    axum::extract::State(h): axum::extract::State<Hits>,
+    axum::extract::State((h, barrier)): axum::extract::State<(Hits, Arc<tokio::sync::Barrier>)>,
     hd: HeaderMap,
     b: Bytes,
 ) -> Response {
@@ -36,7 +34,9 @@ async fn up(
         .contains("compaction_trigger");
     h.lock().unwrap().push((sid, tok, compact));
     // overlap: both requests are in flight at the same time
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    tokio::time::timeout(std::time::Duration::from_secs(5), barrier.wait())
+        .await
+        .expect("foreground and compaction requests must overlap");
     let body = if compact {
         concat!(
             "data: {\"type\":\"response.created\",\"response\":{\"id\":\"c\"}}\n\n",
@@ -62,7 +62,7 @@ async fn concurrent_compaction_same_account_no_cooldown() {
     let upa = serve(
         Router::new()
             .route("/backend-api/codex/responses", post(up))
-            .with_state(hits.clone()),
+            .with_state((hits.clone(), Arc::new(tokio::sync::Barrier::new(2)))),
     )
     .await;
     let cfg = Config::parse(&format!(
@@ -70,16 +70,14 @@ async fn concurrent_compaction_same_account_no_cooldown() {
     ))
     .unwrap();
     let router = Arc::new(ciallopa_routing::CpaRouter::new(cfg.routing.clone()));
-    let state = AppState {
-        accounts: Arc::new(Store::new(&["a", "b", "c"])),
-        router: router.clone(),
-        upstream: Arc::new(ciallopa_upstream::UpstreamClient::new(&cfg).unwrap()),
-        usage: None,
-        config: Arc::new(cfg.into()),
-        egress: Default::default(),
-    };
+    let state = proxy_state(
+        cfg,
+        Arc::new(Store::new(&["a", "b", "c"])),
+        router.clone(),
+        None,
+    );
     let p = serve(ciallopa::build_app(state)).await;
-    let http = reqwest::Client::new();
+    let http = super::support::http_client();
     let send = |sid: String, compact: bool, path: &'static str| {
         let http = http.clone();
         let p = p.clone();

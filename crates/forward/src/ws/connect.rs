@@ -1,10 +1,11 @@
 use crate::headers::upstream_headers;
+use crate::timing::{delay_for, switch_jitter};
 use crate::usage::Tracker;
 use crate::{proxy, AppState};
 use axum::response::Response;
 use ciallopa_core::{AccountId, Outcome, RouteError, RouteRequest};
 use ciallopa_routing::parse_quota;
-use ciallopa_upstream::retry::{delay_for, is_retryable_status, switch_jitter};
+use ciallopa_upstream::retry::is_retryable_status;
 use ciallopa_upstream::ws::handshake_status;
 use ciallopa_upstream::UpstreamWs;
 use http::{HeaderMap, StatusCode};
@@ -124,9 +125,9 @@ pub(super) async fn connect(
                         transient += 1;
                         if proxy::others_usable(st, &accounts, route, &id) {
                             route.exclude.push(id.clone());
-                            tokio::time::sleep(switch_jitter()).await;
+                            tokio::time::sleep(switch_jitter(st)).await;
                         } else {
-                            tokio::time::sleep(delay_for(transient, None)).await;
+                            tokio::time::sleep(delay_for(st, transient, None)).await;
                         }
                         break;
                     };
@@ -163,7 +164,7 @@ pub(super) async fn connect(
                         }
                         route.exclude.push(id.clone());
                         last = Some(resp);
-                        tokio::time::sleep(switch_jitter()).await;
+                        tokio::time::sleep(switch_jitter(st)).await;
                         break;
                     }
                     match status {
@@ -227,9 +228,9 @@ pub(super) async fn connect(
                             transient += 1;
                             if others {
                                 route.exclude.push(id.clone());
-                                tokio::time::sleep(switch_jitter()).await;
+                                tokio::time::sleep(switch_jitter(st)).await;
                             } else {
-                                tokio::time::sleep(delay_for(transient, Some(&h))).await;
+                                tokio::time::sleep(delay_for(st, transient, Some(&h))).await;
                             }
                             break;
                         }

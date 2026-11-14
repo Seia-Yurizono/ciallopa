@@ -57,6 +57,7 @@ pub(super) type Seen = (Vec<(String, String)>, Bytes);
 #[derive(Clone, Default)]
 pub(super) struct Mock {
     pub(super) hits: Arc<AtomicUsize>,
+    scripts: Arc<Mutex<std::collections::HashMap<String, std::collections::VecDeque<Reply>>>>,
     pub(super) seen: Arc<Mutex<Vec<Seen>>>,
     /// (authorization, client peer port) per `/responses` hit: one port = one connection.
     pub(super) peers: Arc<Mutex<Vec<(String, u16)>>>,
@@ -72,6 +73,77 @@ impl Mock {
             .collect();
         self.seen.lock().unwrap().push((hs, b.clone()));
         self.hits.fetch_add(1, Ordering::SeqCst)
+    }
+}
+
+/// Per-account replies let a test describe attempts without adding another mode branch.
+#[derive(Default)]
+pub(super) struct Script(std::collections::HashMap<String, std::collections::VecDeque<Reply>>);
+
+impl Script {
+    pub(super) fn for_account(
+        mut self,
+        account: &str,
+        replies: impl IntoIterator<Item = Reply>,
+    ) -> Self {
+        self.0
+            .insert(format!("acct-{account}"), replies.into_iter().collect());
+        self
+    }
+}
+
+pub(super) enum Reply {
+    Status(u16, &'static str),
+    Sse(Vec<Step>),
+}
+
+pub(super) enum Step {
+    Data(&'static str),
+    Wait(Duration),
+    Stall,
+    Cut,
+}
+
+impl Reply {
+    fn response(self) -> Response {
+        match self {
+            Self::Status(status, body) => Response::builder()
+                .status(status)
+                .body(Body::from(body))
+                .unwrap(),
+            Self::Sse(steps) => {
+                let stream = futures::stream::unfold(steps.into_iter(), |mut steps| async move {
+                    loop {
+                        match steps.next()? {
+                            Step::Data(data) => {
+                                return Some((
+                                    Ok::<_, std::io::Error>(Bytes::from_static(data.as_bytes())),
+                                    steps,
+                                ))
+                            }
+                            Step::Wait(duration) => tokio::time::sleep(duration).await,
+                            Step::Stall => futures::future::pending::<()>().await,
+                            Step::Cut => {
+                                return Some((
+                                    Err(std::io::Error::other("scripted upstream cut")),
+                                    steps,
+                                ))
+                            }
+                        }
+                    }
+                });
+                Response::builder()
+                    .header("content-type", "text/event-stream")
+                    .body(Body::from_stream(stream))
+                    .unwrap()
+            }
+        }
+    }
+}
+
+impl Mock {
+    pub(super) fn script(&self, script: Script) {
+        self.scripts.lock().unwrap().extend(script.0);
     }
 }
 
@@ -212,6 +284,21 @@ pub(super) async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: B
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
+    let reply = {
+        let account = h
+            .get("chatgpt-account-id")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        let mut scripts = m.scripts.lock().unwrap();
+        scripts.get_mut(account).map(|replies| {
+            replies
+                .pop_front()
+                .expect("unexpected extra upstream attempt")
+        })
+    };
+    if let Some(reply) = reply {
+        return reply.response();
+    }
     const OVER: &str = concat!(
         "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-a\"}}\n\n",
         "event: error\ndata: {\"type\":\"service_unavailable_error\",\"code\":\"server_is_overloaded\",\"message\":\"Our servers are currently overloaded. Please try again later.\",\"sequence_number\":1}\n\n",
@@ -223,6 +310,7 @@ pub(super) async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: B
         "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r-b\"}}\n\n"
     );
     match mode.as_str() {
+        "retry" if n < 1 => return Response::builder().status(503).body(Body::from("busy")).unwrap(),
         "gzip_flush_held" | "gzip_late_truncated" | "gzip_terminal_bad_crc" | "gzip_terminal_truncated" | "gzip_terminal_drop" => {
             let terminal = mode == "gzip_flush_held";
             let terminal_before_trailer = mode.starts_with("gzip_terminal_");
@@ -272,7 +360,7 @@ pub(super) async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: B
                         0 if mode.starts_with("diag_boot") => b"data: {\"type\":\"response.created\"}\n\n",
                         0 => b"data: {\"type\":\"response.created\"}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"private-output\"}\n\n",
                         1 => {
-                            tokio::time::sleep(Duration::from_millis(120)).await;
+                            tokio::time::sleep(millis(120)).await;
                             b": private-heartbeat\n\n"
                         }
                         2 if mode == "diag_boot_idle" => futures::future::pending().await,
@@ -302,7 +390,7 @@ pub(super) async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: B
         "image_reset" => {
             let s = futures::stream::once(async { Ok::<_, std::io::Error>(Bytes::from_static(b"data: {\"type\":\"response.created\"}\n\n")) })
                 .chain(futures::stream::once(async {
-                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    tokio::time::sleep(millis(50)).await;
                     Err(std::io::Error::other("connection reset"))
                 }));
             return Response::builder().header("content-type", "text/event-stream").body(Body::from_stream(s)).unwrap();
@@ -369,7 +457,7 @@ pub(super) async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: B
             let stream = futures::stream::once(async {
                 Ok::<_, std::io::Error>(Bytes::from_static(b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n"))
             }).chain(futures::stream::once(async {
-                tokio::time::sleep(Duration::from_millis(1500)).await;
+                tokio::time::sleep(millis(1500)).await;
                 Ok::<_, std::io::Error>(Bytes::from_static(b"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"reload-idle\"}}\n\n"))
             }));
             return Response::builder().header("content-type", "text/event-stream")
@@ -389,7 +477,7 @@ pub(super) async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: B
         "gzip_retry_reload" => return sse_resp(OK_B),
         "preparation_shared" if auth.contains("tok-a") => {
             // A slow response header consumes most of the shared two-second budget.
-            tokio::time::sleep(Duration::from_millis(1500)).await;
+            tokio::time::sleep(millis(1500)).await;
             return sse_resp("data: {\"type\":\"error\",\"error\":{\"type\":\"usage_limit_reached\",\"resets_in_seconds\":30}}\n\n");
         }
         "preparation_shared" => {
@@ -398,12 +486,13 @@ pub(super) async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: B
             return sse_resp(OK_B);
         }
         "bootstrap_long_quota" if auth.contains("tok-a") => {
-            let stream = futures::stream::unfold(0, |n| async move {
+            let delay = millis(1200);
+            let stream = futures::stream::unfold(0, move |n| async move {
                 let chunk = match n {
                     0 => b"data: {\"type\":\"response.created\"}\n\n".as_slice(),
                     1 => {
                         // Legitimate streaming/pre-output time is not preparation time.
-                        tokio::time::sleep(Duration::from_millis(1200)).await;
+                        tokio::time::sleep(delay).await;
                         b"data: {\"type\":\"error\",\"error\":{\"type\":\"usage_limit_reached\",\"resets_in_seconds\":30}}\n\n".as_slice()
                     }
                     _ => return None,
@@ -593,7 +682,6 @@ pub(super) async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: B
         _ => {}
     }
     match mode.as_str() {
-        "retry" if n < 1 => Response::builder().status(503).body(Body::from("busy")).unwrap(),
         "deact" | "pay402" | "nf404" | "nfmodel" if auth.contains("tok-a") => {
             let (st, body) = match mode.as_str() {
                 "deact" => (402, r#"{"detail":{"code":"deactivated_workspace"}}"#),
@@ -667,11 +755,11 @@ pub(super) async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: B
                 let b: &'static [u8] = match i {
                     0 => b"data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-s\"}}\n\ndata: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"reasoning\"}}\n\n",
                     1 => {
-                        tokio::time::sleep(Duration::from_millis(300)).await;
+                        tokio::time::sleep(millis(300)).await;
                         b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r-s\",\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}}\n\n"
                     }
                     2 => {
-                        tokio::time::sleep(Duration::from_millis(300)).await;
+                        tokio::time::sleep(millis(300)).await;
                         b"\n"
                     }
                     _ => return None,
@@ -702,7 +790,7 @@ pub(super) async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: B
                 match i {
                     0 if first => Some((Ok::<_, std::io::Error>(Bytes::from_static(b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"x\"}\n\n")), 1)),
                     0 | 1 => {
-                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        tokio::time::sleep(millis(50)).await;
                         Some((Err(std::io::Error::other("connection reset")), 2))
                     }
                     _ => None,
@@ -715,7 +803,7 @@ pub(super) async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: B
                 match i {
                     0 => Some((Ok::<_, std::io::Error>(Bytes::from_static(COMPLETED_HI)), 1)),
                     1 => {
-                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        tokio::time::sleep(millis(100)).await;
                         Some((Err(std::io::Error::other("reset after completed")), 2))
                     }
                     _ => None,
@@ -736,25 +824,12 @@ pub(super) async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: B
             }).chain(futures::stream::pending());
             Response::builder().header("content-type", "text/event-stream").body(Body::from_stream(s)).unwrap()
         }
-        "booterr" => {
-            let s = futures::stream::unfold(0, |i| async move {
-                match i {
-                    0 => Some((Ok::<_, std::io::Error>(Bytes::from_static(b"data: {\"type\":\"response.created\"}\n\n")), 1)),
-                    1 => {
-                        tokio::time::sleep(Duration::from_millis(200)).await;
-                        Some((Err(std::io::Error::other("boom")), 2))
-                    }
-                    _ => None,
-                }
-            });
-            Response::builder().header("content-type", "text/event-stream").body(Body::from_stream(s)).unwrap()
-        }
         "idle" => {
             let s = futures::stream::unfold(0, |i| async move {
                 if i == 0 {
                     Some((Ok::<_, std::io::Error>(Bytes::from_static(b"data: {\"type\":\"response.created\"}\n\n")), 1))
                 } else {
-                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    tokio::time::sleep(units(5)).await;
                     None
                 }
             });
@@ -952,7 +1027,7 @@ pub(super) async fn up_ws(State(m): State<Mock>, h: HeaderMap, ws: WebSocketUpgr
         m.release.notified().await;
     }
     if mode == "ws_budget_turns" {
-        tokio::time::sleep(Duration::from_millis(650)).await;
+        tokio::time::sleep(millis(650)).await;
     }
     if mode == "repro_cf1010_text" {
         return Response::builder()
@@ -979,7 +1054,7 @@ pub(super) async fn up_ws(State(m): State<Mock>, h: HeaderMap, ws: WebSocketUpgr
                 }
                 if t.as_str().contains("\"diagnostic_close\"") || t.as_str().contains("\"diagnostic_complete\"") {
                     let _ = s.send(Message::Text(r#"{"type":"private-do-not-log","value":"private-output"}"#.into())).await;
-                    tokio::time::sleep(Duration::from_millis(120)).await;
+                    tokio::time::sleep(millis(120)).await;
                     let _ = s.send(Message::Ping(Bytes::from_static(b"private-ping"))).await;
                     if t.as_str().contains("\"diagnostic_complete\"") {
                         let _ = s.send(Message::Text(r#"{"type":"response.completed"}"#.into())).await;
@@ -1035,7 +1110,7 @@ pub(super) async fn up_ws(State(m): State<Mock>, h: HeaderMap, ws: WebSocketUpgr
                         let _ = s.send(Message::Text(r#"{"type":"error","status":429,"error":{"type":"usage_limit_reached","resets_in_seconds":45}}"#.into())).await;
                     } else {
                         for _ in 0..3 {
-                            tokio::time::sleep(Duration::from_millis(450)).await;
+                            tokio::time::sleep(millis(450)).await;
                             let _ = s.send(Message::Text(r#"{"type":"response.output_text.delta","delta":"ok"}"#.into())).await;
                         }
                         let _ = s.send(Message::Text(r#"{"type":"response.completed","response":{"id":"budget-long"}}"#.into())).await;
@@ -1123,7 +1198,7 @@ pub(super) async fn up_ws(State(m): State<Mock>, h: HeaderMap, ws: WebSocketUpgr
                     let _ = s.send(Message::Text(r#"{"type":"codex.response.metadata","headers":{}}"#.into())).await;
                     let _ = s.send(Message::Text(r#"{"type":"response.created","response":{"id":"r-x"}}"#.into())).await;
                     let _ = s.send(Message::Text(r#"{"type":"response.output_item.added","item":{"type":"reasoning"}}"#.into())).await;
-                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    tokio::time::sleep(millis(300)).await;
                     let _ = s.send(Message::Text(r#"{"type":"response.reasoning_summary_text.delta","delta":"x"}"#.into())).await;
                     let _ = s.send(Message::Text(r#"{"type":"response.completed","response":{"id":"r-x","usage":{"input_tokens":5,"output_tokens":1}}}"#.into())).await;
                 } else if t.as_str().contains("\"meta\"") {
@@ -1225,19 +1300,12 @@ pub(super) async fn env_cfg_accounts(
     .unwrap();
     let rec = Arc::new(Rec::default());
     let store = Arc::new(Store::rotating(&["a", "b"]));
-    let state = AppState {
-        accounts: accounts.unwrap_or_else(|| store.clone()),
-        router: rec.clone(),
-        upstream: {
-            let up = ciallopa_upstream::UpstreamClient::new(&cfg).unwrap();
-            // mock upstream is plain http on 127.0.0.1, not an https ChatGPT host
-            up.pools.allow_any_cookie_host_for_tests();
-            Arc::new(up)
-        },
+    let state = proxy_state(
+        cfg,
+        accounts.unwrap_or_else(|| store.clone()),
+        rec.clone(),
         usage,
-        config: Arc::new(cfg.into()),
-        egress: Default::default(),
-    };
+    );
     let config = state.config.clone();
     let drain = state.upstream.drain.clone();
     let app = ciallopa::build_app(state.clone());
@@ -1248,7 +1316,7 @@ pub(super) async fn env_cfg_accounts(
         mock,
         rec,
         store,
-        http: reqwest::Client::new(),
+        http: http_client(),
         config,
         drain,
         app,
@@ -1256,6 +1324,20 @@ pub(super) async fn env_cfg_accounts(
 }
 
 impl Env {
+    pub(super) async fn warm_http(&self) {
+        // Establish the account connections before measuring preparation/replay budgets.
+        for a in self.state.accounts.accounts().iter() {
+            let (client, _) = self.state.upstream.http_for_attempt(&a.id).unwrap();
+            let response = client
+                .get(self.state.upstream.url("/__test_ready"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 404);
+            response.bytes().await.unwrap();
+        }
+    }
+
     pub(super) fn post(&self, path: &str) -> reqwest::RequestBuilder {
         self.http
             .post(format!("http://{}{path}", self.proxy))
