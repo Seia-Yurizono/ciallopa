@@ -58,6 +58,17 @@ pub(crate) struct SendInfo {
     pub overload_waited: bool,
     pub held: Duration,
     phase: Phase,
+    /// The last account-bound phase, so a timeout while selecting/holding still names it.
+    prior: Phase,
+}
+
+impl SendInfo {
+    fn leave_account(&mut self) {
+        let prev = std::mem::take(&mut self.phase);
+        if !matches!(prev, Phase::Selecting | Phase::Holding) {
+            self.prior = prev;
+        }
+    }
 }
 
 /// Successful SSE bootstrap/streaming stays outside the cumulative preparation budget.
@@ -217,7 +228,11 @@ pub(crate) async fn send_info(
     let result = match result {
         Ok(result) => result,
         Err(mut response) => {
-            info.phase.timeout(&mut info.attempts, &mut response);
+            let phase = match info.phase {
+                Phase::Selecting | Phase::Holding => &info.prior,
+                ref p => p,
+            };
+            phase.timeout(&mut info.attempts, &mut response);
             Err(response)
         }
     };

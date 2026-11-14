@@ -164,7 +164,11 @@ impl Writer {
         f: impl FnOnce(&Transaction<'_>, &mut write::WriterState) -> rusqlite::Result<T>,
     ) -> rusqlite::Result<T> {
         let result = (|| {
-            let tx = self.conn.transaction()?;
+            // IMMEDIATE: the first statement reads `data_version`; a deferred read that later
+            // upgrades to a write fails at once (no busy wait) if another connection wrote.
+            let tx = self
+                .conn
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             self.state.refresh(&tx)?;
             let value = f(&tx, &mut self.state)?;
             tx.commit()?;

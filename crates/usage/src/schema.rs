@@ -288,13 +288,22 @@ const STEPS: &[(i64, Migration)] = &[
     }),
     (14, |tx| tx.execute_batch(crate::observation::CREATE)),
     (15, |tx| {
+        let has: bool = tx.query_row(
+            "SELECT count(*) FROM pragma_table_info('quota_obs') WHERE name='cards'",
+            [],
+            |r| r.get::<_, i64>(0).map(|n| n > 0),
+        )?;
+        if has {
+            return Ok(());
+        }
         tx.execute_batch("ALTER TABLE quota_obs ADD COLUMN cards INTEGER")
     }),
     (16, migrate_v16),
 ];
 
 // Excludes requests.thread, whose ids now belong to the independent threads dictionary.
-pub(crate) const LABEL_REFERENCES: &str = r#"SELECT account AS id FROM requests WHERE account IS NOT NULL
+// Used once by the v16 migration to drop the moved session names from `labels`.
+const LABEL_REFERENCES: &str = r#"SELECT account AS id FROM requests WHERE account IS NOT NULL
 UNION SELECT first_account AS id FROM requests WHERE first_account IS NOT NULL
 UNION SELECT model AS id FROM requests WHERE model IS NOT NULL
 UNION SELECT effort AS id FROM requests WHERE effort IS NOT NULL

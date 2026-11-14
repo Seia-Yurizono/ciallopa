@@ -1188,7 +1188,7 @@ async fn close(reason: Close, tx: DownTx, rx: DownRx, up: UpLink, grace: Duratio
                     ))
                     .await;
             }
-            close_downstream(&mut down, frame).await;
+            close_downstream(&mut down, frame, matches!(reason, Close::TooBig)).await;
         })
         .await;
     };
@@ -1202,8 +1202,11 @@ async fn close(reason: Close, tx: DownTx, rx: DownRx, up: UpLink, grace: Duratio
 }
 
 /// Flush our Close, then consume in-flight client data until the reply or EOF.
-async fn close_downstream<S>(down: &mut tokio_tungstenite::WebSocketStream<S>, frame: Message)
-where
+async fn close_downstream<S>(
+    down: &mut tokio_tungstenite::WebSocketStream<S>,
+    frame: Message,
+    capacity_error: bool,
+) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     // A peer Close already queued its reply; send then reports SendAfterClosing.
@@ -1215,6 +1218,11 @@ where
         if matches!(message, Message::Close(_)) {
             return;
         }
+    }
+    // Stream ended normally (handshake done or EOF): the server closes TCP first, so do not
+    // wait for the client's EOF. Only a Capacity error leaves unread client bytes behind.
+    if !capacity_error {
+        return;
     }
     // tokio-tungstenite fuses its Stream after Capacity (including oversized compressed
     // messages). Read the transport directly so unread TCP bytes cannot reset our Close.
@@ -1347,7 +1355,7 @@ mod tests {
                         Some(Err(tungstenite::Error::Capacity(_)))
                     ));
                 }
-                close_downstream(&mut server, close_frame(code, "test")).await;
+                close_downstream(&mut server, close_frame(code, "test"), capacity).await;
             };
             let sending = async {
                 client

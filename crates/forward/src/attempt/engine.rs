@@ -123,7 +123,7 @@ impl<T: Transport> Loop<'_, T> {
         let mut best = Best::default();
         let mut last_net = None;
         'select: loop {
-            self.info.phase = Phase::Selecting;
+            self.info.leave_account();
             let accounts = self.st.accounts.accounts();
             let id = match self.st.router.select(self.route, &accounts) {
                 Ok(s) => s.account,
@@ -140,6 +140,7 @@ impl<T: Transport> Loop<'_, T> {
                         self.policy.hold_cap,
                     );
                     if let Cooling::Hold(wait) = cooling {
+                        self.info.leave_account();
                         self.info.phase = Phase::Holding;
                         hold(wait, &mut self.info.held).await;
                         continue;
@@ -396,7 +397,14 @@ impl<T: Transport> Loop<'_, T> {
                         return Err(failed.respond(final_error, best, self.policy.final_error))
                     }
                     Verdict::Switch { jitter, transient } => {
-                        failed.remember(&mut best, self.policy.final_error);
+                        // WS keeps the last account-level refusal; a 408/5xx switch is not one.
+                        let server_error =
+                            !matches!(seen, Seen::Refused(Refusal::Overloaded { .. }))
+                                && matches!(&failed, Failed::Response(c)
+                                if matches!(c.response.status().as_u16(), 408 | 500..=599));
+                        if !(server_error && self.policy.final_error == FinalError::Latest) {
+                            failed.remember(&mut best, self.policy.final_error);
+                        }
                         if transient {
                             self.info.retries += 1;
                         }

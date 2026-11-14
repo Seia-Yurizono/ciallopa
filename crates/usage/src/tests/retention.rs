@@ -229,7 +229,7 @@ fn retention_zero_keeps_forever_and_default_is_90() {
 }
 
 #[tokio::test]
-async fn purge_reclaims_threads_and_labels_then_writer_reloads_dictionary_ids() {
+async fn purge_reclaims_threads_keeps_labels_and_writer_reloads_dictionary_ids() {
     let d = tempfile::tempdir().unwrap();
     let r = Recorder::open(&UsageConfig {
         retention_days: 0,
@@ -250,10 +250,11 @@ async fn purge_reclaims_threads_and_labels_then_writer_reloads_dictionary_ids() 
             .unwrap(),
         0
     );
-    assert_eq!(
+    // Labels (accounts, models, ...) are a small dictionary and are not pruned.
+    assert!(
         c.query_row("SELECT count(*) FROM labels", [], |r| r.get::<_, i64>(0))
-            .unwrap(),
-        0
+            .unwrap()
+            > 0
     );
     r.refuse(Refusal {
         ts_ms: now_ms(),
@@ -312,5 +313,33 @@ async fn failed_transaction_discards_rolled_back_dictionary_ids() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].account.as_deref(), Some("account"));
     assert_eq!(rows[0].model.as_deref(), Some("model"));
+    r.shutdown();
+}
+
+/// Another connection holding the write lock (a second instance, kv/reset writes, the purge
+/// CLI) makes the writer wait out busy_timeout instead of dropping the batch.
+#[test]
+fn writer_waits_for_another_connection_instead_of_dropping_the_batch() {
+    let d = tempfile::tempdir().unwrap();
+    let r = Recorder::open(&cfg(d.path())).unwrap();
+    rec(&r, now_ms(), "account", "model", 1, 2, 3);
+    r.flush_blocking().unwrap();
+    let other = crate::schema::open_write(r.path()).unwrap();
+    other
+        .execute_batch("BEGIN IMMEDIATE; INSERT OR REPLACE INTO kv(k,v) VALUES('x','1');")
+        .unwrap();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        other.execute_batch("COMMIT").unwrap();
+    });
+    rec(&r, now_ms(), "account", "model", 1, 2, 3);
+    r.flush_blocking().unwrap();
+    release.join().unwrap();
+    assert_eq!(r.stats().write_errors, 0);
+    let c = crate::schema::open_read(r.path()).unwrap();
+    let n: i64 = c
+        .query_row("SELECT count(*) FROM requests", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 2);
     r.shutdown();
 }

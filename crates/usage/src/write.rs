@@ -300,7 +300,7 @@ pub(crate) fn purge_step(
     cutoff_ms: i64,
     chunk: u64,
 ) -> rusqlite::Result<PurgeProgress> {
-    let tx = c.transaction()?;
+    let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let cut = cutoff_ms << SEQ_BITS;
     let n = tx.execute(
         "DELETE FROM requests WHERE id IN (SELECT id FROM requests WHERE id < ?1 ORDER BY id LIMIT ?2)", params![cut,chunk as i64]
@@ -315,11 +315,8 @@ pub(crate) fn purge_step(
         if !more {
             tx.execute("DELETE FROM quota_obs WHERE id < ?1 AND id < (SELECT max(id) FROM quota_obs q WHERE q.account=quota_obs.account)", [cut])?;
             crate::history::purge(&tx, cutoff_ms)?;
+            // Sessions are unbounded, so their dictionary is pruned; labels stay small and are kept.
             tx.execute("DELETE FROM threads WHERE NOT EXISTS (SELECT 1 FROM requests WHERE thread=threads.id)", [])?;
-            tx.execute_batch(&format!(
-                "DELETE FROM labels WHERE id NOT IN ({})",
-                crate::schema::LABEL_REFERENCES
-            ))?;
         }
     }
     tx.commit()?;
