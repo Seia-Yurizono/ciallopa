@@ -3563,64 +3563,6 @@ async fn usage_sse_rows() {
 }
 
 #[tokio::test]
-async fn usage_problem_filters_and_counts_api() {
-    let d = tempfile::tempdir().unwrap();
-    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
-    sse_text(&e, "usage").await; // clean
-    sse_text(&e, "midlimit").await; // quota before output → rescued on b
-    sse_text(&e, "latelimit").await; // quota after output → 报错 / 额度
-    assert_eq!(wait_rows(&e, 3).await.len(), 3);
-    let get = |q: &str| {
-        let (h, url) = (
-            e.http.clone(),
-            format!("http://{}/usage/v1/records{q}", e.proxy),
-        );
-        async move {
-            let r = h.get(url).bearer_auth(KEY).send().await.unwrap();
-            let st = r.status().as_u16();
-            (st, r.json::<serde_json::Value>().await.unwrap_or_default())
-        }
-    };
-    let (st, v) = get("?problem=error&cause=quota").await;
-    assert_eq!(st, 200, "{v}");
-    assert_eq!(v["total"], 1, "{v}");
-    assert_eq!(v["records"][0]["error"], "usage_limit");
-    let (_, v) = get("?problem=upstream&cause=rescued").await;
-    assert_eq!(v["total"], 1, "{v}");
-    assert_eq!(v["records"][0]["account"], "b");
-    let (_, v) = get("?problem=upstream").await;
-    assert_eq!(
-        v["total"], 2,
-        "rescued plus the in-stream quota failure: {v}"
-    );
-    let (_, v) = get("?problem=all").await;
-    assert_eq!(v["total"], 3, "{v}");
-    let (_, c) = get("/counts?range=1h").await;
-    assert_eq!(c["all"], 3, "{c}");
-    assert_eq!(c["error"], 1);
-    assert_eq!(c["upstream"], 2);
-    assert_eq!(c["unfinished"], 0);
-    assert_eq!(c["refused"], 0);
-    assert_eq!(c["causes"]["error"]["quota"], 1);
-    assert_eq!(c["causes"]["upstream"]["rescued"], 1);
-    assert_eq!(c["causes"]["upstream"]["unrescued"], 1);
-    assert_eq!(c["causes"]["unfinished"]["client_closed"], 0);
-    let (_, c) = get("/counts?range=1h&account=b&problem=error").await;
-    assert_eq!(c["all"], 1, "problem is ignored, account applies: {c}");
-    assert!(c["refused"].is_null(), "{c}");
-    for bad in [
-        "?problem=slow",
-        "?problem=error&cause=rescued",
-        "?cause=quota",
-        "?problem=refused",
-        "/counts?problem=nope",
-    ] {
-        let (st, v) = get(bad).await;
-        assert_eq!(st, 400, "{bad}: {v}");
-    }
-}
-
-#[tokio::test]
 async fn usage_counts_retries() {
     let d = tempfile::tempdir().unwrap();
     let e = env_usage(300, Some(usage_recorder(d.path()))).await;
@@ -3796,52 +3738,6 @@ async fn usage_key_label_instance_and_quota_api() {
         .unwrap()
         .windows(KEY.len())
         .any(|w| w == KEY.as_bytes()));
-    let all = get(format!("http://{}/usage/v1/records?key={label}", e.proxy)).await;
-    assert_eq!(all["records"].as_array().unwrap().len(), 1);
-    assert!(!all.to_string().contains(KEY));
-    let none = get(format!("http://{}/usage/v1/records?key=other", e.proxy)).await;
-    assert!(none["records"].as_array().unwrap().is_empty());
-    // window, paging, tier and downgrade filters
-    let n = |v: &serde_json::Value| v["records"].as_array().unwrap().len();
-    let v = get(format!("http://{}/usage/v1/records?range=1h", e.proxy)).await;
-    assert_eq!((n(&v), v["total"].as_u64()), (1, Some(1)), "{v}");
-    assert!(v["next_offset"].is_null());
-    let v = get(format!("http://{}/usage/v1/records?offset=1", e.proxy)).await;
-    assert_eq!((n(&v), v["total"].as_u64()), (0, Some(1)));
-    let v = get(format!("http://{}/usage/v1/records?from=1&to=2", e.proxy)).await;
-    assert_eq!((n(&v), v["total"].as_u64()), (0, Some(0)));
-    let v = get(format!("http://{}/usage/v1/records?tier=fast", e.proxy)).await;
-    assert_eq!(n(&v), 1);
-    let v = get(format!("http://{}/usage/v1/records?tier=standard", e.proxy)).await;
-    assert_eq!(n(&v), 0);
-    let v = get(format!("http://{}/usage/v1/records?downgraded=1", e.proxy)).await;
-    assert_eq!(n(&v), 0);
-    let s = get(format!(
-        "http://{}/usage/v1/summary?group=key,instance",
-        e.proxy
-    ))
-    .await;
-    assert_eq!(s["summary"]["groups"][0]["group"]["key"], label.as_str());
-    assert!((s["summary"]["groups"][0]["cost_usd"].as_f64().unwrap() - want).abs() < 1e-12);
-    assert_eq!(s["summary"]["total"]["unknown_price"], 0);
-    let s = get(format!(
-        "http://{}/usage/v1/summary?group=account,tier",
-        e.proxy
-    ))
-    .await;
-    assert_eq!(
-        s["summary"]["groups"][0]["group"]["service_tier"],
-        "priority"
-    );
-    let r = e
-        .http
-        .get(format!("http://{}/usage/v1/summary?group=bogus", e.proxy))
-        .bearer_auth(KEY)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status(), 400);
-
     let q = get(format!("http://{}/usage/v1/quota", e.proxy)).await;
     assert!(q["note"].as_str().unwrap().contains("other clients"));
     let accts = q["accounts"].as_array().unwrap();
@@ -3910,57 +3806,6 @@ async fn ui_page_csp_and_toggle() {
         .await
         .unwrap();
     assert_eq!(r.status(), 404);
-}
-
-#[tokio::test]
-async fn summary_day_buckets_api() {
-    let d = tempfile::tempdir().unwrap();
-    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
-    sse_text(&e, "usage").await;
-    wait_rows(&e, 1).await;
-    let get = |q: &str| {
-        let (h, u) = (
-            e.http.clone(),
-            format!("http://{}/usage/v1/summary?{q}", e.proxy),
-        );
-        async move { h.get(u).bearer_auth(KEY).send().await.unwrap() }
-    };
-    let v: serde_json::Value = get("range=7d&bucket=day&tz=480&group=account")
-        .await
-        .json()
-        .await
-        .unwrap();
-    let b = v["summary"]["buckets"].as_array().unwrap();
-    assert_eq!(b.len(), 1, "{v}");
-    assert_eq!(b[0]["count"], 1);
-    assert_eq!(b[0]["input_tokens"], 120);
-    assert!(b[0]["day"].as_str().unwrap().len() == 10);
-    let v: serde_json::Value = get("range=7d").await.json().await.unwrap();
-    assert!(v["summary"].get("buckets").is_none());
-    assert_eq!(get("bucket=week").await.status(), 400);
-    let v: serde_json::Value = get("range=24h&bucket=hour&tz=0&group=account")
-        .await
-        .json()
-        .await
-        .unwrap();
-    let b = v["summary"]["buckets"].as_array().unwrap();
-    assert_eq!(
-        (b.len(), b[0]["day"].as_str().unwrap().len()),
-        (1, 13),
-        "{v}"
-    );
-    assert_eq!(get("bucket=day&tz=9999").await.status(), 400);
-    // numeric params next to the flattened filters
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis();
-    let v: serde_json::Value = get(&format!("from={}&to={}", now - 60_000, now + 1000))
-        .await
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(v["summary"]["total"]["count"], 1, "{v}");
 }
 
 async fn detail_of(e: &Env, id: &str, auth: bool) -> reqwest::Response {

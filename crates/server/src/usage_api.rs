@@ -895,6 +895,228 @@ mod tests {
     use ciallopa_usage::{Record, Transport};
     use tower::ServiceExt;
 
+    #[derive(Default)]
+    struct RowSpec {
+        account: &'static str,
+        key: &'static str,
+        tier: Option<&'static str>,
+        error: Option<&'static str>,
+        retries: u32,
+    }
+    fn seed(rec: &Recorder, specs: &[RowSpec]) -> Vec<i64> {
+        let base = now_ms() - 1000;
+        let ids = specs
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let id = rec.ids.next_at(base + i as i64);
+                let mut row = Record::new(id, Transport::Sse, "responses");
+                row.account = Some(s.account.into());
+                row.key = Some(s.key.into());
+                row.model = Some("gpt-5.5".into());
+                row.status = 200;
+                row.input_tokens = Some(120);
+                row.output_tokens = Some(12);
+                row.service_tier = s.tier.map(str::to_string);
+                row.error = s.error.map(str::to_string);
+                row.err_source = s.error.map(|_| "stream");
+                row.retries = s.retries;
+                assert!(rec.record(row));
+                id
+            })
+            .collect::<Vec<_>>();
+        rec.flush_blocking().unwrap();
+        ids
+    }
+    fn test_app(dir: &std::path::Path) -> (Arc<Recorder>, Router) {
+        let rec = Recorder::open_as(
+            &ciallopa_core::config::UsageConfig {
+                path: dir.join("usage.db"),
+                retention_days: 0,
+                ..Default::default()
+            },
+            "demo",
+        )
+        .unwrap();
+        let app = routes(
+            Some(rec.clone()),
+            Arc::new(NoAccounts),
+            Default::default(),
+            None,
+        );
+        (rec, app)
+    }
+
+    #[tokio::test]
+    async fn summary_bucket_range_and_group_parameters() {
+        let dir = tempfile::tempdir().unwrap();
+        let (rec, app) = test_app(dir.path());
+        let ids = seed(
+            &rec,
+            &[RowSpec {
+                account: "a",
+                key: "alpha",
+                tier: Some("priority"),
+                ..Default::default()
+            }],
+        );
+        for (args, length) in [
+            ("range=7d&bucket=day&tz=480&group=account", 10),
+            ("range=24h&bucket=hour&tz=0&group=account", 13),
+        ] {
+            let (status, v) = query(&app, &format!("/usage/v1/summary?{args}")).await;
+            assert_eq!(status, StatusCode::OK, "{v}");
+            let buckets = v["summary"]["buckets"].as_array().unwrap();
+            assert_eq!(buckets.len(), 1);
+            assert_eq!(buckets[0]["count"], 1);
+            assert_eq!(buckets[0]["input_tokens"], 120);
+            assert_eq!(buckets[0]["day"].as_str().unwrap().len(), length);
+        }
+        for bad in [
+            "bucket=week",
+            "bucket=day&tz=9999",
+            "group=bogus",
+            "from=2&to=1",
+        ] {
+            assert_eq!(
+                query(&app, &format!("/usage/v1/summary?{bad}")).await.0,
+                StatusCode::BAD_REQUEST,
+                "{bad}"
+            );
+        }
+        let ts = ids[0] >> ciallopa_usage::SEQ_BITS;
+        let (_, v) = query(
+            &app,
+            &format!("/usage/v1/summary?from={ts}&to={ts}&group=key,instance"),
+        )
+        .await;
+        assert_eq!(v["summary"]["total"]["count"], 1);
+        assert!(v["summary"].get("buckets").is_none());
+        assert_eq!(v["summary"]["groups"][0]["group"]["key"], "alpha");
+        assert_eq!(v["summary"]["groups"][0]["group"]["instance"], "demo");
+        let (_, v) = query(&app, "/usage/v1/summary?group=account,tier").await;
+        assert_eq!(
+            v["summary"]["groups"][0]["group"]["service_tier"],
+            "priority"
+        );
+        rec.shutdown();
+    }
+
+    #[tokio::test]
+    async fn record_parameter_problem_and_flag_matrices() {
+        let dir = tempfile::tempdir().unwrap();
+        let (rec, app) = test_app(dir.path());
+        seed(
+            &rec,
+            &[
+                RowSpec {
+                    account: "a",
+                    key: "alpha",
+                    tier: Some("priority"),
+                    ..Default::default()
+                },
+                RowSpec {
+                    account: "b",
+                    key: "beta",
+                    retries: 1,
+                    ..Default::default()
+                },
+                RowSpec {
+                    account: "a",
+                    key: "alpha",
+                    error: Some("usage_limit"),
+                    ..Default::default()
+                },
+            ],
+        );
+        for (args, expected) in [
+            ("key=alpha", 2),
+            ("key=other", 0),
+            ("range=1h", 3),
+            ("offset=3", 3),
+            ("from=1&to=2", 0),
+            ("tier=fast", 1),
+            ("tier=standard", 2),
+            ("downgraded=1", 0),
+            ("problem=error&cause=quota", 1),
+            ("problem=upstream&cause=rescued", 1),
+            ("problem=upstream", 2),
+            ("problem=all", 3),
+        ] {
+            let (status, v) = query(&app, &format!("/usage/v1/records?{args}")).await;
+            assert_eq!(status, StatusCode::OK, "{args}: {v}");
+            assert_eq!(v["total"], expected, "{args}: {v}");
+            if args == "offset=3" {
+                assert!(v["records"].as_array().unwrap().is_empty());
+            }
+        }
+        let (_, counts) = query(&app, "/usage/v1/records/counts?range=1h").await;
+        for (name, n) in [
+            ("all", 3),
+            ("error", 1),
+            ("upstream", 2),
+            ("unfinished", 0),
+            ("refused", 0),
+        ] {
+            assert_eq!(counts[name], n, "{counts}");
+        }
+        assert_eq!(counts["causes"]["error"]["quota"], 1);
+        assert_eq!(counts["causes"]["upstream"]["rescued"], 1);
+        assert_eq!(counts["causes"]["upstream"]["unrescued"], 1);
+        let (_, counts) = query(&app, "/usage/v1/records/counts?account=b&problem=error").await;
+        assert_eq!(counts["all"], 1);
+        assert!(counts["refused"].is_null());
+        for bad in [
+            "?problem=slow",
+            "?problem=error&cause=rescued",
+            "?cause=quota",
+            "?problem=refused",
+            "/counts?problem=nope",
+        ] {
+            assert_eq!(
+                query(&app, &format!("/usage/v1/records{bad}")).await.0,
+                StatusCode::BAD_REQUEST,
+                "{bad}"
+            );
+        }
+        for reason in [
+            ciallopa_usage::RefusalReason::Inflight,
+            ciallopa_usage::RefusalReason::Inflight,
+            ciallopa_usage::RefusalReason::Ws,
+        ] {
+            rec.refuse(ciallopa_usage::Refusal {
+                ts_ms: now_ms(),
+                reason: Some(reason),
+                ..Default::default()
+            });
+        }
+        rec.flush_blocking().unwrap();
+        let (_, counts) = query(&app, "/usage/v1/records/counts?range=1h").await;
+        assert_eq!(counts["refused"], 3);
+        assert_eq!(
+            counts["causes"]["refused"],
+            serde_json::json!({"inflight":2,"ws":1,"body":0,"ws_msg":0})
+        );
+        // Retain summary's legacy nonempty/nonzero flags and extend records to accept them.
+        for value in ["0", "1", "2", "255", "true", "false", "yes", ""] {
+            for path in [
+                "/usage/v1/records?errors=",
+                "/usage/v1/records?downgraded=",
+                "/usage/v1/records?retried=",
+                "/usage/v1/records?exclude_prewarm=",
+                "/usage/v1/summary?exclude_prewarm=",
+                "/usage/v1/summary?compare=",
+            ] {
+                assert_eq!(
+                    query(&app, &format!("{path}{value}")).await.0,
+                    StatusCode::OK,
+                    "{path}{value}"
+                );
+            }
+        }
+        rec.shutdown();
+    }
+
     struct NoAccounts;
     #[async_trait::async_trait]
     impl AccountStore for NoAccounts {
