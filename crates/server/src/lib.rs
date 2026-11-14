@@ -71,18 +71,11 @@ async fn live_body_limit(
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    let limit = cfg.load().max_body_mb.saturating_mul(1024 * 1024) as usize;
+    let limit = cfg.load().max_body_mb.saturating_mul(1024 * 1024);
     let (parts, body) = req.into_parts();
-    match axum::body::to_bytes(body, limit).await {
+    match ciallopa_forward::read_body_limited(&parts.headers, body, limit).await {
         Ok(b) => next.run(Request::from_parts(parts, Body::from(b))).await,
-        Err(_) => (
-            StatusCode::PAYLOAD_TOO_LARGE,
-            axum::Json(serde_json::json!({"error": {
-                "type": "invalid_request_error",
-                "message": "Request body is too large.",
-            }})),
-        )
-            .into_response(),
+        Err(r) => r,
     }
 }
 

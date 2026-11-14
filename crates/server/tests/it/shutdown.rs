@@ -11,20 +11,21 @@ use futures::StreamExt;
 use std::{process::Stdio, time::Duration};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
+/// Waits for a log line containing `text` and returns it.
 async fn wait_log(
     lines: &mut tokio::io::Lines<BufReader<tokio::process::ChildStderr>>,
     text: &str,
-) {
+) -> String {
     tokio::time::timeout(Duration::from_secs(5), async {
         while let Some(line) = lines.next_line().await.unwrap() {
             if line.contains(text) {
-                return;
+                return line;
             }
         }
         panic!("server exited before logging {text}");
     })
     .await
-    .expect("server lifecycle notification");
+    .expect("server lifecycle notification")
 }
 
 #[tokio::test]
@@ -50,8 +51,6 @@ async fn second_signal_bounds_shutdown_with_an_unfinished_response() {
     let mock = tokio::spawn(async move {
         axum::serve(up, app).await.unwrap();
     });
-    let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = reservation.local_addr().unwrap();
     let auth = dir.path().join("auth");
     std::fs::create_dir(&auth).unwrap();
     std::fs::write(auth.join("local.json"), r#"{"type":"codex","email":"local@invalid","access_token":"fake-local-token","account_id":"local","expired":"2099-01-01T00:00:00Z"}"#).unwrap();
@@ -60,7 +59,7 @@ async fn second_signal_bounds_shutdown_with_an_unfinished_response() {
         &path,
         format!(
             r#"
-listen = "{addr}"
+listen = "127.0.0.1:0"
 api_keys = ["sk-local-shutdown-test-0123456789"]
 upstream = "http://{up_addr}/backend-api"
 auth_dir = "{}"
@@ -76,7 +75,6 @@ level = "info"
         ),
     )
     .unwrap();
-    drop(reservation);
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_ciallopa"))
         .arg("-c")
         .arg(path)
@@ -88,7 +86,12 @@ level = "info"
         .spawn()
         .unwrap();
     let mut lines = BufReader::new(child.stderr.take().unwrap()).lines();
-    wait_log(&mut lines, "ciallopa listening").await;
+    let line = wait_log(&mut lines, "ciallopa listening").await;
+    let addr = line.split("listen=").nth(1).expect("listen field");
+    let addr: String = addr
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == ':')
+        .collect();
     let response = reqwest::Client::new()
         .post(format!("http://{addr}/v1/responses"))
         .bearer_auth("sk-local-shutdown-test-0123456789")

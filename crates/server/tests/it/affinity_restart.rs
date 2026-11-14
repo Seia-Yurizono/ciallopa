@@ -25,11 +25,11 @@ async fn start(config: &Path) -> (tokio::process::Child, std::net::SocketAddr) {
         while let Some(line) = lines.next_line().await.unwrap() {
             if line.contains("ciallopa listening") {
                 let at = line.split("listen=").nth(1).expect("listen field");
-                let addr: String = at.chars().take_while(|c| !c.is_whitespace()).collect();
-                return addr
-                    .trim_end_matches(|c: char| !c.is_ascii_digit())
-                    .parse()
-                    .unwrap();
+                let addr: String = at
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == ':')
+                    .collect();
+                return addr.parse().unwrap();
             }
         }
         panic!("server exited before listening");

@@ -31,6 +31,7 @@ mod ws_upgrade;
 pub use ciallopa_routing::parse_quota;
 pub use egress::{EgressStatus, Seen as EgressBlockSeen};
 pub use headers::{downstream_headers, upstream_headers};
+pub use reqbody::read_limited as read_body_limited;
 pub use turn_state::forget_account as forget_turn_state;
 
 use axum::{

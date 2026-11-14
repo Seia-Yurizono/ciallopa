@@ -76,6 +76,31 @@ async fn discard(mut stream: axum::body::BodyDataStream, r: Response) -> Respons
     r
 }
 
+/// Whole body up to `max` bytes, for routes outside the buffered-body budget (management and
+/// usage APIs). Over the limit it answers 413 after [`discard`], like the forwarding routes.
+pub async fn read_limited(
+    headers: &http::HeaderMap,
+    body: axum::body::Body,
+    max: u64,
+) -> Result<Bytes, Response> {
+    let declared = headers
+        .get(http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok());
+    let mut stream = body.into_data_stream();
+    if declared.is_none_or(|n| n <= max) {
+        let mut buf = Vec::with_capacity(declared.unwrap_or(0) as usize);
+        loop {
+            match stream.next().await {
+                None => return Ok(buf.into()),
+                Some(Ok(c)) if (buf.len() + c.len()) as u64 <= max => buf.extend_from_slice(&c),
+                _ => break,
+            }
+        }
+    }
+    Err(discard(stream, too_large()).await)
+}
+
 /// Reserve a WebSocket client message that is already buffered (tungstenite reads whole
 /// messages) in the same budget, with the same bounded wait. A message larger than the whole
 /// budget waits for all of it instead of never fitting, so WS message limits stay unchanged.
