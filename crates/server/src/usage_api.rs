@@ -144,6 +144,13 @@ fn err(status: StatusCode, msg: &str) -> Response {
     (status, Json(serde_json::json!({"error": {"message": msg}}))).into_response()
 }
 
+/// Query flags retain the legacy summary spelling: any nonempty value except `0` is on.
+fn flag<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    let value = String::deserialize(d)?;
+    let value = value.trim();
+    Ok(!value.is_empty() && value != "0")
+}
+
 #[derive(Deserialize)]
 struct RecordsQ {
     limit: Option<usize>,
@@ -160,18 +167,22 @@ struct RecordsQ {
     /// completed / failed / cancelled / incomplete / unknown / prewarm.
     outcome: Option<String>,
     /// `1` ⇒ business requests only, matching summary.count.
-    exclude_prewarm: Option<u8>,
+    #[serde(default, deserialize_with = "flag")]
+    exclude_prewarm: bool,
     /// Served tier: `priority`/`fast`, `flex`, `standard`.
     tier: Option<String>,
     /// `1` ⇒ only requested Fast/Flex that was not served.
-    downgraded: Option<u8>,
-    errors: Option<u8>,
+    #[serde(default, deserialize_with = "flag")]
+    downgraded: bool,
+    #[serde(default, deserialize_with = "flag")]
+    errors: bool,
     /// Comma-separated error sources (`client,local,network,upstream,stream`).
     source: Option<String>,
     /// Exact error code.
     error: Option<String>,
     /// `1` ⇒ only requests that retried or switched accounts.
-    retried: Option<u8>,
+    #[serde(default, deserialize_with = "flag")]
+    retried: bool,
     /// Failure class (`quota,rate_limit,upstream,network,stream,local,other`); implies failed.
     failure_class: Option<String>,
     /// Problem chip: `all`, `error` (报错), `upstream` (上游出错, rescued included) or
@@ -266,10 +277,10 @@ fn records_query(q: RecordsQ) -> Result<RecordsReq, String> {
         before_id,
         since_ms: since,
         filters: q.f.into(),
-        errors_only: q.errors.unwrap_or(0) != 0,
+        errors_only: q.errors,
         offset,
         tier: q.tier,
-        downgraded: q.downgraded.unwrap_or(0) != 0,
+        downgraded: q.downgraded,
         sources: q
             .source
             .as_deref()
@@ -280,9 +291,9 @@ fn records_query(q: RecordsQ) -> Result<RecordsReq, String> {
             .map(str::to_string)
             .collect(),
         error: q.error.filter(|e| !e.trim().is_empty()),
-        retried: q.retried.unwrap_or(0) != 0,
+        retried: q.retried,
         outcome,
-        exclude_prewarm: q.exclude_prewarm.unwrap_or(0) != 0,
+        exclude_prewarm: q.exclude_prewarm,
         failure_class,
         problem,
         cause,
@@ -342,18 +353,8 @@ async fn records(State(St { rec, .. }): State<St>, Query(q): Query<RecordsQ>) ->
         return r;
     }
     let thread = rq.thread.clone();
-    let total = match rec
-        .recent_count(RecentQuery {
-            before_id: None,
-            ..rq.clone()
-        })
-        .await
-    {
-        Ok(n) => n,
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
-    };
-    match rec.recent(rq).await {
-        Ok(mut rows) => {
+    match rec.records_page(rq).await {
+        Ok((total, mut rows)) => {
             for r in &mut rows {
                 reveal_row(r);
             }
@@ -394,10 +395,6 @@ async fn record_counts(State(St { rec, .. }): State<St>, Query(q): Query<Records
     if let Err(r) = resolve_thread(&rec, &mut rq).await {
         return r;
     }
-    let mut counts = match rec.problem_counts(rq.clone()).await {
-        Ok(c) => c,
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
-    };
     let f = &rq.filters;
     let request_only = f.account.is_some()
         || f.model.is_some()
@@ -410,36 +407,17 @@ async fn record_counts(State(St { rec, .. }): State<St>, Query(q): Query<Records
         || rq.outcome.is_some()
         || rq.failure_class.is_some()
         || rq.thread.is_some();
-    if !request_only {
-        let to = rq.before_ms.map(|b| b - 1).unwrap_or_else(now_ms);
-        let t = match rec
-            .refusal_totals(ciallopa_usage::RefusalQuery {
-                from_ms: rq.since_ms.unwrap_or(0),
-                to_ms: to,
-                key: f.key.clone(),
-                instance: f.instance.clone(),
-                reason: None,
-                limit: 0,
-                offset: 0,
-            })
-            .await
-        {
-            Ok(t) => t,
-            Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
-        };
-        counts.refused = Some(t.count);
-        counts.causes.insert(
-            "refused",
-            [
-                ("inflight", t.inflight),
-                ("ws", t.ws),
-                ("body", t.body),
-                ("ws_msg", t.ws_msg),
-            ]
-            .into_iter()
-            .collect(),
-        );
-    }
+    let refusals = (!request_only).then(|| ciallopa_usage::RefusalQuery {
+        from_ms: rq.since_ms.unwrap_or(0),
+        to_ms: rq.before_ms.map(|b| b - 1).unwrap_or_else(now_ms),
+        key: f.key.clone(),
+        instance: f.instance.clone(),
+        ..Default::default()
+    });
+    let counts = match rec.problem_counts_with_refusals(rq, refusals).await {
+        Ok(counts) => counts,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    };
     Json(counts).into_response()
 }
 
@@ -454,10 +432,10 @@ async fn record(State(St { rec, .. }): State<St>, Path(id): Path<String>) -> Res
     let Some(rec) = rec else {
         return err(StatusCode::NOT_FOUND, "usage log disabled");
     };
-    if parse_id(&id).is_none() {
+    let Some(id) = parse_id(&id) else {
         return err(StatusCode::BAD_REQUEST, "invalid request id");
-    }
-    match rec.record_by_id(&id).await {
+    };
+    match rec.record_by_id(id).await {
         Ok(Some(mut record)) => {
             reveal_row(&mut record);
             Json(serde_json::json!({"record": record})).into_response()
@@ -475,10 +453,10 @@ async fn detail(State(St { rec, .. }): State<St>, Path(id): Path<String>) -> Res
     let Some(rec) = rec else {
         return err(StatusCode::NOT_FOUND, "usage log disabled");
     };
-    if parse_id(&id).is_none() {
+    let Some(id) = parse_id(&id) else {
         return err(StatusCode::BAD_REQUEST, "invalid request id");
-    }
-    match rec.detail(&id).await {
+    };
+    match rec.detail(id).await {
         Ok(Some(mut d)) => {
             reveal_attempts(&mut d.attempts);
             Json(d).into_response()
@@ -493,10 +471,10 @@ async fn observation(State(St { rec, .. }): State<St>, Path(id): Path<String>) -
     let Some(rec) = rec else {
         return err(StatusCode::NOT_FOUND, "usage log disabled");
     };
-    if parse_id(&id).is_none() {
+    let Some(id) = parse_id(&id) else {
         return err(StatusCode::BAD_REQUEST, "invalid request id");
-    }
-    match rec.observation(&id).await {
+    };
+    match rec.observation(id).await {
         Ok(Some(o)) => Json(o).into_response(),
         Ok(None) => err(StatusCode::NOT_FOUND, "no observation for this request"),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
@@ -517,10 +495,12 @@ struct SummaryQ {
     tz: Option<String>,
     /// `1` ⇒ leave prewarm rows out of every figure (tokens, cost, buckets, groups).
     /// String for the same `flatten` reason.
-    exclude_prewarm: Option<String>,
+    #[serde(default, deserialize_with = "flag")]
+    exclude_prewarm: bool,
     /// `1` ⇒ also return `previous`: the total (and buckets, with `bucket`) and refusal
     /// totals of the equal-length window right before `from`.
-    compare: Option<String>,
+    #[serde(default, deserialize_with = "flag")]
+    compare: bool,
     #[serde(flatten)]
     f: FiltersQ,
 }
@@ -593,69 +573,31 @@ async fn summary(State(St { rec, .. }): State<St>, Query(q): Query<SummaryQ>) ->
         filters: q.f.into(),
         bucket_day,
         bucket_hour: q.bucket.as_deref() == Some("hour"),
-        exclude_prewarm: matches!(q.exclude_prewarm.as_deref().map(str::trim), Some(v) if !v.is_empty() && v != "0"),
+        exclude_prewarm: q.exclude_prewarm,
         total_only: false,
         bucket_refusals: true,
     };
-    let flag = |v: Option<&str>| matches!(v.map(str::trim), Some(v) if !v.is_empty() && v != "0");
     // Previous period: same length, ending 1 ms before `from`; no groups.
-    let prev = flag(q.compare.as_deref()).then(|| SummaryQuery {
+    let prev = q.compare.then(|| SummaryQuery {
         from_ms: from - (to - from) - 1,
         to_ms: from - 1,
         group_by: vec![],
         total_only: true,
         ..sq.clone()
     });
-    // Refusals happen before an account or model is known, so they only follow the key /
-    // instance scope; with an account or model filter they are left out (`null`).
-    let rq = (sq.filters.account.is_none() && sq.filters.model.is_none()).then(|| {
-        ciallopa_usage::RefusalQuery {
-            from_ms: from,
-            to_ms: to,
-            key: sq.filters.key.clone(),
-            instance: sq.filters.instance.clone(),
-            ..Default::default()
-        }
-    });
-    let mut s = match rec.summary(sq).await {
-        Ok(s) => s,
+    let periods = match rec.summary_with_refusals(sq, prev).await {
+        Ok(p) => p,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     };
+    let mut s = periods.current.summary;
     reveal_summary(&mut s);
-    let refusals = match rq.clone() {
-        None => None,
-        Some(rq) => match rec.refusal_totals(rq).await {
-            Ok(t) => Some(t),
-            Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
-        },
-    };
-    let previous = match prev {
-        None => None,
-        Some(pq) => {
-            let (pf, pt) = (pq.from_ms, pq.to_ms);
-            let ps = match rec.summary(pq).await {
-                Ok(s) => s,
-                Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
-            };
-            let pr = match rq {
-                None => None,
-                Some(rq) => match rec
-                    .refusal_totals(ciallopa_usage::RefusalQuery {
-                        from_ms: pf,
-                        to_ms: pt,
-                        ..rq
-                    })
-                    .await
-                {
-                    Ok(t) => Some(t),
-                    Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
-                },
-            };
-            Some(serde_json::json!({
-                "from": pf, "to": pt, "total": ps.total, "buckets": ps.buckets, "refusals": pr,
-            }))
-        }
-    };
+    let refusals = periods.current.refusals;
+    let previous = periods.previous.map(|p| {
+        serde_json::json!({
+            "from": p.summary.from_ms, "to": p.summary.to_ms, "total": p.summary.total,
+            "buckets": p.summary.buckets, "refusals": p.refusals,
+        })
+    });
     Json(serde_json::json!({
         "summary": s, "refusals": refusals, "previous": previous, "recorder": rec.stats(),
     }))
@@ -863,10 +805,11 @@ async fn quota(
     let relogin = accounts.relogin_required().await;
     let mut out: Vec<serde_json::Value> = vec![];
     let known = accounts.list().await;
+    let aliases: std::collections::HashSet<_> =
+        known.iter().map(|a| ciallopa_core::a(&a.id)).collect();
     for a in &known {
         let alias = ciallopa_core::a(&a.id);
-        // DB labels store aliases (v12+); also accept a legacy raw id during rolling upgrades.
-        let q = obs.iter().find(|q| q.account == alias || q.account == a.id);
+        let q = obs.iter().find(|q| q.account == alias);
         let mut row = serde_json::json!({
             "account": if admin { a.id.clone() } else { alias.clone() },
             "disabled": a.disabled,
@@ -879,12 +822,7 @@ async fn quota(
         out.push(row);
     }
     // Observed in the log but no longer configured.
-    for q in obs.iter().filter(|q| {
-        !known.iter().any(|a| {
-            let alias = ciallopa_core::a(&a.id);
-            q.account == a.id || q.account == alias
-        })
-    }) {
+    for q in obs.iter().filter(|q| !aliases.contains(&q.account)) {
         let mut row = serde_json::json!({
             "account": q.account,
             "configured": false,
@@ -935,27 +873,9 @@ async fn quota_history(State(St { rec, .. }): State<St>, Query(q): Query<History
         return err(StatusCode::BAD_REQUEST, "from must be <= to");
     }
     let aliased = q.account.as_deref().map(ciallopa_core::a);
-    match rec
-        .quota_history(aliased.as_deref().or(q.account.as_deref()), from, to)
-        .await
-    {
+    match rec.quota_history(aliased.as_deref(), from, to).await {
         Ok(mut rows) => {
             reveal_history(&mut rows);
-            // Try the raw id if the alias missed (legacy rows / already-aliased query).
-            let empty = rows
-                .iter()
-                .all(|h| h.events.is_empty() && h.cycles.is_empty());
-            if empty {
-                if let (Some(raw), Some(al)) = (q.account.as_deref(), aliased.as_deref()) {
-                    if raw != al {
-                        if let Ok(mut rows2) = rec.quota_history(Some(raw), from, to).await {
-                            reveal_history(&mut rows2);
-                            return Json(serde_json::json!({"from_ms": from, "to_ms": to, "accounts": rows2}))
-                                .into_response();
-                        }
-                    }
-                }
-            }
             Json(serde_json::json!({"from_ms": from, "to_ms": to, "accounts": rows}))
                 .into_response()
         }
@@ -974,6 +894,228 @@ mod tests {
     use ciallopa_core::{Account, AccountId, AuthError, Credentials};
     use ciallopa_usage::{Record, Transport};
     use tower::ServiceExt;
+
+    #[derive(Default)]
+    struct RowSpec {
+        account: &'static str,
+        key: &'static str,
+        tier: Option<&'static str>,
+        error: Option<&'static str>,
+        retries: u32,
+    }
+    fn seed(rec: &Recorder, specs: &[RowSpec]) -> Vec<i64> {
+        let base = now_ms() - 1000;
+        let ids = specs
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let id = rec.ids.next_at(base + i as i64);
+                let mut row = Record::new(id, Transport::Sse, "responses");
+                row.account = Some(s.account.into());
+                row.key = Some(s.key.into());
+                row.model = Some("gpt-5.5".into());
+                row.status = 200;
+                row.input_tokens = Some(120);
+                row.output_tokens = Some(12);
+                row.service_tier = s.tier.map(str::to_string);
+                row.error = s.error.map(str::to_string);
+                row.err_source = s.error.map(|_| "stream");
+                row.retries = s.retries;
+                assert!(rec.record(row));
+                id
+            })
+            .collect::<Vec<_>>();
+        rec.flush_blocking().unwrap();
+        ids
+    }
+    fn test_app(dir: &std::path::Path) -> (Arc<Recorder>, Router) {
+        let rec = Recorder::open_as(
+            &ciallopa_core::config::UsageConfig {
+                path: dir.join("usage.db"),
+                retention_days: 0,
+                ..Default::default()
+            },
+            "demo",
+        )
+        .unwrap();
+        let app = routes(
+            Some(rec.clone()),
+            Arc::new(NoAccounts),
+            Default::default(),
+            None,
+        );
+        (rec, app)
+    }
+
+    #[tokio::test]
+    async fn summary_bucket_range_and_group_parameters() {
+        let dir = tempfile::tempdir().unwrap();
+        let (rec, app) = test_app(dir.path());
+        let ids = seed(
+            &rec,
+            &[RowSpec {
+                account: "a",
+                key: "alpha",
+                tier: Some("priority"),
+                ..Default::default()
+            }],
+        );
+        for (args, length) in [
+            ("range=7d&bucket=day&tz=480&group=account", 10),
+            ("range=24h&bucket=hour&tz=0&group=account", 13),
+        ] {
+            let (status, v) = query(&app, &format!("/usage/v1/summary?{args}")).await;
+            assert_eq!(status, StatusCode::OK, "{v}");
+            let buckets = v["summary"]["buckets"].as_array().unwrap();
+            assert_eq!(buckets.len(), 1);
+            assert_eq!(buckets[0]["count"], 1);
+            assert_eq!(buckets[0]["input_tokens"], 120);
+            assert_eq!(buckets[0]["day"].as_str().unwrap().len(), length);
+        }
+        for bad in [
+            "bucket=week",
+            "bucket=day&tz=9999",
+            "group=bogus",
+            "from=2&to=1",
+        ] {
+            assert_eq!(
+                query(&app, &format!("/usage/v1/summary?{bad}")).await.0,
+                StatusCode::BAD_REQUEST,
+                "{bad}"
+            );
+        }
+        let ts = ids[0] >> ciallopa_usage::SEQ_BITS;
+        let (_, v) = query(
+            &app,
+            &format!("/usage/v1/summary?from={ts}&to={ts}&group=key,instance"),
+        )
+        .await;
+        assert_eq!(v["summary"]["total"]["count"], 1);
+        assert!(v["summary"].get("buckets").is_none());
+        assert_eq!(v["summary"]["groups"][0]["group"]["key"], "alpha");
+        assert_eq!(v["summary"]["groups"][0]["group"]["instance"], "demo");
+        let (_, v) = query(&app, "/usage/v1/summary?group=account,tier").await;
+        assert_eq!(
+            v["summary"]["groups"][0]["group"]["service_tier"],
+            "priority"
+        );
+        rec.shutdown();
+    }
+
+    #[tokio::test]
+    async fn record_parameter_problem_and_flag_matrices() {
+        let dir = tempfile::tempdir().unwrap();
+        let (rec, app) = test_app(dir.path());
+        seed(
+            &rec,
+            &[
+                RowSpec {
+                    account: "a",
+                    key: "alpha",
+                    tier: Some("priority"),
+                    ..Default::default()
+                },
+                RowSpec {
+                    account: "b",
+                    key: "beta",
+                    retries: 1,
+                    ..Default::default()
+                },
+                RowSpec {
+                    account: "a",
+                    key: "alpha",
+                    error: Some("usage_limit"),
+                    ..Default::default()
+                },
+            ],
+        );
+        for (args, expected) in [
+            ("key=alpha", 2),
+            ("key=other", 0),
+            ("range=1h", 3),
+            ("offset=3", 3),
+            ("from=1&to=2", 0),
+            ("tier=fast", 1),
+            ("tier=standard", 2),
+            ("downgraded=1", 0),
+            ("problem=error&cause=quota", 1),
+            ("problem=upstream&cause=rescued", 1),
+            ("problem=upstream", 2),
+            ("problem=all", 3),
+        ] {
+            let (status, v) = query(&app, &format!("/usage/v1/records?{args}")).await;
+            assert_eq!(status, StatusCode::OK, "{args}: {v}");
+            assert_eq!(v["total"], expected, "{args}: {v}");
+            if args == "offset=3" {
+                assert!(v["records"].as_array().unwrap().is_empty());
+            }
+        }
+        let (_, counts) = query(&app, "/usage/v1/records/counts?range=1h").await;
+        for (name, n) in [
+            ("all", 3),
+            ("error", 1),
+            ("upstream", 2),
+            ("unfinished", 0),
+            ("refused", 0),
+        ] {
+            assert_eq!(counts[name], n, "{counts}");
+        }
+        assert_eq!(counts["causes"]["error"]["quota"], 1);
+        assert_eq!(counts["causes"]["upstream"]["rescued"], 1);
+        assert_eq!(counts["causes"]["upstream"]["unrescued"], 1);
+        let (_, counts) = query(&app, "/usage/v1/records/counts?account=b&problem=error").await;
+        assert_eq!(counts["all"], 1);
+        assert!(counts["refused"].is_null());
+        for bad in [
+            "?problem=slow",
+            "?problem=error&cause=rescued",
+            "?cause=quota",
+            "?problem=refused",
+            "/counts?problem=nope",
+        ] {
+            assert_eq!(
+                query(&app, &format!("/usage/v1/records{bad}")).await.0,
+                StatusCode::BAD_REQUEST,
+                "{bad}"
+            );
+        }
+        for reason in [
+            ciallopa_usage::RefusalReason::Inflight,
+            ciallopa_usage::RefusalReason::Inflight,
+            ciallopa_usage::RefusalReason::Ws,
+        ] {
+            rec.refuse(ciallopa_usage::Refusal {
+                ts_ms: now_ms(),
+                reason: Some(reason),
+                ..Default::default()
+            });
+        }
+        rec.flush_blocking().unwrap();
+        let (_, counts) = query(&app, "/usage/v1/records/counts?range=1h").await;
+        assert_eq!(counts["refused"], 3);
+        assert_eq!(
+            counts["causes"]["refused"],
+            serde_json::json!({"inflight":2,"ws":1,"body":0,"ws_msg":0})
+        );
+        // Retain summary's legacy nonempty/nonzero flags and extend records to accept them.
+        for value in ["0", "1", "2", "255", "true", "false", "yes", ""] {
+            for path in [
+                "/usage/v1/records?errors=",
+                "/usage/v1/records?downgraded=",
+                "/usage/v1/records?retried=",
+                "/usage/v1/records?exclude_prewarm=",
+                "/usage/v1/summary?exclude_prewarm=",
+                "/usage/v1/summary?compare=",
+            ] {
+                assert_eq!(
+                    query(&app, &format!("{path}{value}")).await.0,
+                    StatusCode::OK,
+                    "{path}{value}"
+                );
+            }
+        }
+        rec.shutdown();
+    }
 
     struct NoAccounts;
     #[async_trait::async_trait]

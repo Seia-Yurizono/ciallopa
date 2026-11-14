@@ -187,3 +187,130 @@ mod tests {
         assert_eq!(*m.keys().next().unwrap(), 5 * 60_000, "oldest dropped");
     }
 }
+
+use crate::filter::{contains_filters, LabelNames};
+use crate::write::WriterState;
+use rusqlite::{params, params_from_iter, Connection};
+
+/// Merge per-minute occupancy into its rows (one transaction).
+pub(crate) fn upsert_occupancy(
+    tx: &rusqlite::Transaction<'_>,
+    ws: &mut WriterState,
+    rows: &std::collections::BTreeMap<i64, crate::occupancy::Agg>,
+) -> rusqlite::Result<()> {
+    {
+        let mut st = tx.prepare_cached(
+            "INSERT INTO occupancy(minute,instance,samples,inflight_sum,inflight_peak,ws_sum,ws_peak,\
+             buffered_sum,buffered_peak,lim_inflight,lim_ws,lim_buffered) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12) \
+             ON CONFLICT(minute,instance) DO UPDATE SET \
+             samples = samples + excluded.samples, inflight_sum = inflight_sum + excluded.inflight_sum, \
+             inflight_peak = max(inflight_peak, excluded.inflight_peak), ws_sum = ws_sum + excluded.ws_sum, \
+             ws_peak = max(ws_peak, excluded.ws_peak), buffered_sum = buffered_sum + excluded.buffered_sum, \
+             buffered_peak = max(buffered_peak, excluded.buffered_peak), lim_inflight = excluded.lim_inflight, \
+             lim_ws = excluded.lim_ws, lim_buffered = excluded.lim_buffered",
+        )?;
+        let instance_name = ws.instance.clone();
+        let instance = ws.label(tx, Some(&instance_name))?.unwrap_or(0);
+        let as_i = |v: u64| i64::try_from(v).unwrap_or(i64::MAX);
+        for (minute, a) in rows {
+            st.execute(params![
+                minute,
+                instance,
+                as_i(a.samples),
+                as_i(a.inflight_sum),
+                as_i(a.inflight_peak),
+                as_i(a.ws_sum),
+                as_i(a.ws_peak),
+                as_i(a.buffered_sum),
+                as_i(a.buffered_peak),
+                as_i(a.limit_inflight),
+                as_i(a.limit_ws),
+                as_i(a.limit_buffered),
+            ])?;
+        }
+    }
+    Ok(())
+}
+
+/// Range and bucket for occupancy reads.
+#[derive(Debug, Clone, Default)]
+pub struct OccupancyQuery {
+    pub from_ms: i64,
+    pub to_ms: i64,
+    pub instance: Option<String>,
+    /// Bucket width in minutes (at least 1).
+    pub step_min: u32,
+    /// UTC offset (minutes) that bucket boundaries align to, so hour / day buckets match
+    /// the summary's local buckets.
+    pub tz_min: i32,
+}
+
+/// Buckets per instance at most; a wider range gets a wider step.
+pub const OCCUPANCY_MAX_BUCKETS: i64 = 1440;
+
+/// The bucket width actually used for `q` (minutes).
+pub fn occupancy_step(q: &OccupancyQuery) -> i64 {
+    let span = (q.to_ms - q.from_ms).max(60_000) / 60_000;
+    let min = (span + OCCUPANCY_MAX_BUCKETS - 1) / OCCUPANCY_MAX_BUCKETS;
+    i64::from(q.step_min.max(1)).max(min)
+}
+
+pub(crate) fn occupancy_rows(
+    c: &Connection,
+    q: &OccupancyQuery,
+) -> rusqlite::Result<Vec<crate::occupancy::OccupancyRow>> {
+    let step = occupancy_step(q) * 60_000;
+    // Non-negative offset modulo the step keeps the integer division floor-like.
+    let off = (i64::from(q.tz_min) * 60_000).rem_euclid(step);
+    let mut w = String::from(" WHERE minute > ? AND minute <= ?");
+    let mut p = vec![(q.from_ms - 60_000).into(), q.to_ms.into()];
+    if !contains_filters(c, &mut w, &mut p, &[("instance", &q.instance)])? {
+        return Ok(vec![]);
+    }
+    let mut labels = LabelNames::new(c);
+    let mut st = c.prepare(&format!(
+        "SELECT ((minute + {off}) / {step}) * {step} - {off} AS b, instance, sum(samples), sum(inflight_sum), max(inflight_peak), \
+         sum(ws_sum), max(ws_peak), sum(buffered_sum), max(buffered_peak), max(lim_inflight), max(lim_ws), \
+         max(lim_buffered), \
+         sum(CASE WHEN (lim_inflight > 0 AND inflight_peak >= lim_inflight) OR (lim_ws > 0 AND ws_peak >= lim_ws) THEN 1 ELSE 0 END) \
+         FROM occupancy{w} GROUP BY b, instance ORDER BY b, instance"
+    ))?;
+    let rows = st.query_map(params_from_iter(p), |r| {
+        let mut n = [0i64; 11];
+        for (i, v) in n.iter_mut().enumerate() {
+            *v = r.get(i + 2)?;
+        }
+        Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, n))
+    })?;
+    let u = |v: i64| v.max(0) as u64;
+    let mut out = vec![];
+    for row in rows {
+        let (b, inst, n) = row?;
+        labels.load([(inst != 0).then_some(inst)])?;
+        let samples = u(n[0]);
+        let avg = |sum: i64| {
+            if samples == 0 {
+                0.0
+            } else {
+                (u(sum) as f64 / samples as f64 * 100.0).round() / 100.0
+            }
+        };
+        out.push(crate::occupancy::OccupancyRow {
+            minute_ms: b,
+            instance: (inst != 0).then(|| labels.get(&inst).cloned()).flatten(),
+            samples,
+            inflight_avg: avg(n[1]),
+            inflight_peak: u(n[2]),
+            ws_avg: avg(n[3]),
+            ws_peak: u(n[4]),
+            buffered_avg_bytes: avg(n[5]).round(),
+            buffered_peak_bytes: u(n[6]),
+            max_inflight_requests: u(n[7]),
+            ws_max_connections: u(n[8]),
+            max_buffered_body_bytes: u(n[9]),
+            full_minutes: u(n[10]),
+        });
+    }
+    Ok(out)
+}

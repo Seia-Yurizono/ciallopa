@@ -73,6 +73,40 @@ cargo build --release --locked -p ciallopa-usage --example usage_bench
   默认值下峰值 940MiB，40/40 完成（超出的 16 个连接握手收到 503 后 1 秒重连，共 108 次），6 个 busy 帧，54.9 秒；
   最坏情况 24 连接 × 15.9MiB 峰值 1026MiB，24/24 完成。默认值适合 2GB 主机。
 
+## 2026-11-14 usage 查询对照
+
+环境：Intel Core Ultra 7 270K Plus、WSL2 Linux 6.18.58.1、24 逻辑 CPU，Rust 1.95.0
+release、SQLite 3.54.1（rusqlite 0.41.1 bundled），数据库位于 `/tmp` 的 tmpfs。
+合成负载：100 万行、7 天、100 账号、500 模型/价格、100,000 个 session，每 100 行写一个
+quota snapshot；两个窗口均保持一个周期。查询串行，quota/history 各 5 次，summary 各 3 次；
+首次调用也计入样本，不代表冷磁盘、生产容量或写入压力下的尾延迟。未发生队列丢弃或查询错误。
+
+```sh
+cargo build --release --locked -p ciallopa-usage --example usage_bench
+target/release/examples/usage_bench gen /tmp/usage.db 1000000 7 100 500 --threads 100000 --quota-every 100
+target/release/examples/usage_bench query /tmp/usage.db
+# 在无索引基线的副本上测量单独增加索引：
+target/release/examples/usage_bench query /tmp/usage-index.db --account-index
+```
+
+基线为 `2e58dce` 加上扩展后的 benchmark，已使用读取连接池，仍是 v15 schema。
+同一份数据的副本用于只加 account 索引的对照；完整改动另用副本升级到 v16。
+
+| 项目 | 无 account 索引 | 仅加 account 索引 | 完整改动 |
+|---|---:|---:|---:|
+| quota 中位 | 18,233 ms | 6,544 ms | 2,877 ms |
+| quota_history 中位 | 10,538 ms | 4,936 ms | 2,824 ms |
+| 30d summary 中位 | 2,312 ms | 2,256 ms | 852 ms |
+| recent 100 行，单次 | 12.04 ms | 14.13 ms | 0.73 ms |
+| thread 页中位 | 10.73 ms | 10.78 ms | 0.14 ms |
+| thread fragment 中位 | 10.70 ms | 11.00 ms | 10.72 ms |
+
+单独增加 `requests(account,id)` 后，关闭数据库文件从 99,393,536 字节增至 124,215,296 字节
+（+24.97%），quota 中位改善约 2.8 倍、history 约 2.1 倍，因此 v16 采用该索引。
+完整改动同时合并 token/cycle 扫描、按查询缓存价格和 tier、按页解析 labels，并分离 threads。
+fragment 仍需扫描保留的 sessions，本负载下没有测得改善。未单独隔离 schema 迁移、cycle-close 写锁、
+写吞吐和清理代价，不能由上述读取结果推导这些路径的收益。
+
 ## 下一次测量怎么选
 
 从实际部署的上下文长度、流时长和图像数量取样，交叉 SSE/WS、查询争用、冷/热连接与 usage 开关。

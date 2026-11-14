@@ -45,11 +45,18 @@ pub enum Tier {
 impl Tier {
     /// From a request / response `service_tier` value.
     pub fn from_service_tier(s: Option<&str>) -> Tier {
-        match s.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
-            Some("flex") => Tier::Flex,
-            Some("priority" | "fast" | "priority-fast") => Tier::PriorityFast,
-            Some("ultrafast") => Tier::Ultrafast,
-            _ => Tier::Standard,
+        let value = s.unwrap_or("").trim();
+        if value.eq_ignore_ascii_case("flex") {
+            Self::Flex
+        } else if ["priority", "fast", "priority-fast"]
+            .iter()
+            .any(|name| value.eq_ignore_ascii_case(name))
+        {
+            Self::PriorityFast
+        } else if value.eq_ignore_ascii_case("ultrafast") {
+            Self::Ultrafast
+        } else {
+            Self::Standard
         }
     }
     pub fn name(self) -> &'static str {
@@ -254,23 +261,57 @@ impl PriceTable {
     /// USD for one request; `None` = unknown model/tier/date (caller flags `unknown_price`).
     /// Ignored models: `Some(0.0)`.
     pub fn cost(&self, model: Option<&str>, tier: Tier, ts_ms: i64, u: Usage) -> Option<f64> {
-        let model = model?;
+        self.resolve(model, tier, ts_ms.div_euclid(86_400_000))
+            .cost(u)
+    }
+    fn resolve(&self, model: Option<&str>, tier: Tier, day: i64) -> ResolvedPrice<'_> {
+        let Some(model) = model else {
+            return ResolvedPrice::Unknown;
+        };
         if self.is_ignored(model) {
-            return Some(0.0);
+            return ResolvedPrice::Ignored;
         }
-        let day = ts_ms.div_euclid(86_400_000);
         let (e, mult) = match self.find(model, tier, day) {
             Some(e) => (e, 1.0),
             None => {
-                let e = self.find(model, Tier::Standard, day)?;
+                let Some(e) = self.find(model, Tier::Standard, day) else {
+                    return ResolvedPrice::Unknown;
+                };
                 let x = match tier {
-                    Tier::Standard => 1.0,
-                    Tier::Flex => e.flex_x.or(self.defaults.flex_x)?,
-                    Tier::PriorityFast => e.fast_x.or(self.defaults.fast_x)?,
-                    Tier::Ultrafast => e.ultra_x.or(self.defaults.ultra_x)?,
+                    Tier::Standard => Some(1.0),
+                    Tier::Flex => e.flex_x.or(self.defaults.flex_x),
+                    Tier::PriorityFast => e.fast_x.or(self.defaults.fast_x),
+                    Tier::Ultrafast => e.ultra_x.or(self.defaults.ultra_x),
+                };
+                let Some(x) = x else {
+                    return ResolvedPrice::Unknown;
                 };
                 (e, x)
             }
+        };
+        ResolvedPrice::Priced(e, mult)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum ResolvedPrice<'a> {
+    Unknown,
+    Ignored,
+    Priced(&'a Entry, f64),
+}
+impl ResolvedPrice<'_> {
+    pub fn status(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown_price",
+            Self::Ignored => "ignored",
+            Self::Priced(..) => "ok",
+        }
+    }
+    pub fn cost(self, u: Usage) -> Option<f64> {
+        let (e, mult) = match self {
+            Self::Unknown => return None,
+            Self::Ignored => return Some(0.0),
+            Self::Priced(e, mult) => (e, mult),
         };
         let (mut pi, mut pc, mut pw, mut po) = (
             e.input,
@@ -289,6 +330,42 @@ impl PriceTable {
         let fresh = (u.input - cached - write).max(0) as f64;
         let usd = fresh * pi + cached as f64 * pc + write as f64 * pw + u.output.max(0) as f64 * po;
         Some(usd * mult / 1e6)
+    }
+}
+
+/// One query's label-id lookups, including unknown / ignored models and dated entries.
+pub(crate) struct QueryPrices<'a> {
+    prices: &'a PriceTable,
+    tiers: std::collections::HashMap<Option<i64>, Tier>,
+    entries: std::collections::HashMap<(Option<i64>, Option<i64>, i64), ResolvedPrice<'a>>,
+}
+impl<'a> QueryPrices<'a> {
+    pub fn new(prices: &'a PriceTable) -> Self {
+        Self {
+            prices,
+            tiers: Default::default(),
+            entries: Default::default(),
+        }
+    }
+    pub fn tier(&mut self, id: Option<i64>, name: Option<&str>) -> Tier {
+        *self
+            .tiers
+            .entry(id)
+            .or_insert_with(|| Tier::from_service_tier(name))
+    }
+    pub fn resolve(
+        &mut self,
+        ids: (Option<i64>, Option<i64>),
+        ts_ms: i64,
+        model: Option<&str>,
+        tier: Option<&str>,
+    ) -> ResolvedPrice<'a> {
+        let parsed = self.tier(ids.1, tier);
+        let day = ts_ms.div_euclid(86_400_000);
+        *self
+            .entries
+            .entry((ids.0, ids.1, day))
+            .or_insert_with(|| self.prices.resolve(model, parsed, day))
     }
 }
 

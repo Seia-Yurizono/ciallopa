@@ -423,6 +423,7 @@ dependencies = [
 name = "ciallopa-usage"
 version = "0.4.2"
 dependencies = [
+ "arc-swap",
  "ciallopa-core",
  "rusqlite",
  "serde",

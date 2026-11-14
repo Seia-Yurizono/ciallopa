@@ -1,13 +1,56 @@
 //! The single writer thread: batch inserts + periodic retention purge.
-use crate::{store, Counters, Msg, Record};
-use rusqlite::Connection;
+use crate::{write, Counters, Msg, QuotaSnapshot, Record};
+use rusqlite::{Connection, Transaction};
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub(crate) const PURGE_CHUNK: u64 = 20_000;
 const PURGE_EVERY: Duration = Duration::from_secs(3600);
+
+enum PurgeState {
+    Idle(Instant),
+    Backlog(Instant),
+    Disabled(Instant),
+}
+impl PurgeState {
+    fn deadline(&self) -> Instant {
+        match self {
+            Self::Idle(t) | Self::Backlog(t) | Self::Disabled(t) => *t,
+        }
+    }
+    fn tick(&mut self, days: u32, mut purge: impl FnMut() -> bool) -> Instant {
+        let now = Instant::now();
+        if now >= self.deadline() {
+            *self = if days == 0 {
+                Self::Disabled(now + Duration::from_secs(60))
+            } else if purge() {
+                Self::Backlog(Instant::now() + Duration::from_millis(5))
+            } else {
+                Self::Idle(Instant::now() + PURGE_EVERY)
+            };
+        }
+        self.deadline()
+    }
+}
+
+struct Batch {
+    rows: Vec<Record>,
+    quotas: Vec<QuotaSnapshot>,
+    acks: Vec<SyncSender<()>>,
+    stop: bool,
+}
+impl Batch {
+    fn take(&mut self, msg: Msg) {
+        match msg {
+            Msg::Rec(row) => self.rows.push(*row),
+            Msg::Quota(q) => self.quotas.push(*q),
+            Msg::Flush(ack) => self.acks.push(ack),
+            Msg::Stop => self.stop = true,
+        }
+    }
+}
 
 pub(crate) struct Writer {
     pub conn: Connection,
@@ -16,17 +59,15 @@ pub(crate) struct Writer {
     pub flush: Duration,
     pub retention_days: Arc<std::sync::atomic::AtomicU32>,
     pub counters: Arc<Counters>,
-    pub state: store::WriterState,
+    pub state: write::WriterState,
     pub refusals: Arc<crate::refusals::Aggregator>,
     pub occupancy: Arc<crate::occupancy::Aggregator>,
-    pub prices: std::sync::Arc<std::sync::RwLock<std::sync::Arc<crate::PriceTable>>>,
+    pub prices: Arc<arc_swap::ArcSwap<crate::PriceTable>>,
 }
 
 impl Writer {
     pub fn run(mut self) {
-        let mut batch: Vec<Record> = Vec::with_capacity(self.batch_size);
-        let mut acks = Vec::new();
-        let mut next_purge = Instant::now();
+        let mut purge = PurgeState::Idle(Instant::now());
         let mut next_refusals = Instant::now() + crate::refusals::FLUSH_EVERY;
         loop {
             if Instant::now() >= next_refusals {
@@ -34,109 +75,105 @@ impl Writer {
                 self.flush_occupancy(false);
                 next_refusals = Instant::now() + crate::refusals::FLUSH_EVERY;
             }
+            // Invariant: the first purge chunk runs before receiving or acknowledging Flush.
             let days = self.retention_days.load(Ordering::Relaxed);
-            if days == 0 && Instant::now() >= next_purge {
-                // Retention off (hot-reloadable): look again in a minute instead of spinning.
-                next_purge = Instant::now() + Duration::from_secs(60);
-            }
-            if days > 0 && Instant::now() >= next_purge {
-                // One bounded chunk per pass so a large backlog never stalls inserts.
-                next_purge = if self.purge() {
-                    Instant::now() + Duration::from_millis(5)
-                } else {
-                    Instant::now() + PURGE_EVERY
-                };
-            }
-            // Wait for the first message of a batch (wake up for purges).
+            let next_purge = purge.tick(days, || self.purge(days));
             let wait = next_purge
                 .min(next_refusals)
                 .saturating_duration_since(Instant::now())
                 .max(Duration::from_millis(1));
             let first = match self.rx.recv_timeout(wait) {
-                Ok(m) => m,
+                Ok(msg) => msg,
                 Err(RecvTimeoutError::Timeout) => continue,
                 Err(RecvTimeoutError::Disconnected) => return,
             };
-            let mut quotas = vec![];
-            let mut take = |m: Msg, batch: &mut Vec<Record>, acks: &mut Vec<_>| {
-                match m {
-                    Msg::Rec(r) => batch.push(*r),
-                    Msg::Quota(q) => quotas.push(*q),
-                    Msg::Flush(a) => acks.push(a),
-                    Msg::Stop => return true,
-                }
-                false
-            };
-            let mut stop = take(first, &mut batch, &mut acks);
-            let deadline = Instant::now() + self.flush;
-            while !stop && batch.len() < self.batch_size && acks.is_empty() {
-                // Drain what is already queued without waiting, then wait up to the deadline.
-                match self.rx.try_recv() {
-                    Ok(m) => stop = take(m, &mut batch, &mut acks),
-                    Err(_) => {
-                        let left = deadline.saturating_duration_since(Instant::now());
-                        if left.is_zero() {
-                            break;
-                        }
-                        match self.rx.recv_timeout(left) {
-                            Ok(m) => stop = take(m, &mut batch, &mut acks),
-                            Err(_) => break,
-                        }
+            let batch = self.collect_batch(first);
+            if !batch.rows.is_empty() || !batch.quotas.is_empty() {
+                let n = batch.rows.len() as u64;
+                let prices = self.prices.load_full();
+                let result = self.in_tx(|tx, state| {
+                    if !batch.rows.is_empty() {
+                        write::insert_batch(tx, state, &batch.rows, &prices)?;
                     }
-                }
-            }
-            if stop {
-                // Stop ends batching immediately; drain only what is already queued.
-                while let Ok(m) = self.rx.try_recv() {
-                    take(m, &mut batch, &mut acks);
-                }
-            }
-            if !batch.is_empty() {
-                let n = batch.len() as u64;
-                let prices = self
-                    .prices
-                    .read()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone();
-                match store::insert_batch(&mut self.conn, &mut self.state, &batch, &prices) {
+                    if !batch.quotas.is_empty() {
+                        write::insert_quota(tx, state, &batch.quotas, &prices)?;
+                    }
+                    Ok(())
+                });
+                match result {
                     Ok(()) => {
                         self.counters.written.fetch_add(n, Ordering::Relaxed);
                     }
-                    Err(e) => {
-                        // Labels cache may reference rolled-back rows.
-                        self.state.reset();
+                    Err(error) => {
                         self.counters.write_errors.fetch_add(n, Ordering::Relaxed);
-                        tracing::warn!(error = %e, rows = n, "usage batch write failed; rows dropped");
+                        tracing::warn!(%error, rows=n, quotas=batch.quotas.len(), "usage batch write failed; rows dropped");
                     }
                 }
-                batch.clear();
             }
-            if !quotas.is_empty() {
-                let prices = self
-                    .prices
-                    .read()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone();
-                if let Err(e) =
-                    store::insert_quota(&mut self.conn, &mut self.state, &quotas, &prices)
-                {
-                    self.state.reset();
-                    tracing::warn!(error = %e, "quota snapshot write failed");
-                }
-            }
-            if stop || !acks.is_empty() {
-                // Shutdown and explicit flushes include refusals and occupancy so far.
+            if batch.stop || !batch.acks.is_empty() {
                 self.flush_refusals();
                 self.flush_occupancy(true);
             }
-            for a in acks.drain(..) {
-                let _ = a.send(());
+            for ack in batch.acks {
+                let _ = ack.send(());
             }
-            if stop {
-                let _ = self.conn.execute_batch("PRAGMA optimize;");
+            if batch.stop {
+                let _ = self.conn.execute_batch("PRAGMA optimize");
                 return;
             }
         }
+    }
+
+    fn collect_batch(&self, first: Msg) -> Batch {
+        let mut batch = Batch {
+            rows: Vec::with_capacity(self.batch_size),
+            quotas: Vec::new(),
+            acks: Vec::new(),
+            stop: false,
+        };
+        batch.take(first);
+        let deadline = Instant::now() + self.flush;
+        while !batch.stop
+            && batch.rows.len() + batch.quotas.len() < self.batch_size
+            && batch.acks.is_empty()
+        {
+            match self.rx.try_recv() {
+                Ok(msg) => batch.take(msg),
+                Err(_) => {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        break;
+                    }
+                    match self.rx.recv_timeout(left) {
+                        Ok(msg) => batch.take(msg),
+                        Err(_) => break,
+                    }
+                }
+            }
+        }
+        if batch.stop {
+            while let Ok(msg) = self.rx.try_recv() {
+                batch.take(msg);
+            }
+        }
+        batch
+    }
+
+    fn in_tx<T>(
+        &mut self,
+        f: impl FnOnce(&Transaction<'_>, &mut write::WriterState) -> rusqlite::Result<T>,
+    ) -> rusqlite::Result<T> {
+        let result = (|| {
+            let tx = self.conn.transaction()?;
+            self.state.refresh(&tx)?;
+            let value = f(&tx, &mut self.state)?;
+            tx.commit()?;
+            Ok(value)
+        })();
+        if result.is_err() {
+            self.state.reset();
+        }
+        result
     }
 
     fn flush_refusals(&mut self) {
@@ -144,58 +181,42 @@ impl Writer {
             return;
         }
         let rows = self.refusals.take();
-        if let Err(e) = store::upsert_refusals(&mut self.conn, &mut self.state, &rows) {
-            self.state.reset();
-            tracing::warn!(error = %e, groups = rows.len(), "refusal write failed; retrying later");
+        if let Err(error) =
+            self.in_tx(|tx, state| crate::refusals::upsert_refusals(tx, state, &rows))
+        {
+            tracing::warn!(%error, groups=rows.len(), "refusal write failed; retrying later");
             self.refusals.restore(rows);
         }
     }
-
-    /// Complete minutes only (one write per minute), unless `all`.
     fn flush_occupancy(&mut self, all: bool) {
         let rows = self.occupancy.take((!all).then(crate::now_ms));
         if rows.is_empty() {
             return;
         }
-        if let Err(e) = store::upsert_occupancy(&mut self.conn, &mut self.state, &rows) {
-            self.state.reset();
-            tracing::warn!(error = %e, minutes = rows.len(), "occupancy write failed; retrying later");
+        if let Err(error) =
+            self.in_tx(|tx, state| crate::occupancy::upsert_occupancy(tx, state, &rows))
+        {
+            tracing::warn!(%error, minutes=rows.len(), "occupancy write failed; retrying later");
             self.occupancy.restore(rows);
         }
     }
-
-    /// Returns true when more rows may remain.
-    fn purge(&mut self) -> bool {
-        let cutoff =
-            crate::now_ms() - i64::from(self.retention_days.load(Ordering::Relaxed)) * 86_400_000;
-        let more_refusals = match store::purge_refusals_before(&self.conn, cutoff) {
-            Ok(more) => more,
-            Err(e) => {
-                tracing::warn!(error = %e, "refusal purge failed");
+    fn purge(&mut self, days: u32) -> bool {
+        let cutoff = crate::now_ms() - i64::from(days) * 86_400_000;
+        match write::purge_step(&mut self.conn, cutoff, PURGE_CHUNK) {
+            Ok(progress) => {
+                self.state.reset(); // A finished purge can remove cached dictionary ids.
+                self.counters
+                    .purged
+                    .fetch_add(progress.removed, Ordering::Relaxed);
+                if !progress.more {
+                    let _ = self.conn.execute_batch("PRAGMA optimize");
+                }
+                progress.more
+            }
+            Err(error) => {
+                tracing::warn!(%error,"usage purge failed");
                 false
             }
-        };
-        let more_occupancy = match store::purge_occupancy_before(&self.conn, cutoff) {
-            Ok(more) => more,
-            Err(e) => {
-                tracing::warn!(error = %e, "occupancy purge failed");
-                false
-            }
-        };
-        more_refusals
-            | more_occupancy
-            | match store::purge_before(&mut self.conn, cutoff, PURGE_CHUNK) {
-                Ok(n) => {
-                    if n > 0 {
-                        self.counters.purged.fetch_add(n, Ordering::Relaxed);
-                        tracing::debug!(rows = n, "usage retention purge chunk");
-                    }
-                    n >= PURGE_CHUNK
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "usage purge failed");
-                    false
-                }
-            }
+        }
     }
 }

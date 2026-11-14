@@ -687,7 +687,7 @@ mod tests {
             instance: None,
             started_ms: t,
             finished_ms: None,
-            status: status.into(),
+            status: status.try_into().unwrap(),
             http_status: None,
             code: None,
             windows_reset: None,

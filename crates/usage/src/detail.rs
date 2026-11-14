@@ -1,5 +1,6 @@
 //! Error details for failed requests: redacted upstream body (capped), selected headers and a
 //! descriptive message. Stored in `error_detail` (same retention as `requests`).
+use rusqlite::OptionalExtension;
 use serde::Serialize;
 
 /// Max stored body size (bytes, after redaction).
@@ -347,6 +348,37 @@ pub fn redact_text(s: &str) -> String {
         }
     }
     out
+}
+
+/// Error detail of one request (`id` = request id).
+pub(crate) fn detail(
+    c: &rusqlite::Connection,
+    id: i64,
+) -> Result<Option<crate::DetailRow>, crate::UsageError> {
+    let row = c
+        .query_row(
+            "SELECT message, body, body_len, truncated, headers, up_req_id, attempts FROM error_detail WHERE id = ?1",
+            [id],
+            |r| {
+                let h: String = r.get(4)?;
+                Ok(crate::DetailRow {
+                    request_id: format!("{id:016x}"),
+                    ts_ms: id >> crate::SEQ_BITS,
+                    message: r.get(0)?,
+                    body: r.get(1)?,
+                    body_len: r.get(2)?,
+                    truncated: r.get(3)?,
+                    headers: serde_json::from_str(&h).unwrap_or(serde_json::Value::Null),
+                    upstream_request_id: r.get(5)?,
+                    attempts: r
+                        .get::<_, Option<String>>(6)?
+                        .and_then(|a| serde_json::from_str(&a).ok())
+                        .unwrap_or(serde_json::Value::Null),
+                })
+            },
+        )
+        .optional()?;
+    Ok(row)
 }
 
 #[cfg(test)]

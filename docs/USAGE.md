@@ -409,6 +409,7 @@ an overload wait; a request with no retry stores no chain:
 ## Schema
 ```sql
 CREATE TABLE labels(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);  -- interned strings
+CREATE TABLE threads(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE); -- v16, session ids
 CREATE TABLE requests(
   id INTEGER PRIMARY KEY, account INTEGER, first_account INTEGER, model INTEGER, effort INTEGER,
   transport INTEGER NOT NULL, endpoint INTEGER, status INTEGER NOT NULL, error INTEGER,
@@ -420,6 +421,8 @@ CREATE TABLE requests(
   req_tier INTEGER, resp_model INTEGER, resp_effort INTEGER,  -- v5
   incomplete INTEGER,                                         -- v7
   err_source INTEGER, up_status INTEGER);                     -- v9
+CREATE INDEX requests_thread ON requests(thread) WHERE thread IS NOT NULL;
+CREATE INDEX requests_account ON requests(account, id); -- v16, quota/cycle scans
 -- one row per *change* of an account's quota (id = observing request id)
 CREATE TABLE quota_obs(id INTEGER PRIMARY KEY, account INTEGER NOT NULL, instance INTEGER,
   plan INTEGER, p_pct REAL, p_reset INTEGER, p_win INTEGER, s_pct REAL, s_reset INTEGER, s_win INTEGER,
@@ -461,19 +464,24 @@ CREATE TABLE occupancy(minute INTEGER NOT NULL, instance INTEGER NOT NULL, sampl
   lim_inflight INTEGER NOT NULL, lim_ws INTEGER NOT NULL, lim_buffered INTEGER NOT NULL,
   PRIMARY KEY(minute, instance));
 ```
-- Schema is at `user_version = 15` (v13 adds the `requests_thread` index; v14 adds the
+- Schema is at `user_version = 16` (v13 adds the `requests_thread` index; v14 adds the
   `request_obs` table, see *Gateway downstream observation*; v15 adds `quota_obs.cards` and the
-  `quota_reset_events` / `quota_cycle_estimates` tables). Opening an older file upgrades it in place (`ALTER TABLE` /
+  `quota_reset_events` / `quota_cycle_estimates` tables; v16 moves sessions into `threads`,
+  preserving ids, adds `requests_account`, and normalizes reset-result codes). Opening an older file upgrades it in place (`ALTER TABLE` /
   new tables); columns that did not exist yet stay NULL on old rows.
 - `quota_obs` gets a row only when used % / plan changes or a reset time moves by > 120 s
   (upstream reset times jitter by a few seconds). Purge keeps each account's latest row.
   A successful reset-card consume also writes the fetched `/wham/usage` snapshot (via the
   existing writer queue, not a synchronous extra write).
-- **One secondary index on `requests`**: the partial `requests_thread(thread) WHERE thread IS
-  NOT NULL`, for the session view. Everything else on `requests` is rowid based: time ranges are
-  rowid range scans (`id BETWEEN from<<20 AND to<<20`), purge is a rowid range delete, "recent"
-  is a reverse rowid scan. Strings (account e-mails,
-  model names) are interned in `labels`, so a row is ~51 bytes on disk (1M rows ≈ 51 MB).
+- `requests_thread(thread) WHERE thread IS NOT NULL` serves session views; the
+  `requests_account(account,id)` index keeps quota/cycle scans proportional to one account.
+  Time ranges and retention still use the ordered request id. Other strings live in `labels`;
+  sessions live in `threads`. Retention removes orphan dictionary entries after the final chunk.
+  The writer caches at most 10,000 labels and does not cache session names.
+- Usage reads share four reusable read-only connections. Each call uses one transaction;
+  records/counts and current/previous summaries with refusals each share one snapshot.
+  Excess queries wait for a read permit. Reset writes and synchronous startup/shutdown KV calls
+  use separate non-migrating write connections; async KV reads can use the read pool.
 
 ## Refusals (local limits)
 Requests refused by ciallopa itself never reach an account, so they have no `requests` row.
