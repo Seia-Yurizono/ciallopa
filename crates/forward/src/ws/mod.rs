@@ -121,12 +121,13 @@ pub(crate) async fn handler(
         ..ctx
     };
     let drain = st.upstream.drain.clone();
+    let close_grace = timing::scale(&st, Duration::from_secs(2));
     let mut resp = ws.on_upgrade(compression, max_message, move |socket| async move {
         let _slot = slot;
         let handoff = lease.map(|axum::Extension(l)| l);
         finish_on_shutdown(
             drain,
-            Duration::from_secs(2),
+            close_grace,
             relay(
                 st2, ctx, route, account, socket, up, gen, idle, hs_headers, handoff,
             ),

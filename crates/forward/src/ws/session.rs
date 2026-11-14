@@ -126,7 +126,11 @@ async fn redial(
         tracker.quota(&replacement.quota);
     }
     let old = std::mem::replace(up, replacement);
-    tokio::spawn(drain_close(old.tx, old.rx));
+    tokio::spawn(drain_close(
+        old.tx,
+        old.rx,
+        timing::scale(st, Duration::from_secs(2)),
+    ));
     Ok(())
 }
 
@@ -149,7 +153,7 @@ pub(super) async fn finish_on_shutdown(
     }
 }
 
-fn close(code: u16, reason: &str) -> Message {
+fn close_frame(code: u16, reason: &str) -> Message {
     Message::Close(Some(UpCloseFrame {
         code: CloseCode::from(code),
         reason: reason.into(),
@@ -174,7 +178,6 @@ pub(super) async fn relay(
     // between turns and the client reconnects through the new egress. A running turn finishes
     // on the old connection first. Not an error: no cooldown, no usage record.
     let mut egress = st.upstream.egress_watch();
-    let mut egress_live = true;
     // Graceful shutdown: same rule (close between turns, after the running one), and after
     // the drain bound a 1001 close. A session opened during the drain sees it at once.
     let _session = st.upstream.drain.enter();
@@ -184,12 +187,10 @@ pub(super) async fn relay(
     let mut turn_slot: Option<ciallopa_upstream::drain::Lease> = None;
     let mut drain = st.upstream.drain.watch();
     drain.mark_changed();
-    let mut drain_live = true;
     let mut up = UpLink::new(up, handshake, account, gen);
     let mut progress = StreamObservation::new();
     let (mut dtx, mut drx) = down.split();
     let mut queued_down = None;
-    let mut abandon_upstream = false;
     let max_switches = st.accounts.len().max(1);
     let mut switches = 0usize;
     let mut awaiting = false;
@@ -214,7 +215,7 @@ pub(super) async fn relay(
     // Shutdown cut a running turn: forward what upstream already delivered, then end the turn
     // with a retryable response.failed and close (see `next_upstream`).
     let mut cut: Option<tokio::time::Instant> = None;
-    'outer: loop {
+    let reason = 'outer: loop {
         tokio::select! {
             m = next_downstream(&mut drx, &mut queued_down), if cut.is_none() => match m {
                 Some(Ok(m)) => {
@@ -241,7 +242,7 @@ pub(super) async fn relay(
                                     limit: budget,
                                     bytes: Some(n as u64),
                                 });
-                                if dtx.send(busy_frame()).await.is_err() { break; }
+                                if dtx.send(busy_frame()).await.is_err() { break 'outer Close::ClientGone; }
                                 continue 'outer;
                             }
                         }
@@ -270,14 +271,13 @@ pub(super) async fn relay(
                                     bytes: None,
                                 });
                                 drop(msg_permit.take());
-                                if dtx.send(busy_frame()).await.is_err() { break; }
+                                if dtx.send(busy_frame()).await.is_err() { break 'outer Close::ClientGone; }
                                 continue 'outer;
                             }
                             Err(ciallopa_upstream::drain::Refused::Draining) => {
                                 drop(msg_permit.take());
                                 // The client already sent this turn: ask it to replay later.
-                                close_for_shutdown(&up.account, ShutdownClose::Refused, &mut dtx, &mut up.tx).await;
-                                break;
+                                break 'outer Close::Shutdown(ShutdownClose::Refused);
                             }
                         }
                     }
@@ -326,8 +326,7 @@ pub(super) async fn relay(
                                             // Its `previous_response_id` lives on this connection only.
                                             tracing::info!(account = %ciallopa_core::a(&up.account), model = %route.model, "ws turn model cooling on this account; closing for client replay");
                                             if let Some(tr) = turn.as_mut() { tr.fail_msg("model_cooldown", "account cooling down for this model; closed for client replay"); tr.source(crate::errors::SRC_LOCAL); }
-                                            let _ = dtx.send(close(CLOSE_REPLAY, CLOSE_REPLAY_REASON)).await;
-                                            break;
+                                            break 'outer Close::Replay;
                                         }
                                         let accounts = st.accounts.accounts();
                                         let mut r = route.clone();
@@ -342,12 +341,12 @@ pub(super) async fn relay(
                                                 let ev = error_event(resp, turn.take()).await;
                                                 pending = None;
                                                 drop(msg_permit.take());
-                                                if dtx.send(ev).await.is_err() { break; }
+                                                if dtx.send(ev).await.is_err() { break 'outer Close::ClientGone; }
                                                 continue 'outer;
                                             }
                                             Err(RedialFailed::Budget) => {
-                                                close_after_preparation_timeout(turn.as_mut(), &mut dtx).await;
-                                                break;
+                                                preparation_timeout(turn.as_mut());
+                                                break 'outer Close::Replay;
                                             }
                                         }
                                     }
@@ -362,8 +361,7 @@ pub(super) async fn relay(
                             WriteResult::Sent(Ok(())) => {}
                             WriteResult::ClientClosed => {
                                 if let Some(t) = turn.as_mut() { t.client_gone(); }
-                                abandon_upstream = true;
-                                break;
+                                break 'outer Close::Interrupted;
                             }
                             WriteResult::Sent(Err(e)) => {
                                 // Client Close and forced shutdown retain their cancellation cause.
@@ -376,8 +374,7 @@ pub(super) async fn relay(
                                         t.source(crate::errors::SRC_NETWORK);
                                     }
                                 }
-                                let _ = dtx.send(close(CLOSE_INTERNAL, "upstream gone")).await;
-                                break;
+                                break 'outer Close::Internal("upstream gone");
                             }
                         }
                     }
@@ -387,19 +384,16 @@ pub(super) async fn relay(
                     }
                     if is_close {
                         if let Some(t) = turn.as_mut() { t.client_gone(); }
-                        break;
+                        break 'outer Close::ClientGone;
                     }
                 }
                 other => {
-                    if let Some(Err(tokio_tungstenite::tungstenite::Error::Capacity(e))) = &other {
-                        // Over `ws_max_message_mb` (checked while reading and inflating, so it
-                        // never grows past the limit). 1009 = message too big.
-                        tracing::warn!(account = %ciallopa_core::a(&up.account), error = %e, "websocket message over ws_max_message_mb; closing 1009");
-                        let _ = dtx.send(close(CLOSE_TOO_BIG, "message too big")).await;
-                    }
                     if let Some(t) = turn.as_mut() { t.client_gone(); }
-                    abandon_upstream = true;
-                    break;
+                    if let Some(Err(tokio_tungstenite::tungstenite::Error::Capacity(e))) = &other {
+                        tracing::warn!(account = %ciallopa_core::a(&up.account), error = %e, "websocket message over ws_max_message_mb; closing 1009");
+                        break 'outer Close::TooBig;
+                    }
+                    break 'outer Close::Interrupted;
                 }
             },
             m = next_upstream(&mut up.rx, cut) => {
@@ -409,8 +403,7 @@ pub(super) async fn relay(
                         if let Some(t) = turn.as_mut() { t.fail_msg("shutdown", "closed by server shutdown before the turn finished".to_string()); t.source(crate::errors::SRC_LOCAL); }
                     }
                     for h in held.drain(..) { let _ = send_down(&mut dtx, h, turn.as_mut()).await; }
-                    close_for_shutdown(&up.account, ShutdownClose::Cut, &mut dtx, &mut up.tx).await;
-                    break;
+                    break 'outer Close::Shutdown(ShutdownClose::Cut);
                 };
                 sleep.as_mut().reset(tokio::time::Instant::now() + idle);
                 match m {
@@ -427,10 +420,7 @@ pub(super) async fn relay(
                             st.router.report(&route, &up.account, &Outcome::Transport);
                         }
                         for h in held.drain(..) { let _ = send_down(&mut dtx, h, turn.as_mut()).await; }
-                        if let Some(d) = to_down(WsMessage::Close(f)) {
-                            let _ = dtx.send(d).await;
-                        }
-                        break;
+                        break 'outer Close::Upstream(f);
                     }
                     Some(Ok(m)) => {
                         if awaiting {
@@ -507,22 +497,20 @@ pub(super) async fn relay(
                                             }
                                             WriteResult::ClientClosed => {
                                                 if let Some(t) = turn.as_mut() { t.client_gone(); }
-                                                abandon_upstream = true;
-                                                break 'outer;
+                                                break 'outer Close::Interrupted;
                                             }
                                             WriteResult::Sent(Err(_)) => {}
                                         }
                                     }
                                     Err(RedialFailed::Refused(_)) => tracing::warn!("ws redial after overload failed"),
                                     Err(RedialFailed::Budget) => {
-                                        close_after_preparation_timeout(turn.as_mut(), &mut dtx).await;
-                                        break;
+                                        preparation_timeout(turn.as_mut());
+                                                break 'outer Close::Replay;
                                     }
                                 }
                                 // Redial failed: stop using the old socket and let the client replay.
                                 if let Some(t) = turn.as_mut() { t.fail_msg(code, "upstream overloaded; redial failed, closed for client replay"); t.source(crate::errors::SRC_STREAM); }
-                                let _ = dtx.send(close(CLOSE_REPLAY, CLOSE_REPLAY_REASON)).await;
-                                break;
+                                break 'outer Close::Replay;
                             }
                             // Output already sent, or no other account: pass it through verbatim.
                             if let Some(t) = turn.as_mut() {
@@ -548,24 +536,22 @@ pub(super) async fn relay(
                                                 }
                                                 WriteResult::ClientClosed => {
                                                     if let Some(t) = turn.as_mut() { t.client_gone(); }
-                                                    abandon_upstream = true;
-                                                    break 'outer;
+                                                    break 'outer Close::Interrupted;
                                                 }
                                                 WriteResult::Sent(Err(_)) => {}
                                             }
                                         }
                                         Err(RedialFailed::Refused(_)) => tracing::warn!("ws redial after quota error failed"),
                                         Err(_) => {
-                                            close_after_preparation_timeout(turn.as_mut(), &mut dtx).await;
-                                            break;
+                                            preparation_timeout(turn.as_mut());
+                                                break 'outer Close::Replay;
                                         }
                                     }
                                 }
                             }
                             tracing::info!(account = %ciallopa_core::a(&up.account), "ws quota error mid-turn; closing for client replay");
                             if let Some(t) = turn.as_mut() { t.fail_msg(crate::errors::quota_outcome_code(&o), "usage limit reached mid-turn; closed for client replay"); t.source(crate::errors::SRC_STREAM); }
-                            let _ = dtx.send(close(CLOSE_REPLAY, CLOSE_REPLAY_REASON)).await;
-                            break;
+                            break 'outer Close::Replay;
                         }
                         if let (Some(t), WsMessage::Text(txt)) = (turn.as_mut(), &m) {
                             if !done && proxy::memfind(txt.as_bytes(), b"\"response.created\"") {
@@ -598,7 +584,7 @@ pub(super) async fn relay(
                                     held.push(d);
                                     started = true;
                                     for h in held.drain(..) {
-                                        if send_down(&mut dtx, h, turn.as_mut()).await.is_err() { break 'outer; }
+                                        if send_down(&mut dtx, h, turn.as_mut()).await.is_err() { break 'outer Close::ClientGone; }
                                     }
                                     continue;
                                 }
@@ -613,7 +599,7 @@ pub(super) async fn relay(
                             started = true;
                         }
                         for h in held.drain(..) {
-                            if send_down(&mut dtx, h, turn.as_mut()).await.is_err() { break 'outer; }
+                            if send_down(&mut dtx, h, turn.as_mut()).await.is_err() { break 'outer Close::ClientGone; }
                         }
                         // The finished turn's tracker lives until its terminal frame was sent
                         // downstream (observed send), with `duration_ms` fixed here as before.
@@ -650,18 +636,16 @@ pub(super) async fn relay(
                             if send_down(&mut dtx, d, t).await.is_err() {
                                 drop(finished);
                                 let _ = up.tx.send(WsMessage::Close(None)).await;
-                                break;
+                                break 'outer Close::ClientGone;
                             }
                         }
                         // `finished` dropped here → record emitted.
                         drop(finished);
                         if done && st.upstream.egress_gen() != up.gen {
-                            close_for_egress(&up.account, &mut dtx, &mut up.tx).await;
-                            break;
+                            break 'outer Close::Egress;
                         }
                         if done && st.upstream.drain.phase() != Phase::Running {
-                            close_for_shutdown(&up.account, ShutdownClose::BetweenTurns, &mut dtx, &mut up.tx).await;
-                            break;
+                            break 'outer Close::Shutdown(ShutdownClose::BetweenTurns);
                         }
                     }
                     other => {
@@ -673,56 +657,39 @@ pub(super) async fn relay(
                         }
                         if let Some(t) = turn.as_mut() { t.fail_msg(code, msg); t.source(crate::errors::SRC_NETWORK); }
                         st.router.report(&route, &up.account, &Outcome::Transport);
-                        let _ = dtx.send(close(CLOSE_INTERNAL, "upstream disconnected")).await;
-                        break;
+                        break 'outer Close::Internal("upstream disconnected");
                     }
                 }
             },
-            r = egress.changed(), if egress_live => {
-                if r.is_err() {
-                    egress_live = false;
-                } else if !awaiting && *egress.borrow_and_update() != up.gen {
-                    close_for_egress(&up.account, &mut dtx, &mut up.tx).await;
-                    break;
+            _ = egress.changed() => {
+                if !awaiting && *egress.borrow_and_update() != up.gen {
+                    break 'outer Close::Egress;
                 }
             }
-            r = drain.changed(), if drain_live && cut.is_none() => {
+            _ = drain.changed(), if cut.is_none() => {
                 let phase = *drain.borrow_and_update();
-                if r.is_err() {
-                    drain_live = false;
-                } else if phase == Phase::Force && awaiting {
+                if phase == Phase::Force && awaiting {
                     tracing::warn!(account = %ciallopa_core::a(&up.account), "shutting down; drain bound reached, cutting the running websocket turn");
                     cut = Some(tokio::time::Instant::now() + timing::scale(&st, CUT_FLUSH_MAX));
                 } else if phase == Phase::Force || (phase == Phase::Draining && !awaiting) {
-                    close_for_shutdown(&up.account, ShutdownClose::BetweenTurns, &mut dtx, &mut up.tx).await;
-                    break;
+                    break 'outer Close::Shutdown(ShutdownClose::BetweenTurns);
                 }
             }
             _ = &mut sleep, if awaiting => {
                 progress.warn("ws", "idle_timeout", &up.account, up.request_id.as_deref(), turn.as_ref());
                 if let Some(t) = turn.as_mut() { t.fail_msg("idle_timeout", format!("upstream websocket idle for {}s (timeout)", idle.as_secs())); t.source(crate::errors::SRC_NETWORK); }
                 st.router.report(&route, &up.account, &Outcome::Transport);
-                let _ = dtx.send(close(CLOSE_INTERNAL, "stream idle timeout")).await;
-                let _ = up.tx.send(WsMessage::Close(None)).await;
-                break;
+                break 'outer Close::Internal("stream idle timeout");
             }
         }
-    }
-    if abandon_upstream {
-        // A cancelled send may have written part of a frame. Do not flush or reuse
-        // that connection: even close() can flush the remaining request bytes.
-        drop(up.tx);
-        drop(up.rx);
-        let _ = tokio::time::timeout(Duration::from_secs(2), dtx.close()).await;
-        return;
-    }
-    // Finish both closing handshakes: flush the close frame (tungstenite queues the reply to a
-    // peer Close; without this the TCP stream is dropped with "reset without closing
-    // handshake"). Bounded so a dead peer cannot hold the task.
-    let _ = tokio::time::timeout(Duration::from_secs(2), async {
-        let _ = dtx.close().await;
-        let _ = up.tx.close().await;
-    })
+    };
+    close(
+        reason,
+        dtx,
+        drx,
+        up,
+        timing::scale(&st, Duration::from_secs(2)),
+    )
     .await;
 }
 
@@ -831,16 +798,85 @@ where
     }
 }
 
-/// Between turns, after an egress proxy change: normal close on both legs (the client
-/// reconnects on its next request, through the new egress).
-async fn close_for_egress<D, U>(account: &AccountId, dtx: &mut D, utx: &mut U)
+enum Close {
+    ClientGone,
+    /// A cancelled upstream write may contain a partial frame and must never be flushed.
+    Interrupted,
+    Upstream(Option<UpCloseFrame>),
+    Replay,
+    Internal(&'static str),
+    TooBig,
+    Egress,
+    Shutdown(ShutdownClose),
+}
+
+type DownTx = futures::stream::SplitSink<DownWs, Message>;
+type DownRx = futures::stream::SplitStream<DownWs>;
+
+async fn close(reason: Close, tx: DownTx, rx: DownRx, up: UpLink, grace: Duration) {
+    let mut down = tx
+        .reunite(rx)
+        .expect("downstream halves belong to this session");
+    let frame = match &reason {
+        Close::ClientGone | Close::Interrupted => Message::Close(None),
+        Close::Upstream(frame) => Message::Close(frame.clone()),
+        Close::Replay => close_frame(CLOSE_REPLAY, CLOSE_REPLAY_REASON),
+        Close::Internal(reason) => close_frame(CLOSE_INTERNAL, reason),
+        Close::TooBig => close_frame(CLOSE_TOO_BIG, "message too big"),
+        Close::Egress => {
+            tracing::info!(account = %ciallopa_core::a(&up.account), "egress proxy changed; closing the idle websocket session");
+            close_frame(1000, "")
+        }
+        Close::Shutdown(ShutdownClose::BetweenTurns) => close_frame(1000, ""),
+        Close::Shutdown(ShutdownClose::Cut | ShutdownClose::Refused) => close_frame(1001, ""),
+    };
+    let downstream = async {
+        let _ = tokio::time::timeout(grace, async {
+            if matches!(
+                reason,
+                Close::Shutdown(ShutdownClose::Cut | ShutdownClose::Refused)
+            ) {
+                let _ = down
+                    .send(Message::text(proxy::shutdown_failed_event().to_string()))
+                    .await;
+            }
+            close_downstream(&mut down, frame).await;
+        })
+        .await;
+    };
+    let upstream = async {
+        match reason {
+            Close::Interrupted | Close::TooBig => drop(up),
+            _ => drain_close(up.tx, up.rx, grace).await,
+        }
+    };
+    tokio::join!(downstream, upstream);
+}
+
+/// Flush our Close, then consume in-flight client data until the reply or EOF.
+async fn close_downstream<S>(down: &mut tokio_tungstenite::WebSocketStream<S>, frame: Message)
 where
-    D: futures::Sink<Message> + Unpin,
-    U: futures::Sink<WsMessage> + Unpin,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    tracing::info!(account = %ciallopa_core::a(account), "egress proxy changed; closing the idle websocket session so the client reconnects through the new egress");
-    let _ = dtx.send(close(1000, "")).await;
-    let _ = utx.send(WsMessage::Close(None)).await;
+    // A peer Close already queued its reply; send then reports SendAfterClosing.
+    let _ = down.send(frame).await;
+    if down.flush().await.is_err() {
+        return;
+    }
+    while let Some(Ok(message)) = down.next().await {
+        if matches!(message, Message::Close(_)) {
+            return;
+        }
+    }
+    // tokio-tungstenite fuses its Stream after Capacity (including oversized compressed
+    // messages). Read the transport directly so unread TCP bytes cannot reset our Close.
+    let mut discard = [0; 8192];
+    loop {
+        match tokio::io::AsyncReadExt::read(down.get_mut(), &mut discard).await {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
+        }
+    }
 }
 
 /// How a session ends on server shutdown.
@@ -876,40 +912,7 @@ where
     }
 }
 
-/// Server shutdown close. A cut or refused turn first gets a retryable `response.failed`:
-/// Codex treats an unknown `response.failed` code as retryable and waits for
-/// `error.headers.retry-after`, so it replays the turn on the restarted gateway.
-async fn close_for_shutdown<D, U>(account: &AccountId, how: ShutdownClose, dtx: &mut D, utx: &mut U)
-where
-    D: futures::Sink<Message> + Unpin,
-    U: futures::Sink<WsMessage> + Unpin,
-{
-    let code = match how {
-        ShutdownClose::BetweenTurns => {
-            tracing::info!(account = %ciallopa_core::a(account), "shutting down; closing the websocket session between turns");
-            1000
-        }
-        ShutdownClose::Cut | ShutdownClose::Refused => {
-            if how == ShutdownClose::Refused {
-                tracing::info!(account = %ciallopa_core::a(account), "shutting down; refusing a new websocket turn, client will replay");
-            }
-            let _ = dtx
-                .send(Message::text(
-                    crate::proxy::shutdown_failed_event().to_string(),
-                ))
-                .await;
-            1001
-        }
-    };
-    let _ = dtx.send(close(code, "")).await;
-    let _ = utx.send(WsMessage::Close(None)).await;
-}
-
-/// Preserve the preparation failure while asking the client to replay on a new connection.
-async fn close_after_preparation_timeout<T>(turn: Option<&mut Tracker>, dtx: &mut T)
-where
-    T: futures::Sink<WsMessage> + Unpin,
-{
+fn preparation_timeout(turn: Option<&mut Tracker>) {
     if let Some(t) = turn {
         t.fail_msg(
             "preparation_timeout",
@@ -917,22 +920,16 @@ where
         );
         t.source(crate::errors::SRC_LOCAL);
     }
-    // This is cleanup after a bounded preparation, not a deadline for ordinary data writes.
-    let _ = tokio::time::timeout(
-        Duration::from_secs(2),
-        dtx.send(close(CLOSE_REPLAY, CLOSE_REPLAY_REASON)),
-    )
-    .await;
 }
 
 /// Send Close and wait for its reply within one bound, then drop both halves.
-async fn drain_close<T, R, E>(mut tx: T, mut rx: R)
+async fn drain_close<T, R, E>(mut tx: T, mut rx: R, grace: Duration)
 where
     T: futures::Sink<WsMessage> + Unpin,
     R: futures::Stream<Item = Result<WsMessage, E>> + Unpin,
 {
     // Closing the abandoned connection must not hold up preparing its replacement.
-    let _ = tokio::time::timeout(Duration::from_secs(2), async {
+    let _ = tokio::time::timeout(grace, async {
         let _ = tx.send(WsMessage::Close(None)).await;
         while let Some(Ok(m)) = rx.next().await {
             if matches!(m, WsMessage::Close(_)) {
@@ -984,6 +981,54 @@ fn upstream_end(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn close_drains_inflight_data_even_after_capacity_fuses_the_stream() {
+        use tungstenite::protocol::{Role, WebSocketConfig};
+        for capacity in [false, true] {
+            let (server, client) = tokio::io::duplex(64);
+            let mut cfg = WebSocketConfig::default();
+            if capacity {
+                cfg.max_message_size = Some(8);
+                cfg.max_frame_size = Some(8);
+            }
+            let mut server = tokio_tungstenite::WebSocketStream::from_raw_socket(
+                server,
+                Role::Server,
+                Some(cfg),
+            )
+            .await;
+            let mut client =
+                tokio_tungstenite::WebSocketStream::from_raw_socket(client, Role::Client, None)
+                    .await;
+            let code = if capacity { 1009 } else { 1011 };
+            let closing = async {
+                if capacity {
+                    assert!(matches!(
+                        server.next().await,
+                        Some(Err(tungstenite::Error::Capacity(_)))
+                    ));
+                }
+                close_downstream(&mut server, close_frame(code, "test")).await;
+            };
+            let sending = async {
+                client
+                    .send(Message::text("x".repeat(64 * 1024)))
+                    .await
+                    .unwrap();
+                assert!(
+                    matches!(client.next().await, Some(Ok(Message::Close(Some(f)))) if u16::from(f.code) == code)
+                );
+                client.flush().await.unwrap();
+                drop(client);
+            };
+            tokio::time::timeout(Duration::from_secs(1), async {
+                tokio::join!(closing, sending);
+            })
+            .await
+            .expect("close must drain bytes while the client is still sending");
+        }
+    }
 
     #[test]
     fn upstream_end_splits_eof_from_read_error() {
