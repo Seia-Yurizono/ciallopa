@@ -1,7 +1,10 @@
 //! Quota / retry-after parsing. Ports CPA `helps/codex_quota.go`
 //! (`ParseCodexQuotaEventHeaders`), `codex_retry_after.go` and
 //! `codex_executor_terminal.go` (`parseCodexRetryAfter`, `isCodexUsageLimitError`).
-use ciallopa_core::{QuotaSnapshot, QuotaWindow};
+use ciallopa_core::{
+    retry_after::{parse, Format},
+    QuotaSnapshot, QuotaWindow,
+};
 use http::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::Value;
 use std::time::{Duration, SystemTime};
@@ -386,25 +389,6 @@ pub fn parse_quota_event_headers(payload: &[u8]) -> Option<HeaderMap> {
 
 // ---------------- 429 handling ----------------
 
-/// CPA `parseRetryAfterHeader`: delta-seconds or HTTP-date, capped at 6h.
-pub fn parse_retry_after_header(raw: &str, now: SystemTime) -> Option<Duration> {
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return None;
-    }
-    let d = if let Ok(secs) = raw.parse::<i64>() {
-        if secs < 0 {
-            return None;
-        }
-        Duration::from_secs(secs as u64)
-    } else if let Ok(at) = httpdate::parse_http_date(raw) {
-        at.duration_since(now).unwrap_or(Duration::ZERO)
-    } else {
-        return None;
-    };
-    Some(d.min(MAX_HEADER_RETRY_AFTER))
-}
-
 fn usage_limit_objs(body: &Value) -> impl Iterator<Item = &Value> {
     [
         body.get("error"),
@@ -456,12 +440,14 @@ pub fn parse_codex_retry_after(status: u16, body: &[u8], now: SystemTime) -> Opt
 
 /// Body reset time first, then `Retry-After` header (CPA `withCodexRetryAfterHeader`).
 pub fn retry_after_for_429(headers: &HeaderMap, body: &[u8], now: SystemTime) -> Option<Duration> {
-    parse_codex_retry_after(429, body, now)
-        .or_else(|| hget(headers, "retry-after").and_then(|r| parse_retry_after_header(r, now)))
+    parse_codex_retry_after(429, body, now).or_else(|| {
+        hget(headers, "retry-after")
+            .and_then(|r| parse(r, now, Format::Http).map(|d| d.min(MAX_HEADER_RETRY_AFTER)))
+    })
 }
 
 /// CPA `isCloudflareChallengeErrorMessage` (callers: only for status < 500).
-pub fn is_cloudflare_challenge(body_or_msg: &str) -> bool {
+pub(crate) fn is_cloudflare_challenge(body_or_msg: &str) -> bool {
     let l = body_or_msg.trim().to_lowercase();
     l.contains("challenge-platform")
         || l.contains("cf-mitigated")

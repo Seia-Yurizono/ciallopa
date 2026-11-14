@@ -5,6 +5,7 @@ pub mod config;
 pub mod error;
 pub mod fingerprint;
 pub mod logging;
+pub mod retry_after;
 pub mod settings;
 pub mod traits;
 pub mod types;

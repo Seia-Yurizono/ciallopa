@@ -27,11 +27,19 @@ The source is authoritative; avoid maintaining a second copy of Rust signatures 
 - [`core/src/types.rs`](../crates/core/src/types.rs): `Account`, `Credentials`, `SessionInfo`,
   `RouteRequest`, `Selection`, `QuotaSnapshot`, `Outcome`, account patches and import results.
   `Credentials::Debug` redacts the access token. `RouteRequest::attempt_at` prevents an old
-  in-flight success from clearing a newer cooldown.
+  in-flight success from clearing a newer cooldown. `Outcome::Transport` reports statusless
+  failures without cooling an account or changing its bindings; HTTP 408/5xx use `ServerError`.
+  `SessionInfo`'s subagent/fork flags determine parent inheritance and aliasing in both
+  selection and result reporting.
 - [`core/src/traits.rs`](../crates/core/src/traits.rs): `AccountStore` exposes snapshots,
   credentials/refresh, reload and account management. `Router` selects, receives attempt
   outcomes, updates config and exposes/clears routing state. Its methods remain synchronous
-  and free of I/O; internal short critical sections are allowed.
+  and free of I/O; internal short critical sections are allowed. Each select/report captures
+  one routing config snapshot. Implementations expose the trait methods directly, including
+  `forget_account`, `model_cooling_until`, `cooling_until` and the cooldown-clear methods.
+- [`core/src/retry_after.rs`](../crates/core/src/retry_after.rs): shared Retry-After parsing
+  retains explicit caller policies. HTTP uses integer seconds or HTTP-dates with a caller
+  cap of 6 h; WS/overload retries use float seconds with their existing 60 s / 10 s caps.
 - [`core/src/settings.rs`](../crates/core/src/settings.rs): `SharedConfig` uses atomically
   replaceable snapshots; `SCHEMA` declares hot/restart, editable and secret fields. New config
   fields must have schema coverage and reload behavior. Request timeouts retain their captured

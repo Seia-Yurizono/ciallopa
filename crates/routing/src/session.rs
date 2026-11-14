@@ -4,9 +4,10 @@ use ciallopa_core::SessionInfo;
 use http::HeaderMap;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 
 /// CPA `NormalizeExplicitID`: reject control chars, trim, 1..=256 bytes.
-pub fn normalize_explicit_id(raw: &str) -> Option<String> {
+pub(crate) fn normalize_explicit_id(raw: &str) -> Option<String> {
     if raw.chars().any(char::is_control) {
         return None;
     }
@@ -18,7 +19,7 @@ pub fn normalize_explicit_id(raw: &str) -> Option<String> {
 }
 
 /// CPA `BoundSessionIdentity`: ids > 256 bytes become `<190-byte utf8 prefix>#<sha256 hex>`.
-pub fn bound_session_identity(id: &str) -> String {
+pub(crate) fn bound_session_identity(id: &str) -> String {
     if id.len() <= 256 {
         return id.to_string();
     }
@@ -35,13 +36,11 @@ fn hex(b: &[u8]) -> String {
 }
 
 /// gjson `.String()` semantics.
-fn gstr(v: Option<&Value>) -> String {
+fn gstr(v: Option<&Value>) -> Cow<'_, str> {
     match v {
-        None | Some(Value::Null) => String::new(),
-        Some(Value::String(s)) => s.clone(),
-        Some(Value::Bool(b)) => b.to_string(),
-        Some(Value::Number(n)) => n.to_string(),
-        Some(o) => o.to_string(),
+        None | Some(Value::Null) => Cow::Borrowed(""),
+        Some(Value::String(s)) => Cow::Borrowed(s),
+        Some(v) => Cow::Owned(v.to_string()),
     }
 }
 
@@ -603,9 +602,20 @@ pub fn extract_session(headers: &HeaderMap, body: Option<&Value>) -> SessionInfo
     }
 }
 
-fn trunc(s: &str) -> &[u8] {
-    let b = s.as_bytes();
-    &b[..b.len().min(100)]
+/// gjson text semantics, bounded before copying or serializing large content.
+fn value_prefix(value: Option<&Value>) -> Vec<u8> {
+    match value {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::String(s)) => s.as_bytes()[..s.len().min(100)].to_vec(),
+        Some(value) => {
+            let mut bytes = [0; 100];
+            let mut writer = std::io::Cursor::new(bytes.as_mut_slice());
+            // A full cursor stops serialization after the prefix we hash.
+            let _ = serde_json::to_writer(&mut writer, value);
+            let len = writer.position() as usize;
+            bytes[..len].to_vec()
+        }
+    }
 }
 
 fn fnv64a(parts: &[&[u8]]) -> u64 {
@@ -633,26 +643,43 @@ fn session_hash(sys: &[u8], usr: &[u8], ast: &[u8]) -> String {
     format!("msg:{:016x}", fnv64a(&refs))
 }
 
-fn texts_of(content: Option<&Value>, types: &[&str]) -> String {
+fn texts_of(content: Option<&Value>, types: &[&str]) -> Vec<u8> {
     match content {
-        Some(Value::String(s)) => s.clone(),
-        Some(Value::Array(a)) => a
-            .iter()
-            .filter(|p| types.contains(&gstr(get(Some(p), "type")).as_str()))
-            .map(|p| gstr(get(Some(p), "text")))
-            .filter(|t| !t.is_empty())
-            .collect::<Vec<_>>()
-            .join(" "),
-        _ => String::new(),
+        Some(Value::String(_)) => value_prefix(content),
+        Some(Value::Array(parts)) => {
+            let mut out = Vec::new();
+            for part in parts {
+                let ty = get(Some(part), "type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if !types.contains(&ty) {
+                    continue;
+                }
+                let text = value_prefix(get(Some(part), "text"));
+                if text.is_empty() {
+                    continue;
+                }
+                if !out.is_empty() {
+                    out.push(b' ');
+                }
+                let remaining = 100 - out.len();
+                out.extend_from_slice(&text[..text.len().min(remaining)]);
+                if out.len() == 100 {
+                    break;
+                }
+            }
+            out
+        }
+        _ => Vec::new(),
     }
 }
 
 /// CPA `extractMessageHashIDs` (byte-exact FNV-64a over first 100 bytes).
 pub(crate) fn message_hash_ids(payload: &Value) -> (String, String) {
     let (mut sys, mut usr, mut ast) = (Vec::<u8>::new(), Vec::<u8>::new(), Vec::<u8>::new());
-    let set = |slot: &mut Vec<u8>, s: &str| {
+    let set = |slot: &mut Vec<u8>, s: &[u8]| {
         if slot.is_empty() {
-            *slot = trunc(s).to_vec();
+            *slot = s[..s.len().min(100)].to_vec();
         }
     };
     let root = Some(payload);
@@ -663,7 +690,7 @@ pub(crate) fn message_hash_ids(payload: &Value) -> (String, String) {
             if c.is_empty() {
                 continue;
             }
-            match role.as_str() {
+            match role.as_ref() {
                 "system" => set(&mut sys, &c),
                 "user" => set(&mut usr, &c),
                 "assistant" => set(&mut ast, &c),
@@ -679,13 +706,13 @@ pub(crate) fn message_hash_ids(payload: &Value) -> (String, String) {
             Some(Value::Array(a)) => {
                 if let Some(t) = a
                     .iter()
-                    .map(|p| gstr(get(Some(p), "text")))
+                    .map(|p| value_prefix(get(Some(p), "text")))
                     .find(|t| !t.is_empty())
                 {
                     set(&mut sys, &t);
                 }
             }
-            Some(Value::String(s)) => set(&mut sys, s),
+            Some(Value::String(s)) => set(&mut sys, s.as_bytes()),
             _ => {}
         }
     }
@@ -693,7 +720,7 @@ pub(crate) fn message_hash_ids(payload: &Value) -> (String, String) {
         if let Some(Value::Array(a)) = get(root, "systemInstruction.parts") {
             if let Some(t) = a
                 .iter()
-                .map(|p| gstr(get(Some(p), "text")))
+                .map(|p| value_prefix(get(Some(p), "text")))
                 .find(|t| !t.is_empty())
             {
                 set(&mut sys, &t);
@@ -705,10 +732,10 @@ pub(crate) fn message_hash_ids(payload: &Value) -> (String, String) {
                 if let Some(Value::Array(parts)) = get(Some(m), "parts") {
                     if let Some(t) = parts
                         .iter()
-                        .map(|p| gstr(get(Some(p), "text")))
+                        .map(|p| value_prefix(get(Some(p), "text")))
                         .find(|t| !t.is_empty())
                     {
-                        match role.as_str() {
+                        match role.as_ref() {
                             "user" => set(&mut usr, &t),
                             "model" => set(&mut ast, &t),
                             _ => {}
@@ -722,7 +749,7 @@ pub(crate) fn message_hash_ids(payload: &Value) -> (String, String) {
         }
     }
     if sys.is_empty() && usr.is_empty() {
-        let instr = gstr(get(root, "instructions"));
+        let instr = value_prefix(get(root, "instructions"));
         if !instr.is_empty() {
             set(&mut sys, &instr);
         }
@@ -743,7 +770,7 @@ pub(crate) fn message_hash_ids(payload: &Value) -> (String, String) {
                 if t.is_empty() {
                     continue;
                 }
-                match role.as_str() {
+                match role.as_ref() {
                     "developer" | "system" => set(&mut sys, &t),
                     "user" => set(&mut usr, &t),
                     "assistant" => set(&mut ast, &t),

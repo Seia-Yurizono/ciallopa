@@ -3,183 +3,6 @@
 //! conductor cooldown tests (table-driven where CPA is).
 #![allow(clippy::unwrap_used, clippy::type_complexity)]
 use super::*;
-
-#[test]
-fn clear_cooldown_and_reason() {
-    let (r, _) = router(RoutingConfig::default());
-    let a: AccountId = "a".into();
-    for _ in 0..3 {
-        r.report(
-            &rq("m"),
-            &a,
-            &Outcome::ServerError {
-                status: 502,
-                cooldown: Some(Duration::from_secs(15)),
-            },
-        );
-    }
-    assert_eq!(r.cooling_reason_any(&a), Some("transient"));
-    assert!(r.clear(&a));
-    assert_eq!(r.cooling_reason_any(&a), None);
-    assert!(!r.clear(&a));
-}
-
-#[test]
-fn payment_and_not_found_reasons() {
-    let (r, _) = router(RoutingConfig::default());
-    let (a, b, c): (AccountId, AccountId, AccountId) = ("a".into(), "b".into(), "c".into());
-    r.report(
-        &rq("m"),
-        &a,
-        &Outcome::PaymentRequired {
-            deactivated: true,
-            cooldown: Duration::from_secs(86_400),
-        },
-    );
-    r.report(
-        &rq("m"),
-        &b,
-        &Outcome::PaymentRequired {
-            deactivated: false,
-            cooldown: Duration::from_secs(1_800),
-        },
-    );
-    r.report(
-        &rq("m"),
-        &c,
-        &Outcome::NotFound {
-            retry_after: None,
-            cooldown: Duration::from_secs(600),
-        },
-    );
-    assert_eq!(r.cooling_reason_any(&a), Some("workspace_deactivated"));
-    assert_eq!(r.cooling_reason_any(&b), Some("payment_required"));
-    assert_eq!(r.cooling_reason_any(&c), Some("not_found"));
-    // A 402 blocks every model of the account; a plain 404 only that model.
-    let accts = [acct("a"), acct("b"), acct("c")];
-    assert_eq!(r.select(&rq("other"), &accts).unwrap().account, "c");
-    // b (5xx, 15 s) recovers before a (quota, 300 s).
-    assert!(matches!(
-        r.select(&rq("m"), &accts),
-        Err(RouteError::AllCoolingDown {
-            quota: false,
-            earliest_quota: false,
-            ..
-        })
-    ));
-}
-
-#[test]
-fn all_cooling_earliest_quota_flag() {
-    let (r, _) = router(RoutingConfig::default());
-    let accts = [acct("a"), acct("b")];
-    // a: quota reset in 60 s; b: 402 cooldown 1800 s. The first to recover is out of quota.
-    r.report(
-        &rq("m"),
-        &"a".into(),
-        &Outcome::RateLimited {
-            retry_after: Some(Duration::from_secs(60)),
-            usage_limit: true,
-            quota: None,
-        },
-    );
-    r.report(
-        &rq("m"),
-        &"b".into(),
-        &Outcome::PaymentRequired {
-            deactivated: false,
-            cooldown: Duration::from_secs(1800),
-        },
-    );
-    match r.select(&rq("m"), &accts) {
-        Err(RouteError::AllCoolingDown {
-            retry_after,
-            quota,
-            earliest_quota,
-        }) => {
-            assert!(!quota);
-            assert!(earliest_quota);
-            assert_eq!(retry_after, Duration::from_secs(60));
-        }
-        other => panic!("{other:?}"),
-    }
-}
-
-#[test]
-fn clear_quota_keeps_other_cooldowns() {
-    let (r, _) = router(RoutingConfig::default());
-    let (a, b): (AccountId, AccountId) = ("a".into(), "b".into());
-    let ul = Outcome::RateLimited {
-        retry_after: Some(Duration::from_secs(3600)),
-        usage_limit: true,
-        quota: None,
-    };
-    r.report(&rq("m"), &a, &ul);
-    r.report(
-        &rq("n"),
-        &a,
-        &Outcome::RateLimited {
-            retry_after: Some(Duration::from_secs(300)),
-            usage_limit: false,
-            quota: None,
-        },
-    );
-    assert_eq!(r.cooling_reason_any(&a), Some("usage_limit"));
-    assert!(r.clear_quota(&a));
-    assert_eq!(r.cooling_reason_any(&a), None);
-    assert_eq!(r.select(&rq("m"), &[acct("a")]).unwrap().account, "a");
-    assert!(!r.clear_quota(&a), "nothing left to clear");
-    // Non-quota cooldowns survive a reset.
-    r.report(
-        &rq("m"),
-        &b,
-        &Outcome::PaymentRequired {
-            deactivated: true,
-            cooldown: Duration::from_secs(86_400),
-        },
-    );
-    r.report(
-        &rq("x"),
-        &b,
-        &Outcome::ModelUnsupported { retry_after: None },
-    );
-    r.report(&rq("m"), &b, &ul);
-    assert!(r.clear_quota(&b));
-    assert_eq!(r.cooling_reason_any(&b), Some("workspace_deactivated"));
-    assert!(r.select(&rq("m"), &[acct("b")]).is_err());
-}
-
-#[test]
-fn all_cooling_quota_flag() {
-    let (r, _) = router(RoutingConfig::default());
-    let accts = [acct("a"), acct("b")];
-    let ul = Outcome::RateLimited {
-        retry_after: Some(Duration::from_secs(300)),
-        usage_limit: true,
-        quota: None,
-    };
-    r.report(&rq("m"), &"a".into(), &ul);
-    r.report(&rq("m"), &"b".into(), &ul);
-    assert!(matches!(
-        r.select(&rq("m"), &accts),
-        Err(RouteError::AllCoolingDown { quota: true, .. })
-    ));
-    r.clear(&"b".into());
-    for _ in 0..3 {
-        r.report(
-            &rq("m"),
-            &"b".into(),
-            &Outcome::ServerError {
-                status: 502,
-                cooldown: Some(Duration::from_secs(15)),
-            },
-        );
-    }
-    assert!(matches!(
-        r.select(&rq("m"), &accts),
-        Err(RouteError::AllCoolingDown { quota: false, .. })
-    ));
-}
 use ciallopa_core::SessionInfo;
 use http::HeaderMap;
 use serde_json::json;
@@ -263,6 +86,69 @@ fn rq_s(model: &str, key: &str) -> RouteRequest {
 }
 fn pick(r: &CpaRouter, req: &RouteRequest, a: &[Account]) -> String {
     r.select(req, a).unwrap().account
+}
+
+#[test]
+fn clear_cooldown_and_reason() {
+    let (r, _) = router(RoutingConfig::default());
+    let a: AccountId = "a".into();
+    for _ in 0..3 {
+        r.report(
+            &rq("m"),
+            &a,
+            &Outcome::ServerError {
+                status: 502,
+                cooldown: Some(Duration::from_secs(15)),
+            },
+        );
+    }
+    assert!(r.clear_cooldown(&a));
+    assert_eq!(r.cooling_reason(&a), None);
+    assert!(!r.clear_cooldown(&a));
+}
+
+#[test]
+fn clear_quota_keeps_other_cooldowns() {
+    let (r, _) = router(RoutingConfig::default());
+    let (a, b): (AccountId, AccountId) = ("a".into(), "b".into());
+    let ul = Outcome::RateLimited {
+        retry_after: Some(Duration::from_secs(3600)),
+        usage_limit: true,
+        quota: None,
+    };
+    r.report(&rq("m"), &a, &ul);
+    r.report(
+        &rq("n"),
+        &a,
+        &Outcome::RateLimited {
+            retry_after: Some(Duration::from_secs(300)),
+            usage_limit: false,
+            quota: None,
+        },
+    );
+    assert_eq!(r.cooling_reason(&a), Some("usage_limit"));
+    assert!(r.clear_quota_cooldown(&a));
+    assert_eq!(r.cooling_reason(&a), None);
+    assert_eq!(r.select(&rq("m"), &[acct("a")]).unwrap().account, "a");
+    assert!(!r.clear_quota_cooldown(&a), "nothing left to clear");
+    // Non-quota cooldowns survive a reset.
+    r.report(
+        &rq("m"),
+        &b,
+        &Outcome::PaymentRequired {
+            deactivated: true,
+            cooldown: Duration::from_secs(86_400),
+        },
+    );
+    r.report(
+        &rq("x"),
+        &b,
+        &Outcome::ModelUnsupported { retry_after: None },
+    );
+    r.report(&rq("m"), &b, &ul);
+    assert!(r.clear_quota_cooldown(&b));
+    assert_eq!(r.cooling_reason(&b), Some("workspace_deactivated"));
+    assert!(r.select(&rq("m"), &[acct("b")]).is_err());
 }
 
 // ---------------- strategies ----------------
@@ -421,37 +307,69 @@ fn disabled_and_empty_errors() {
 }
 
 #[test]
-fn all_cooldown_returns_earliest_retry_after() {
-    let (r, _) = router(cfg(Strategy::RoundRobin));
-    let a = [acct("a"), acct("b")];
-    r.report(
-        &rq("m"),
-        &"a".into(),
-        &Outcome::RateLimited {
-            retry_after: Some(Duration::from_secs(120)),
-            usage_limit: false,
-            quota: None,
-        },
-    );
-    r.report(
-        &rq("m"),
-        &"b".into(),
-        &Outcome::RateLimited {
-            retry_after: Some(Duration::from_secs(30)),
-            usage_limit: false,
-            quota: None,
-        },
-    );
-    assert_eq!(
-        r.select(&rq("m"), &a),
-        Err(RouteError::AllCoolingDown {
-            retry_after: Duration::from_secs(30),
-            quota: false,
-            earliest_quota: false,
-        })
-    );
-    // per-model: other models still route
-    assert!(r.select(&rq("other"), &a).is_ok());
+fn all_cooling_flags() {
+    let quota = |seconds, usage_limit| Outcome::RateLimited {
+        retry_after: Some(Duration::from_secs(seconds)),
+        usage_limit,
+        quota: None,
+    };
+    let server = Outcome::ServerError {
+        status: 502,
+        cooldown: Some(TRANSIENT_COOLDOWN),
+    };
+    for (outcomes, seconds, all_quota, earliest_quota, other_usable) in [
+        (
+            [
+                vec![quota(60, true)],
+                vec![Outcome::PaymentRequired {
+                    deactivated: false,
+                    cooldown: Duration::from_secs(1800),
+                }],
+            ],
+            60,
+            false,
+            true,
+            false,
+        ),
+        (
+            [vec![quota(300, true)], vec![quota(300, true)]],
+            300,
+            true,
+            true,
+            false,
+        ),
+        (
+            [vec![quota(300, true)], vec![server; 3]],
+            15,
+            false,
+            false,
+            true,
+        ),
+        (
+            [vec![quota(120, false)], vec![quota(30, false)]],
+            30,
+            false,
+            false,
+            true,
+        ),
+    ] {
+        let (r, _) = router(cfg(Strategy::RoundRobin));
+        let accounts = [acct("a"), acct("b")];
+        for (account, outcomes) in accounts.iter().zip(outcomes) {
+            for outcome in outcomes {
+                r.report(&rq("m"), &account.id, &outcome);
+            }
+        }
+        assert_eq!(
+            r.select(&rq("m"), &accounts),
+            Err(RouteError::AllCoolingDown {
+                retry_after: Duration::from_secs(seconds),
+                quota: all_quota,
+                earliest_quota,
+            })
+        );
+        assert_eq!(r.select(&rq("other"), &accounts).is_ok(), other_usable);
+    }
 }
 
 // ---------------- cooldown rules ----------------
@@ -461,6 +379,7 @@ struct CoolCase {
     outcomes: Vec<Outcome>,
     model_scoped: bool,
     want: Option<Duration>,
+    reason: Option<&'static str>,
 }
 
 #[test]
@@ -476,42 +395,49 @@ fn cooldown_table() {
             outcomes: vec![rl(Some(300), false)],
             model_scoped: true,
             want: Some(Duration::from_secs(300)),
+            reason: Some("rate_limited"),
         },
         CoolCase {
             name: "429 retry-after floored to 10s",
             outcomes: vec![rl(Some(2), false)],
             model_scoped: true,
             want: Some(Duration::from_secs(10)),
+            reason: Some("rate_limited"),
         },
         CoolCase {
             name: "429 no hint backoff starts at 1s",
             outcomes: vec![rl(None, false)],
             model_scoped: true,
             want: Some(Duration::from_secs(1)),
+            reason: Some("rate_limited"),
         },
         CoolCase {
             name: "429 burst in same window does not escalate",
             outcomes: vec![rl(None, false), rl(None, false), rl(None, false)],
             model_scoped: true,
             want: Some(Duration::from_secs(1)),
+            reason: Some("rate_limited"),
         },
         CoolCase {
             name: "usage_limit is account-wide",
             outcomes: vec![rl(Some(3600), true)],
             model_scoped: false,
             want: Some(Duration::from_secs(3600)),
+            reason: Some("usage_limit"),
         },
         CoolCase {
             name: "auth failed 30min account-wide",
             outcomes: vec![Outcome::AuthFailed],
             model_scoped: false,
             want: Some(AUTH_COOLDOWN),
+            reason: Some("auth"),
         },
         CoolCase {
             name: "404 12h",
             outcomes: vec![Outcome::ModelUnsupported { retry_after: None }],
             model_scoped: true,
             want: Some(NOT_FOUND_COOLDOWN),
+            reason: Some("model_unsupported"),
         },
         CoolCase {
             name: "404 retry-after",
@@ -520,6 +446,7 @@ fn cooldown_table() {
             }],
             model_scoped: true,
             want: Some(Duration::from_secs(90)),
+            reason: Some("model_unsupported"),
         },
         CoolCase {
             name: "other 404 short, model-scoped",
@@ -529,6 +456,7 @@ fn cooldown_table() {
             }],
             model_scoped: true,
             want: Some(Duration::from_secs(600)),
+            reason: Some("not_found"),
         },
         CoolCase {
             name: "other 404 retry-after wins",
@@ -538,6 +466,7 @@ fn cooldown_table() {
             }],
             model_scoped: true,
             want: Some(Duration::from_secs(45)),
+            reason: Some("not_found"),
         },
         CoolCase {
             name: "other 404 cooldown 0: not cooled",
@@ -547,6 +476,7 @@ fn cooldown_table() {
             }],
             model_scoped: true,
             want: None,
+            reason: None,
         },
         CoolCase {
             name: "402 deactivated_workspace account-wide",
@@ -556,6 +486,7 @@ fn cooldown_table() {
             }],
             model_scoped: false,
             want: Some(Duration::from_secs(86_400)),
+            reason: Some("workspace_deactivated"),
         },
         CoolCase {
             name: "other 402 account-wide",
@@ -565,6 +496,7 @@ fn cooldown_table() {
             }],
             model_scoped: false,
             want: Some(Duration::from_secs(1_800)),
+            reason: Some("payment_required"),
         },
         CoolCase {
             name: "402 cooldown 0: not cooled",
@@ -574,18 +506,24 @@ fn cooldown_table() {
             }],
             model_scoped: false,
             want: None,
+            reason: None,
         },
         CoolCase {
             name: "cloudflare egress block: never cooled",
             outcomes: vec![Outcome::EgressBlocked; 3],
             model_scoped: true,
             want: None,
+            reason: None,
         },
         CoolCase {
             name: "single 5xx: no cooldown",
-            outcomes: vec![Outcome::Transient { status: Some(502) }],
+            outcomes: vec![Outcome::ServerError {
+                status: 502,
+                cooldown: Some(TRANSIENT_COOLDOWN),
+            }],
             model_scoped: true,
             want: None,
+            reason: None,
         },
         CoolCase {
             name: "3 consecutive 5xx: cooldown",
@@ -598,6 +536,7 @@ fn cooldown_table() {
             ],
             model_scoped: true,
             want: Some(TRANSIENT_COOLDOWN),
+            reason: Some("transient"),
         },
         CoolCase {
             name: "5xx cooldown capped at 60s",
@@ -610,6 +549,7 @@ fn cooldown_table() {
             ],
             model_scoped: true,
             want: Some(TRANSIENT_COOLDOWN_MAX),
+            reason: Some("transient"),
         },
         CoolCase {
             name: "last usable account never cooled on 5xx",
@@ -622,6 +562,7 @@ fn cooldown_table() {
             ],
             model_scoped: true,
             want: None,
+            reason: None,
         },
         CoolCase {
             name: "success resets the 5xx streak",
@@ -642,24 +583,28 @@ fn cooldown_table() {
             ],
             model_scoped: true,
             want: None,
+            reason: None,
         },
         CoolCase {
             name: "transport error no cooldown",
-            outcomes: vec![Outcome::Transient { status: None }],
+            outcomes: vec![Outcome::Transport],
             model_scoped: true,
             want: None,
+            reason: None,
         },
         CoolCase {
             name: "client error no cooldown",
             outcomes: vec![Outcome::ClientError { status: 400 }],
             model_scoped: true,
             want: None,
+            reason: None,
         },
         CoolCase {
             name: "success clears",
             outcomes: vec![rl(Some(300), true), Outcome::Success { quota: None }],
             model_scoped: false,
             want: None,
+            reason: None,
         },
     ];
     for c in cases {
@@ -667,12 +612,13 @@ fn cooldown_table() {
         for o in &c.outcomes {
             r.report(&rq("m"), &"a".into(), o);
         }
+        assert_eq!(r.cooling_reason(&"a".into()), c.reason, "{}", c.name);
         let got = r
-            .cooldown_until(&"a".into(), "m")
+            .model_cooling_until(&"a".into(), "m")
             .map(|t| t.duration_since(t0()).unwrap());
         assert_eq!(got, c.want, "{}", c.name);
         let other = r
-            .cooldown_until(&"a".into(), "other")
+            .model_cooling_until(&"a".into(), "other")
             .map(|t| t.duration_since(t0()).unwrap());
         let want_other = if c.model_scoped { None } else { c.want };
         assert_eq!(other, want_other, "{} (other model)", c.name);
@@ -695,7 +641,7 @@ fn quota_backoff_doubles_per_window_and_caps_at_30min() {
         );
         let now = t0() + Duration::from_millis(clk.0.load(Ordering::SeqCst));
         let d = r
-            .cooldown_until(&"a".into(), "m")
+            .model_cooling_until(&"a".into(), "m")
             .unwrap()
             .duration_since(now)
             .unwrap();
@@ -708,23 +654,138 @@ fn quota_backoff_doubles_per_window_and_caps_at_30min() {
 
 #[test]
 fn later_shorter_failure_does_not_shorten_cooldown() {
-    let (r, _) = router(cfg(Strategy::RoundRobin));
-    r.report(&rq("m"), &"a".into(), &Outcome::AuthFailed);
+    let quota = |seconds, usage_limit| Outcome::RateLimited {
+        retry_after: Some(Duration::from_secs(seconds)),
+        usage_limit,
+        quota: None,
+    };
+    let unsupported = |seconds| Outcome::ModelUnsupported {
+        retry_after: Some(Duration::from_secs(seconds)),
+    };
+    let not_found = |seconds| Outcome::NotFound {
+        retry_after: None,
+        cooldown: Duration::from_secs(seconds),
+    };
+    for (first, later, deadline, reason) in [
+        (
+            Outcome::AuthFailed,
+            vec![quota(20, true)],
+            AUTH_COOLDOWN,
+            "usage_limit",
+        ),
+        (
+            quota(3600, true),
+            vec![Outcome::AuthFailed],
+            Duration::from_secs(3600),
+            "usage_limit",
+        ),
+        (
+            unsupported(600),
+            vec![quota(20, false)],
+            Duration::from_secs(600),
+            "model_unsupported",
+        ),
+        (
+            quota(600, false),
+            vec![unsupported(20)],
+            Duration::from_secs(600),
+            "model_unsupported",
+        ),
+        (
+            not_found(600),
+            vec![unsupported(20)],
+            Duration::from_secs(600),
+            "model_unsupported",
+        ),
+        (
+            unsupported(600),
+            vec![not_found(20)],
+            Duration::from_secs(600),
+            "not_found",
+        ),
+        (
+            not_found(600),
+            vec![
+                Outcome::ServerError {
+                    status: 503,
+                    cooldown: Some(TRANSIENT_COOLDOWN)
+                };
+                3
+            ],
+            Duration::from_secs(600),
+            "transient",
+        ),
+    ] {
+        let (r, clk) = router(cfg(Strategy::RoundRobin));
+        r.report(&rq("m"), &"a".into(), &first);
+        clk.advance(Duration::from_secs(1));
+        for outcome in later {
+            r.report(&rq("m"), &"a".into(), &outcome);
+        }
+        assert_eq!(
+            r.model_cooling_until(&"a".into(), "m"),
+            Some(t0() + deadline)
+        );
+        assert_eq!(r.cooling_reason(&"a".into()), Some(reason));
+        if matches!(
+            first,
+            Outcome::AuthFailed
+                | Outcome::RateLimited {
+                    usage_limit: true,
+                    ..
+                }
+        ) {
+            r.clear_quota_cooldown(&"a".into());
+            assert_eq!(r.cooling_reason(&"a".into()), Some("auth"));
+        }
+    }
+}
+
+#[test]
+fn forget_account_resets_cooldowns_stats_quota_and_weighted_credits() {
+    let (r, _) = router(cfg(Strategy::WeightedRoundRobin));
+    let accounts = [acct_w("a", 2), acct_w("b", 1)];
+    let id = "a".to_string();
+    assert_eq!(pick(&r, &rq("m"), &accounts), "a");
+    r.note_attempt(&id);
     r.report(
         &rq("m"),
-        &"a".into(),
+        &id,
         &Outcome::RateLimited {
-            retry_after: Some(Duration::from_secs(20)),
+            retry_after: Some(Duration::from_secs(60)),
             usage_limit: true,
-            quota: None,
+            quota: Some(QuotaSnapshot::default()),
         },
     );
+    r.forget_account(&id);
+    assert_eq!(r.quota_snapshot(&id), None);
+    assert_eq!(r.overload_stats(&id), (0, 0));
+    assert_eq!(r.cooling_until(&id), None);
     assert_eq!(
-        r.cooldown_until(&"a".into(), "m")
-            .unwrap()
-            .duration_since(t0())
-            .unwrap(),
-        AUTH_COOLDOWN
+        pick(&r, &rq("m"), &accounts),
+        "a",
+        "removed WRR credits must not survive re-addition"
+    );
+    let failure = Outcome::ServerError {
+        status: 503,
+        cooldown: Some(TRANSIENT_COOLDOWN),
+    };
+    r.report(&rq("m"), &id, &failure);
+    r.report(
+        &RouteRequest {
+            attempt_at: Some(t0()),
+            ..rq("m")
+        },
+        &id,
+        &Outcome::Success { quota: None },
+    );
+    for _ in 0..2 {
+        r.report(&rq("m"), &id, &failure);
+    }
+    assert_eq!(
+        r.cooling_until(&id),
+        None,
+        "a removed cooldown timestamp must not reject the new account's success"
     );
 }
 
@@ -828,13 +889,19 @@ fn rebind_on_table() {
         RebindCase {
             name: "any: 5xx failover rebinds",
             rebind: RebindOn::Any,
-            outcome: Outcome::Transient { status: Some(503) },
+            outcome: Outcome::ServerError {
+                status: 503,
+                cooldown: Some(TRANSIENT_COOLDOWN),
+            },
             want_bound_after: "b",
         },
         RebindCase {
             name: "quota: 5xx keeps binding",
             rebind: RebindOn::Quota,
-            outcome: Outcome::Transient { status: Some(503) },
+            outcome: Outcome::ServerError {
+                status: 503,
+                cooldown: Some(TRANSIENT_COOLDOWN),
+            },
             want_bound_after: "a",
         },
         RebindCase {
@@ -879,13 +946,13 @@ fn rebind_on_table() {
         RebindCase {
             name: "any: transport error failover rebinds",
             rebind: RebindOn::Any,
-            outcome: Outcome::Transient { status: None },
+            outcome: Outcome::Transport,
             want_bound_after: "b",
         },
         RebindCase {
             name: "quota: transport error keeps binding",
             rebind: RebindOn::Quota,
-            outcome: Outcome::Transient { status: None },
+            outcome: Outcome::Transport,
             want_bound_after: "a",
         },
         RebindCase {
@@ -925,12 +992,19 @@ fn rebind_quota_preserves_binding_while_bound_account_cools_transiently() {
     let req = rq_s("m", "codex:s");
     assert_eq!(pick(&r, &req, &a), "a");
     for _ in 0..3 {
-        r.report(&req, &"a".into(), &Outcome::Transient { status: Some(500) });
+        r.report(
+            &req,
+            &"a".into(),
+            &Outcome::ServerError {
+                status: 500,
+                cooldown: Some(TRANSIENT_COOLDOWN),
+            },
+        );
     }
     // a is cooling: requests fail over to b but binding stays a
     assert_eq!(pick(&r, &req, &a), "b");
     assert_eq!(pick(&r, &req, &a), "b");
-    assert!(r.cooldown_until(&"a".into(), "m").is_some());
+    assert!(r.model_cooling_until(&"a".into(), "m").is_some());
 }
 
 #[test]
@@ -992,6 +1066,14 @@ fn fork_inherits_parent_even_when_subagent_affinity_disabled() {
         attempt_at: None,
     };
     assert_eq!(pick(&r, &fork, &a), "a");
+    r.report(&fork, &"a".into(), &Outcome::AuthFailed);
+    assert_eq!(
+        r.affinity_export()
+            .iter()
+            .flat_map(|b| &b.aliases)
+            .collect::<Vec<_>>(),
+        vec!["codex::codex:parent-111::m"]
+    );
 }
 
 #[test]
@@ -1035,7 +1117,51 @@ fn prompt_cache_key_binds_conversation_alias() {
 }
 
 #[test]
-fn quota_threshold_avoidance_only_for_new_sessions() {
+fn quota_threshold_for_new_sessions() {
+    assert_eq!(RoutingConfig::default().quota_avoid_threshold, 0.0);
+    for (threshold, reset, advance, only_hot_account, expected) in [
+        (0.0, None, 0, false, "a"),
+        (0.99, None, 0, false, "b"),
+        (0.99, Some(5), 0, false, "b"),
+        (0.99, Some(5), 6, false, "a"),
+        (0.99, None, 0, true, "a"),
+    ] {
+        let (r, clk) = router(RoutingConfig {
+            quota_avoid_threshold: threshold,
+            session_affinity: true,
+            ..cfg(Strategy::FillFirst)
+        });
+        let hot = QuotaSnapshot {
+            primary: Some(ciallopa_core::QuotaWindow {
+                used_percent: 100.0,
+                window_minutes: None,
+                resets_at: reset.map(|s| t0() + Duration::from_secs(s)),
+            }),
+            secondary: None,
+        };
+        r.report(
+            &rq("m"),
+            &"a".into(),
+            &Outcome::Success { quota: Some(hot) },
+        );
+        clk.advance(Duration::from_secs(advance));
+        let accounts = if only_hot_account {
+            vec![acct("a")]
+        } else {
+            vec![acct("a"), acct("b")]
+        };
+        for req in [rq("m"), rq_s("m", "codex:new")] {
+            assert_eq!(
+                pick(&r, &req, &accounts),
+                expected,
+                "threshold={threshold} reset={reset:?} advance={advance}"
+            );
+        }
+    }
+}
+
+#[test]
+fn quota_threshold_keeps_bound_session() {
     let (r, _) = router(RoutingConfig {
         quota_avoid_threshold: 0.99,
         ..aff(RebindOn::Quota, true)
@@ -1060,37 +1186,6 @@ fn quota_threshold_avoidance_only_for_new_sessions() {
     );
     assert_eq!(r.quota_snapshot(&"a".into()), Some(hot));
     assert_eq!(pick(&r, &bound, &a), "a", "bound session not moved");
-    for k in ["codex:n1", "codex:n2", "codex:n3"] {
-        assert_eq!(
-            pick(&r, &rq_s("m", k), &a),
-            "b",
-            "new session avoids hot account"
-        );
-    }
-    assert_eq!(pick(&r, &rq("m"), &a), "b");
-    // when every account is hot, avoidance is lifted
-    assert_eq!(pick(&r, &rq("m"), &[acct("a")]), "a");
-}
-
-#[test]
-fn quota_threshold_ignores_expired_windows() {
-    let (r, clk) = router(RoutingConfig {
-        quota_avoid_threshold: 0.99,
-        ..cfg(Strategy::FillFirst)
-    });
-    let q = QuotaSnapshot {
-        primary: Some(ciallopa_core::QuotaWindow {
-            used_percent: 100.0,
-            window_minutes: None,
-            resets_at: Some(t0() + Duration::from_secs(5)),
-        }),
-        secondary: None,
-    };
-    r.report(&rq("m"), &"a".into(), &Outcome::Success { quota: Some(q) });
-    let a = [acct("a"), acct("b")];
-    assert_eq!(pick(&r, &rq("m"), &a), "b");
-    clk.advance(Duration::from_secs(6));
-    assert_eq!(pick(&r, &rq("m"), &a), "a");
 }
 
 #[test]
@@ -1112,12 +1207,6 @@ fn concurrent_select_is_safe() {
         .collect();
     for h in hs {
         h.join().unwrap();
-    }
-    // every session ends up with a stable binding
-    for k in 0..13 {
-        let req = rq_s("m", &format!("codex:{k}"));
-        let x = pick(&r, &req, &a);
-        assert_eq!(pick(&r, &req, &a), x);
     }
 }
 
@@ -1726,25 +1815,12 @@ fn parse_codex_retry_after_layouts() {
 }
 
 #[test]
-fn retry_after_header_parsing() {
+fn retry_after_429_precedence_and_cap() {
     let now = t0();
     assert_eq!(
-        parse_retry_after_header("120", now),
-        Some(Duration::from_secs(120))
-    );
-    assert_eq!(parse_retry_after_header("-1", now), None);
-    assert_eq!(parse_retry_after_header("junk", now), None);
-    assert_eq!(
-        parse_retry_after_header("999999", now),
+        retry_after_for_429(&hm(&[("retry-after", "999999")]), b"{}", now),
         Some(quota::MAX_HEADER_RETRY_AFTER)
     );
-    let date = httpdate::fmt_http_date(now + Duration::from_secs(90));
-    assert_eq!(
-        parse_retry_after_header(&date, now),
-        Some(Duration::from_secs(90))
-    );
-    let past = httpdate::fmt_http_date(now - Duration::from_secs(90));
-    assert_eq!(parse_retry_after_header(&past, now), Some(Duration::ZERO));
     // body reset wins over header
     let h = hm(&[("retry-after", "5")]);
     assert_eq!(
@@ -1807,23 +1883,6 @@ fn canonical_model_key_strips_thinking_suffix() {
 }
 
 #[test]
-fn quota_avoidance_off_by_default() {
-    assert_eq!(RoutingConfig::default().quota_avoid_threshold, 0.0);
-    let (r, _) = router(cfg(Strategy::FillFirst));
-    let q = QuotaSnapshot {
-        primary: Some(ciallopa_core::QuotaWindow {
-            used_percent: 100.0,
-            window_minutes: None,
-            resets_at: None,
-        }),
-        secondary: None,
-    };
-    r.report(&rq("m"), &"a".into(), &Outcome::Success { quota: Some(q) });
-    // No proactive avoidance: a full-but-not-erroring account is still picked.
-    assert_eq!(pick(&r, &rq("m"), &[acct("a"), acct("b")]), "a");
-}
-
-#[test]
 fn overload_streak_backoff_and_reset() {
     let (r, clk) = router(cfg(Strategy::FillFirst));
     let a: AccountId = "a".into();
@@ -1834,7 +1893,7 @@ fn overload_streak_backoff_and_reset() {
         cool,
     };
     let left = |r: &CpaRouter| {
-        r.cooling_until_any(&"a".into())
+        r.cooling_until(&"a".into())
             .and_then(|t| {
                 t.duration_since(t0() + Duration::from_millis(clk.0.load(Ordering::SeqCst)))
                     .ok()
@@ -1845,13 +1904,13 @@ fn overload_streak_backoff_and_reset() {
     for _ in 0..5 {
         r.report(&rq("m"), &a, &ov(false));
     }
-    assert_eq!(r.cooling_until_any(&a), None);
+    assert_eq!(r.cooling_until(&a), None);
     r.content_ok(&a);
     r.report(&rq("m"), &a, &ov(true));
-    assert_eq!(r.cooling_until_any(&a), None, "below streak");
+    assert_eq!(r.cooling_until(&a), None, "below streak");
     r.report(&rq("m"), &a, &ov(true));
     assert_eq!(left(&r), Some(120));
-    assert_eq!(r.cooling_reason_any(&a), Some("overloaded"));
+    assert_eq!(r.cooling_reason(&a), Some("overloaded"));
     // Not quota: selection error is not flagged as quota exhaustion.
     match r.select(&rq("m"), &[acct("a")]) {
         Err(RouteError::AllCoolingDown { quota, .. }) => assert!(!quota),
@@ -1895,14 +1954,14 @@ fn stale_inflight_success_keeps_newer_cooldown() {
     clk.advance(Duration::from_secs(1));
     r.report(&inflight, &a, &Outcome::Success { quota: None });
     assert!(
-        r.cooling_reason_any(&a).is_some(),
+        r.cooling_reason(&a).is_some(),
         "stale success must not clear"
     );
     let mut fresh = rq("m");
     fresh.attempt_at = Some(t0() + Duration::from_secs(3));
     clk.advance(Duration::from_secs(2));
     r.report(&fresh, &a, &Outcome::Success { quota: None });
-    assert!(r.cooling_reason_any(&a).is_none(), "newer success clears");
+    assert!(r.cooling_reason(&a).is_none(), "newer success clears");
 }
 
 #[test]
@@ -1920,5 +1979,5 @@ fn success_without_attempt_time_still_clears_cooldown() {
     );
     clk.advance(Duration::from_secs(1));
     r.report(&rq("m"), &a, &Outcome::Success { quota: None });
-    assert!(r.cooling_reason_any(&a).is_none());
+    assert!(r.cooling_reason(&a).is_none());
 }

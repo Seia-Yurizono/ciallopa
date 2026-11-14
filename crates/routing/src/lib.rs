@@ -7,12 +7,15 @@ mod cache;
 pub mod quota;
 pub mod session;
 
+#[cfg(test)]
+use quota::is_cloudflare_challenge;
 pub use quota::{
-    cloudflare_block, is_cloudflare_challenge, is_usage_limit, parse_codex_retry_after,
-    parse_quota, parse_quota_at, parse_quota_event_headers, parse_retry_after_header,
-    retry_after_for_429, CloudflareBlock,
+    cloudflare_block, is_usage_limit, parse_codex_retry_after, parse_quota, parse_quota_at,
+    parse_quota_event_headers, retry_after_for_429, CloudflareBlock,
 };
-pub use session::{bound_session_identity, extract_session, normalize_explicit_id};
+#[cfg(test)]
+use session::bound_session_identity;
+pub use session::extract_session;
 
 pub use cache::AffinityBinding;
 use cache::SessionCache;
@@ -20,7 +23,7 @@ use ciallopa_core::config::{RebindOn, RoutingConfig, Strategy};
 use ciallopa_core::{
     Account, AccountId, Outcome, QuotaSnapshot, RouteError, RouteRequest, Router, Selection,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
@@ -76,17 +79,176 @@ impl ErrKind {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-struct CoolState {
-    next_retry: Option<SystemTime>,
-    /// Quota window (`Quota.NextRecoverAt`) — used for "advance backoff once per window".
-    recover_at: Option<SystemTime>,
-    backoff_level: u32,
-    last_err: Option<ErrKind>,
+/// Quota backoff is remembered after expiry, until success or a manual reset.
+#[derive(Debug, Clone, Copy)]
+enum Failure {
+    Quota { window_end: SystemTime, level: u32 },
+    UsageLimit { window_end: SystemTime, level: u32 },
+    Auth,
+    ModelUnsupported,
+    NotFound,
+    PaymentRequired,
+    WorkspaceDeactivated,
+    Transient,
+    Overloaded,
 }
-impl CoolState {
+impl Failure {
+    fn kind(self) -> ErrKind {
+        match self {
+            Self::Quota { .. } => ErrKind::Quota,
+            Self::UsageLimit { .. } => ErrKind::UsageLimit,
+            Self::Auth => ErrKind::Auth,
+            Self::ModelUnsupported => ErrKind::ModelUnsupported,
+            Self::NotFound => ErrKind::NotFound,
+            Self::PaymentRequired => ErrKind::PaymentRequired,
+            Self::WorkspaceDeactivated => ErrKind::WorkspaceDeactivated,
+            Self::Transient => ErrKind::Transient,
+            Self::Overloaded => ErrKind::Overloaded,
+        }
+    }
+    fn quota_window(self) -> Option<(SystemTime, u32)> {
+        match self {
+            Self::Quota { window_end, level } | Self::UsageLimit { window_end, level } => {
+                Some((window_end, level))
+            }
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+enum Health {
+    #[default]
+    Healthy,
+    Cooling {
+        until: SystemTime,
+        failure: Failure,
+    },
+    Remembered(Failure),
+}
+impl Health {
+    fn failure(&self) -> Option<Failure> {
+        match self {
+            Self::Healthy => None,
+            Self::Cooling { failure, .. } | Self::Remembered(failure) => Some(*failure),
+        }
+    }
     fn live_until(&self, now: SystemTime) -> Option<SystemTime> {
-        self.next_retry.filter(|t| *t > now)
+        match self {
+            Self::Cooling { until, .. } if *until > now => Some(*until),
+            _ => None,
+        }
+    }
+    fn expire(&mut self, now: SystemTime) {
+        if let Self::Cooling { until, failure } = self {
+            if *until <= now {
+                *self = Self::Remembered(*failure);
+            }
+        }
+    }
+    /// Never shorten a live cooldown; shorter quota advice cannot replace a non-quota reason.
+    fn merge_longer(&mut self, now: SystemTime, until: SystemTime, mut failure: Failure) {
+        self.expire(now);
+        let previous = self.live_until(now);
+        if previous.is_some_and(|old| old >= until)
+            && failure.quota_window().is_some()
+            && self.failure().is_some_and(|f| f.quota_window().is_none())
+        {
+            return;
+        }
+        let until = previous.map_or(until, |old| old.max(until));
+        match &mut failure {
+            Failure::Quota { window_end, .. } | Failure::UsageLimit { window_end, .. } => {
+                *window_end = until
+            }
+            _ => {}
+        }
+        *self = Self::Cooling { until, failure };
+    }
+    fn on_rate_limit(&mut self, now: SystemTime, hint: Option<Duration>, usage: bool) {
+        let previous = self.failure().and_then(Failure::quota_window);
+        let level = previous.map_or(0, |(_, level)| level);
+        let (until, level) = if let Some(d) = hint {
+            (now + d.max(MIN_QUOTA_COOLDOWN_FLOOR), level)
+        } else if let Some((end, level)) = previous.filter(|(end, _)| *end > now) {
+            (end, level)
+        } else {
+            let (delay, level) = next_quota_cooldown(level);
+            (now + delay, level)
+        };
+        let failure = if usage {
+            Failure::UsageLimit {
+                window_end: until,
+                level,
+            }
+        } else {
+            Failure::Quota {
+                window_end: until,
+                level,
+            }
+        };
+        self.merge_longer(now, until, failure);
+    }
+    fn clear_quota(&mut self, now: SystemTime) -> bool {
+        if self.failure().and_then(Failure::quota_window).is_none() {
+            return false;
+        }
+        let live = self.live_until(now).is_some();
+        *self = Self::Healthy;
+        live
+    }
+}
+
+#[derive(Default)]
+struct OverloadState {
+    streak: u32,
+    level: u32,
+}
+
+#[derive(Default)]
+struct AccountState {
+    health: Health,
+    models: HashMap<String, Health>,
+    quota: Option<QuotaSnapshot>,
+    server_streak: u32,
+    overload: OverloadState,
+    /// (hour index, attempts, overloaded), last 24 h (memory only).
+    stats: [(u64, u64, u64); 24],
+    cooled_at: Option<SystemTime>,
+}
+impl AccountState {
+    fn bump(&mut self, now: SystemTime, attempts: u64, overloaded: u64) {
+        let h = hour_of(now);
+        let slot = &mut self.stats[(h % 24) as usize];
+        if slot.0 != h {
+            *slot = (h, 0, 0);
+        }
+        slot.1 += attempts;
+        slot.2 += overloaded;
+    }
+    fn cooldowns(&self) -> impl Iterator<Item = &Health> {
+        std::iter::once(&self.health).chain(self.models.values())
+    }
+    fn on_success(&mut self, model: &str, sent_at: Option<SystemTime>) -> bool {
+        if sent_at
+            .zip(self.cooled_at)
+            .is_some_and(|(sent, cooled)| cooled >= sent)
+        {
+            return false;
+        }
+        self.health = Health::Healthy;
+        self.models.remove(model);
+        self.server_streak = 0;
+        true
+    }
+    fn clear_cooldowns(&mut self, now: SystemTime) -> bool {
+        let live = self.cooldowns().any(|s| s.live_until(now).is_some());
+        self.health = Health::Healthy;
+        self.models.clear();
+        self.server_streak = 0;
+        self.overload = OverloadState::default();
+        self.cooled_at = None;
+        live
     }
 }
 
@@ -100,34 +262,54 @@ struct State {
     rr_last: HashMap<String, String>,
     wrr: HashMap<String, SwState>,
     cache: SessionCache,
-    account: HashMap<AccountId, CoolState>,
-    model: HashMap<(AccountId, String), CoolState>,
-    quota: HashMap<AccountId, QuotaSnapshot>,
-    /// Consecutive upstream 5xx per account (reset on success / manual clear).
-    streak: HashMap<AccountId, u32>,
-    /// Overload streak and cooldown level per account (reset by delivered content / clear).
-    overload: HashMap<AccountId, (u32, u32)>,
-    /// Hourly (hour index, attempts, overloaded) ring per account, last 24 h (memory only).
-    stats: HashMap<AccountId, [(u64, u64, u64); 24]>,
-    /// Last time a cooldown was recorded for the account (any kind).
-    cooled_at: HashMap<AccountId, SystemTime>,
+    accounts: HashMap<AccountId, AccountState>,
+}
+
+/// Both result reporting and selection use the same alias/fork policy.
+struct BindingKeys {
+    primary: String,
+    fallback: Option<String>,
+    aliased: bool,
+    inherits_parent: bool,
+}
+impl BindingKeys {
+    fn new(req: &RouteRequest, model: &str, cfg: &RoutingConfig) -> Option<Self> {
+        let session = &req.session;
+        let primary = session
+            .key
+            .as_deref()
+            .filter(|k| !k.is_empty() && cfg.session_affinity)?;
+        let fallback = session
+            .parent_key
+            .as_deref()
+            .filter(|k| !k.is_empty() && *k != primary)
+            .map(|k| format!("{PROVIDER}::{k}::{model}"));
+        Some(Self {
+            primary: format!("{PROVIDER}::{primary}::{model}"),
+            fallback,
+            aliased: !session.is_subagent && !session.is_fork,
+            inherits_parent: session.is_fork
+                || !session.is_subagent
+                || cfg.session_affinity_subagents,
+        })
+    }
+    fn bind(&self, cache: &mut SessionCache, id: &str, now: SystemTime) {
+        if let Some(fallback) = self.fallback.as_ref().filter(|_| self.aliased) {
+            cache.set_aliases(id, &[self.primary.clone(), fallback.clone()], now);
+        } else {
+            cache.set(&self.primary, id, now);
+        }
+    }
+    fn reported_keys(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.primary.as_str())
+            .chain(self.fallback.as_deref().filter(|_| self.aliased))
+    }
 }
 
 fn hour_of(t: SystemTime) -> u64 {
     t.duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_secs() / 3600)
         .unwrap_or(0)
-}
-
-fn bump(st: &mut State, id: &AccountId, now: SystemTime, att: u64, ov: u64) {
-    let h = hour_of(now);
-    let ring = st.stats.entry(id.clone()).or_default();
-    let slot = &mut ring[(h % 24) as usize];
-    if slot.0 != h {
-        *slot = (h, 0, 0);
-    }
-    slot.1 += att;
-    slot.2 += ov;
 }
 
 pub struct CpaRouter {
@@ -166,22 +348,6 @@ fn next_quota_cooldown(prev: u32) -> (Duration, u32) {
     }
 }
 
-/// CPA `quotaCooldownAfterFailure`: reuse an open window instead of escalating.
-fn quota_after_failure(s: &CoolState, now: SystemTime) -> (SystemTime, u32) {
-    if let Some(r) = s.recover_at.filter(|r| *r > now) {
-        return (r, s.backoff_level);
-    }
-    let (c, lvl) = next_quota_cooldown(s.backoff_level);
-    (now + c, lvl)
-}
-
-fn max_opt(a: Option<SystemTime>, b: SystemTime) -> SystemTime {
-    match a {
-        Some(a) if a > b => a,
-        _ => b,
-    }
-}
-
 impl CpaRouter {
     pub fn new(cfg: RoutingConfig) -> Self {
         Self::with_clock(cfg, Arc::new(SystemTime::now))
@@ -200,13 +366,7 @@ impl CpaRouter {
                 rr_last: HashMap::new(),
                 wrr: HashMap::new(),
                 cache: SessionCache::new(ttl, cache::DEFAULT_MAX_ENTRIES),
-                account: HashMap::new(),
-                model: HashMap::new(),
-                quota: HashMap::new(),
-                streak: HashMap::new(),
-                overload: HashMap::new(),
-                stats: HashMap::new(),
-                cooled_at: HashMap::new(),
+                accounts: HashMap::new(),
             }),
         }
     }
@@ -217,22 +377,7 @@ impl CpaRouter {
 
     /// Last quota snapshot per account (for `status`).
     pub fn quota_snapshot(&self, id: &AccountId) -> Option<QuotaSnapshot> {
-        self.lock().quota.get(id).cloned()
-    }
-
-    /// Earliest time the account is usable again for `model` (None = available).
-    pub fn cooldown_until(&self, id: &AccountId, model: &str) -> Option<SystemTime> {
-        let now = (self.clock)();
-        blocked(&self.lock(), id, &canonical_model_key(model), now)
-    }
-
-    /// Hot-reload: new strategy / affinity / threshold. Cooldowns, quota snapshots, session
-    /// bindings and round-robin cursors are kept; a new TTL applies to bindings written from now.
-    pub fn set_config(&self, cfg: RoutingConfig) {
-        if let Some(ttl) = cfg.ttl().ok().filter(|d| !d.is_zero()) {
-            self.lock().cache.set_ttl(ttl);
-        }
-        self.cfg.store(Arc::new(cfg));
+        self.lock().accounts.get(id).and_then(|a| a.quota.clone())
     }
 
     /// Changes whenever session bindings change (persistence writes only then).
@@ -257,97 +402,17 @@ impl CpaRouter {
         self.lock().cache.import(bindings, now, known)
     }
 
-    /// Everything kept about an account (bindings, cooldowns, quota) — account removed.
-    pub fn forget(&self, id: &AccountId) {
-        let mut st = self.lock();
-        st.cache.invalidate_auth(id);
-        st.account.remove(id);
-        st.model.retain(|(a, _), _| a != id);
-        st.quota.remove(id);
-        st.streak.remove(id);
-        st.overload.remove(id);
-        st.stats.remove(id);
-        st.rr_last.retain(|_, v| v != id);
-    }
-
-    /// Reason of the longest live cooldown of the account (account- or model-level).
-    pub fn cooling_reason_any(&self, id: &AccountId) -> Option<&'static str> {
-        let now = (self.clock)();
-        let st = self.lock();
-        let a = st.account.get(id).into_iter();
-        let m = st
-            .model
-            .iter()
-            .filter(|((x, _), _)| x == id)
-            .map(|(_, s)| s);
-        a.chain(m)
-            .filter_map(|s| Some((s.live_until(now)?, s.last_err?)))
-            .max_by_key(|(t, _)| *t)
-            .map(|(_, k)| k.reason())
-    }
-
-    /// Manual unblock: every cooldown and the 5xx streak; quota snapshot and bindings are kept.
-    pub fn clear(&self, id: &AccountId) -> bool {
-        let now = (self.clock)();
-        let mut st = self.lock();
-        let live = st.account.get(id).and_then(|s| s.live_until(now)).is_some()
-            || st
-                .model
-                .iter()
-                .any(|((x, _), s)| x == id && s.live_until(now).is_some());
-        st.account.remove(id);
-        st.model.retain(|(a, _), _| a != id);
-        st.streak.remove(id);
-        st.overload.remove(id);
-        live
-    }
-
-    /// Usage windows were reset upstream: drop usage-limit / rate-limit cooldowns and backoff.
-    pub fn clear_quota(&self, id: &AccountId) -> bool {
-        let now = (self.clock)();
-        let mut st = self.lock();
-        let quota =
-            |s: &CoolState| matches!(s.last_err, Some(ErrKind::UsageLimit | ErrKind::Quota));
-        let mut live = false;
-        if st.account.get(id).is_some_and(quota) {
-            live |= st.account.get(id).and_then(|s| s.live_until(now)).is_some();
-            st.account.remove(id);
-        }
-        st.model.retain(|(a, _), s| {
-            if a == id && quota(s) {
-                live |= s.live_until(now).is_some();
-                false
-            } else {
-                true
-            }
-        });
-        live
-    }
-
-    /// Latest time the account is cooling down for any reason (account- or model-level).
-    pub fn cooling_until_any(&self, id: &AccountId) -> Option<SystemTime> {
-        let now = (self.clock)();
-        let st = self.lock();
-        let a = st.account.get(id).and_then(|s| s.live_until(now));
-        st.model
-            .iter()
-            .filter(|((x, _), _)| x == id)
-            .filter_map(|(_, s)| s.live_until(now))
-            .chain(a)
-            .max()
-    }
-
-    /// Drop all session bindings of an account (e.g. account removed).
-    pub fn invalidate_account(&self, id: &AccountId) {
-        self.lock().cache.invalidate_auth(id);
-    }
-
-    fn pick_strategy(&self, st: &mut State, model: &str, avail: &[&Account]) -> Option<AccountId> {
+    fn pick_strategy(
+        st: &mut State,
+        strategy: Strategy,
+        model: &str,
+        avail: &[&Account],
+    ) -> Option<AccountId> {
         if avail.is_empty() {
             return None;
         }
         let key = format!("{PROVIDER}:{model}");
-        match self.cfg.load().strategy {
+        match strategy {
             Strategy::FillFirst => Some(avail[0].id.clone()),
             Strategy::RoundRobin => {
                 if !st.rr_last.contains_key(&key) && st.rr_last.len() >= MAX_KEYS {
@@ -419,80 +484,123 @@ impl CpaRouter {
 
 /// Error kind of the state that blocks the account the longest.
 fn blocked_kind(st: &State, id: &AccountId, model: &str, now: SystemTime) -> Option<ErrKind> {
-    let a = st.account.get(id);
-    let m = st.model.get(&(id.clone(), model.to_string()));
-    a.into_iter()
-        .chain(m)
-        .filter_map(|s| Some((s.live_until(now)?, s.last_err)))
+    let a = st.accounts.get(id)?;
+    std::iter::once(&a.health)
+        .chain(a.models.get(model))
+        .filter_map(|s| Some((s.live_until(now)?, s.failure()?.kind())))
         .max_by_key(|(t, _)| *t)
-        .and_then(|(_, k)| k)
+        .map(|(_, k)| k)
 }
 
 fn blocked(st: &State, id: &AccountId, model: &str, now: SystemTime) -> Option<SystemTime> {
-    let a = st.account.get(id).and_then(|s| s.live_until(now));
-    let m = st
-        .model
-        .get(&(id.clone(), model.to_string()))
-        .and_then(|s| s.live_until(now));
-    match (a, m) {
-        (Some(a), Some(m)) => Some(a.max(m)),
-        (x, y) => x.or(y),
-    }
+    let a = st.accounts.get(id)?;
+    std::iter::once(&a.health)
+        .chain(a.models.get(model))
+        .filter_map(|s| s.live_until(now))
+        .max()
 }
 
-/// CPA `isAuthBlockedByQuotaOrAuthForModel` (drives `shouldPreserveBindingWhenUnavailable`).
+/// Expired auth/payment failures still prevent preserving an unavailable binding.
 fn blocked_by_quota_or_auth(st: &State, a: &Account, model: &str, now: SystemTime) -> bool {
     if a.disabled {
         return true;
     }
-    if let Some(s) = st.account.get(&a.id) {
-        match s.last_err {
-            Some(ErrKind::Auth | ErrKind::PaymentRequired | ErrKind::WorkspaceDeactivated) => {
-                return true
-            }
-            Some(ErrKind::UsageLimit) if s.live_until(now).is_some() => return true,
-            _ => {}
+    let Some(state) = st.accounts.get(&a.id) else {
+        return false;
+    };
+    match state.health.failure().map(Failure::kind) {
+        Some(ErrKind::Auth | ErrKind::PaymentRequired | ErrKind::WorkspaceDeactivated) => {
+            return true
         }
+        Some(ErrKind::UsageLimit) if state.health.live_until(now).is_some() => return true,
+        _ => {}
     }
-    if let Some(s) = st.model.get(&(a.id.clone(), model.to_string())) {
-        return s.last_err.is_some_and(ErrKind::rebinds);
-    }
-    false
+    state
+        .models
+        .get(model)
+        .and_then(Health::failure)
+        .is_some_and(|f| f.kind().rebinds())
 }
 
 impl Router for CpaRouter {
     fn update_config(&self, cfg: &RoutingConfig) {
-        self.set_config(cfg.clone());
+        if let Some(ttl) = cfg.ttl().ok().filter(|d| !d.is_zero()) {
+            self.lock().cache.set_ttl(ttl);
+        }
+        self.cfg.store(Arc::new(cfg.clone()));
     }
     fn forget_account(&self, id: &AccountId) {
-        self.forget(id);
+        let mut st = self.lock();
+        st.accounts.remove(id);
+        st.cache.invalidate_auth(id);
+        st.rr_last.retain(|_, v| v != id);
+        for state in st.wrr.values_mut() {
+            state.current.remove(id);
+            state.weights.remove(id);
+        }
     }
     fn cooling_until(&self, id: &AccountId) -> Option<SystemTime> {
-        self.cooling_until_any(id)
+        let now = (self.clock)();
+        self.lock()
+            .accounts
+            .get(id)?
+            .cooldowns()
+            .filter_map(|s| s.live_until(now))
+            .max()
     }
     fn cooling_reason(&self, id: &AccountId) -> Option<&'static str> {
-        self.cooling_reason_any(id)
+        let now = (self.clock)();
+        self.lock()
+            .accounts
+            .get(id)?
+            .cooldowns()
+            .filter_map(|s| Some((s.live_until(now)?, s.failure()?.kind())))
+            .max_by_key(|(until, _)| *until)
+            .map(|(_, k)| k.reason())
     }
     fn model_cooling_until(&self, id: &AccountId, model: &str) -> Option<SystemTime> {
-        self.cooldown_until(id, model)
+        let now = (self.clock)();
+        let model = canonical_model_key(model);
+        blocked(&self.lock(), id, &model, now)
     }
     fn clear_cooldown(&self, id: &AccountId) -> bool {
-        self.clear(id)
+        let now = (self.clock)();
+        self.lock()
+            .accounts
+            .get_mut(id)
+            .is_some_and(|a| a.clear_cooldowns(now))
     }
     fn clear_quota_cooldown(&self, id: &AccountId) -> bool {
-        self.clear_quota(id)
+        let now = (self.clock)();
+        let mut st = self.lock();
+        let Some(a) = st.accounts.get_mut(id) else {
+            return false;
+        };
+        let mut live = a.health.clear_quota(now);
+        a.models.retain(|_, s| {
+            live |= s.clear_quota(now);
+            !matches!(s, Health::Healthy)
+        });
+        live
     }
     fn note_attempt(&self, id: &AccountId) {
         let now = (self.clock)();
-        bump(&mut self.lock(), id, now, 1, 0);
+        self.lock()
+            .accounts
+            .entry(id.clone())
+            .or_default()
+            .bump(now, 1, 0);
     }
     fn content_ok(&self, id: &AccountId) {
-        self.lock().overload.remove(id);
+        if let Some(a) = self.lock().accounts.get_mut(id) {
+            a.overload = OverloadState::default();
+        }
     }
     fn overload_stats(&self, id: &AccountId) -> (u64, u64) {
         let h = hour_of((self.clock)());
-        self.lock().stats.get(id).map_or((0, 0), |r| {
-            r.iter()
+        self.lock().accounts.get(id).map_or((0, 0), |a| {
+            a.stats
+                .iter()
                 .filter(|s| s.0 + 24 > h && s.0 <= h)
                 .fold((0, 0), |a, s| (a.0 + s.1, a.1 + s.2))
         })
@@ -500,19 +608,31 @@ impl Router for CpaRouter {
     fn select(&self, req: &RouteRequest, accounts: &[Account]) -> Result<Selection, RouteError> {
         let now = (self.clock)();
         let model = canonical_model_key(&req.model);
-        let mut st = self.lock();
-        let weighted = self.cfg.load().strategy == Strategy::WeightedRoundRobin;
+        let cfg = self.cfg.load_full();
+        let keys = BindingKeys::new(req, &model, &cfg);
+        let weighted = cfg.strategy == Strategy::WeightedRoundRobin;
+        let excluded: HashSet<&str> = req.exclude.iter().map(String::as_str).collect();
+        let by_id: HashMap<&str, &Account> = accounts.iter().map(|a| (a.id.as_str(), a)).collect();
 
         let mut cands: Vec<&Account> = accounts
             .iter()
             .filter(|a| {
-                !a.disabled && !req.exclude.contains(&a.id) && (!weighted || eff_weight(a) > 0)
+                !a.disabled && !excluded.contains(a.id.as_str()) && (!weighted || eff_weight(a) > 0)
             })
             .collect();
         if cands.is_empty() {
             return Err(RouteError::NoAccounts);
         }
         cands.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut st = self.lock();
+        for a in &cands {
+            if let Some(state) = st.accounts.get_mut(&a.id) {
+                state.health.expire(now);
+                if let Some(health) = state.models.get_mut(&model) {
+                    health.expire(now);
+                }
+            }
+        }
         let mut earliest: Option<(SystemTime, &AccountId)> = None;
         let available: Vec<&Account> = cands
             .iter()
@@ -543,26 +663,32 @@ impl Router for CpaRouter {
         }
 
         // Cold pick: quota-threshold avoidance (new bindings only), then highest priority tier.
-        let thr = self.cfg.load().quota_avoid_threshold;
+        let thr = cfg.quota_avoid_threshold;
         let cold = |st: &mut State| -> Option<AccountId> {
-            let mut pool: Vec<&Account> = available.clone();
+            let filtered: Vec<&Account>;
+            let mut pool = available.as_slice();
             if thr > 0.0 {
-                let ok: Vec<&Account> = pool
+                filtered = pool
                     .iter()
                     .copied()
                     .filter(|a| {
-                        st.quota
+                        st.accounts
                             .get(&a.id)
+                            .and_then(|a| a.quota.as_ref())
                             .is_none_or(|q| quota::max_used_fraction(q, now) < thr)
                     })
                     .collect();
-                if !ok.is_empty() {
-                    pool = ok;
+                if !filtered.is_empty() {
+                    pool = &filtered;
                 }
             }
             let best = pool.iter().map(|a| a.priority).max()?;
-            let tier: Vec<&Account> = pool.into_iter().filter(|a| a.priority == best).collect();
-            self.pick_strategy(st, &model, &tier)
+            let tier: Vec<&Account> = pool
+                .iter()
+                .copied()
+                .filter(|a| a.priority == best)
+                .collect();
+            Self::pick_strategy(st, cfg.strategy, &model, &tier)
         };
         let fresh = |account: AccountId| {
             Ok(Selection {
@@ -571,37 +697,26 @@ impl Router for CpaRouter {
             })
         };
 
-        let primary = match (&req.session.key, self.cfg.load().session_affinity) {
-            (Some(k), true) if !k.is_empty() => k.clone(),
-            _ => {
-                return cold(&mut st)
-                    .map(fresh)
-                    .unwrap_or(Err(RouteError::NoAccounts))
-            }
+        let Some(keys) = keys else {
+            return cold(&mut st)
+                .map(fresh)
+                .unwrap_or(Err(RouteError::NoAccounts));
         };
-        let fallback = req.session.parent_key.clone().unwrap_or_default();
-        let is_fork = req.session.is_fork;
-        let is_sub = !is_fork && session::is_subagent_session(&primary, &fallback);
-        let cache_key = format!("{PROVIDER}::{primary}::{model}");
-        let fallback_key = (!fallback.is_empty() && fallback != primary)
-            .then(|| format!("{PROVIDER}::{fallback}::{model}"));
-        let preserve_quota = self.cfg.load().session_affinity_rebind_on == RebindOn::Quota;
-        let bind = |st: &mut State, id: &str| match (&fallback_key, is_sub || is_fork) {
-            (Some(fk), false) => st
-                .cache
-                .set_aliases(id, &[cache_key.clone(), fk.clone()], now),
-            _ => st.cache.set(&cache_key, id, now),
-        };
+        let preserve_quota = cfg.session_affinity_rebind_on == RebindOn::Quota;
+        let bind = |st: &mut State, id: &str| keys.bind(&mut st.cache, id, now);
         let preserve = |st: &State, id: &str| {
             preserve_quota
-                && accounts
-                    .iter()
-                    .find(|a| a.id == id)
+                && by_id
+                    .get(id)
                     .is_some_and(|a| !blocked_by_quota_or_auth(st, a, &model, now))
         };
-        let in_avail = |id: &str| available.iter().any(|a| a.id == id);
+        let in_avail = |id: &str| {
+            available
+                .binary_search_by(|a| a.id.as_str().cmp(id))
+                .is_ok()
+        };
 
-        if let Some(cached) = st.cache.get_and_refresh(&cache_key, now) {
+        if let Some(cached) = st.cache.get_and_refresh(&keys.primary, now) {
             if in_avail(&cached) {
                 bind(&mut st, &cached);
                 return Ok(Selection {
@@ -619,16 +734,16 @@ impl Router for CpaRouter {
             }
             return fresh(pick);
         }
-        if let Some(fk) = &fallback_key {
+        if let Some(fk) = &keys.fallback {
             if let Some(cached) = st.cache.get(fk, now) {
-                if in_avail(&cached) && (!is_sub || self.cfg.load().session_affinity_subagents) {
+                if in_avail(&cached) && keys.inherits_parent {
                     bind(&mut st, &cached);
                     return Ok(Selection {
                         account: cached,
                         from_binding: true,
                     });
                 }
-                if !is_sub && !is_fork && preserve(&st, &cached) {
+                if keys.aliased && preserve(&st, &cached) {
                     let Some(pick) = cold(&mut st) else {
                         return Err(RouteError::NoAccounts);
                     };
@@ -646,25 +761,26 @@ impl Router for CpaRouter {
 
     fn report(&self, req: &RouteRequest, account: &AccountId, outcome: &Outcome) {
         let now = (self.clock)();
+        let cfg = self.cfg.load_full();
         let model = canonical_model_key(&req.model);
+        let keys = BindingKeys::new(req, &model, &cfg);
+        // These failures never cool credentials or change bindings.
+        if matches!(
+            outcome,
+            Outcome::Transport | Outcome::ClientError { .. } | Outcome::EgressBlocked
+        ) {
+            return;
+        }
         let mut st = self.lock();
-        let mkey = (account.clone(), model.clone());
-
-        // ---- cooldown state (conductor_cooldown.go MarkResult) ----
-        let kind: Option<ErrKind> = match outcome {
+        let a = st.accounts.entry(account.clone()).or_default();
+        let kind = match outcome {
             Outcome::Success { quota } => {
                 if let Some(q) = quota {
-                    st.quota.insert(account.clone(), q.clone());
+                    a.quota = Some(q.clone());
                 }
-                // CPA #6643: a success from an attempt sent before the latest cooldown is stale.
-                if let (Some(sent), Some(cooled)) = (req.attempt_at, st.cooled_at.get(account)) {
-                    if *cooled >= sent {
-                        return;
-                    }
+                if !a.on_success(&model, req.attempt_at) {
+                    return;
                 }
-                st.model.remove(&mkey);
-                st.account.remove(account);
-                st.streak.remove(account);
                 None
             }
             Outcome::RateLimited {
@@ -673,68 +789,47 @@ impl Router for CpaRouter {
                 quota,
             } => {
                 if let Some(q) = quota {
-                    st.quota.insert(account.clone(), q.clone());
+                    a.quota = Some(q.clone());
                 }
                 if *usage_limit {
-                    // credential-scoped: whole account.
-                    let a = st.account.entry(account.clone()).or_default();
-                    let base = if a.last_err == Some(ErrKind::UsageLimit) {
-                        a.clone()
-                    } else {
-                        CoolState::default()
-                    };
-                    let (next, lvl) = match retry_after {
-                        Some(d) => (now + (*d).max(MIN_QUOTA_COOLDOWN_FLOOR), base.backoff_level),
-                        None => quota_after_failure(&base, now),
-                    };
-                    // A longer live non-quota cooldown (auth, 402…) keeps its reason, so a
-                    // later quota reset (`clear_quota`) cannot lift it.
-                    let longer_other = a.last_err != Some(ErrKind::UsageLimit)
-                        && a.live_until(now).is_some_and(|t| t >= next);
-                    let next = max_opt(a.live_until(now), next);
-                    if !longer_other {
-                        *a = CoolState {
-                            next_retry: Some(next),
-                            recover_at: Some(next),
-                            backoff_level: lvl,
-                            last_err: Some(ErrKind::UsageLimit),
-                        };
-                    }
-                    let m = st.model.entry(mkey).or_default();
-                    m.next_retry = Some(max_opt(m.recover_at.filter(|r| *r > now), next));
-                    m.recover_at = m.next_retry;
-                    m.last_err = Some(ErrKind::UsageLimit);
+                    a.health.on_rate_limit(now, *retry_after, true);
+                    let until = a.health.live_until(now).expect("new usage cooldown");
+                    let model = a.models.entry(model).or_default();
+                    let level = model
+                        .failure()
+                        .and_then(Failure::quota_window)
+                        .map_or(0, |(_, level)| level);
+                    model.merge_longer(
+                        now,
+                        until,
+                        Failure::UsageLimit {
+                            window_end: until,
+                            level,
+                        },
+                    );
                     Some(ErrKind::UsageLimit)
                 } else {
-                    let m = st.model.entry(mkey).or_default();
-                    let (next, lvl) = match retry_after {
-                        Some(d) => (now + (*d).max(MIN_QUOTA_COOLDOWN_FLOOR), m.backoff_level),
-                        None => quota_after_failure(m, now),
-                    };
-                    let next = max_opt(m.recover_at.filter(|r| *r > now), next);
-                    *m = CoolState {
-                        next_retry: Some(next),
-                        recover_at: Some(next),
-                        backoff_level: lvl,
-                        last_err: Some(ErrKind::Quota),
-                    };
+                    a.models
+                        .entry(model)
+                        .or_default()
+                        .on_rate_limit(now, *retry_after, false);
                     Some(ErrKind::Quota)
                 }
             }
             Outcome::AuthFailed => {
-                let a = st.account.entry(account.clone()).or_default();
-                a.next_retry = Some(max_opt(a.live_until(now), now + AUTH_COOLDOWN));
-                a.last_err = Some(ErrKind::Auth);
+                a.health
+                    .merge_longer(now, now + AUTH_COOLDOWN, Failure::Auth);
                 Some(ErrKind::Auth)
             }
             Outcome::ModelUnsupported { retry_after } => {
-                let m = st.model.entry(mkey).or_default();
-                m.next_retry = Some(
-                    now + retry_after
-                        .filter(|d| !d.is_zero())
-                        .unwrap_or(NOT_FOUND_COOLDOWN),
+                let delay = retry_after
+                    .filter(|d| !d.is_zero())
+                    .unwrap_or(NOT_FOUND_COOLDOWN);
+                a.models.entry(model).or_default().merge_longer(
+                    now,
+                    now + delay,
+                    Failure::ModelUnsupported,
                 );
-                m.last_err = Some(ErrKind::ModelUnsupported);
                 Some(ErrKind::ModelUnsupported)
             }
             Outcome::NotFound {
@@ -743,30 +838,28 @@ impl Router for CpaRouter {
             } => {
                 let d = retry_after.filter(|d| !d.is_zero()).unwrap_or(*cooldown);
                 if d.is_zero() {
-                    // Not cooled; the caller still fails over for this request.
                     return;
                 }
-                let m = st.model.entry(mkey).or_default();
-                m.next_retry = Some(max_opt(m.live_until(now), now + d));
-                m.last_err = Some(ErrKind::NotFound);
+                a.models
+                    .entry(model)
+                    .or_default()
+                    .merge_longer(now, now + d, Failure::NotFound);
                 Some(ErrKind::NotFound)
             }
             Outcome::PaymentRequired {
                 deactivated,
                 cooldown,
             } => {
-                let k = if *deactivated {
-                    ErrKind::WorkspaceDeactivated
-                } else {
-                    ErrKind::PaymentRequired
-                };
                 if cooldown.is_zero() {
                     return;
                 }
-                let a = st.account.entry(account.clone()).or_default();
-                a.next_retry = Some(max_opt(a.live_until(now), now + *cooldown));
-                a.last_err = Some(k);
-                Some(k)
+                let failure = if *deactivated {
+                    Failure::WorkspaceDeactivated
+                } else {
+                    Failure::PaymentRequired
+                };
+                a.health.merge_longer(now, now + *cooldown, failure);
+                Some(failure.kind())
             }
             Outcome::Overloaded {
                 streak,
@@ -774,81 +867,53 @@ impl Router for CpaRouter {
                 max,
                 cool,
             } => {
-                bump(&mut st, account, now, 0, 1);
-                let e = st.overload.entry(account.clone()).or_insert((0, 0));
-                e.0 = e.0.saturating_add(1);
-                if !*cool || *streak == 0 || base.is_zero() || e.0 < *streak {
-                    // Counted only: binding kept, account stays usable.
+                a.bump(now, 0, 1);
+                let e = &mut a.overload;
+                e.streak = e.streak.saturating_add(1);
+                if !*cool || *streak == 0 || base.is_zero() || e.streak < *streak {
                     return;
                 }
                 let d = base
-                    .saturating_mul(1u32.checked_shl(e.1).unwrap_or(u32::MAX))
+                    .saturating_mul(1u32.checked_shl(e.level).unwrap_or(u32::MAX))
                     .min((*max).max(*base));
-                e.0 = 0;
-                e.1 = e.1.saturating_add(1).min(16);
-                let a = st.account.entry(account.clone()).or_default();
-                a.next_retry = Some(max_opt(a.live_until(now), now + d));
-                a.last_err = Some(ErrKind::Overloaded);
+                e.streak = 0;
+                e.level = e.level.saturating_add(1).min(16);
+                a.health.merge_longer(now, now + d, Failure::Overloaded);
                 Some(ErrKind::Overloaded)
             }
-            // Egress-level (Cloudflare): every account would see the same page. Nothing to
-            // cool, and the session binding stays where it is.
-            Outcome::EgressBlocked => return,
-            // Transport errors (no status) and request-scoped 4xx never cool the credential
-            // and never touch session bindings (CPA shouldSkipCredentialCooldown).
-            Outcome::Transient { status: None } | Outcome::ClientError { .. } => return,
-            Outcome::Transient { status: Some(_) } | Outcome::ServerError { .. } => {
-                let cooldown = match outcome {
-                    Outcome::ServerError { cooldown, .. } => *cooldown,
-                    _ => Some(TRANSIENT_COOLDOWN),
-                };
-                let n = st.streak.entry(account.clone()).or_insert(0);
-                *n = n.saturating_add(1);
+            Outcome::ServerError { cooldown, .. } => {
+                a.server_streak = a.server_streak.saturating_add(1);
                 let Some(d) = cooldown
-                    .filter(|d| !d.is_zero() && *n >= TRANSIENT_STREAK)
+                    .filter(|d| !d.is_zero() && a.server_streak >= TRANSIENT_STREAK)
                     .map(|d| d.min(TRANSIENT_COOLDOWN_MAX))
                 else {
-                    // Below the streak (or never cooled): no cooldown, binding kept.
                     return;
                 };
-                *n = 0;
-                let m = st.model.entry(mkey).or_default();
-                m.next_retry = Some(max_opt(m.live_until(now), now + d));
-                m.last_err = Some(ErrKind::Transient);
+                a.server_streak = 0;
+                a.models
+                    .entry(model)
+                    .or_default()
+                    .merge_longer(now, now + d, Failure::Transient);
                 Some(ErrKind::Transient)
             }
+            Outcome::Transport | Outcome::ClientError { .. } | Outcome::EgressBlocked => {
+                unreachable!()
+            }
         };
-
         if kind.is_some() {
-            st.cooled_at.insert(account.clone(), now);
+            a.cooled_at = Some(now);
         }
-        // ---- session binding (SessionAffinitySelector.OnResult) ----
-        if !self.cfg.load().session_affinity {
-            return;
-        }
-        if let Some(k) = kind {
-            if self.cfg.load().session_affinity_rebind_on == RebindOn::Quota && !k.rebinds() {
-                return;
-            }
-        }
-        let Some(primary) = req.session.key.as_deref().filter(|k| !k.is_empty()) else {
+        let Some(keys) = keys else {
             return;
         };
-        let fallback = req.session.parent_key.as_deref().unwrap_or("");
-        let cache_key = format!("{PROVIDER}::{primary}::{model}");
-        let fallback_key = (!fallback.is_empty()
-            && fallback != primary
-            && !session::is_subagent_session(primary, fallback))
-        .then(|| format!("{PROVIDER}::{fallback}::{model}"));
-        if kind.is_none() {
-            st.cache.touch(&cache_key, account, now);
-            if let Some(fk) = &fallback_key {
-                st.cache.touch(fk, account, now);
-            }
-        } else {
-            st.cache.compare_and_delete(&cache_key, account);
-            if let Some(fk) = &fallback_key {
-                st.cache.compare_and_delete(fk, account);
+        if kind.is_some_and(|k| cfg.session_affinity_rebind_on == RebindOn::Quota && !k.rebinds()) {
+            return;
+        }
+        for key in keys.reported_keys() {
+            if kind.is_none() {
+                st.cache.touch(key, account, now);
+            } else {
+                st.cache.compare_and_delete(key, account);
             }
         }
     }
