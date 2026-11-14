@@ -71,6 +71,19 @@ link once; run one module with `cargo test -p ciallopa --test it forward::`. A p
 also builds the musl release binaries once per architecture, so the next tag's packaging
 restores a warm cache instead of compiling every dependency.
 
+Forwarding tests live in `it/forward/` (admission, cookies, gzip, images, models, retry,
+shutdown, SSE, usage, WS) with shared fixtures in `forward/scaffold.rs`; `it/support.rs`
+holds the fixed account store, recording router and app factory. Decision variants
+(attempt policy, prelude/body end, event classification, Tracker finalization, cooldowns)
+are pure table tests next to the code; the e2e tests keep one case per behaviour family to
+prove the wiring.
+
+`UpstreamOpts::time_unit` (serde-skipped, exactly one second in production, not settable
+from TOML or the API) scales preparation/header/idle limits, retry waits, body-budget waits,
+cooldown holds and shutdown flush bounds. The test factory uses 100 ms per configured
+second, so timeout tests do not wait out real seconds. A few waits stay physical on purpose:
+natural cookie expiry, silence diagnostics and the process-level signal test.
+
 Clippy compiles all targets, so a separate full debug build adds little here. `--all-targets`
 includes loadbench's SSE parser and measurement tests. These checks
 do not install a browser, run capacity benchmarks or build release packages.
