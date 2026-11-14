@@ -17,8 +17,9 @@ struct Group {
 pub(crate) struct SessionCache {
     ttl: Duration,
     max_entries: usize,
-    entries: HashMap<String, u64>, // alias -> group seq
-    groups: BTreeMap<u64, Group>,  // insertion order = eviction order
+    entries: HashMap<String, u64>, // alias -> stable group id
+    groups: HashMap<u64, Group>,
+    lru: BTreeMap<u64, u64>, // refresh sequence -> group id
     next: u64,
     /// Bumped by every change (including sliding-TTL refreshes); persistence compares it.
     generation: u64,
@@ -87,7 +88,8 @@ impl SessionCache {
             ttl,
             max_entries: max_entries.max(1),
             entries: HashMap::new(),
-            groups: BTreeMap::new(),
+            groups: HashMap::new(),
+            lru: BTreeMap::new(),
             next: 0,
             generation: 0,
         }
@@ -100,95 +102,164 @@ impl SessionCache {
         }
     }
 
-    fn remove_group(&mut self, seq: u64) -> Option<Group> {
-        let g = self.groups.remove(&seq)?;
+    fn remove_group(&mut self, id: u64) -> Option<Group> {
+        let g = self.groups.remove(&id)?;
+        self.lru.remove(&g.seq);
         self.generation += 1;
         for a in &g.aliases {
-            if self.entries.get(a) == Some(&seq) {
-                self.entries.remove(a);
-            }
+            self.entries.remove(a);
         }
         Some(g)
     }
 
-    fn insert_group(&mut self, auth: String, expires: SystemTime, aliases: Vec<String>) {
-        if aliases.is_empty() {
-            return;
-        }
-        self.generation += 1;
-        // An alias can belong to only one group: steal it from older groups.
-        for a in &aliases {
-            if let Some(old) = self.entries.get(a).copied() {
-                if let Some(g) = self.groups.get_mut(&old) {
-                    g.aliases.retain(|x| x != a);
-                    if g.aliases.is_empty() {
-                        self.groups.remove(&old);
-                    }
-                }
-            }
-        }
-        self.next += 1;
-        let seq = self.next;
-        for a in &aliases {
-            self.entries.insert(a.clone(), seq);
-        }
-        self.groups.insert(
-            seq,
-            Group {
-                auth,
-                expires,
-                aliases,
-                seq,
-            },
-        );
+    fn evict(&mut self) {
         while self.entries.len() > self.max_entries {
-            let Some((&oldest, _)) = self.groups.iter().next() else {
+            let Some((_, &oldest)) = self.lru.first_key_value() else {
                 break;
             };
             self.remove_group(oldest);
         }
     }
 
-    fn live(&mut self, key: &str, now: SystemTime) -> Option<Group> {
-        let seq = *self.entries.get(key)?;
-        let g = self.groups.get(&seq)?.clone();
-        if now >= g.expires {
-            self.remove_group(seq);
+    fn insert_group(&mut self, auth: String, expires: SystemTime, aliases: Vec<String>) {
+        if aliases.is_empty() {
+            return;
+        }
+        // Import may steal aliases, but leaves the surviving groups in their LRU position.
+        for a in &aliases {
+            if let Some(old) = self.entries.get(a).copied() {
+                let g = self.groups.get_mut(&old).expect("alias group");
+                g.aliases.retain(|x| x != a);
+                if g.aliases.is_empty() {
+                    self.remove_group(old);
+                }
+            }
+        }
+        self.next += 1;
+        let id = self.next;
+        for a in &aliases {
+            self.entries.insert(a.clone(), id);
+        }
+        self.groups.insert(
+            id,
+            Group {
+                auth,
+                expires,
+                aliases,
+                seq: id,
+            },
+        );
+        self.lru.insert(id, id);
+        self.generation += 1;
+        self.evict();
+    }
+
+    fn live(&mut self, key: &str, now: SystemTime) -> Option<u64> {
+        let id = *self.entries.get(key)?;
+        if now >= self.groups.get(&id)?.expires {
+            self.remove_group(id);
             return None;
         }
-        Some(g)
+        Some(id)
+    }
+
+    fn refresh(&mut self, id: u64, now: SystemTime) {
+        let g = self.groups.get_mut(&id).expect("live group");
+        self.lru.remove(&g.seq);
+        self.next += 1;
+        g.seq = self.next;
+        g.expires = now + self.ttl;
+        self.lru.insert(g.seq, id);
+        self.generation += 1;
+    }
+
+    // Lookup order decides which aliases survive the next compaction.
+    fn promote(&mut self, id: u64, key: &str) {
+        let g = self.groups.get_mut(&id).expect("live group");
+        if let Some(pos) = g.aliases.iter().position(|a| a == key) {
+            g.aliases[..=pos].rotate_right(1);
+        }
     }
 
     pub fn get(&mut self, key: &str, now: SystemTime) -> Option<String> {
-        self.live(key, now).map(|g| g.auth)
+        let id = self.live(key, now)?;
+        Some(self.groups[&id].auth.clone())
     }
 
     pub fn get_and_refresh(&mut self, key: &str, now: SystemTime) -> Option<String> {
-        let g = self.live(key, now)?;
-        self.remove_group(g.seq);
-        let aliases = compact(merge(vec![key.to_string()], &g.aliases));
-        self.insert_group(g.auth.clone(), now + self.ttl, aliases);
-        Some(g.auth)
+        let id = self.live(key, now)?;
+        self.refresh(id, now);
+        self.promote(id, key);
+        Some(self.groups[&id].auth.clone())
     }
 
     pub fn set_aliases(&mut self, auth: &str, keys: &[String], now: SystemTime) {
         if auth.is_empty() {
             return;
         }
-        let mut aliases = merge(vec![], keys);
-        for k in keys {
-            if let Some(seq) = self.entries.get(k).copied() {
-                let Some(g) = self.groups.get(&seq).cloned() else {
-                    continue;
-                };
-                self.remove_group(seq);
-                if now < g.expires {
-                    aliases = merge(aliases, &g.aliases);
+        let mut ids = Vec::new();
+        for key in keys {
+            if let Some(id) = self.live(key, now) {
+                if !ids.contains(&id) {
+                    ids.push(id);
                 }
             }
         }
+        // The common bound-request path changes neither group identity nor alias mappings.
+        if let [id] = ids.as_slice() {
+            if keys
+                .iter()
+                .all(|k| k.is_empty() || self.entries.get(k) == Some(id))
+            {
+                let id = *id;
+                let g = self.groups.get_mut(&id).expect("live group");
+                if g.auth != auth {
+                    g.auth = auth.to_string();
+                }
+                for key in keys.iter().rev() {
+                    self.promote(id, key);
+                }
+                self.refresh(id, now);
+                return;
+            }
+        }
+        let mut aliases = merge(vec![], keys);
+        for id in &ids {
+            aliases = merge(aliases, &self.groups[id].aliases);
+        }
         let aliases = compact(aliases);
-        self.insert_group(auth.to_string(), now + self.ttl, aliases);
+        if aliases.is_empty() {
+            return;
+        }
+        self.next += 1;
+        let seq = self.next;
+        let id = ids.first().copied().unwrap_or(seq);
+        for old in ids {
+            let g = self.groups.remove(&old).expect("live group");
+            self.lru.remove(&g.seq);
+            for alias in &g.aliases {
+                if !aliases.contains(alias) {
+                    self.entries.remove(alias);
+                }
+            }
+        }
+        for alias in &aliases {
+            if self.entries.get(alias) != Some(&id) {
+                self.entries.insert(alias.clone(), id);
+            }
+        }
+        self.groups.insert(
+            id,
+            Group {
+                auth: auth.to_string(),
+                expires: now + self.ttl,
+                aliases,
+                seq,
+            },
+        );
+        self.lru.insert(seq, id);
+        self.generation += 1;
+        self.evict();
     }
 
     pub fn set(&mut self, key: &str, auth: &str, now: SystemTime) {
@@ -196,42 +267,49 @@ impl SessionCache {
     }
 
     pub fn touch(&mut self, key: &str, auth: &str, now: SystemTime) -> bool {
-        match self.live(key, now) {
-            Some(g) if g.auth == auth => {
-                self.remove_group(g.seq);
-                let aliases = compact(merge(vec![key.to_string()], &g.aliases));
-                self.insert_group(g.auth, now + self.ttl, aliases);
-                true
-            }
-            _ => false,
+        let Some(id) = self.live(key, now) else {
+            return false;
+        };
+        if self.groups[&id].auth != auth {
+            return false;
         }
+        self.refresh(id, now);
+        self.promote(id, key);
+        true
     }
 
     pub fn compare_and_delete(&mut self, key: &str, auth: &str) -> bool {
-        let Some(seq) = self.entries.get(key).copied() else {
+        let Some(id) = self.entries.get(key).copied() else {
             return false;
         };
-        let Some(g) = self.groups.get(&seq).cloned() else {
-            return false;
-        };
+        let g = self.groups.get_mut(&id).expect("alias group");
         if g.auth != auth {
             return false;
         }
-        self.remove_group(seq);
-        let surviving: Vec<String> = g.aliases.into_iter().filter(|a| a != key).collect();
-        self.insert_group(g.auth, g.expires, surviving);
+        g.aliases.retain(|a| a != key);
+        self.entries.remove(key);
+        if g.aliases.is_empty() {
+            self.remove_group(id);
+        } else {
+            // Deletion previously reinserted surviving aliases as the newest group.
+            self.lru.remove(&g.seq);
+            self.next += 1;
+            g.seq = self.next;
+            self.lru.insert(g.seq, id);
+            self.generation += 1;
+        }
         true
     }
 
     pub fn invalidate_auth(&mut self, auth: &str) {
-        let seqs: Vec<u64> = self
+        let ids: Vec<_> = self
             .groups
-            .values()
-            .filter(|g| g.auth == auth)
-            .map(|g| g.seq)
+            .iter()
+            .filter(|(_, g)| g.auth == auth)
+            .map(|(&id, _)| id)
             .collect();
-        for s in seqs {
-            self.remove_group(s);
+        for id in ids {
+            self.remove_group(id);
         }
     }
 
@@ -241,8 +319,9 @@ impl SessionCache {
 
     /// Live groups, oldest first (the eviction order).
     pub fn export(&self, now: SystemTime) -> Vec<AffinityBinding> {
-        self.groups
+        self.lru
             .values()
+            .filter_map(|id| self.groups.get(id))
             .filter(|g| g.expires > now)
             .map(|g| AffinityBinding {
                 account: g.auth.clone(),
