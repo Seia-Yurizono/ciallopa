@@ -7,7 +7,7 @@ fn migrates_v4_db_and_roundtrips_v5_fields() {
     let old_id = (now_ms() - 5_000) << SEQ_BITS;
     {
         let mut c = rusqlite::Connection::open(&p).unwrap();
-        store::migrate(&mut c).unwrap();
+        crate::schema::migrate(&mut c).unwrap();
         c.execute_batch(&format!(
             "ALTER TABLE requests DROP COLUMN req_tier;
              ALTER TABLE requests DROP COLUMN resp_model;
@@ -42,12 +42,12 @@ fn migrates_v4_db_and_roundtrips_v5_fields() {
     x.incomplete = Some("max_output_tokens".into());
     assert!(r.record(x));
     r.flush_blocking().unwrap();
-    let c = store::open_ro(&p).unwrap();
+    let c = crate::schema::open_ro(&p).unwrap();
     let v: i64 = c
         .query_row("PRAGMA user_version", [], |x| x.get(0))
         .unwrap();
-    assert_eq!(v, store::SCHEMA_VERSION);
-    let rows = store::recent(
+    assert_eq!(v, crate::schema::SCHEMA_VERSION);
+    let rows = crate::records::recent(
         &c,
         &RecentQuery {
             limit: 10,
@@ -80,11 +80,11 @@ fn migrates_v4_db_and_roundtrips_v5_fields() {
         downgraded,
         ..Default::default()
     };
-    let cnt = |q| store::recent_count(&c, &q).unwrap();
+    let cnt = |q| crate::filter::recent_count(&c, &q).unwrap();
     assert_eq!(cnt(q(None, true)), 1);
     assert_eq!(cnt(q(Some("standard"), false)), 2);
     assert_eq!(cnt(q(Some("fast"), false)), 0);
-    let page = store::recent(
+    let page = crate::records::recent(
         &c,
         &RecentQuery {
             offset: 1,
@@ -130,16 +130,16 @@ fn migrates_v1_db() {
     .unwrap();
     qrec(&r, now_ms(), "new", "k", 1, 1.0, now_ms() / 1000 + 60);
     r.flush_blocking().unwrap();
-    let c = store::open_ro(&p).unwrap();
+    let c = crate::schema::open_ro(&p).unwrap();
     let v: i64 = c
         .query_row("PRAGMA user_version", [], |x| x.get(0))
         .unwrap();
-    assert_eq!(v, store::SCHEMA_VERSION);
+    assert_eq!(v, crate::schema::SCHEMA_VERSION);
     let n: i64 = c
         .query_row("SELECT count(*) FROM requests", [], |x| x.get(0))
         .unwrap();
     assert_eq!(n, 2, "old rows kept");
-    let rows = store::recent(
+    let rows = crate::records::recent(
         &c,
         &RecentQuery {
             limit: 10,
@@ -162,7 +162,7 @@ async fn migrate_v13_adds_observation_table() {
     let rid = (now_ms() - 5_000) << SEQ_BITS;
     {
         let mut db = rusqlite::Connection::open(&c.path).unwrap();
-        store::migrate(&mut db).unwrap();
+        crate::schema::migrate(&mut db).unwrap();
         db.execute_batch(&format!(
             "DROP TABLE request_obs;
              INSERT INTO requests(id, transport, status, retries, switches, duration_ms)
@@ -176,12 +176,8 @@ async fn migrate_v13_adds_observation_table() {
     let v: i64 = db
         .query_row("PRAGMA user_version", [], |x| x.get(0))
         .unwrap();
-    assert_eq!(v, store::SCHEMA_VERSION);
-    assert!(r
-        .observation(&format!("{rid:016x}"))
-        .await
-        .unwrap()
-        .is_none());
+    assert_eq!(v, crate::schema::SCHEMA_VERSION);
+    assert!(r.observation(rid).await.unwrap().is_none());
     let n: i64 = db
         .query_row("SELECT COUNT(*) FROM requests", [], |x| x.get(0))
         .unwrap();
@@ -218,7 +214,7 @@ async fn alias_key_stable_across_reopen_and_labels_store_aliases() {
     let al2 = r2.load_or_create_aliaser().unwrap();
     assert_eq!(al2.alias(id), alias);
     assert_eq!(r2.kv_get("alias_key").unwrap().unwrap(), key1);
-    let c = store::open_ro(&path).unwrap();
+    let c = crate::schema::open_ro(&path).unwrap();
     let name: String = c
         .query_row(
             "SELECT name FROM labels WHERE name LIKE 'acct_%' LIMIT 1",
@@ -249,7 +245,7 @@ fn migrate_v11_db_has_no_emails() {
     {
         let mut c = rusqlite::Connection::open(&p).unwrap();
         // Create current schema then pin user_version back to 11 with raw labels.
-        store::migrate(&mut c).unwrap();
+        crate::schema::migrate(&mut c).unwrap();
         // Force v11 marker and inject sensitive rows as a pre-v12 DB would look.
         c.execute_batch(&format!(
             "DELETE FROM requests; DELETE FROM error_detail; DELETE FROM reset_consume;
@@ -278,7 +274,7 @@ fn migrate_v11_db_has_no_emails() {
     }
     // Migrate via open_rw.
     {
-        let _c = store::open_rw(&p).unwrap();
+        let _c = crate::schema::open_rw(&p).unwrap();
     }
     // Column-level check (raw `@` also appears in SQLite page headers as 0x40).
     {
@@ -325,7 +321,7 @@ fn migrate_v11_db_has_no_emails() {
     let v: i64 = c
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(v, store::SCHEMA_VERSION);
+    assert_eq!(v, crate::schema::SCHEMA_VERSION);
     let names: Vec<String> = {
         let mut st = c.prepare("SELECT name FROM labels ORDER BY id").unwrap();
         st.query_map([], |r| r.get(0))
@@ -356,7 +352,7 @@ fn migrate_v12_to_v13_only_adds_thread_index() {
     let d = tempfile::tempdir().unwrap();
     let p = d.path().join("u.db");
     let mut c = rusqlite::Connection::open(&p).unwrap();
-    store::migrate(&mut c).unwrap();
+    crate::schema::migrate(&mut c).unwrap();
     // A v12 DB: no thread index; a raw label shows the v12 rewrite does not run again.
     c.execute_batch(
         "DROP INDEX requests_thread;
@@ -364,11 +360,11 @@ fn migrate_v12_to_v13_only_adds_thread_index() {
          PRAGMA user_version = 12;",
     )
     .unwrap();
-    store::migrate(&mut c).unwrap();
+    crate::schema::migrate(&mut c).unwrap();
     let v: i64 = c
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(v, store::SCHEMA_VERSION);
+    assert_eq!(v, crate::schema::SCHEMA_VERSION);
     let idx: i64 = c
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='requests_thread'",
@@ -389,7 +385,7 @@ fn migrate_v12_is_idempotent() {
     let p = d.path().join("u.db");
     {
         let mut c = rusqlite::Connection::open(&p).unwrap();
-        store::migrate(&mut c).unwrap();
+        crate::schema::migrate(&mut c).unwrap();
         c.execute_batch(
             "INSERT INTO labels(id, name) VALUES (1, 'codex-x-bob@example.com-plus');
              INSERT INTO requests(id, account, transport, status, retries, switches, duration_ms)
@@ -401,7 +397,7 @@ fn migrate_v12_is_idempotent() {
     }
     {
         let mut c = rusqlite::Connection::open(&p).unwrap();
-        store::migrate(&mut c).unwrap();
+        crate::schema::migrate(&mut c).unwrap();
     }
     let name1: String = {
         let c = rusqlite::Connection::open(&p).unwrap();
@@ -419,7 +415,7 @@ fn migrate_v12_is_idempotent() {
         let mut c = rusqlite::Connection::open(&p).unwrap();
         // Force rewrite path again.
         c.execute_batch("PRAGMA user_version = 11;").unwrap();
-        store::migrate(&mut c).unwrap();
+        crate::schema::migrate(&mut c).unwrap();
     }
     let c = rusqlite::Connection::open(&p).unwrap();
     let name2: String = c
@@ -442,7 +438,7 @@ fn v12_db_with_aliases_queries_cleanly() {
     let rid = (now_ms() - 1_000) << SEQ_BITS;
     {
         let mut c = rusqlite::Connection::open(&p).unwrap();
-        store::migrate(&mut c).unwrap();
+        crate::schema::migrate(&mut c).unwrap();
         c.execute_batch(&format!(
             "INSERT INTO labels(id, name) VALUES (1, 'acct_deadbeef'), (2, 'gpt-5.5');
              INSERT INTO requests(id, account, model, transport, status, retries, switches, duration_ms)
@@ -450,8 +446,8 @@ fn v12_db_with_aliases_queries_cleanly() {
         ))
         .unwrap();
     }
-    let c = store::open_ro(&p).unwrap();
-    let rows = store::recent(
+    let c = crate::schema::open_ro(&p).unwrap();
+    let rows = crate::records::recent(
         &c,
         &RecentQuery {
             limit: 5,

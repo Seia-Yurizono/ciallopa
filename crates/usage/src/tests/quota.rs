@@ -24,7 +24,7 @@ async fn keys_instances_quota_and_cost() {
     qrec(&r, t0 + 1, "b", "laptop", 10, 2.0, reset);
     r.flush_blocking().unwrap();
 
-    let c = store::open_ro(&d.path().join("u.db")).unwrap();
+    let c = crate::schema::open_ro(&d.path().join("u.db")).unwrap();
     let obs: i64 = c
         .query_row("SELECT count(*) FROM quota_obs", [], |x| x.get(0))
         .unwrap();

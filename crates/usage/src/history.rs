@@ -448,7 +448,7 @@ pub(crate) fn history(
     from_ms: i64,
     to_ms: i64,
 ) -> Result<Vec<AccountHistory>, UsageError> {
-    let names = crate::store::label_map(c)?;
+    let names = crate::filter::label_map(c)?;
     let acct_id = match account {
         Some(n) => match names.iter().find(|(_, v)| v.as_str() == n).map(|(k, _)| *k) {
             Some(id) => Some(id),
@@ -673,7 +673,7 @@ fn apply_trend(cycles: &mut [CycleRow]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store;
+
     use crate::{Record, Recorder, Transport};
     use ciallopa_core::config::UsageConfig;
 
@@ -718,11 +718,11 @@ mod tests {
             )
             .unwrap();
         }
-        let c = store::open_rw(&p).unwrap();
+        let c = crate::schema::open_rw(&p).unwrap();
         let v: i64 = c
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, store::SCHEMA_VERSION);
+        assert_eq!(v, crate::schema::SCHEMA_VERSION);
         let cards: i64 = c
             .query_row(
                 "SELECT count(*) FROM pragma_table_info('quota_obs') WHERE name='cards'",
@@ -763,7 +763,7 @@ mod tests {
         snap(&r, t0 + 60_000, "a", "gpt-6.1-sol", 1_000, 2.0, new_reset);
         r.flush_blocking().unwrap();
 
-        let c = store::open_ro(&d.path().join("u.db")).unwrap();
+        let c = crate::schema::open_ro(&d.path().join("u.db")).unwrap();
         let events: i64 = c
             .query_row("SELECT count(*) FROM quota_reset_events", [], |x| x.get(0))
             .unwrap();
@@ -820,7 +820,7 @@ mod tests {
         snap(&r, t0, "a", "gpt-6.1-sol", 100, 40.0, reset);
         snap(&r, t0 + 10, "a", "gpt-6.1-sol", 100, 40.0, reset + 400);
         r.flush_blocking().unwrap();
-        let c = store::open_ro(&d.path().join("u.db")).unwrap();
+        let c = crate::schema::open_ro(&d.path().join("u.db")).unwrap();
         let n: i64 = c
             .query_row("SELECT count(*) FROM quota_reset_events", [], |x| x.get(0))
             .unwrap();
@@ -829,7 +829,7 @@ mod tests {
         // percent halved, same resets_at → limit change
         snap(&r, t0 + 20, "a", "gpt-6.1-sol", 100, 20.0, reset + 410);
         r.flush_blocking().unwrap();
-        let c = store::open_ro(&d.path().join("u.db")).unwrap();
+        let c = crate::schema::open_ro(&d.path().join("u.db")).unwrap();
         let kind: String = c
             .query_row("SELECT kind FROM quota_reset_events", [], |x| x.get(0))
             .unwrap();
@@ -859,7 +859,7 @@ mod tests {
         r.observe_quota("a", "manual", snap(2));
         r.observe_quota("a", "manual", snap(1));
         r.flush_blocking().unwrap();
-        let c = store::open_ro(&d.path().join("u.db")).unwrap();
+        let c = crate::schema::open_ro(&d.path().join("u.db")).unwrap();
         let n: i64 = c
             .query_row("SELECT count(*) FROM quota_reset_events", [], |x| x.get(0))
             .unwrap();

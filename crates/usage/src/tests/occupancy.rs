@@ -20,7 +20,7 @@ fn occupancy_buckets_align_to_the_requested_utc_offset() {
         });
     }
     r.flush_blocking().unwrap();
-    let c = store::open_ro(r.path()).unwrap();
+    let c = crate::schema::open_ro(r.path()).unwrap();
     let q = |tz_min| OccupancyQuery {
         from_ms: hour,
         to_ms: hour + 3_600_000,
@@ -28,14 +28,14 @@ fn occupancy_buckets_align_to_the_requested_utc_offset() {
         tz_min,
         ..Default::default()
     };
-    let utc = store::occupancy_rows(&c, &q(0)).unwrap();
+    let utc = crate::occupancy::occupancy_rows(&c, &q(0)).unwrap();
     assert_eq!(utc.len(), 1, "{utc:?}");
     assert_eq!(
         utc[0].full_minutes, 2,
         "minutes at the inflight or WS limit"
     );
     // UTC+5:30: local hours start at :30 UTC, splitting 00/20 from 40.
-    let ist = store::occupancy_rows(&c, &q(330)).unwrap();
+    let ist = crate::occupancy::occupancy_rows(&c, &q(330)).unwrap();
     let starts: Vec<i64> = ist.iter().map(|x| x.minute_ms).collect();
     assert_eq!(starts, [hour - 1_800_000, hour + 1_800_000], "{ist:?}");
     let full: Vec<u64> = ist.iter().map(|x| x.full_minutes).collect();
@@ -65,13 +65,13 @@ fn occupancy_stores_minutes_merges_flushes_buckets_and_follows_retention() {
     r.occupancy(mk(minute + 61_000, 1, 1, 0, 0));
     r.occupancy(mk(minute + 3 * 60_000, 0, 0, 0, 0));
     r.shutdown();
-    let c = store::open_ro(r.path()).unwrap();
+    let c = crate::schema::open_ro(r.path()).unwrap();
     let q = OccupancyQuery {
         from_ms: minute,
         to_ms: minute + 10 * 60_000,
         ..Default::default()
     };
-    let rows = store::occupancy_rows(&c, &q).unwrap();
+    let rows = crate::occupancy::occupancy_rows(&c, &q).unwrap();
     assert_eq!(rows.len(), 3, "{rows:?}");
     let m = &rows[0];
     assert_eq!(m.minute_ms, minute);
@@ -93,7 +93,7 @@ fn occupancy_stores_minutes_merges_flushes_buckets_and_follows_retention() {
         (8, 4, 1 << 20)
     );
     // Five-minute buckets merge the first two minutes.
-    let b = store::occupancy_rows(
+    let b = crate::occupancy::occupancy_rows(
         &c,
         &OccupancyQuery {
             step_min: 5,
@@ -111,16 +111,21 @@ fn occupancy_stores_minutes_merges_flushes_buckets_and_follows_retention() {
         instance: Some("pod-b".into()),
         ..q.clone()
     };
-    assert!(store::occupancy_rows(&c, &other).unwrap().is_empty());
+    assert!(crate::occupancy::occupancy_rows(&c, &other)
+        .unwrap()
+        .is_empty());
     let mine = OccupancyQuery {
         instance: Some("pod-a".into()),
         ..q.clone()
     };
-    assert_eq!(store::occupancy_rows(&c, &mine).unwrap().len(), 3);
+    assert_eq!(
+        crate::occupancy::occupancy_rows(&c, &mine).unwrap().len(),
+        3
+    );
     drop(c);
     purge_db(r.path(), minute + 60_000, 100).unwrap();
-    let c = store::open_ro(r.path()).unwrap();
-    let rows = store::occupancy_rows(&c, &q).unwrap();
+    let c = crate::schema::open_ro(r.path()).unwrap();
+    let rows = crate::occupancy::occupancy_rows(&c, &q).unwrap();
     assert_eq!(rows.len(), 2, "older minute purged");
     assert_eq!(rows[0].minute_ms, minute + 60_000);
 }

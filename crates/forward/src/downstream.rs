@@ -314,10 +314,7 @@ mod tests {
     }
     async fn obs(r: &Recorder, id: i64) -> Option<ciallopa_usage::Observation> {
         r.flush_blocking().unwrap();
-        r.observation(&format!("{id:016x}"))
-            .await
-            .unwrap()
-            .map(|o| o.obs)
+        r.observation(id).await.unwrap().map(|o| o.obs)
     }
     fn chunks(
         n: usize,

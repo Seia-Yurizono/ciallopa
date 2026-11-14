@@ -1,5 +1,6 @@
 #![allow(clippy::unwrap_used)]
 use super::*;
+use crate::problem::{failure_class, LIFECYCLE_ERRORS};
 
 /// RUSTSEC-2026-0459 / CVE-2026-119375: the bundled SQLite must be 3.54.0 or newer.
 mod migrate;

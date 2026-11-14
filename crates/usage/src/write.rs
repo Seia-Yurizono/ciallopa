@@ -225,7 +225,7 @@ pub(crate) fn insert_batch(
 pub(crate) fn insert_quota(
     c: &mut Connection,
     ws: &mut WriterState,
-    rows: &[(i64, String, String, QuotaObs)],
+    rows: &[crate::QuotaSnapshot],
     prices: &crate::prices::PriceTable,
 ) -> rusqlite::Result<()> {
     let tx = c.transaction()?;
@@ -236,7 +236,13 @@ pub(crate) fn insert_quota(
             "INSERT OR IGNORE INTO quota_obs(id,account,instance,plan,p_pct,p_reset,p_win,s_pct,s_reset,s_win,cards) \
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
         )?;
-        for (id, account, by, q) in rows {
+        for crate::QuotaSnapshot {
+            id,
+            account,
+            observer: by,
+            obs: q,
+        } in rows
+        {
             let Some(a) = ws.label(&tx, Some(account))? else {
                 continue;
             };
@@ -321,14 +327,14 @@ pub(crate) fn purge_refusals_before(c: &Connection, cutoff_ms: i64) -> rusqlite:
 
 /// Maintenance: delete rows started before `cutoff_ms`, `chunk` rows per transaction.
 pub fn purge_db(path: &Path, cutoff_ms: i64, chunk: u64) -> Result<u64, UsageError> {
-    let mut c = crate::store::open_rw(path)?;
+    let mut c = crate::schema::open_rw(path)?;
     let mut n = 0;
     loop {
-        let k = crate::store::purge_before(&mut c, cutoff_ms, chunk)?;
+        let k = crate::write::purge_before(&mut c, cutoff_ms, chunk)?;
         n += k;
         if k < chunk {
-            while crate::store::purge_refusals_before(&c, cutoff_ms)? {}
-            while crate::store::purge_occupancy_before(&c, cutoff_ms)? {}
+            while crate::write::purge_refusals_before(&c, cutoff_ms)? {}
+            while crate::occupancy::purge_occupancy_before(&c, cutoff_ms)? {}
             return Ok(n);
         }
     }
@@ -336,7 +342,7 @@ pub fn purge_db(path: &Path, cutoff_ms: i64, chunk: u64) -> Result<u64, UsageErr
 
 /// `PRAGMA integrity_check` result ("ok" when healthy) and row count.
 pub fn integrity_check(path: &Path) -> Result<(String, i64), UsageError> {
-    let c = crate::store::open_ro(path)?;
+    let c = crate::schema::open_read(path)?;
     let s: String = c.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
     let n: i64 = c.query_row("SELECT count(*) FROM requests", [], |r| r.get(0))?;
     Ok((s, n))

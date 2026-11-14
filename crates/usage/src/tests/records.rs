@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn bundled_sqlite_has_wal_page_size_fix() {
     let dir = tempfile::tempdir().unwrap();
-    let c = store::open_rw(&dir.path().join("u.db")).unwrap();
+    let c = crate::schema::open_rw(&dir.path().join("u.db")).unwrap();
     let v: String = c
         .query_row("SELECT sqlite_version()", [], |r| r.get(0))
         .unwrap();
@@ -17,7 +17,7 @@ fn broad_scope_contains_has_no_bind_variable_limit() {
     // A broad fragment can match more names than SQLite's variable limit.
     // Keep user text in bound data, not generated SQL placeholders or literals.
     let mut db = rusqlite::Connection::open_in_memory().unwrap();
-    store::migrate(&mut db).unwrap();
+    crate::schema::migrate(&mut db).unwrap();
     let tx = db.transaction().unwrap();
     {
         let mut label = tx
@@ -41,8 +41,8 @@ fn broad_scope_contains_has_no_bind_variable_limit() {
         filters: filters.clone(),
         ..Default::default()
     };
-    assert_eq!(store::recent_count(&db, &q).unwrap(), 33_000);
-    let sum = store::summary(
+    assert_eq!(crate::filter::recent_count(&db, &q).unwrap(), 33_000);
+    let sum = crate::summary::summary(
         &db,
         &SummaryQuery {
             filters,
@@ -54,9 +54,9 @@ fn broad_scope_contains_has_no_bind_variable_limit() {
     .unwrap();
     assert_eq!(sum.total.count, 33_000);
     // Exact internal lookups (errors, sessions, prices etc.) were not broadened.
-    assert_eq!(store::label_id(&db, "model-1").unwrap(), Some(1));
-    assert_eq!(store::label_id(&db, "MODEL-1").unwrap(), None);
-    assert_eq!(store::label_id(&db, "model-").unwrap(), None);
+    assert_eq!(crate::filter::label_id(&db, "model-1").unwrap(), Some(1));
+    assert_eq!(crate::filter::label_id(&db, "MODEL-1").unwrap(), None);
+    assert_eq!(crate::filter::label_id(&db, "model-").unwrap(), None);
 }
 
 #[test]
@@ -73,7 +73,7 @@ fn ids_are_time_ordered_and_unique() {
 fn read_snapshot_keeps_labels_and_rows_together_during_write() {
     let d = tempfile::tempdir().unwrap();
     let r = Recorder::open(&cfg(d.path())).unwrap();
-    let reader = store::open_ro(r.path()).unwrap();
+    let reader = crate::schema::open_ro(r.path()).unwrap();
     // Pin the same snapshot that label_map reads before fetching request rows.
     let labels: i64 = reader
         .query_row("SELECT count(*) FROM labels", [], |row| row.get(0))
@@ -83,38 +83,40 @@ fn read_snapshot_keeps_labels_and_rows_together_during_write() {
     qrec(&r, now, "new-account", "new-key", 10, 25.0, now / 1000 + 60);
     r.flush_blocking().unwrap(); // Writer commits while the reader is still open.
     let prices = PriceTable::default();
-    assert!(store::recent(&reader, &RecentQuery::default(), &prices)
-        .unwrap()
-        .is_empty());
+    assert!(
+        crate::records::recent(&reader, &RecentQuery::default(), &prices)
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
-        store::summary(&reader, &SummaryQuery::default(), &prices)
+        crate::summary::summary(&reader, &SummaryQuery::default(), &prices)
             .unwrap()
             .total
             .count,
         0
     );
     assert!(
-        store::quota(&reader, &QuotaWeights::default(), &prices, now)
+        crate::quota::quota(&reader, &QuotaWeights::default(), &prices, now)
             .unwrap()
             .is_empty()
     );
     drop(reader);
 
-    let fresh = store::open_ro(r.path()).unwrap();
-    let rows = store::recent(&fresh, &RecentQuery::default(), &prices).unwrap();
+    let fresh = crate::schema::open_ro(r.path()).unwrap();
+    let rows = crate::records::recent(&fresh, &RecentQuery::default(), &prices).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].account.as_deref(), Some("new-account"));
     assert_eq!(rows[0].key.as_deref(), Some("new-key"));
     assert_eq!(rows[0].model.as_deref(), Some("m"));
     assert_eq!(
-        store::summary(&fresh, &SummaryQuery::default(), &prices)
+        crate::summary::summary(&fresh, &SummaryQuery::default(), &prices)
             .unwrap()
             .total
             .count,
         1
     );
     assert_eq!(
-        store::quota(&fresh, &QuotaWeights::default(), &prices, now)
+        crate::quota::quota(&fresh, &QuotaWeights::default(), &prices, now)
             .unwrap()
             .len(),
         1
@@ -266,8 +268,8 @@ async fn thread_filter_resolves_fragments_counts_and_uses_index() {
     };
     assert_eq!(r.recent_count(ok).await.unwrap(), 2);
     // The plan uses the partial index rather than scanning the id range.
-    let c = store::open_ro(&d.path().join("u.db")).unwrap();
-    let tid = store::label_id(&c, a).unwrap().unwrap();
+    let c = crate::schema::open_ro(&d.path().join("u.db")).unwrap();
+    let tid = crate::filter::label_id(&c, a).unwrap().unwrap();
     let plan: Vec<String> = c
         .prepare(
             "EXPLAIN QUERY PLAN SELECT id FROM requests \
@@ -624,10 +626,14 @@ async fn keyset_preserves_same_millisecond_rows_and_ignores_late_higher_ids() {
         .unwrap(),
         0
     );
-    let detail = r.record_by_id(&expected[0]).await.unwrap().unwrap();
+    let detail = r
+        .record_by_id(i64::from_str_radix(&expected[0], 16).unwrap())
+        .await
+        .unwrap()
+        .unwrap();
     assert!(!detail.has_detail);
     assert_eq!(detail, first[0]);
-    assert!(r.record_by_id("0000000000000000").await.unwrap().is_none());
+    assert!(r.record_by_id(0).await.unwrap().is_none());
     assert!(r.record(late));
     let mut newer = Record::new(r.ids.next_at(base + 1), Transport::Sse, "responses");
     newer.status = 200;

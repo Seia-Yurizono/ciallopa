@@ -1,5 +1,5 @@
 use crate::filter::{label_id, label_map, Filters};
-use crate::problem::Outcome;
+use crate::problem::{failure_class, Outcome};
 use crate::records::row_cost;
 use crate::refusals::refusal_minutes;
 use crate::{RefusalQuery, PREWARM_ENDPOINT};
@@ -64,102 +64,6 @@ impl Dim {
             d => d.col(),
         }
     }
-}
-
-/// Error codes that mean an account (or every account) is out of usage quota: the upstream
-/// 429 / in-stream `usage_limit_reached`, and the gateway's own answer when the first account
-/// to recover is out of quota.
-pub const QUOTA_ERRORS: &[&str] = &[
-    "usage_limit",
-    "usage_limit_reached",
-    "all_quota_exhausted",
-    "first_quota_reset",
-];
-
-/// Rate-limit codes reported in-stream (no HTTP 429 on the row): cool the model only.
-pub const RATE_LIMIT_ERRORS: &[&str] = &["rate_limit_exceeded", "turn_rate_limit_exceeded"];
-
-/// Upstream codes that blame the request itself (too long, malformed): not an upstream or
-/// account fault.
-pub const REQUEST_ERRORS: &[&str] = &[
-    "context_length_exceeded",
-    "invalid_request_error",
-    "invalid_prompt",
-    "invalid_value",
-    "unsupported_parameter",
-    "unsupported_value",
-    "string_above_max_length",
-];
-
-/// WebSocket lifecycle codes: Codex reconnects (connection age limit) or resends the full
-/// history (unknown `previous_response_id`). Not failures; counted as cancelled.
-pub const LIFECYCLE_ERRORS: &[&str] = &[
-    "websocket_connection_limit_reached",
-    "previous_response_not_found",
-];
-
-/// Why a failed request failed, coarse enough to chart: `quota` (usage limit, upstream or
-/// local), `rate_limit` (another 429 or an in-stream rate limit), `request` (the upstream
-/// rejected the request content), then by source: `upstream`, `network`, `stream`, `local`
-/// (the gateway itself), `other`. Cancellations are not failures and have no class.
-pub fn failure_class(
-    status: u16,
-    error: Option<&str>,
-    source: Option<&str>,
-    upstream_status: Option<u16>,
-) -> &'static str {
-    if error.is_some_and(|e| QUOTA_ERRORS.contains(&e)) {
-        return "quota";
-    }
-    if status == 429
-        || (source == Some("upstream") && upstream_status == Some(429))
-        || error.is_some_and(|e| RATE_LIMIT_ERRORS.contains(&e))
-    {
-        return "rate_limit";
-    }
-    if error.is_some_and(|e| REQUEST_ERRORS.contains(&e)) {
-        return "request";
-    }
-    match source {
-        Some("upstream") => "upstream",
-        Some("network") => "network",
-        Some("stream") => "stream",
-        Some("local") => "local",
-        _ => "other",
-    }
-}
-
-/// Failure classes in display order.
-pub const FAILURE_CLASSES: &[&str] = &[
-    "quota",
-    "rate_limit",
-    "request",
-    "upstream",
-    "network",
-    "stream",
-    "local",
-    "other",
-];
-
-/// [`failure_class`] of a stored row, or `None` when the row is not a failure (completed,
-/// incomplete, cancelled, unknown outcome or prewarm). Same rules as the summary counts.
-pub fn row_failure_class(
-    status: u16,
-    error: Option<&str>,
-    source: Option<&str>,
-    upstream_status: Option<u16>,
-    endpoint: Option<&str>,
-) -> Option<&'static str> {
-    let f = crate::problem::Facts {
-        status,
-        error,
-        source,
-        upstream_status,
-        endpoint,
-        ..Default::default()
-    };
-    (crate::problem::outcome(&f) == Outcome::Failed)
-        .then(|| failure_class(status, error, source, upstream_status))
 }
 
 #[derive(Debug, Clone)]

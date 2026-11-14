@@ -1,15 +1,16 @@
 //! Per-request usage log. **Never blocks forwarding**: `Recorder::record` is a non-blocking
 //! `try_send` into a bounded queue (full ⇒ drop + count); one dedicated OS thread batch-writes
 //! to SQLite (WAL). Reads open their own read-only connections. Design: docs/USAGE.md.
-pub mod classify;
-pub mod credits;
+pub(crate) mod classify;
+pub(crate) mod credits;
 pub mod detail;
-pub mod estimate;
+pub(crate) mod estimate;
 mod filter;
 mod history;
 mod migrate_v12;
 pub mod observation;
 pub mod occupancy;
+mod pool;
 pub mod prices;
 pub mod problem;
 mod quota;
@@ -17,29 +18,31 @@ mod records;
 pub mod refusals;
 pub mod reset;
 mod schema;
-mod store;
 mod summary;
 mod write;
 mod writer;
 
 pub use detail::{DetailRow, ErrorDetail};
+pub use filter::{Filters, RecentQuery, ThreadMatch, THREAD_FRAGMENT_MIN};
 pub use history::{AccountHistory, CycleRow, ResetEvent};
 pub use observation::{Observation, ObservationRow};
+pub use occupancy::{occupancy_step, OccupancyQuery};
 pub use occupancy::{OccupancyRow, Sample as OccupancySample};
 pub use prices::{PriceTable, Tier};
+pub use problem::FAILURE_CLASSES;
 pub use problem::{Outcome, Problem, ProblemCounts};
+pub use quota::{AccountQuota, Estimate, WindowQuota};
+pub use records::{RecordRow, ScopeValue};
+pub use refusals::RefusalQuery;
 pub use refusals::{Reason as RefusalReason, Refusal, RefusalRow, RefusalTotals};
-pub use store::{
-    failure_class, row_failure_class, AccountQuota, DayBucket, Dim, Estimate, Filters, RecentQuery,
-    RecordRow, ScopeValue, Summary, SummaryGroup, SummaryQuery, WindowQuota, FAILURE_CLASSES,
-    LIFECYCLE_ERRORS, PREWARM_ENDPOINT, QUOTA_ERRORS, RATE_LIMIT_ERRORS, REQUEST_ERRORS,
-};
-pub use store::{occupancy_step, OccupancyQuery, RefusalQuery, ThreadMatch, THREAD_FRAGMENT_MIN};
+pub use summary::{DayBucket, Dim, Summary, SummaryGroup, SummaryQuery};
 pub use write::{integrity_check, purge_db};
+/// Endpoint label of a Codex WS prewarm turn.
+pub const PREWARM_ENDPOINT: &str = "prewarm";
 
 use ciallopa_core::config::{QuotaWeights, UsageConfig};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
@@ -216,17 +219,20 @@ impl Record {
 
 /// Generates time-ordered unique ids (monotonic within the process, 2^20 per ms).
 #[derive(Default)]
-pub struct RequestIds(Mutex<i64>);
+pub struct RequestIds(AtomicI64);
 impl RequestIds {
     pub fn next(&self) -> i64 {
         self.next_at(now_ms())
     }
     pub fn next_at(&self, ms: i64) -> i64 {
         let base = ms << SEQ_BITS;
-        let mut last = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let id = if *last >= base { *last + 1 } else { base };
-        *last = id;
-        id
+        let last = self
+            .0
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
+                Some((last + 1).max(base))
+            })
+            .expect("request id update always succeeds");
+        (last + 1).max(base)
     }
 }
 
@@ -238,7 +244,7 @@ pub fn now_ms() -> i64 {
 }
 
 #[derive(Debug, Default)]
-pub struct Counters {
+pub(crate) struct Counters {
     pub accepted: AtomicU64,
     pub dropped: AtomicU64,
     pub written: AtomicU64,
@@ -258,9 +264,16 @@ pub struct Stats {
 pub(crate) enum Msg {
     Rec(Box<Record>),
     /// Quota snapshot read on request (not from a proxied response): `(id, account, by, obs)`.
-    Quota(Box<(i64, String, String, QuotaObs)>),
+    Quota(Box<QuotaSnapshot>),
     Flush(SyncSender<()>),
     Stop,
+}
+
+pub(crate) struct QuotaSnapshot {
+    pub id: i64,
+    pub account: String,
+    pub observer: String,
+    pub obs: QuotaObs,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -271,14 +284,18 @@ pub enum UsageError {
     Io(#[from] std::io::Error),
     #[error("writer thread gone")]
     Gone,
+    #[error("usage blocking task: {0}")]
+    Join(#[from] tokio::task::JoinError),
 }
 
 pub struct Recorder {
     fast: SyncSender<Msg>,
     path: PathBuf,
-    weights: std::sync::RwLock<QuotaWeights>,
+    reads: Arc<pool::ReadPool>,
+    kv: Mutex<Option<rusqlite::Connection>>,
+    weights: arc_swap::ArcSwap<QuotaWeights>,
     retention_days: Arc<std::sync::atomic::AtomicU32>,
-    prices: Arc<std::sync::RwLock<Arc<PriceTable>>>,
+    prices: Arc<arc_swap::ArcSwap<PriceTable>>,
     pub ids: RequestIds,
     counters: Arc<Counters>,
     refusals: Arc<refusals::Aggregator>,
@@ -299,13 +316,13 @@ impl Recorder {
         if let Some(dir) = cfg.path.parent().filter(|d| !d.as_os_str().is_empty()) {
             std::fs::create_dir_all(dir)?;
         }
-        let conn = store::open_rw(&cfg.path)?;
+        let conn = schema::open_and_migrate(&cfg.path)?;
         let (tx, rx) = sync_channel(cfg.queue_size.max(1));
         let counters = Arc::new(Counters::default());
         let retention_days = Arc::new(std::sync::atomic::AtomicU32::new(cfg.retention_days));
         let refusals = Arc::new(refusals::Aggregator::default());
         let occupancy = Arc::new(occupancy::Aggregator::default());
-        let prices = Arc::new(std::sync::RwLock::new(Arc::new(PriceTable::default())));
+        let prices = Arc::new(arc_swap::ArcSwap::from_pointee(PriceTable::default()));
         let w = writer::Writer {
             refusals: refusals.clone(),
             occupancy: occupancy.clone(),
@@ -315,7 +332,7 @@ impl Recorder {
             flush: std::time::Duration::from_millis(cfg.flush_ms),
             retention_days: retention_days.clone(),
             counters: counters.clone(),
-            state: store::WriterState::new(instance.to_string()),
+            state: crate::write::WriterState::new(instance.to_string()),
             prices: prices.clone(),
         };
         let join = std::thread::Builder::new()
@@ -324,7 +341,9 @@ impl Recorder {
         Ok(Arc::new(Self {
             fast: tx,
             path: cfg.path.clone(),
-            weights: std::sync::RwLock::new(cfg.quota_weights.clone()),
+            reads: pool::ReadPool::new(cfg.path.clone()),
+            kv: Mutex::new(None),
+            weights: arc_swap::ArcSwap::from_pointee(cfg.quota_weights.clone()),
             retention_days,
             ids: RequestIds::default(),
             counters,
@@ -371,26 +390,19 @@ impl Recorder {
 
     /// Occupancy buckets for a range, oldest first, one per bucket and instance.
     pub async fn occupancy_rows(&self, q: OccupancyQuery) -> Result<Vec<OccupancyRow>, UsageError> {
-        let p = self.path.clone();
-        tokio::task::spawn_blocking(move || Ok(store::occupancy_rows(&store::open_ro(&p)?, &q)?))
+        self.read(move |c| Ok(occupancy::occupancy_rows(c, &q)?))
             .await
-            .map_err(|_| UsageError::Gone)?
     }
 
     /// Refusal totals by reason for a range (key / instance filters only).
     pub async fn refusal_totals(&self, q: RefusalQuery) -> Result<RefusalTotals, UsageError> {
-        let p = self.path.clone();
-        tokio::task::spawn_blocking(move || Ok(store::refusal_totals(&store::open_ro(&p)?, &q)?))
+        self.read(move |c| Ok(refusals::refusal_totals(c, &q)?))
             .await
-            .map_err(|_| UsageError::Gone)?
     }
 
     /// Per-minute refusal groups, newest first.
     pub async fn refusal_rows(&self, q: RefusalQuery) -> Result<Vec<RefusalRow>, UsageError> {
-        let p = self.path.clone();
-        tokio::task::spawn_blocking(move || Ok(store::refusal_rows(&store::open_ro(&p)?, &q)?))
-            .await
-            .map_err(|_| UsageError::Gone)?
+        self.read(move |c| Ok(refusals::refusal_rows(c, &q)?)).await
     }
 
     /// Queue a quota snapshot fetched outside a proxied request (management page). Written
@@ -399,12 +411,12 @@ impl Recorder {
     pub fn observe_quota(&self, account: &str, by: &str, q: QuotaObs) -> bool {
         let id = self.ids.next();
         self.fast
-            .try_send(Msg::Quota(Box::new((
+            .try_send(Msg::Quota(Box::new(QuotaSnapshot {
                 id,
-                self.alias_account(account),
-                by.to_string(),
-                q,
-            ))))
+                account: self.alias_account(account),
+                observer: by.to_string(),
+                obs: q,
+            })))
             .is_ok()
     }
 
@@ -435,28 +447,15 @@ impl Recorder {
 
     /// Persist / reuse the HMAC key in kv and return the shared aliaser (also installs it).
     pub fn load_or_create_aliaser(&self) -> Result<Arc<ciallopa_core::Aliaser>, UsageError> {
-        const K: &str = "alias_key";
-        let al = match self.kv_get(K)? {
-            Some(s) => ciallopa_core::Aliaser::from_b64(&s).map_err(|e| {
-                UsageError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
-            })?,
-            None => {
-                let al = ciallopa_core::Aliaser::ephemeral();
-                self.kv_set(K, &al.key_b64())?;
-                al
-            }
-        };
+        let c = schema::open_read(&self.path)?;
+        let al = migrate_v12::load_or_create_aliaser(&c)?;
         self.install_aliaser(al.clone());
         Ok(al)
     }
 
     /// Attach an aliaser so subsequent writes store `acct_…` instead of raw account ids.
-    pub fn install_aliaser(&self, aliaser: Arc<ciallopa_core::Aliaser>) {
+    fn install_aliaser(&self, aliaser: Arc<ciallopa_core::Aliaser>) {
         let _ = self.aliaser.set(aliaser);
-    }
-
-    pub fn aliaser(&self) -> Option<Arc<ciallopa_core::Aliaser>> {
-        self.aliaser.get().cloned()
     }
 
     pub fn alias_account(&self, id: &str) -> String {
@@ -494,24 +493,18 @@ impl Recorder {
 
     /// Distinct models (lowercase) of rows with token counts since `since_ms`.
     pub async fn models_since(&self, since_ms: i64) -> Result<Vec<String>, UsageError> {
-        let p = self.path.clone();
-        tokio::task::spawn_blocking(move || store::models_since(&store::open_ro(&p)?, since_ms))
-            .await
-            .map_err(|_| UsageError::Gone)?
+        self.read(move |c| records::models_since(c, since_ms)).await
     }
 
     /// Distinct models, key labels and instances of the newest `max_rows` rows, most used
     /// first (see [`ScopeValue`]).
     pub async fn scope_values(&self, max_rows: u32) -> Result<[Vec<ScopeValue>; 3], UsageError> {
-        let p = self.path.clone();
-        tokio::task::spawn_blocking(move || store::scope_values(&store::open_ro(&p)?, max_rows))
-            .await
-            .map_err(|_| UsageError::Gone)?
+        self.read(move |c| records::scope_values(c, max_rows)).await
     }
 
     /// Hot-reload: quota-capacity estimation weights.
     pub fn set_weights(&self, w: QuotaWeights) {
-        *self.weights.write().unwrap_or_else(|e| e.into_inner()) = w;
+        self.weights.store(Arc::new(w));
     }
     /// Hot-reload: raw-row retention (0 = keep forever); the writer picks it up within a minute.
     pub fn set_retention_days(&self, days: u32) {
@@ -522,129 +515,155 @@ impl Recorder {
     }
     /// Install / replace the price table (applies to every query, history included).
     pub fn set_prices(&self, p: PriceTable) {
-        *self.prices.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(p);
+        self.prices.store(Arc::new(p));
     }
     pub fn prices(&self) -> Arc<PriceTable> {
-        self.prices
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        self.prices.load_full()
+    }
+
+    async fn read<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&rusqlite::Connection) -> Result<T, UsageError> + Send + 'static,
+    ) -> Result<T, UsageError> {
+        self.reads.read(f).await
     }
 
     pub async fn recent(&self, q: RecentQuery) -> Result<Vec<RecordRow>, UsageError> {
-        let (p, pr) = (self.path.clone(), self.prices());
-        tokio::task::spawn_blocking(move || store::recent(&store::open_ro(&p)?, &q, &pr))
-            .await
-            .map_err(|_| UsageError::Gone)?
+        let prices = self.prices();
+        self.read(move |c| records::recent(c, &q, &prices)).await
     }
 
-    /// Metadata for any recorded request, including a clean success without error detail.
-    pub async fn record_by_id(&self, request_id: &str) -> Result<Option<RecordRow>, UsageError> {
-        let Ok(id) = i64::from_str_radix(request_id, 16) else {
-            return Ok(None);
-        };
-        let (p, pr) = (self.path.clone(), self.prices());
-        tokio::task::spawn_blocking(move || store::record(&store::open_ro(&p)?, id, &pr))
-            .await
-            .map_err(|_| UsageError::Gone)?
-    }
-
-    /// Number of rows matching `q` (ignores limit/offset).
-    /// Request counts per problem chip and cause ([`problem`]); `refused` left null.
-    pub async fn problem_counts(&self, q: RecentQuery) -> Result<ProblemCounts, UsageError> {
-        let p = self.path.clone();
-        tokio::task::spawn_blocking(move || store::problem_counts(&store::open_ro(&p)?, &q))
-            .await
-            .map_err(|_| UsageError::Gone)?
-    }
-
-    /// Resolve a pasted session id or unique fragment ([`store::resolve_thread`]).
-    pub async fn resolve_thread(&self, input: String) -> Result<ThreadMatch, UsageError> {
-        let p = self.path.clone();
-        tokio::task::spawn_blocking(move || {
-            Ok(store::resolve_thread(&store::open_ro(&p)?, &input)?)
+    /// Count ignores the exclusive keyset cursor, as on the HTTP records endpoint.
+    pub async fn records_page(&self, q: RecentQuery) -> Result<(u64, Vec<RecordRow>), UsageError> {
+        let prices = self.prices();
+        self.read(move |c| {
+            let total = filter::recent_count(
+                c,
+                &RecentQuery {
+                    before_id: None,
+                    ..q.clone()
+                },
+            )?;
+            Ok((total, records::recent(c, &q, &prices)?))
         })
         .await
-        .map_err(|_| UsageError::Gone)?
+    }
+
+    /// Metadata for any recorded request, including successes without error detail.
+    pub async fn record_by_id(&self, id: i64) -> Result<Option<RecordRow>, UsageError> {
+        let prices = self.prices();
+        self.read(move |c| records::record(c, id, &prices)).await
+    }
+
+    /// Request counts per problem chip and cause; refused is filled by the HTTP caller.
+    pub async fn problem_counts(&self, q: RecentQuery) -> Result<ProblemCounts, UsageError> {
+        self.read(move |c| filter::problem_counts(c, &q)).await
+    }
+
+    pub async fn problem_counts_with_refusals(
+        &self,
+        q: RecentQuery,
+        refusals: Option<RefusalQuery>,
+    ) -> Result<ProblemCounts, UsageError> {
+        self.read(move |c| {
+            let mut counts = filter::problem_counts(c, &q)?;
+            if let Some(q) = refusals {
+                counts.refused = Some(crate::refusals::refusal_totals(c, &q)?.count);
+            }
+            Ok(counts)
+        })
+        .await
+    }
+
+    /// Resolve a pasted session id or unique fragment.
+    pub async fn resolve_thread(&self, input: String) -> Result<ThreadMatch, UsageError> {
+        self.read(move |c| Ok(filter::resolve_thread(c, &input)?))
+            .await
     }
 
     pub async fn recent_count(&self, q: RecentQuery) -> Result<u64, UsageError> {
-        let p = self.path.clone();
-        tokio::task::spawn_blocking(move || store::recent_count(&store::open_ro(&p)?, &q))
-            .await
-            .map_err(|_| UsageError::Gone)?
+        self.read(move |c| filter::recent_count(c, &q)).await
     }
 
     pub async fn summary(&self, q: SummaryQuery) -> Result<Summary, UsageError> {
-        let (p, pr) = (self.path.clone(), self.prices());
-        let n = pr.models.len();
-        let mut s =
-            tokio::task::spawn_blocking(move || store::summary(&store::open_ro(&p)?, &q, &pr))
-                .await
-                .map_err(|_| UsageError::Gone)??;
-        s.price_models = n;
-        Ok(s)
+        let prices = self.prices();
+        self.read(move |c| {
+            let mut summary = summary::summary(c, &q, &prices)?;
+            summary.price_models = prices.models.len();
+            Ok(summary)
+        })
+        .await
     }
 
-    /// Gateway stream observation by request id (16 hex chars); None when not recorded.
-    pub async fn observation(
+    /// Current and optional previous period, including refusal totals, share one snapshot.
+    pub async fn summary_with_refusals(
         &self,
-        request_id: &str,
-    ) -> Result<Option<ObservationRow>, UsageError> {
-        let Ok(id) = i64::from_str_radix(request_id, 16) else {
-            return Ok(None);
-        };
-        let p = self.path.clone();
-        tokio::task::spawn_blocking(move || Ok(observation::read(&store::open_ro(&p)?, id)?))
-            .await
-            .map_err(|_| UsageError::Gone)?
+        q: SummaryQuery,
+        previous: Option<SummaryQuery>,
+    ) -> Result<SummaryPeriods, UsageError> {
+        let prices = self.prices();
+        self.read(move |c| {
+            let period = |q: &SummaryQuery| -> Result<SummaryPeriod, UsageError> {
+                let mut summary = summary::summary(c, q, &prices)?;
+                summary.price_models = prices.models.len();
+                let refusals = if q.filters.account.is_none() && q.filters.model.is_none() {
+                    Some(refusals::refusal_totals(
+                        c,
+                        &RefusalQuery {
+                            from_ms: q.from_ms,
+                            to_ms: q.to_ms,
+                            key: q.filters.key.clone(),
+                            instance: q.filters.instance.clone(),
+                            ..Default::default()
+                        },
+                    )?)
+                } else {
+                    None
+                };
+                Ok(SummaryPeriod { summary, refusals })
+            };
+            Ok(SummaryPeriods {
+                current: period(&q)?,
+                previous: previous.as_ref().map(period).transpose()?,
+            })
+        })
+        .await
     }
 
-    /// Error detail by request id (16 hex chars as shown in records).
-    pub async fn detail(&self, request_id: &str) -> Result<Option<DetailRow>, UsageError> {
-        let Ok(id) = i64::from_str_radix(request_id, 16) else {
-            return Ok(None);
-        };
-        let p = self.path.clone();
-        tokio::task::spawn_blocking(move || store::detail(&store::open_ro(&p)?, id))
-            .await
-            .map_err(|_| UsageError::Gone)?
+    /// Gateway observation by numeric request id; parse external ids at the HTTP edge.
+    pub async fn observation(&self, id: i64) -> Result<Option<ObservationRow>, UsageError> {
+        self.read(move |c| Ok(observation::read(c, id)?)).await
     }
 
-    /// Latest quota snapshot + capacity estimate per observed account. Snapshots come from
-    /// upstream and include usage by *other* clients / instances of the same account.
+    pub async fn detail(&self, id: i64) -> Result<Option<DetailRow>, UsageError> {
+        self.read(move |c| detail::detail(c, id)).await
+    }
+
     pub async fn quota(&self) -> Result<Vec<AccountQuota>, UsageError> {
-        let (p, w, pr) = (
-            self.path.clone(),
-            self.weights
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone(),
-            self.prices(),
-        );
-        tokio::task::spawn_blocking(move || store::quota(&store::open_ro(&p)?, &w, &pr, now_ms()))
+        let (weights, prices) = (self.weights.load_full(), self.prices());
+        self.read(move |c| quota::quota(c, &weights, &prices, now_ms()))
             .await
-            .map_err(|_| UsageError::Gone)?
     }
 
-    /// Reset timeline and per-cycle capacity/API-cost records (`from_ms`/`to_ms` inclusive).
     pub async fn quota_history(
         &self,
         account: Option<&str>,
         from_ms: i64,
         to_ms: i64,
     ) -> Result<Vec<AccountHistory>, UsageError> {
-        let (p, pr, acct) = (
-            self.path.clone(),
-            self.prices(),
-            account.map(str::to_string),
-        );
-        tokio::task::spawn_blocking(move || {
-            crate::history::history(&store::open_ro(&p)?, &pr, acct.as_deref(), from_ms, to_ms)
-        })
-        .await
-        .map_err(|_| UsageError::Gone)?
+        let (prices, account) = (self.prices(), account.map(str::to_string));
+        self.read(move |c| history::history(c, &prices, account.as_deref(), from_ms, to_ms))
+            .await
     }
+}
+
+pub struct SummaryPeriod {
+    pub summary: Summary,
+    pub refusals: Option<RefusalTotals>,
+}
+pub struct SummaryPeriods {
+    pub current: SummaryPeriod,
+    pub previous: Option<SummaryPeriod>,
 }
 
 #[cfg(test)]

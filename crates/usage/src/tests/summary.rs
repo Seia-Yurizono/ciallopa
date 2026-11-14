@@ -111,10 +111,10 @@ async fn roundtrip_dedupe_summary_purge() {
 
     r.shutdown();
     // purge: everything older than "now" (direct store call, chunked)
-    let mut c = store::open_rw(&d.path().join("u.db")).unwrap();
+    let mut c = crate::schema::open_rw(&d.path().join("u.db")).unwrap();
     let mut n = 0;
     loop {
-        let k = store::purge_before(&mut c, now_ms(), 5).unwrap();
+        let k = crate::write::purge_before(&mut c, now_ms(), 5).unwrap();
         n += k;
         if k < 5 {
             break;
@@ -766,7 +766,7 @@ fn ops_figures_upstream_rate_bucket_latency_refusals_and_failure_class_filter() 
         });
     }
     r.flush_blocking().unwrap();
-    let c = store::open_ro(r.path()).unwrap();
+    let c = crate::schema::open_ro(r.path()).unwrap();
     let prices = PriceTable::default();
     let q = SummaryQuery {
         from_ms: day,
@@ -777,7 +777,7 @@ fn ops_figures_upstream_rate_bucket_latency_refusals_and_failure_class_filter() 
         bucket_refusals: true,
         ..Default::default()
     };
-    let s = store::summary(&c, &q, &prices).unwrap();
+    let s = crate::summary::summary(&c, &q, &prices).unwrap();
     let t = &s.total;
     assert_eq!((t.count, t.failures, t.cancelled), (8, 5, 1), "{t:?}");
     assert_eq!(t.upstream_failures, 2, "upstream quota 429 + upstream 500");
@@ -805,10 +805,10 @@ fn ops_figures_upstream_rate_bucket_latency_refusals_and_failure_class_filter() 
         },
         ..q.clone()
     };
-    let s2 = store::summary(&c, &scoped, &prices).unwrap();
+    let s2 = crate::summary::summary(&c, &scoped, &prices).unwrap();
     assert!(s2.buckets.unwrap().iter().all(|b| b.refused == 0));
     // total_only skips groups.
-    let s3 = store::summary(
+    let s3 = crate::summary::summary(
         &c,
         &SummaryQuery {
             total_only: true,
@@ -821,7 +821,7 @@ fn ops_figures_upstream_rate_bucket_latency_refusals_and_failure_class_filter() 
     assert_eq!(s3.total.count, 8);
 
     let rows = |class: &str, outcome: Option<Outcome>| {
-        store::recent(
+        crate::records::recent(
             &c,
             &RecentQuery {
                 limit: 50,
@@ -850,7 +850,7 @@ fn ops_figures_upstream_rate_bucket_latency_refusals_and_failure_class_filter() 
     assert_eq!(rows("network", Some(Outcome::Failed)), ["connect_failed"]);
     assert!(rows("network", Some(Outcome::Completed)).is_empty());
     assert!(rows("bogus", None).is_empty());
-    let all = store::recent(
+    let all = crate::records::recent(
         &c,
         &RecentQuery {
             limit: 50,

@@ -1,5 +1,5 @@
 use crate::filter::{label_map, recent_where, RecentQuery};
-use crate::row_failure_class;
+use crate::problem::row_failure_class;
 use crate::{Transport, UsageError, SEQ_BITS};
 use rusqlite::{params_from_iter, types::Value, Connection};
 use serde::Serialize;

@@ -21,22 +21,22 @@ fn refusals_merge_across_flushes_persist_on_shutdown_and_follow_retention() {
     r.refuse(mk(minute + 30_000, 3, "a"));
     r.refuse(mk(minute + 61_000, 2, "b"));
     r.shutdown();
-    let c = store::open_ro(r.path()).unwrap();
+    let c = crate::schema::open_ro(r.path()).unwrap();
     let q = RefusalQuery {
         from_ms: minute,
         to_ms: minute + 120_000,
         limit: 10,
         ..Default::default()
     };
-    let rows = store::refusal_rows(&c, &q).unwrap();
+    let rows = crate::refusals::refusal_rows(&c, &q).unwrap();
     assert_eq!(rows.len(), 2, "{rows:?}");
     let a = rows.iter().find(|x| x.key.as_deref() == Some("a")).unwrap();
     assert_eq!((a.minute_ms, a.count), (minute, 3), "merged across flushes");
     assert_eq!((a.first_ms, a.last_ms), (minute + 1_000, minute + 30_000));
     assert_eq!(a.max_inflight, 3);
-    let t = store::refusal_totals(&c, &q).unwrap();
+    let t = crate::refusals::refusal_totals(&c, &q).unwrap();
     assert_eq!((t.count, t.inflight), (4, 4));
-    let k = store::refusal_totals(
+    let k = crate::refusals::refusal_totals(
         &c,
         &RefusalQuery {
             key: Some("b".into()),
@@ -47,8 +47,8 @@ fn refusals_merge_across_flushes_persist_on_shutdown_and_follow_retention() {
     assert_eq!(k.count, 1);
     drop(c);
     purge_db(r.path(), minute + 60_000, 100).unwrap();
-    let c = store::open_ro(r.path()).unwrap();
-    let rows = store::refusal_rows(&c, &q).unwrap();
+    let c = crate::schema::open_ro(r.path()).unwrap();
+    let rows = crate::refusals::refusal_rows(&c, &q).unwrap();
     assert_eq!(rows.len(), 1, "older minute purged");
     assert_eq!(rows[0].key.as_deref(), Some("b"));
 }

@@ -77,7 +77,7 @@ fn shutdown_flushes_without_waiting_for_batch_deadline() {
             "shutdown waited for the batch deadline ({count} records)"
         );
         assert_eq!(r.stats().written, count);
-        let conn = store::open_ro(r.path()).unwrap();
+        let conn = crate::schema::open_ro(r.path()).unwrap();
         let stored: i64 = conn
             .query_row("SELECT COUNT(*) FROM requests", [], |row| row.get(0))
             .unwrap();
@@ -130,9 +130,8 @@ async fn error_detail_stored_redacted_and_purged() {
             .has_detail
     };
     assert!(!has(ok) && has(bad) && has(old));
-    assert!(r.detail(&format!("{ok:016x}")).await.unwrap().is_none());
-    assert!(r.detail("zz").await.unwrap().is_none());
-    let dt = r.detail(&format!("{bad:016x}")).await.unwrap().unwrap();
+    assert!(r.detail(ok).await.unwrap().is_none());
+    let dt = r.detail(bad).await.unwrap().unwrap();
     assert_eq!(
         dt.message.as_deref(),
         Some("upstream 401 for [REDACTED_EMAIL]")
@@ -152,8 +151,8 @@ async fn error_detail_stored_redacted_and_purged() {
     r.flush_blocking().unwrap();
     std::thread::sleep(std::time::Duration::from_millis(100));
     assert_eq!(r.stats().purged, 1);
-    assert!(r.detail(&format!("{old:016x}")).await.unwrap().is_none());
-    assert!(r.detail(&format!("{bad:016x}")).await.unwrap().is_some());
+    assert!(r.detail(old).await.unwrap().is_none());
+    assert!(r.detail(bad).await.unwrap().is_some());
     r.shutdown();
 }
 
@@ -189,11 +188,7 @@ async fn observation_stored_nullable_and_purged() {
     let none = mk(now_ms(), None);
     let empty = mk(now_ms(), Some(Observation::default()));
     r.flush_blocking().unwrap();
-    let got = r
-        .observation(&format!("{with:016x}"))
-        .await
-        .unwrap()
-        .unwrap();
+    let got = r.observation(with).await.unwrap().unwrap();
     assert_eq!(got.request_id, format!("{with:016x}"));
     assert_eq!(got.obs.up_first_text_ms, Some(0));
     assert_eq!(got.obs.up_bytes, Some(i64::MAX as u64));
@@ -202,17 +197,8 @@ async fn observation_stored_nullable_and_purged() {
     assert_eq!(got.obs.down_incomplete, Some(false));
     let j = serde_json::to_value(&got).unwrap();
     assert!(j["sse_first_yield_ms"].is_null() && j["up_first_text_ms"] == 0);
-    assert!(r
-        .observation(&format!("{none:016x}"))
-        .await
-        .unwrap()
-        .is_none());
-    assert!(r
-        .observation(&format!("{empty:016x}"))
-        .await
-        .unwrap()
-        .is_none());
-    assert!(r.observation("zz").await.unwrap().is_none());
+    assert!(r.observation(none).await.unwrap().is_none());
+    assert!(r.observation(empty).await.unwrap().is_none());
     r.shutdown();
     let r = Recorder::open(&UsageConfig {
         retention_days: 90,
@@ -221,16 +207,8 @@ async fn observation_stored_nullable_and_purged() {
     .unwrap();
     r.flush_blocking().unwrap();
     std::thread::sleep(std::time::Duration::from_millis(100));
-    assert!(r
-        .observation(&format!("{old:016x}"))
-        .await
-        .unwrap()
-        .is_none());
-    assert!(r
-        .observation(&format!("{with:016x}"))
-        .await
-        .unwrap()
-        .is_some());
+    assert!(r.observation(old).await.unwrap().is_none());
+    assert!(r.observation(with).await.unwrap().is_some());
     r.shutdown();
 }
 
@@ -254,7 +232,7 @@ fn retention_zero_keeps_forever_and_default_is_90() {
     r.flush_blocking().unwrap();
     std::thread::sleep(std::time::Duration::from_millis(100));
     assert_eq!(r.stats().purged, 0);
-    let conn = store::open_ro(&d.path().join("u.db")).unwrap();
+    let conn = crate::schema::open_ro(&d.path().join("u.db")).unwrap();
     let n: i64 = conn
         .query_row("SELECT count(*) FROM requests", [], |x| x.get(0))
         .unwrap();

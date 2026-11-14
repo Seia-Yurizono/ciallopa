@@ -1,5 +1,5 @@
 //! The single writer thread: batch inserts + periodic retention purge.
-use crate::{store, Counters, Msg, Record};
+use crate::{Counters, Msg, Record};
 use rusqlite::Connection;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
@@ -16,10 +16,10 @@ pub(crate) struct Writer {
     pub flush: Duration,
     pub retention_days: Arc<std::sync::atomic::AtomicU32>,
     pub counters: Arc<Counters>,
-    pub state: store::WriterState,
+    pub state: crate::write::WriterState,
     pub refusals: Arc<crate::refusals::Aggregator>,
     pub occupancy: Arc<crate::occupancy::Aggregator>,
-    pub prices: std::sync::Arc<std::sync::RwLock<std::sync::Arc<crate::PriceTable>>>,
+    pub prices: Arc<arc_swap::ArcSwap<crate::PriceTable>>,
 }
 
 impl Writer {
@@ -93,12 +93,8 @@ impl Writer {
             }
             if !batch.is_empty() {
                 let n = batch.len() as u64;
-                let prices = self
-                    .prices
-                    .read()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone();
-                match store::insert_batch(&mut self.conn, &mut self.state, &batch, &prices) {
+                let prices = self.prices.load_full();
+                match crate::write::insert_batch(&mut self.conn, &mut self.state, &batch, &prices) {
                     Ok(()) => {
                         self.counters.written.fetch_add(n, Ordering::Relaxed);
                     }
@@ -112,13 +108,9 @@ impl Writer {
                 batch.clear();
             }
             if !quotas.is_empty() {
-                let prices = self
-                    .prices
-                    .read()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone();
+                let prices = self.prices.load_full();
                 if let Err(e) =
-                    store::insert_quota(&mut self.conn, &mut self.state, &quotas, &prices)
+                    crate::write::insert_quota(&mut self.conn, &mut self.state, &quotas, &prices)
                 {
                     self.state.reset();
                     tracing::warn!(error = %e, "quota snapshot write failed");
@@ -144,7 +136,7 @@ impl Writer {
             return;
         }
         let rows = self.refusals.take();
-        if let Err(e) = store::upsert_refusals(&mut self.conn, &mut self.state, &rows) {
+        if let Err(e) = crate::refusals::upsert_refusals(&mut self.conn, &mut self.state, &rows) {
             self.state.reset();
             tracing::warn!(error = %e, groups = rows.len(), "refusal write failed; retrying later");
             self.refusals.restore(rows);
@@ -157,7 +149,7 @@ impl Writer {
         if rows.is_empty() {
             return;
         }
-        if let Err(e) = store::upsert_occupancy(&mut self.conn, &mut self.state, &rows) {
+        if let Err(e) = crate::occupancy::upsert_occupancy(&mut self.conn, &mut self.state, &rows) {
             self.state.reset();
             tracing::warn!(error = %e, minutes = rows.len(), "occupancy write failed; retrying later");
             self.occupancy.restore(rows);
@@ -168,14 +160,14 @@ impl Writer {
     fn purge(&mut self) -> bool {
         let cutoff =
             crate::now_ms() - i64::from(self.retention_days.load(Ordering::Relaxed)) * 86_400_000;
-        let more_refusals = match store::purge_refusals_before(&self.conn, cutoff) {
+        let more_refusals = match crate::write::purge_refusals_before(&self.conn, cutoff) {
             Ok(more) => more,
             Err(e) => {
                 tracing::warn!(error = %e, "refusal purge failed");
                 false
             }
         };
-        let more_occupancy = match store::purge_occupancy_before(&self.conn, cutoff) {
+        let more_occupancy = match crate::occupancy::purge_occupancy_before(&self.conn, cutoff) {
             Ok(more) => more,
             Err(e) => {
                 tracing::warn!(error = %e, "occupancy purge failed");
@@ -184,7 +176,7 @@ impl Writer {
         };
         more_refusals
             | more_occupancy
-            | match store::purge_before(&mut self.conn, cutoff, PURGE_CHUNK) {
+            | match crate::write::purge_before(&mut self.conn, cutoff, PURGE_CHUNK) {
                 Ok(n) => {
                     if n > 0 {
                         self.counters.purged.fetch_add(n, Ordering::Relaxed);
