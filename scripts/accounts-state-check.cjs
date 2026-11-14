@@ -1,23 +1,17 @@
 // Partial reads and login/query races against the actual embedded accounts-page functions.
 // Run from any directory: node /path/to/ciallopa/scripts/accounts-state-check.cjs
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const vm = require('node:vm');
-const html = fs.readFileSync(path.join(__dirname, '../crates/server/src/accounts.html'), 'utf8');
-function section(start, end) {
-  const a = html.indexOf(start), b = html.indexOf(end, a + start.length);
-  assert.ok(a >= 0 && b > a, `Accounts source anchors missing: ${start} / ${end}`);
-  return html.slice(a, b);
-}
+const {loadPage, vm, createContext, createDom} = require('./lib/page.cjs');
+const {html, section} = loadPage('accounts');
 const source = [
-  section('// Behind Cloudflare Access an expired', 'async function get('),
-  section('function fail(e)', 'function ok('),
-  section('// ---- add panel:', '// ---- account reads:'),
-  section('// ---- account reads:', '$("refresh").addEventListener'),
-  section('// Device-code login:', 'onLogout='),
-  section('\nonLogout=()=>{', '\nlogin('),
-  section('// Reset cards: the newer', 'function row('),
+  section('accounts-state'),
+  section('accounts-section-72'),
+  section('accounts-fail-73'),
+  section('accounts-section-74'),
+  section('accounts-section-75'),
+  section('accounts-section-76'),
+  section('accounts-section-77'),
+  section('accounts-section-78'),
 ].join('\n');
 const deferred = () => {
   let resolve;
@@ -34,36 +28,13 @@ const payload = (url, version) => url.endsWith('/quota')
 
 function harness() {
   let auth = 'demo-admin', now = 1000, handler = async url => response(payload(url, 'v1'));
-  const nodes = new Map(), intervals = new Map();
+  const {$: lookup, h} = createDom(), intervals = new Map();
   let nextInterval = 0;
-  function node(id) {
-    if (!nodes.has(id)) {
-      const classes = new Set(), events = {};
-      nodes.set(id, {
-        textContent: '', value: '', dataset: {}, isConnected: true,
-        classList: {
-          add: x => classes.add(x),
-          remove: x => classes.delete(x),
-          toggle: (x, on) => on ? classes.add(x) : classes.delete(x),
-          contains: x => classes.has(x),
-        },
-        setAttribute(name, value) {this[name] = value;},
-        removeAttribute(name) {delete this[name]; if (name === 'data-until') delete this.dataset.until;},
-        addEventListener(type, fn) {events[type] = fn;},
-        click() {return events.click?.();},
-        fire(type, e) {return events[type]?.(e);},
-        focus() {c.focused = id;},
-        scrollIntoView() {},
-        appendChild(child) {this.textContent += child.textContent;},
-      });
-    }
-    return nodes.get(id);
-  }
-  const h = (_tag, _attrs, ...kids) => ({textContent: kids.flat().map(k => k?.textContent ?? k ?? '').join('')});
-  const c = vm.createContext({
+  const node = id => {const e = lookup(id); e.focus = () => {c.focused = id;}; return e;};
+  const c = createContext({
     $: node, clear: n => {n.textContent = '';}, h,
     document: {createTextNode: text => ({textContent: text})},
-    W: false, DATA: null, QM: {}, RCM: {}, QERR: {}, OPEN: new Set(), poll: null, NOADMIN: false,
+    W: false, T: {timeout: 45000}, QERR: {}, OPEN: new Set(), poll: null, NOADMIN: false,
     key: () => auth, KS: 'test-key',
     sessionStorage: {removeItem() {auth = '';}},
     showApp() {c.logoutCount++; c.onLogout();}, logoutCount: 0,
@@ -82,6 +53,7 @@ function harness() {
     loadHistAll() {c.histLoads++;}, histLoads: 0, focused: null, closeModal() {}, matchMedia: () => ({matches: false, addEventListener() {}}),
   });
   vm.runInContext(source, c);
+  c.accountsState = vm.runInContext("accountsState", c);
   return {
     c, node,
     run: expression => vm.runInContext(expression, c),
@@ -98,16 +70,16 @@ function harness() {
 async function partialReads() {
   const t = harness();
   await t.run('load()');
-  assert.equal(t.c.QM.alice.quota.version, 'v1');
-  assert.equal(t.c.RCM.alice.version, 'v1');
+  assert.equal(t.c.accountsState.quota.alice.quota.version, 'v1');
+  assert.equal(t.c.accountsState.credits.alice.version, 'v1');
 
   // A successful account response does not turn failed quota/card reads into empty data.
   t.time(2000);
   t.replies(async url => url.startsWith('/usage/') ? failure(503) : response(payload(url, 'v2')));
   await t.run('load()');
-  assert.equal(t.c.DATA.version, 'v2');
-  assert.equal(t.c.QM.alice.quota.version, 'v1');
-  assert.equal(t.c.RCM.alice.version, 'v1');
+  assert.equal(t.c.accountsState.data.version, 'v2');
+  assert.equal(t.c.accountsState.quota.alice.quota.version, 'v1');
+  assert.equal(t.c.accountsState.credits.alice.version, 'v1');
   assert.match(t.node('readnote').textContent, /额度读取失败.*保留已有数据.*t1000/);
   assert.match(t.node('readnote').textContent, /重置卡读取失败.*保留已有数据.*t1000/);
   assert.equal(t.node('upd').textContent, '账号更新于 t2000');
@@ -116,16 +88,16 @@ async function partialReads() {
   t.time(3000);
   t.replies(async url => url.endsWith('/reset-credits') ? failure(503) : response(payload(url, 'v3')));
   await t.run('load()');
-  assert.equal(t.c.QM.alice.quota.version, 'v3');
-  assert.equal(t.c.RCM.alice.version, 'v1');
+  assert.equal(t.c.accountsState.quota.alice.quota.version, 'v3');
+  assert.equal(t.c.accountsState.credits.alice.version, 'v1');
   assert.doesNotMatch(t.node('readnote').textContent, /额度读取失败/);
   assert.match(t.node('readnote').textContent, /重置卡读取失败/);
 
   // Permission/unavailable responses clear only their source instead of retaining authorized data.
   t.replies(async url => url.endsWith('/quota') ? failure(403) : url.endsWith('/reset-credits') ? failure(404) : response(payload(url, 'v4')));
   await t.run('load()');
-  assert.equal(Object.keys(t.c.QM).length, 0);
-  assert.equal(Object.keys(t.c.RCM).length, 0);
+  assert.equal(Object.keys(t.c.accountsState.quota).length, 0);
+  assert.equal(Object.keys(t.c.accountsState.credits).length, 0);
   assert.match(t.node('readnote').textContent, /额度无读取权限（HTTP 403）/);
   assert.match(t.node('readnote').textContent, /重置卡接口不可用（HTTP 404）/);
   assert.doesNotMatch(t.node('readnote').textContent, /保留/);
@@ -143,8 +115,8 @@ async function partialReads() {
   t.time(4000);
   t.replies(async url => url.startsWith('/admin/') ? failure(503) : response(payload(url, 'unused')));
   await assert.rejects(t.run('load()'), /synthetic 503/);
-  assert.equal(t.c.DATA.version, 'v5');
-  assert.equal(t.c.QM.alice.quota.version, 'v5');
+  assert.equal(t.c.accountsState.data.version, 'v5');
+  assert.equal(t.c.accountsState.quota.alice.quota.version, 'v5');
   assert.equal(t.node('upd').textContent, before);
 }
 
@@ -157,9 +129,9 @@ async function supersededReads() {
   // Neither an old 403 nor an old 401 may clear the fresh snapshot or the current identity.
   for (const [url, d] of old) d.resolve(url.endsWith('/quota') ? failure(403) : url.endsWith('/reset-credits') ? failure(401) : failure(503));
   assert.equal(await pending, false);
-  assert.equal(t.c.DATA.version, 'new');
-  assert.equal(t.c.QM.alice.quota.version, 'new');
-  assert.equal(t.c.RCM.alice.version, 'new');
+  assert.equal(t.c.accountsState.data.version, 'new');
+  assert.equal(t.c.accountsState.quota.alice.quota.version, 'new');
+  assert.equal(t.c.accountsState.credits.alice.version, 'new');
   assert.equal(t.c.renderCount, 1);
   assert.equal(t.c.logoutCount, 0);
   assert.equal(t.currentAuth(), 'demo-admin');
@@ -186,7 +158,7 @@ async function supersededReads() {
   for (const [url, d] of b) d.resolve(response(payload(url, 'latest')));
   await pb;
   assert.equal(t.node('tbl')['aria-busy'], 'false');
-  assert.equal(t.c.DATA.version, 'latest');
+  assert.equal(t.c.accountsState.data.version, 'latest');
 }
 
 async function loginChanges() {
@@ -196,9 +168,9 @@ async function loginChanges() {
   t.replies(url => {const d = deferred(); old.set(url, d); return d.promise;});
   const pending = t.run('load()');
   t.run('onLogout()');
-  assert.equal(t.c.DATA, null);
-  assert.equal(Object.keys(t.c.QM).length, 0);
-  assert.equal(Object.keys(t.c.RCM).length, 0);
+  assert.equal(t.c.accountsState.data, null);
+  assert.equal(Object.keys(t.c.accountsState.quota).length, 0);
+  assert.equal(Object.keys(t.c.accountsState.credits).length, 0);
   assert.equal(t.node('upd').textContent, '');
   t.auth('another-admin');
   t.version('other-login');
@@ -207,14 +179,14 @@ async function loginChanges() {
   await pending;
   assert.equal(t.currentAuth(), 'another-admin');
   assert.equal(t.c.logoutCount, 0);
-  assert.equal(t.c.DATA.version, 'other-login');
+  assert.equal(t.c.accountsState.data.version, 'other-login');
 
   // A current 401 retains the normal logout behavior and clears previous identity data.
   t.replies(async () => failure(401));
   assert.equal(await t.run('load()'), false);
   assert.equal(t.currentAuth(), '');
   assert.equal(t.c.logoutCount, 1);
-  assert.equal(t.c.DATA, null);
+  assert.equal(t.c.accountsState.data, null);
   assert.equal(t.node('tbl')['aria-busy'], 'false');
 }
 
@@ -331,15 +303,15 @@ function resetCardDisplay() {
   assert.equal(run('limitHit({limit_reached: true, usage_observed_ms: 1e6}, {observed_at_ms: 1e6 + 6e3})'), false, 'a newer quota observation wins');
   assert.equal(run('limitHit({limit_reached: false, usage_observed_ms: 1e6}, null)'), false);
   // 快到期时自动使用 + 自动刷新额度: switches per account; a failed listing keeps the last answer
-  run('AUTO = {}; QAUTO = {}; AUTOTOP = null; readAuto({status: "fulfilled", value: {j: {auto_lead_mins: 15, auto_available: true, quota_refresh_mins: 5, accounts: [{account: "a", auto: true, auto_next_ms: 5, quota_auto: true}, {account: "b", quota_auto: false}]}}})');
-  assert.equal(run('JSON.stringify([AUTO, QAUTO, AUTOTOP])'), JSON.stringify([{a: {on: true, next: 5}, b: {on: false, next: null}}, {a: true, b: false}, {lead: 15, ok: true, qmins: 5, qmax: 5}]));
+  run('accountsState.auto = {}; accountsState.quotaAuto = {}; accountsState.autoTop = null; readAuto({status: "fulfilled", value: {j: {auto_lead_mins: 15, auto_available: true, quota_refresh_mins: 5, accounts: [{account: "a", auto: true, auto_next_ms: 5, quota_auto: true}, {account: "b", quota_auto: false}]}}})');
+  assert.equal(run('JSON.stringify([accountsState.auto, accountsState.quotaAuto, accountsState.autoTop])'), JSON.stringify([{a: {on: true, next: 5}, b: {on: false, next: null}}, {a: true, b: false}, {lead: 15, ok: true, qmins: 5, qmax: 5}]));
   run('readAuto({status: "rejected", reason: new Error("x")})');
-  assert.equal(run('AUTO.a.on && QAUTO.a && AUTOTOP.lead === 15 && AUTOTOP.qmins'), 5);
+  assert.equal(run('accountsState.auto.a.on && accountsState.quotaAuto.a && accountsState.autoTop.lead === 15 && accountsState.autoTop.qmins'), 5);
   // a refresh range (5–10 min); an old single value reads as fixed (max = min); off = 0
   run('readAuto({status: "fulfilled", value: {j: {auto_lead_mins: 15, auto_available: true, quota_refresh_mins: 5, quota_refresh_max_mins: 10, accounts: [{account: "a", quota_auto: true}]}}})');
-  assert.equal(run('JSON.stringify([AUTOTOP.qmins, AUTOTOP.qmax])'), '[5,10]');
+  assert.equal(run('JSON.stringify([accountsState.autoTop.qmins, accountsState.autoTop.qmax])'), '[5,10]');
   run('readAuto({status: "fulfilled", value: {j: {auto_lead_mins: 15, auto_available: true, quota_refresh_mins: 0, quota_refresh_max_mins: 10, accounts: []}}})');
-  assert.equal(run('JSON.stringify([AUTOTOP.qmins, AUTOTOP.qmax])'), '[0,0]');
+  assert.equal(run('JSON.stringify([accountsState.autoTop.qmins, accountsState.autoTop.qmax])'), '[0,0]');
 }
 
 // 24 h account usage follows the overview's 「含预热」 preference (business only by default).
@@ -364,16 +336,16 @@ async function historyAndCards() {
   await t.run('load()');
   assert.equal(t.c.histLoads, 1, 'load() also refreshes the 30-day history (throttled inside)');
   t.run('readCardTop({status: "fulfilled", value: {j: {can_consume: true, is_admin: true, attempts: [{account: "alice", code: "reset"}]}}})');
-  assert.equal(t.run('JSON.stringify(RCTOP)'), JSON.stringify({can: true, adm: true, attempts: [{account: 'alice', code: 'reset'}]}));
+  assert.equal(t.run('JSON.stringify(accountsState.cardTop)'), JSON.stringify({can: true, adm: true, attempts: [{account: 'alice', code: 'reset'}]}));
   t.run('readCardTop({status: "rejected", reason: new Error("x")})');
-  assert.equal(t.run('RCTOP.can'), true, 'a failed read keeps the last answer');
+  assert.equal(t.run('accountsState.cardTop.can'), true, 'a failed read keeps the last answer');
   t.run('readCardTop({status: "rejected", reason: Object.assign(new Error("x"), {status: 403})})');
-  assert.equal(t.run('RCTOP.can || RCTOP.adm'), false, 'no permission: no card actions');
+  assert.equal(t.run('accountsState.cardTop.can || accountsState.cardTop.adm'), false, 'no permission: no card actions');
   let now = 1000;const paths = [];
-  const c = vm.createContext({key: () => 'k', DATA: {accounts: []}, renders: 0, render() {c.renders++;}, why: e => e.message,
+  const c = createContext({key: () => 'k', accountsState: {data: {accounts: []}}, renders: 0, render() {c.renders++;}, why: e => e.message,
     Date: class extends Date {static now() {return now;}},
     req: async (method, p) => {paths.push(method + ' ' + p); return {j: {from_ms: 1, to_ms: 2, accounts: [{account: 'alice', events: [], cycles: [{window: 'primary'}]}]}};}});
-  vm.runInContext(section('let QHA=null', 'function hashAcc('), c);
+  vm.runInContext(section('accounts-QHA-79'), c);
   await vm.runInContext('loadHistAll(false)', c);
   assert.deepEqual(paths, ['GET /usage/v1/quota/history?days=30']);
   assert.equal(vm.runInContext('qhOf("alice").cycles.length', c), 1);
@@ -497,7 +469,7 @@ function quotaHistoryRender() {
     createTextNode: s => String(s),
   };
   const store = {};
-  const c = vm.createContext({
+  const c = createContext({
     fmtN: n => String(Math.round(Number(n))),
     fmtTime: (ms) => 't' + ms,
     fmtUsd: n => n == null ? '–' : '$' + Number(n).toFixed(2),
@@ -506,7 +478,7 @@ function quotaHistoryRender() {
     clear: e => { while (e.firstChild) e.removeChild(e.firstChild); },
     sessionStorage: {getItem: k => store[k] ?? null, setItem: (k, v) => { store[k] = String(v); }},
   });
-  vm.runInContext(section('function wlab(', 'function whead(') + section('function qhKindLabel', 'let QHA=null'), c);
+  vm.runInContext(section('accounts-wlab-80') + section('accounts-qhKindLabel-81'), c);
   assert.equal(c.qhKindLabel('early_reset'), '提前重置');
   assert.equal(c.qhKindLabel('manual_card'), '手动卡');
   assert.equal(c.qhKindLabel('auto_card'), '自动用卡');
@@ -735,6 +707,8 @@ function quotaHistoryRender() {
   addPanel();
   quotaHistoryRender();
   resetCardDisplay();
+  await switchReplies();
+  await consumeDialog();
   await partialReads();
   await prewarmFollowsOverview();
   await historyAndCards();
@@ -744,3 +718,62 @@ function quotaHistoryRender() {
   await accessGate();
   console.log('PASS: add-panel toggle/Esc/one solid button, reset-card display, auto-use and quota-auto switch state, account snapshots, prewarm preference, read/login races, device start/poll cancellation and identity isolation, Cloudflare Access expiry, quota history charts (px-fitted), single history read, card flags');
 })().catch(error => {console.error(error); process.exitCode = 1;}).finally(() => clearTimeout(watchdog));
+
+// Switching updates only the affected row and trusts the server's accepted value.
+async function switchReplies() {
+  const t = harness(), calls = [], rows = [];
+  t.c.path = a => '/admin/v1/accounts/' + a.id;
+  t.c.renderAccount = id => rows.push(id);
+  t.c.apost = async (path, body) => {calls.push([path, body]); return {account: 'alice', quota_auto: false};};
+  assert.equal(await t.run('setAccountSwitch({id:"alice"},"quota",true)'), false);
+  assert.equal(t.c.accountsState.quotaAuto.alice, false, 'POST reply wins over the requested value');
+  assert.deepEqual(rows, ['alice']);
+  assert.equal(t.c.renderCount, 0);
+  assert.equal(t.c.histLoads, 0);
+  const next = deferred();
+  t.c.get = url => {calls.push([url]); return next.promise;};
+  t.c.apost = async (path, body) => {calls.push([path, body]); return {account: 'alice', auto: true};};
+  const enabling = t.run('setAccountSwitch({id:"alice"},"auto",true)');
+  await new Promise(setImmediate);
+  assert.equal(t.c.accountsState.auto.alice.on, true);
+  assert.equal(await enabling, true, 'switch feedback does not wait for the next-time read');
+  next.resolve({accounts: [{account: 'alice', auto_next_ms: 12345}]});
+  await new Promise(setImmediate);
+  assert.equal(t.c.accountsState.auto.alice.next, 12345);
+  assert.equal(calls.filter(([url]) => url === '/usage/v1/reset-credits').length, 1);
+  assert.equal(calls.length, 3, 'two POSTs, one card list; no account/quota/history reloads');
+  const stale = deferred();
+  t.c.apost = () => stale.promise;
+  const pending = t.run('setAccountSwitch({id:"alice"},"quota",true)');
+  t.run('onLogout()');
+  t.auth('demo-admin'); // Same-key relogin must also invalidate the old mutation.
+  stale.resolve({account: 'alice', quota_auto: true});
+  assert.equal(await pending, undefined);
+  assert.equal(t.c.accountsState.quotaAuto.alice, undefined);
+}
+async function consumeDialog() {
+  const t = harness(), posts = [];
+  t.c.CODEN = {reset: '已重置'};
+  t.run = expression => vm.runInContext(expression, t.c);
+  vm.runInContext(section('consume-dialog'), t.c);
+  t.run('cp={account:"alice",credit:"first",rid:null}');
+  t.c.post = async (url, body) => {posts.push(body); throw Object.assign(new Error('pending'), {status: 409, body: {pending: {credit_id: 'pending-card', redeem_request_id: 'pending-id'}}});};
+  await t.node('cpyes').click();
+  assert.equal(t.run('JSON.stringify(cp)'), JSON.stringify({account: 'alice', credit: 'pending-card', rid: 'pending-id'}));
+  assert.equal(t.node('cpyes').textContent, '重试上一次');
+  t.c.post = async (url, body) => {posts.push(body); return {code: 'reset', windows_reset: 1, redeem_request_id: 'pending-id'};};
+  await t.node('cpyes').click();
+  assert.equal(JSON.stringify(posts[1]), JSON.stringify({confirm: 'alice', credit_id: 'pending-card', redeem_request_id: 'pending-id'}));
+  t.node('cp')._onclose();
+  assert.equal(t.run('cp'), null);
+  const late = deferred();
+  t.c.post = () => late.promise;
+  t.run('cp={account:"alice",credit:null,rid:null}');
+  const pending = t.node('cpyes').click();
+  t.node('cp')._onclose();
+  t.run('cp={account:"bob",credit:"new-card",rid:null}');
+  t.node('cpres').textContent = 'new dialog';
+  late.resolve({code: 'reset', windows_reset: 1});
+  await pending;
+  assert.equal(t.node('cpres').textContent, 'new dialog', 'a closed dialog cannot overwrite its replacement');
+}

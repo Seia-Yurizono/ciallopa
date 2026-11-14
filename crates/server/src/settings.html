@@ -7,246 +7,7 @@
 <meta name="color-scheme" content="light dark">
 <title>ciallopa 设置</title>
 <style>
-/* ==== shared:begin (identical in ui.html, accounts.html, settings.html) ==== */
-/* spacing: 4px base, only --s1..--s6. Colour is used only for state. */
-:root{color-scheme:light;
---s1:4px;--s2:8px;--s3:12px;--s4:16px;--s5:24px;--s6:32px;--r1:6px;--r2:10px;
---bg:#f6f7f9;--surface:#fff;--surface-2:#f7f8fa;--line:#e6e8ec;--line-2:#d3d7dd;
---fg:#16181d;--fg-2:#3d424b;--mut:#5f6673;--faint:#6b7280;--bar:#e6e8eb;--ctl:#878d96;--scrim:rgba(10,12,16,.45);
---ok:#15803d;--ok-bg:#e9f6ee;--cool:#4b5563;--cool-bg:#eef0f3;--err:#b91c1c;--err-bg:#fdecec;
---proxy:#6d28d9;--proxy-bg:#f1ebfd;--off:#5f6673;--off-bg:#eef0f2;--focus:#2563eb;--danger:#c42b1c;
---font:system-ui,-apple-system,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
---mono:ui-monospace,"SF Mono",Menlo,Consolas,"Noto Sans Mono CJK SC",monospace;
---fs-xs:11px;--fs-s:12px;--fs-m:13px;--fs-l:15px;--hdr:48px;--tabbar:0px;--side:0px;--shadow:0 8px 24px rgba(0,0,0,.14);--card:0 1px 2px rgba(16,24,40,.04)}
-@media (prefers-color-scheme:dark){:root:not([data-theme=light]){color-scheme:dark;
---bg:#0e1013;--surface:#16191e;--surface-2:#1b1f25;--line:#272b33;--line-2:#363b45;
---fg:#e7e9ec;--fg-2:#c3c8cf;--mut:#a1a8b3;--faint:#858c97;--bar:#272c34;--ctl:#6a717c;--scrim:rgba(0,0,0,.6);
---ok:#4ade80;--ok-bg:#12261a;--cool:#fbbf24;--cool-bg:#2a210c;--err:#fb7a55;--err-bg:#2c1712;
---proxy:#b79cff;--proxy-bg:#221a38;--off:#a1a8b3;--off-bg:#20242a;--focus:#7aa2ff;--danger:#b4321f;--shadow:0 8px 28px rgba(0,0,0,.55)}}
-:root[data-theme=dark]{color-scheme:dark;
---bg:#0e1013;--surface:#16191e;--surface-2:#1b1f25;--line:#272b33;--line-2:#363b45;
---fg:#e7e9ec;--fg-2:#c3c8cf;--mut:#a1a8b3;--faint:#858c97;--bar:#272c34;--ctl:#6a717c;--scrim:rgba(0,0,0,.6);
---ok:#4ade80;--ok-bg:#12261a;--cool:#fbbf24;--cool-bg:#2a210c;--err:#fb7a55;--err-bg:#2c1712;
---proxy:#b79cff;--proxy-bg:#221a38;--off:#a1a8b3;--off-bg:#20242a;--focus:#7aa2ff;--danger:#b4321f;--shadow:0 8px 28px rgba(0,0,0,.55)}
-*{box-sizing:border-box}
-html{-webkit-text-size-adjust:100%}
-@media (min-width:761px) and (min-height:501px),(min-width:761px) and (pointer:fine){html{scrollbar-gutter:stable}}
-html.modal-open{overflow:hidden}
-body{margin:0;background:var(--bg);color:var(--fg);font:var(--fs-m)/1.45 var(--font);-webkit-font-smoothing:antialiased}
-a{color:var(--fg)}
-a.tag{text-decoration:none}
-.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
-code,.mono{font-family:var(--mono);font-size:var(--fs-s)}
-.num{font-variant-numeric:tabular-nums;white-space:nowrap}
-.mut{color:var(--mut)}.faint{color:var(--faint)}
-.sm{font-size:var(--fs-s)}.xs{font-size:var(--fs-xs)}
-.trunc{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
-.hide{display:none!important}
-.sp{flex:1}
-:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
-.skip{position:absolute;left:var(--s2);top:-48px;z-index:50;background:var(--fg);color:var(--surface);padding:var(--s1) var(--s3);border-radius:var(--r1)}
-.skip:focus{top:var(--s2)}
-.c-ok{color:var(--ok)}.c-cool{color:var(--cool)}.c-err{color:var(--err)}.c-proxy{color:var(--proxy)}.c-off{color:var(--off)}
-/* shell */
-header{position:sticky;top:0;z-index:30;height:var(--hdr);display:flex;align-items:center;gap:var(--s4);padding:0 var(--s5);background:var(--surface);border-bottom:1px solid var(--line)}
-.brand{font-weight:600;font-size:var(--fs-l);letter-spacing:.2px;white-space:nowrap}
-nav.tabs{display:flex;gap:var(--s1);height:100%}
-nav.tabs a{display:flex;align-items:center;padding:0 var(--s3);color:var(--mut);text-decoration:none;font-weight:500;border-bottom:2px solid transparent;margin-bottom:-1px;white-space:nowrap}
-nav.tabs a:hover{color:var(--fg)}
-nav.tabs a[aria-current]{color:var(--fg);border-bottom-color:var(--fg)}
-nav.tabs a:before{content:"";width:16px;height:16px;flex:none;background:currentColor;opacity:.7;-webkit-mask:var(--ic) center/16px no-repeat;mask:var(--ic) center/16px no-repeat}
-nav.tabs a{gap:6px}
-nav.tabs a[aria-current]:before,nav.tabs a:hover:before{opacity:1}
-nav.tabs a .cnt{margin-left:var(--s1);font-size:var(--fs-xs);color:var(--faint);font-variant-numeric:tabular-nums}
-.hstat{display:flex;align-items:center;gap:var(--s3);font-size:var(--fs-s);color:var(--mut);white-space:nowrap;margin-left:auto}
-main{max-width:1440px;margin:0 auto;padding:var(--s5)}
-section{margin-bottom:var(--s6)}
-section:last-child{margin-bottom:0}
-.sh{display:flex;align-items:baseline;gap:var(--s2);margin-bottom:var(--s2);min-height:28px;flex-wrap:wrap}
-.sh h2{margin:0;font-size:var(--fs-l);font-weight:600}
-.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--r2);box-shadow:var(--card)}
-.tw{overflow-x:auto}
-.row{display:flex;align-items:center;gap:var(--s2);flex-wrap:wrap}
-.nw{flex-wrap:nowrap}
-/* controls */
-button,select,input,textarea{font:inherit;color:inherit}
-button,.btn{display:inline-flex;align-items:center;justify-content:center;gap:var(--s1);height:28px;padding:0 var(--s3);border:1px solid var(--line-2);border-radius:var(--r1);background:var(--surface);font-size:var(--fs-s);font-weight:500;cursor:pointer;white-space:nowrap;touch-action:manipulation;text-decoration:none;color:var(--fg)}
-button:hover,.btn:hover{background:var(--surface-2)}
-button:disabled{opacity:.45;cursor:not-allowed}
-button.xs,.btn.xs{height:24px;padding:0 var(--s2)}
-button.pri{background:var(--fg);border-color:var(--fg);color:var(--surface)}
-button.pri:hover{background:var(--fg-2)}
-/* every text action has a border; .ghost is now just the quieter text colour. Borderless only for icon-only
-   buttons (.icon, #theme) and a table row's 详情 disclosure (.det) */
-button.ghost{color:var(--fg-2)}
-button.ghost:hover{background:var(--surface-2);color:var(--fg)}
-button.icon,button#theme,button.det{border-color:transparent;background:transparent}
-button.icon:hover,button#theme:hover,button.det:hover{background:var(--surface-2)}
-/* toggles show their state: pressed / expanded */
-button.ghost[aria-pressed=true],button.ghost[aria-expanded=true]:not(.det){background:var(--surface-2);border-color:var(--ctl);color:var(--fg)}
-button.danger{color:var(--err);border-color:color-mix(in srgb,var(--err) 45%,transparent);background:transparent}
-button.danger:hover{background:var(--err-bg)}
-button.danger.solid{background:var(--danger);border-color:var(--danger);color:#fff}
-button.danger.solid:hover{background:color-mix(in srgb,var(--danger) 85%,#000)}
-button.armed{background:var(--cool-bg);border-color:var(--cool);color:var(--cool)}
-button.busy{opacity:.75;cursor:progress}
-button.busy:before{content:"";flex:none;width:10px;height:10px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:spin .7s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
-select,input:not([type=checkbox]),textarea{height:28px;padding:0 var(--s2);border:1px solid var(--ctl);border-radius:var(--r1);background:var(--surface);font-size:var(--fs-s);max-width:100%;min-width:0}
-textarea{height:auto;padding:var(--s2);font-family:var(--mono);width:100%;resize:vertical}
-select{appearance:none;-webkit-appearance:none;padding-right:22px;background:var(--surface) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23878d96' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4.5 6.5 3.5 3.5 3.5-3.5'/%3E%3C/svg%3E") right 4px center/14px no-repeat;cursor:pointer}
-select:hover{background-color:var(--surface-2)}
-input[type=number]{width:64px;text-align:right;font-variant-numeric:tabular-nums}
-input[type=checkbox]{width:14px;height:14px;margin:0;accent-color:var(--fg)}
-label.chk{display:inline-flex;align-items:center;gap:var(--s1);font-size:var(--fs-s);color:var(--fg-2);white-space:nowrap;cursor:pointer}
-.sw{appearance:none;-webkit-appearance:none;width:28px!important;height:16px!important;border-radius:8px;background:var(--ctl);position:relative;margin:0;cursor:pointer;flex:none}
-.sw:after{content:"";position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:#fff;transition:transform .15s}
-.sw:checked{background:var(--ok)}.sw:checked:after{transform:translateX(12px)}
-.sw:disabled{opacity:.5}
-/* state tags */
-.tag{display:inline-flex;align-items:center;gap:var(--s1);height:20px;padding:0 var(--s2);border-radius:var(--r1);font-size:var(--fs-xs);font-weight:600;white-space:nowrap;background:var(--off-bg);color:var(--fg-2)}
-.tag.dot:before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
-.tag.ok{background:var(--ok-bg);color:var(--ok)}.tag.cool{background:var(--cool-bg);color:var(--cool)}.tag.err{background:var(--err-bg);color:var(--err)}
-.tag.proxy{background:var(--proxy-bg);color:var(--proxy)}.tag.off{background:var(--off-bg);color:var(--off)}
-.tag.line{background:transparent;box-shadow:inset 0 0 0 1px var(--line-2);color:var(--mut)}
-.sdot{display:inline-block;width:8px;height:8px;border-radius:50%;flex:none;background:var(--off)}
-.sdot.ok{background:var(--ok)}.sdot.cool{background:var(--cool)}.sdot.err{background:var(--err)}.sdot.off{background:transparent;box-shadow:inset 0 0 0 2px var(--off)}
-/* quota bar: shows REMAINING */
-.q{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:var(--s2);min-width:0}
-.q .lb{font-size:var(--fs-xs);color:var(--mut);min-width:2em}
-.q .pc{font-size:var(--fs-s);font-weight:600;font-variant-numeric:tabular-nums;text-align:right;min-width:3.2em}
-.bar{height:6px;background:var(--bar);border-radius:3px;overflow:hidden;min-width:48px}
-.bar>i{display:block;height:100%;background:var(--ok);border-radius:3px}
-.bar>i.w{background:var(--cool)}.bar>i.b{background:var(--err)}
-.pc.w{color:var(--cool)}.pc.b{color:var(--err)}
-.q.stale .bar>i{opacity:.4}.q.stale .pc{color:var(--mut)}
-/* tables */
-table{border-collapse:collapse;width:100%;font-size:var(--fs-m)}
-th,td{padding:var(--s2) var(--s3);text-align:left;vertical-align:middle;border-bottom:1px solid var(--line)}
-thead th{font-size:var(--fs-xs);font-weight:600;color:var(--mut);background:var(--surface-2);white-space:nowrap}
-th[title]{text-decoration:underline dotted var(--line-2);text-underline-offset:3px;cursor:help}
-tbody tr:last-child>td{border-bottom:0}
-tbody tr:hover>td{background:var(--surface-2)}
-th.n,td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
-tr.hl>td{background:color-mix(in srgb,var(--focus) 9%,var(--surface))!important}
-tr.hl>td:first-child{box-shadow:inset 2px 0 0 var(--focus)}
-.who{display:flex;flex-direction:column;min-width:0;max-width:240px}
-.who b{font-weight:600}
-.empty{padding:var(--s6) var(--s4);text-align:center;color:var(--mut)}
-.empty b{display:block;color:var(--fg-2);font-size:var(--fs-m);margin-bottom:var(--s1)}
-.skel{display:block;height:12px;margin:var(--s2) 0;border-radius:var(--r1);background:var(--bar);animation:sk 1.2s ease-in-out infinite alternate}
-@keyframes sk{from{opacity:.5}to{opacity:1}}
-[aria-busy=true] tbody{opacity:.6;transition:opacity .2s}
-/* banners, toasts */
-.banner{display:flex;gap:var(--s2);align-items:baseline;flex-wrap:wrap;padding:var(--s2) var(--s3);border-radius:var(--r2);margin-bottom:var(--s4);font-size:var(--fs-s);border:1px solid color-mix(in srgb,var(--cool) 30%,transparent);background:var(--cool-bg)}
-.banner b{white-space:nowrap}
-.banner.err{background:var(--err-bg);border-color:color-mix(in srgb,var(--err) 30%,transparent)}
-.banner.err b{color:var(--err)}.banner.cool b{color:var(--cool)}
-.banner:empty{display:none}
-#toasts{position:fixed;right:var(--s5);bottom:var(--s5);z-index:60;display:flex;flex-direction:column;gap:var(--s2);align-items:flex-end;pointer-events:none;max-width:calc(100vw - 2 * var(--s5))}
-.toast{pointer-events:auto;display:flex;gap:var(--s3);align-items:center;max-width:440px;min-height:36px;padding:var(--s2) var(--s3);border-radius:var(--r2);background:var(--fg);color:var(--surface);box-shadow:var(--shadow);font-size:var(--fs-m);white-space:pre-line;overflow-wrap:anywhere}
-.toast.err{background:var(--danger);color:#fff}
-.toast span{flex:1}
-.toast button{height:28px;border-color:color-mix(in srgb,var(--surface) 40%,transparent);background:transparent;color:inherit;font-weight:600}
-.toast.out{opacity:0;transition:opacity .25s}
-.toast button.x{width:28px;padding:0;border-color:transparent}
-/* dialogs (bottom sheet on phone) */
-.modal{position:fixed;inset:0;z-index:40;display:flex;align-items:flex-start;justify-content:center;padding:10vh var(--s4) var(--s4);background:var(--scrim)}
-.mbox{width:min(480px,100%);max-height:84vh;overflow:auto;overscroll-behavior:contain;background:var(--surface);border-radius:var(--r2);border:1px solid var(--line);padding:var(--s4);display:flex;flex-direction:column;gap:var(--s3)}
-.mbox.dz{border-top:3px solid var(--err)}
-.mbox.wide{width:min(880px,100%)}
-.mbox h3{margin:0;font-size:var(--fs-l);font-weight:600;overflow-wrap:anywhere}
-.mbox p{margin:0}
-.warnp{padding:var(--s2) var(--s3);border-radius:var(--r1);background:var(--err-bg)}
-.hintp{padding:var(--s2) var(--s3);border-radius:var(--r1);background:var(--cool-bg);color:var(--fg)}
-.hintp b{color:var(--cool)}
-.kv{display:grid;grid-template-columns:auto minmax(0,1fr);gap:var(--s1) var(--s3);font-size:var(--fs-s);margin:0}
-.kv dt{color:var(--mut)}.kv dd{margin:0;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
-.mact{display:flex;gap:var(--s2);justify-content:flex-end;flex-wrap:wrap}
-.mact .alt{margin-right:auto}
-.res{font-size:var(--fs-s);white-space:pre-wrap;overflow-wrap:anywhere}
-.res:not(:empty){padding:var(--s2) var(--s3);border-radius:var(--r1);background:var(--surface-2);border:1px solid var(--line)}
-/* login */
-#login{max-width:400px;margin:14vh auto 0;padding:var(--s5);background:var(--surface);border:1px solid var(--line);border-radius:var(--r2)}
-#login h1{font-size:var(--fs-l);margin:0 0 var(--s2)}
-#login form{display:flex;gap:var(--s2);margin-top:var(--s4)}
-#login input{flex:1;height:40px}
-#login button{height:40px}
-#lerr{margin-top:var(--s2);color:var(--err)}
-.m-only{display:none}
-@media (prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
-@media (max-width:760px),(max-height:500px) and (pointer:coarse){
-:root{--hdr:44px;--tabbar:52px}
-/* landscape phones keep this layout; content clears the notch / Dynamic Island side (needs viewport-fit=cover) */
-header{padding:0 max(var(--s3),env(safe-area-inset-right)) 0 max(var(--s3),env(safe-area-inset-left));gap:var(--s2)}
-nav.tabs{position:fixed;left:0;right:0;bottom:0;height:calc(var(--tabbar) + env(safe-area-inset-bottom));z-index:30;background:var(--surface);border-top:1px solid var(--line);gap:0;padding:0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
-nav.tabs a{flex:1;flex-direction:column;justify-content:center;gap:2px;border-bottom:0;border-top:2px solid transparent;margin:0;font-size:var(--fs-xs)}
-nav.tabs a:before{width:20px;height:20px;-webkit-mask-size:20px;mask-size:20px}
-nav.tabs a .cnt{display:none}
-nav.tabs a[aria-current]{border-top-color:var(--fg)}
-.hstat{gap:var(--s2)}
-main{padding:var(--s3) max(var(--s3),env(safe-area-inset-right)) calc(var(--tabbar) + env(safe-area-inset-bottom) + var(--s5)) max(var(--s3),env(safe-area-inset-left))}
-section{margin-bottom:var(--s5)}
-.d-only{display:none!important}.m-only{display:revert}
-#toasts{left:max(var(--s3),env(safe-area-inset-left));right:max(var(--s3),env(safe-area-inset-right));bottom:calc(var(--tabbar) + env(safe-area-inset-bottom) + var(--s2));align-items:stretch;max-width:none}.toast{max-width:none}
-.modal{align-items:flex-end;padding:var(--s3) var(--s3) calc(var(--s3) + env(safe-area-inset-bottom))}
-select,input:not([type=checkbox]),textarea{font-size:16px}select,input:not([type=checkbox]){height:44px}
-.toast button{height:44px}.toast button.x{width:44px}
-#rmore,#devbtn,#imf button,#kf button,#pcheck{height:44px}
-.mbox{max-height:88vh}
-.mact button{flex:1;height:44px;font-size:var(--fs-m)}
-.mact .alt{margin-right:0;flex-basis:100%}
-/* stacked lists: table rows become 2-3 line items */
-table.stk,table.stk tbody{display:block}
-table.stk thead{display:none}
-table.stk tr{display:grid;gap:var(--s1) var(--s2);padding:var(--s2) var(--s3);border-bottom:1px solid var(--line)}
-table.stk tbody tr:last-child{border-bottom:0}
-table.stk td{display:block;padding:0;border:0;min-width:0}
-table.stk tbody tr:hover>td{background:none}
-table.stk tr.hl{background:color-mix(in srgb,var(--focus) 9%,var(--surface));box-shadow:inset 2px 0 0 var(--focus)}
-table.stk tr.hl>td{background:none!important;box-shadow:none!important}
-}
-@media (pointer:coarse){
-header button,header a.tag,.cchip,label.chk,.toc a,.pop .pf a,.pop button,#acc .stack button,#acc .meta-c button,.sh button,.ptest button,#reload,.qmod,#mstrip button,.banner a{position:relative}
-header button:after,header a.tag:after,.cchip:after,label.chk:after,.toc a:after,.pop .pf a:after,.pop button:after,#acc .stack button:after,#acc .meta-c button:after,.sh button:after,.ptest button:after,#reload:after,.qmod:after,#mstrip button:after,.banner a:after{content:"";position:absolute;left:50%;top:50%;width:max(calc(100% + 4px),44px);height:max(100%,44px);transform:translate(-50%,-50%)}
-}
-/* desktop shell: brand + page links in a left sidebar, page title and global actions in the top bar */
-.ptl{display:none;margin:0;font-size:17px;font-weight:600;letter-spacing:-.1px;white-space:nowrap}
-@media (min-width:1024px){
-:root{--side:208px}
-#app{padding-left:var(--side)}
-#app:before{content:"";position:fixed;left:0;top:0;bottom:0;width:var(--side);background:var(--surface);border-right:1px solid var(--line);z-index:29}
-header{background:color-mix(in srgb,var(--bg) 92%,transparent);border-bottom-color:transparent;padding:0 var(--s5)}
-.brand{position:fixed;left:0;top:0;width:var(--side);height:56px;display:flex;align-items:center;gap:var(--s2);padding:0 var(--s4) 0 20px}
-.brand:before{content:"";width:20px;height:20px;border-radius:6px;background:var(--fg);flex:none;box-shadow:inset 0 0 0 5px var(--fg),inset 0 0 0 20px var(--surface)}
-nav.tabs{position:fixed;left:0;top:56px;width:var(--side);height:auto;flex-direction:column;gap:2px;padding:var(--s2) var(--s3)}
-nav.tabs a{height:32px;gap:10px;padding:0 10px;border:0;margin:0;border-radius:var(--r1);color:var(--fg-2);font-weight:500}
-nav.tabs a:hover{background:var(--surface-2);color:var(--fg)}
-nav.tabs a[aria-current]{background:color-mix(in srgb,var(--fg) 6%,var(--surface));color:var(--fg);font-weight:600}
-nav.tabs a .cnt{margin-left:auto;min-width:20px;padding:0 6px;border-radius:9px;line-height:18px;text-align:center;background:var(--surface-2);box-shadow:inset 0 0 0 1px var(--line)}
-nav.tabs a .cnt:empty{display:none}
-.ptl{display:block}
-}
-/* 1024-1359: the sidebar collapses to an icon rail so wide tables keep their room */
-@media (min-width:1024px) and (max-width:1359px){
-:root{--side:60px}
-.brand{justify-content:center;padding:0;gap:0;font-size:0}
-nav.tabs{padding:var(--s2)}
-nav.tabs a{position:relative;justify-content:center;height:40px;padding:0;gap:0;font-size:0}
-nav.tabs a:before{width:18px;height:18px;-webkit-mask-size:18px;mask-size:18px}
-nav.tabs a .cnt{position:absolute;top:2px;right:2px;margin:0;min-width:16px;padding:0 4px;line-height:14px;font-size:10px}
-}
-nav.tabs a[data-p=overview]{--ic:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='3' width='7' height='9' rx='1.5'/%3E%3Crect x='14' y='3' width='7' height='5' rx='1.5'/%3E%3Crect x='14' y='12' width='7' height='9' rx='1.5'/%3E%3Crect x='3' y='16' width='7' height='5' rx='1.5'/%3E%3C/svg%3E")}
-nav.tabs a[data-p=accounts]{--ic:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='9' cy='8' r='4'/%3E%3Cpath d='M2 21v-1a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1'/%3E%3Cpath d='M16 4a4 4 0 0 1 0 8M22 21v-1a6 6 0 0 0-4-5.6'/%3E%3C/svg%3E")}
-nav.tabs a[data-p=settings]{--ic:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1'/%3E%3Ccircle cx='15' cy='6' r='2'/%3E%3Ccircle cx='9' cy='12' r='2'/%3E%3Ccircle cx='17' cy='18' r='2'/%3E%3C/svg%3E")}
-main.noadm>:not(#noadm){display:none!important}
-#noadm{display:flex;flex-direction:column;gap:var(--s2);align-items:center;margin-top:var(--s6)}
-/* segmented control: a short set of exclusive choices */
-.seg{display:inline-flex;align-items:center;gap:2px;padding:2px;border-radius:var(--r1);background:color-mix(in srgb,var(--fg) 4%,var(--surface));box-shadow:inset 0 0 0 1px var(--line)}
-.seg button{height:24px;padding:0 10px;border:0;border-radius:4px;background:transparent;color:var(--mut);font-size:var(--fs-s);font-weight:500}
-.seg button:hover{background:transparent;color:var(--fg)}
-.seg button[aria-pressed=true],.seg button[aria-current]{background:var(--surface);color:var(--fg);font-weight:600;box-shadow:0 1px 2px rgba(16,24,40,.08),0 0 0 1px var(--line)}
-/* ==== shared:end ==== */
+/*@shared.css*/
 /* settings: left grouped nav + one page per group (hash-linkable); phone: list -> drill-down */
 .slay{display:grid;grid-template-columns:200px minmax(0,1fr);gap:var(--s5);align-items:start;margin-top:var(--s2)}
 .snav{position:sticky;top:calc(var(--hdr) + var(--s4));display:flex;flex-direction:column;gap:var(--s2)}
@@ -478,177 +239,33 @@ fieldset.sc{justify-self:stretch;align-items:flex-start}
 <script>
 "use strict";
 (function(){
-/* ==== shared:begin (identical in ui.html, accounts.html, settings.html) ==== */
-const $=id=>document.getElementById(id);
-const KS="ciallopa_key",TH="ciallopa_theme";
-// All dynamic text goes through textContent / createTextNode: never parsed as HTML.
-function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined&&text!==null)e.textContent=String(text);return e}
-function h(tag,a,...kids){const e=document.createElement(tag);
-  if(typeof a==="string")e.className=a;
-  else if(a)for(const k in a){const v=a[k];if(v===null||v===undefined||v===false)continue;
-    if(k==="class")e.className=v;else if(k==="text")e.textContent=String(v);else if(k.startsWith("on"))e.addEventListener(k.slice(2),v);else e.setAttribute(k,v===true?"":String(v))}
-  add(e,kids);return e}
-function add(e,kids){for(const k of kids){if(k===null||k===undefined||k===false)continue;if(Array.isArray(k))add(e,k);else e.appendChild(typeof k==="object"?k:document.createTextNode(String(k)))}return e}
-function clear(e){while(e.firstChild)e.removeChild(e.firstChild)}
-// ---- formats
-const NF=new Intl.NumberFormat("zh-CN");
-const p2=x=>String(x).padStart(2,"0");
-function exact(n){return n===null||n===undefined?"":NF.format(n)}
-function fmtN(n){if(n===null||n===undefined)return"–";n=Number(n);const a=Math.abs(n);if(a>=1e9)return(n/1e9).toFixed(2)+"B";if(a>=1e6)return(n/1e6).toFixed(2)+"M";if(a>=1e3)return(n/1e3).toFixed(1)+"k";return String(Math.round(n))}
-function fmtMs(n){return n===null||n===undefined?"–":(n>=1000?(n/1e3).toFixed(n>=1e4?1:2)+" s":Math.round(n)+" ms")}
-function fmtUsd(c){if(c===null||c===undefined)return"–";if(c===0)return"$0.00";if(c<0.01)return"<$0.01";return"$"+c.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})}
-function exactUsd(c){return c===null||c===undefined?"":"$"+c.toFixed(6)}
-function tzOff(d){const o=-d.getTimezoneOffset(),a=Math.abs(o);return"UTC"+(o>=0?"+":"-")+p2(Math.floor(a/60))+":"+p2(a%60)}
-function isoLocal(ms){const d=new Date(ms);return d.getFullYear()+"-"+p2(d.getMonth()+1)+"-"+p2(d.getDate())+"T"+p2(d.getHours())+":"+p2(d.getMinutes())+":"+p2(d.getSeconds())+tzOff(d).slice(3)}
-function fmtTime(ms,noSec){const d=new Date(ms);return(d.getFullYear()!==new Date().getFullYear()?d.getFullYear()+"-":"")+p2(d.getMonth()+1)+"-"+p2(d.getDate())+" "+p2(d.getHours())+":"+p2(d.getMinutes())+(noSec?"":":"+p2(d.getSeconds()))}
-function hms(d){return p2(d.getHours())+":"+p2(d.getMinutes())+":"+p2(d.getSeconds())}
-// Compact countdown: 3天9时 / 1时06分 / 4分12秒.
-function dur(s){if(s<=0)return"已到期";const d=Math.floor(s/86400),hh=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return d?d+"天"+hh+"时":hh?hh+"时"+p2(m)+"分":m+"分"+p2(Math.floor(s%60))+"秒"}
-function ago(ms){const s=Math.max(0,(Date.now()-ms)/1000);if(s<60)return"刚刚";if(s<3600)return Math.floor(s/60)+" 分钟前";if(s<86400)return Math.floor(s/3600)+" 小时前";return Math.floor(s/86400)+" 天前"}
-// Elements carrying data-until (unix ms) show a live countdown.
-setInterval(()=>{for(const e of document.querySelectorAll("[data-until]"))e.textContent=(e.dataset.pre||"")+dur((Number(e.dataset.until)-Date.now())/1000)},1000);
-// ---- access key (sessionStorage of this tab, shared by all three pages) and API calls
-function key(){return sessionStorage.getItem(KS)||""}
-function adminMsg(j){return j&&j.error&&j.error.type==="admin_required"?"当前密钥没有管理权限。请使用 admin = true 的密钥登录，或在配置文件的 [[api_keys]] 中为该密钥设置 admin = true。":null}
-// o.timeout (ms): abort a request that gets no answer (the error then has kind "timeout").
-async function req(method,path,body,extra,o){
-  const auth=key(),epoch=authEpoch,current=()=>key()===auth&&epoch===authEpoch&&(!o||!o.current||o.current()),hd={"Authorization":"Bearer "+auth};if(body!==undefined)hd["Content-Type"]="application/json";Object.assign(hd,extra||{});
-  const ac=o&&o.timeout?new AbortController():null,tm=ac?setTimeout(()=>ac.abort(),o.timeout):null;let r;
-  try{r=await fetch(path,{method,headers:hd,body:body===undefined?undefined:JSON.stringify(body),cache:"no-store",credentials:"same-origin",redirect:"manual",referrerPolicy:"no-referrer",signal:ac?ac.signal:undefined})}
-  catch(e){const x=new Error(ac&&ac.signal.aborted?"请求超时（"+Math.round(o.timeout/1000)+" 秒内没有响应）":"网络错误，无法连接 ciallopa（"+e.message+"）");x.kind=ac&&ac.signal.aborted?"timeout":"network";throw x}
-  finally{clearTimeout(tm)}
-  gate(r);
-  if(r.status===401){if(current()){sessionStorage.removeItem(KS);showApp(false,"密钥无效或已过期")}throw new Error("401")}
-  let j=null;try{j=await r.json()}catch(_){}
-  if(current()&&r.status===403&&j&&j.error&&j.error.type==="admin_required")NOADMIN=true;
-  if(!r.ok){const e=new Error(adminMsg(j)||(j&&j.error&&j.error.message)||(path.split("?")[0]+" → HTTP "+r.status));e.status=r.status;e.body=j;throw e}
-  return {j,r}}
-// Behind Cloudflare Access an expired or missing login answers an API call with a redirect to the
-// sign-in page (an opaque redirect under redirect:"manual") or an HTML page instead of JSON. That is
-// not a network error and not a bad key: keep the key and ask for a page reload.
-function gate(r){const hd=n=>r.headers&&r.headers.get?(r.headers.get(n)||"").toLowerCase():"",ks=r.headers&&r.headers.keys?[...r.headers.keys()]:[];
-  if(r.type==="opaqueredirect"||r.status===0||r.redirected||hd("content-type").includes("text/html")||(r.status===401||r.status===403)&&ks.some(k=>k.toLowerCase().startsWith("cf-access"))){const x=new Error("Cloudflare Access 登录已过期，请刷新页面重新登录");x.kind="access";throw x}}
-async function get(p,o){return (await req("GET",p,undefined,undefined,o)).j}
-async function post(p,b){return (await req("POST",p,b||{})).j}
-// Reason of a failed call for a toast: timeout / network as such, HTTP errors with their status.
-function why(e){if(!e)return"未知错误";if(e.kind||!e.status)return e.message||String(e);return"HTTP "+e.status+" · "+e.message}
-// A button action: busy state (spinner, optional label) while it runs; a failure becomes an error
-// toast "<name>失败：<reason>". Returns false on failure. Calls pass `T` for a 45 s timeout.
-const T={timeout:45000};
-// Per-account result of an active quota query (刷新额度) → short reason.
-// Quota windows by length: up to a day → short column (5 小时), longer → long column (周, or the
-// free plan's single 30 天 window). Without window_minutes the slot decides (primary short).
-function wlab(m,d){if(!m)return d;if(m===300)return"5h";if(m===10080)return"周";if(m>=1440)return Math.round(m/1440)+" 天";if(m>=60)return Math.round(m/60)+"h";return m+" 分"}
-function wslots(q){const o={s:null,l:null};if(!q)return o;
-  for(const [w,d,k] of [[q.primary,"5h","s"],[q.secondary,"周","l"]]){if(!w||w.used_pct===null||w.used_pct===undefined)continue;
-    let s=w.window_minutes?(w.window_minutes>1440?"l":"s"):k;if(o[s])s=s==="s"?"l":"s";if(!o[s])o[s]=[wlab(w.window_minutes,d),w,s]}return o}
-function whead(labels,def){const L=[...new Set(labels.map(x=>x==="5h"?"5 小时":x))];return(L.length?L.join(" / "):def)+"剩余"}
-// 刷新额度 answered "asked moments ago": neutral, not a failure.
-const qskip=r=>!r.ok&&r.error&&r.error.kind==="rate_limited";
-function qsummary(j){const sk=j.skipped!==undefined?j.skipped:j.results.filter(qskip).length,cleared=(j.results||[]).filter(r=>r.cooldown_cleared).length,p=[];if(j.ok)p.push("已刷新 "+j.ok+" 个账号的额度");if(cleared)p.push(cleared+" 个已解除额度冷却");if(sk)p.push(sk+" 个 30 秒内刚查询过，已跳过");return p.join("，")||"没有可刷新的账号"}
-function qerr(e){e=e||{};const m=e.message||"";return{rate_limited:"刚查询过，"+(e.retry_after_s||30)+" 秒后重试",http:"上游 HTTP "+e.status+(m?" · "+m:""),network:"无法连接上游（"+m.replace(/^send: /,"")+"）",timeout:"上游 5 秒内没有响应",credentials:"获取令牌失败（"+m.replace(/^credentials: /,"")+"）",token_invalid:"令牌失效，需要重新登录",decode:"上游响应中没有额度数据"}[e.kind]||m||"未知错误"}
-// The button stays focusable while busy (aria-disabled), so keyboard focus is not dropped.
-async function busyRun(b,name,f,label){if(b.disabled||b._busy)return false;const t=b.textContent;b._busy=true;b.classList.add("busy");b.setAttribute("aria-disabled","true");b.setAttribute("aria-busy","true");if(label)b.textContent=label;
-  try{await f();return true}catch(e){if(e&&e.message!=="401")toast(name+(/[\w)]$/.test(name)?" ":"")+"失败："+why(e),{kind:"err"});return false}
-  finally{b._busy=false;b.classList.remove("busy");b.removeAttribute("aria-disabled");b.removeAttribute("aria-busy");if(label&&b.isConnected)b.textContent=t}}
-// set once the server says this key is not an admin: the overview then skips admin-only calls
-let onLogout=()=>{},NOADMIN=false,authEpoch=0;
-function showApp(on,err){$("app").classList.toggle("hide",!on);if(on){$("main").classList.remove("noadm");const n=$("noadm");if(n)n.remove()}else NOADMIN=false;$("login").classList.toggle("hide",on);$("lerr").textContent=err||"";if(!on){authEpoch++;clearEgress();closeAllModals();onLogout()}}
-function login(verify,enter){
-  $("lf").addEventListener("submit",async e=>{e.preventDefault();sessionStorage.setItem(KS,$("key").value);$("key").value="";
-    try{await verify();showApp(true);enter()}catch(err){if(err.message!=="401")$("lerr").textContent=err.message}});
-  $("logout").addEventListener("click",()=>{sessionStorage.removeItem(KS);showApp(false)});
-  if(key()){showApp(true);enter()}else showApp(false)}
-// ---- theme (跟随系统 / 浅色 / 深色), remembered in this browser only
-function applyTheme(t){const r=document.documentElement;if(t==="light"||t==="dark")r.dataset.theme=t;else delete r.dataset.theme;
-  const n={light:"浅色",dark:"深色"}[t]||"跟随系统",b=$("theme");b.textContent={light:"☀",dark:"☾"}[t]||"◐";b.title="主题："+n+"（点击切换）";b.setAttribute("aria-label","切换主题，当前："+n)}
-applyTheme(localStorage.getItem(TH));
-$("theme").addEventListener("click",()=>{const c=localStorage.getItem(TH),n=c==="light"?"dark":c==="dark"?"":"light";if(n)localStorage.setItem(TH,n);else localStorage.removeItem(TH);applyTheme(n);toast("主题："+({light:"浅色",dark:"深色"}[n]||"跟随系统"))});
-// ---- toasts; o.undo adds 撤销 (10 s). Errors are alerts with a close button (10 s). The timer
-// pauses while the toast is hovered, touched or holds keyboard focus, and while the tab is hidden.
-function toast(t,o){o=o||{};const err=o.kind==="err",d=h("div",{class:"toast"+(o.kind?" "+o.kind:""),role:err?"alert":null},h("span",null,t));let tm=null,ptr=false,foc=false;
-  const bye=()=>{clearTimeout(tm);d.classList.add("out");setTimeout(()=>d.remove(),300)};
-  const arm=()=>{clearTimeout(tm);if(ptr||foc)return;tm=setTimeout(()=>{if(document.hidden)arm();else bye()},o.undo||err?10000:4000)};
-  if(o.undo){const b=h("button",{type:"button"},"撤销");b.addEventListener("click",async()=>{b.disabled=true;bye();try{await o.undo()}catch(e){toast("撤销失败："+e.message,{kind:"err"})}});d.appendChild(b)}
-  if(err){const x=h("button",{type:"button",class:"x","aria-label":"关闭"},"✕");x.addEventListener("click",bye);d.appendChild(x)}
-  for(const [ev,v] of [["pointerenter",true],["pointerdown",true],["pointerleave",false],["pointerup",false]])d.addEventListener(ev,()=>{ptr=v;arm()});
-  d.addEventListener("focusin",()=>{foc=true;arm()});d.addEventListener("focusout",e=>{if(!d.contains(e.relatedTarget)){foc=false;arm()}});
-  $("toasts").appendChild(d);arm();return d}
-// An error shown in a page banner that is scrolled out of view is repeated as an error toast.
-function inView(e){const r=e.getBoundingClientRect();return r.height>0&&r.bottom>0&&r.top<innerHeight}
-// ---- re-rendered lists: the last focused control carrying data-fk gets focus back after a render
-// that replaced it (row actions, settings fields). A pointer press elsewhere forgets it.
-let FK=null;
-document.addEventListener("focusin",e=>{const t=e.target.closest&&e.target.closest("[data-fk]");if(t)FK=t.dataset.fk;else if(!e.target.closest||!e.target.closest("#toasts"))FK=null});
-document.addEventListener("pointerdown",e=>{if(!e.target.closest||!e.target.closest("[data-fk],#toasts"))FK=null},true);
-function refocus(){if(!FK)return;const a=document.activeElement;if(a&&a!==document.body&&a.isConnected)return;
-  const t=document.querySelector('[data-fk="'+CSS.escape(FK)+'"]');if(t&&t.offsetParent!==null)t.focus({preventScroll:true})}
-// ---- steady re-render: f() replaces the children of `boxes`. Focus inside them is released
-// first (removing a focused node makes the browser lay out the half-empty page and commit a
-// clamped scroll), and the focused control, or else the row nearest the top of the view, keeps
-// its viewport position. Anchors carry data-fk, data-ak or data-acc, stable across renders.
-const ANK=["data-fk","data-ak","data-acc"],ANS=ANK.map(a=>"["+a+"]").join(",");
-function ankSel(e){for(const a of ANK)if(e.hasAttribute(a))return"["+a+'="'+CSS.escape(e.getAttribute(a))+'"]';return null}
-function ankPick(){const a=document.activeElement,hb=document.querySelector("header").getBoundingClientRect().bottom,vis=e=>{const r=e.getBoundingClientRect();return r.height>0&&r.bottom>hb&&r.top<innerHeight};
-  if(a&&a!==document.body&&a.closest){const e=a.closest(ANS);if(e&&vis(e))return e}
-  for(const f of [.5,.25,.75])for(let y=hb+8;y<innerHeight;y+=48){const e=document.elementFromPoint(innerWidth*f,y),t=e&&e.closest&&e.closest(ANS);if(t&&vis(t))return t}
-  return null}
-function steady(boxes,f){const a=document.activeElement;if(a&&a!==document.body&&boxes.some(b=>b&&b.contains(a)))a.blur();
-  const e=ankPick(),sel=e&&ankSel(e),top=e?e.getBoundingClientRect().top:0;f();
-  const n=sel&&document.querySelector(sel);if(n&&n.getBoundingClientRect().height>0){const d=n.getBoundingClientRect().top-top;if(Math.abs(d)>=1)scrollBy(0,d)}}
-// ---- dialogs: focus goes to 取消, Esc / backdrop close, Tab trapped, focus returns to the opener.
-// A [data-arm] button ignores clicks for its first 400 ms (no double tap through the opener).
-const MODALS=[];
-function openModal(m,focus,opener){if(!m.classList.contains("hide"))return;m.classList.remove("hide");m._opener=opener||document.activeElement;m._at=Date.now();MODALS.push(m);document.documentElement.classList.add("modal-open");(focus||m.querySelector("button")).focus()}
-function closeModal(m){if(m.classList.contains("hide"))return;m.classList.add("hide");const i=MODALS.indexOf(m);if(i>=0)MODALS.splice(i,1);const o=m._opener;m._opener=null;if(m._onclose)m._onclose();document.documentElement.classList.toggle("modal-open",MODALS.length>0);if(o&&document.contains(o))o.focus({preventScroll:true})}
-function closeAllModals(){for(const m of MODALS.slice().reverse())closeModal(m)}
-// Tab order inside a modal: visible, enabled controls, including <summary> toggles; nothing inside a closed <details>.
-function tabbables(m){return Array.from(m.querySelectorAll("button,a[href],input,select,textarea,summary,[tabindex]:not([tabindex='-1'])")).filter(x=>!x.disabled&&x.offsetParent!==null&&!x.closest("details:not([open]) > :not(summary)"))}
-document.addEventListener("keydown",e=>{const m=MODALS[MODALS.length-1];if(!m)return;
-  if(e.key==="Escape"){e.preventDefault();closeModal(m);return}
-  if(e.key!=="Tab")return;const f=tabbables(m);if(!f.length)return;
-  const i=f.indexOf(document.activeElement);e.preventDefault();f[i<0?(e.shiftKey?f.length-1:0):(i+(e.shiftKey?f.length-1:1))%f.length].focus()});
-document.addEventListener("click",e=>{const b=e.target.closest&&e.target.closest("[data-arm]");if(!b)return;const m=b.closest(".modal");if(m&&Date.now()-m._at<400){e.preventDefault();e.stopImmediatePropagation()}},true);
-document.addEventListener("click",e=>{const m=MODALS[MODALS.length-1];if(m&&e.target===m)closeModal(m)});
-// ---- inline click-again: the first click turns the button into `label` for 3 s (armed after
-// 300 ms); a second click runs `act`; timeout, blur or Esc reverts.
-function disarm(b){if(!b._armed)return;clearTimeout(b._t);b._armed=0;b.textContent=b._orig;b.classList.remove("armed")}
-function clickAgain(b,label,act){if(b._armed){if(Date.now()-b._armed<300)return;disarm(b);return act()}
-  b._orig=b.textContent;b._armed=Date.now();b.textContent=label;b.classList.add("armed");b._t=setTimeout(()=>disarm(b),3000);
-  b.addEventListener("blur",()=>disarm(b),{once:true})}
-document.addEventListener("keydown",e=>{if(e.key==="Escape"&&document.activeElement&&document.activeElement._armed)disarm(document.activeElement)});
-// ---- shell: account count on the 账号 tab, egress tag in the header (admin keys only)
-function setTabCount(n){const c=document.querySelector("nav.tabs a[data-p=accounts] .cnt");if(c)c.textContent=n===null||n===undefined?"":String(n)}
-let egressSeq=0;
-function clearEgress(){egressSeq++;const t=$("egress");t.className="hide";t.textContent="";t.title=""}
-async function egressTag(cfg){const seq=++egressSeq,auth=key(),current=()=>seq===egressSeq&&auth===key(),read=p=>get(p,{timeout:30000,current}),t=$("egress");
-  try{if(!cfg&&NOADMIN)throw new Error("admin");const c=cfg||await read("/admin/v1/config");if(!current())return;const eg=Object.assign({},c.egress||{},{runtime:c.runtime});
-    if(eg.direct){t.className="tag line";t.textContent="直连";t.title="出口：直连（未使用出口代理）· 点击查看出口设置";return eg}
-    let n=0;try{const since=Date.now()-36e5;for(const code of ["proxy_connect","proxy_timeout"]){n+=(await read("/usage/v1/records?limit=1&from="+since+"&error="+code)).total||0;if(!current())return}}catch(_){}
-    if(!current())return;t.className="tag proxy dot";t.textContent=n?"出口代理 · "+n+" 错误":"出口代理";t.title="出口："+eg.proxy+(n?"；近 1 小时 "+n+" 次出口代理错误":"；近 1 小时没有出口代理错误")+" · 点击查看出口设置";return eg}
-  catch(_){if(!current())return;clearEgress();return null}}
-// Accounts / settings need an admin key. A usage-only key (e.g. carried over from the overview in
-// this tab) gets a plain explanation instead of a half-loaded page.
-function needAdmin(e){if(!e||!e.body||!e.body.error||e.body.error.type!=="admin_required")return false;const m=$("main");
-  if(!$("noadm"))m.appendChild(h("div",{class:"empty panel",id:"noadm"},h("b",null,"此页面需要管理密钥"),adminMsg(e.body),h("div",null,h("button",{type:"button",class:"pri",onclick:()=>{sessionStorage.removeItem(KS);showApp(false)}},"使用其他密钥登录"))));
-  m.classList.add("noadm");$("msg").textContent="";return true}
-/* ==== shared:end ==== */
-// ---- settings
-let CFG=null,ETAG="",EDITS={},EDIT_REV=0,LOAD_SEQ=0,BASE_STALE=false;
+/*@shared.js*/
+/*@unit settings-section-82*/// ---- settings
+const draft={base:null,etag:"",edits:{},invalid:new Set(),serverErrors:new Map(),rev:0,loadSeq:0,epoch:0,stale:false,phase:"clean",
+  isChanged(value,original){return this.stale||value!==original},
+  edit(k,value,original,display=value){const changed=this.isChanged(display,original);if(changed)this.edits[k]=value;else delete this.edits[k];return changed},
+  invalidate(k,bad){if(bad)this.invalid.add(k);else this.invalid.delete(k)},
+  settle(){this.phase=this.stale?"stale":nEdits()?"dirty":"clean"},
+  changed(){this.rev++;this.settle();upd()},
+  rebase(cfg){this.base=cfg;this.edits={};this.invalid.clear();this.serverErrors.clear();this.stale=false;this.changed()},
+  preserve(cfg){if(this.base&&cfg.version!==this.base.version)this.stale=true;this.settle()},
+  guard({load=false}={}){const seq=this.loadSeq,rev=this.rev,epoch=this.epoch,auth=key();return (edits=true)=>epoch===this.epoch&&auth===key()&&(!load||seq===this.loadSeq)&&(!edits||rev===this.rev)},
+  beginLoad(){this.loadSeq++;return this.guard({load:true})},
+  beginReview(){this.phase="reviewing";return {changes:{...this.edits},current:this.guard()}},
+  async commit(write,current){this.phase="saving";try{const reply=await write();if(current(false)){this.stale=true;this.settle()}return reply}finally{if(current(false))this.settle()}},
+  discard(){return load(true)}};
 async function call(method,p,body,extra){return req(method,p,body,extra)}
 function fail(e){if(!e||e.message==="401")return;const m=$("msg"),t=e.status===412?(nEdits()?"配置已被修改，未保存的编辑已保留。请再点「检查并保存」，查看最新配置与草稿的差异后确认；也可放弃草稿并载入最新。":"配置已被修改。请刷新后重试。"):(adminMsg(e.body)||e.message||String(e));clear(m);m.appendChild(h("b",null,"操作失败"));
   m.appendChild(document.createTextNode(t));if(!inView(m))toast("操作失败："+t,{kind:"err"})}
 function ok(t,o){$("msg").textContent="";return toast(t,o)}
 function fmt(v){if(v===null||v===undefined)return"（默认）";if(typeof v==="object")return JSON.stringify(v);if(v==="")return"（空）";return String(v)}
 function eff(f){return f.effect==="hot"?h("span",{class:"xs mut",title:"保存或修改文件后无需重启；具体生效时机因设置而异"},"热更新"):h("span",{class:"tag cool",title:"写入文件后，重启 ciallopa 才生效"},"需重启")}
-const BAD=new Set();
-const SERVER_ERRORS=new Map();
-function clearServerErrors(){for(const [k,{field,hint}] of SERVER_ERRORS){if(!BAD.has(k)){field.setAttribute("aria-invalid","false");hint.textContent="";hint.classList.add("hide")}}SERVER_ERRORS.clear()}
+function clearServerErrors(){for(const [k,{field,hint}] of draft.serverErrors){if(!draft.invalid.has(k)){field.setAttribute("aria-invalid","false");hint.textContent="";hint.classList.add("hide")}}draft.serverErrors.clear()}
 addEventListener("input",clearServerErrors,true);
-function nEdits(){return new Set([...Object.keys(EDITS),...BAD]).size}
-function upd(){EDIT_REV++;const n=nEdits();const nc=$("nchg");nc.textContent=n+" 项未保存"+(BAD.size?" · "+BAD.size+" 项有误":"");
+function nEdits(){return new Set([...Object.keys(draft.edits),...draft.invalid]).size}
+function upd(){const n=nEdits();const nc=$("nchg");nc.textContent=n+" 项未保存"+(draft.invalid.size?" · "+draft.invalid.size+" 项有误":"");
   const pg=editPages();if(pg.length)nc.appendChild(h("small",null,pg.join(" · ")));
-  $("check").disabled=BAD.size>0;$("editbar").classList.toggle("hide",!n||!CFG||!CFG.write_enabled);if(!n)$("draft").classList.add("hide");sync()}
+  $("check").disabled=draft.invalid.size>0;$("editbar").classList.toggle("hide",!n||!draft.base||!draft.base.write_enabled);if(!n)$("draft").classList.add("hide");sync()}
 // Leaving or reloading the page with unsaved edits asks first (native prompt; only then).
 addEventListener("beforeunload",e=>{if(nEdits()){e.preventDefault();e.returnValue=""}});
 // An unsaved control: .chg on the control (a switch also gets .sw.pending, the one class
@@ -661,7 +278,7 @@ const UNIT={"usage.retention_days":"天","max_inflight_requests":"个","ws_max_c
 function unit(f){if(UNIT[f.key])return UNIT[f.key];const m=/（(秒|分钟|毫秒|MiB|次|%)）$/.exec(f.desc||"");return m?m[1]:""}
 function input(f,v,tr){
   if(f.kind==="bool"){const orig=!!v,e=h("input",{type:"checkbox",class:"sw","aria-label":f.desc,"data-fk":f.key}),t=h("span",null,orig?"已开启":"已关闭");e.checked=orig;e.addEventListener("animationend",()=>e.classList.remove("anim"));
-    e.addEventListener("change",()=>{e.title=e.checked!==orig?"未保存，已保存的值是"+(orig?"开启":"关闭"):"";t.textContent=e.checked?"已开启":"已关闭";const changed=BASE_STALE||e.checked!==orig;if(!changed)delete EDITS[f.key];else EDITS[f.key]=e.checked;mark(e,tr,changed);upd()});
+    e.addEventListener("change",()=>{e.title=e.checked!==orig?"未保存，已保存的值是"+(orig?"开启":"关闭"):"";t.textContent=e.checked?"已开启":"已关闭";const changed=draft.edit(f.key,e.checked,orig);mark(e,tr,changed);draft.changed()});
     return h("label","chk",e,t)}
   let e;
   if(f.kind==="enum"&&f.choices&&f.choices.length)return choices(f,v,tr);
@@ -671,8 +288,8 @@ function input(f,v,tr){
   if(fe)e.setAttribute("aria-describedby",fe.id);
   e.addEventListener("input",()=>{let val=e.value;if(f.kind==="int")val=val===""?null:parseInt(val,10);else if(f.kind==="float")val=val===""?null:parseFloat(val);
     if(num){const bad=e.validity.badInput||(e.value!==""&&(f.kind==="int"?!/^\d+$/.test(e.value):!(Number(e.value)>=0)));
-      fe.textContent=bad?(f.kind==="int"?"需要大于或等于 0 的整数":"需要大于或等于 0 的数字"):"";fe.classList.toggle("hide",!bad);e.setAttribute("aria-invalid",String(bad));if(bad)BAD.add(f.key);else BAD.delete(f.key)}
-    const changed=BASE_STALE||e.value!==orig;if(!changed)delete EDITS[f.key];else EDITS[f.key]=val;mark(e,tr,changed);upd()});
+      fe.textContent=bad?(f.kind==="int"?"需要大于或等于 0 的整数":"需要大于或等于 0 的数字"):"";fe.classList.toggle("hide",!bad);e.setAttribute("aria-invalid",String(bad));draft.invalidate(f.key,bad)}
+    const changed=draft.edit(f.key,val,orig,e.value);mark(e,tr,changed);draft.changed()});
   e.addEventListener("change",()=>e.dispatchEvent(new Event("input")));
   const u=num?unit(f):"";
   return fe?h("div","zo",e,u?h("span","unit",u):null,fe):e}
@@ -695,32 +312,32 @@ function rinput(f,fx,v,vx,tr){const offt=ZO[f.key][0],omin=Number(v)||0,oraw=Num
   const a=num(f.key,f.desc+"：最短"),b=num(fx.key,f.desc+"：最长");
   a.value=String(on0?omin:RZ_ON[0]);b.value=String(on0?omax:oraw>=RZ_ON[0]?oraw:RZ_ON[1]);a.disabled=b.disabled=!on0;
   const st=h("span","unit",on0?"分钟":offt),fe=h("div",{class:"xs c-err hide",id:"fe-"+f.key.replace(/\W/g,"_")});a.setAttribute("aria-describedby",fe.id);b.setAttribute("aria-describedby",fe.id);
-  const ed=(k,val,orig)=>{if(BASE_STALE||val!==orig)EDITS[k]=val;else delete EDITS[k]};
+  const ed=(k,val,orig)=>draft.edit(k,val,orig);
   const apply=()=>{const on=sw.checked;a.disabled=b.disabled=!on;st.textContent=on?"分钟":offt;let msg="",mn=0,mx=0;
     if(on){const ok=e=>!e.validity.badInput&&/^\d+$/.test(e.value.trim())&&+e.value>=1&&+e.value<=60;
       if(!ok(a)||!ok(b))msg="最短和最长均需为 1–60 的整数；关闭请使用左侧开关";else{mn=parseInt(a.value,10);mx=parseInt(b.value,10);if(mn>mx)msg="最短不能大于最长"}}
     const bad=!!msg;fe.textContent=msg;fe.classList.toggle("hide",!bad);a.setAttribute("aria-invalid",String(bad));b.setAttribute("aria-invalid",String(bad));
-    if(bad)BAD.add(f.key);else BAD.delete(f.key);
-    const changed=BASE_STALE||on!==on0||(on&&(mn!==omin||mx!==omax));
-    if(bad||!changed){delete EDITS[f.key];delete EDITS[fx.key]}
+    draft.invalidate(f.key,bad);
+    const changed=draft.isChanged(on,on0)||(on&&(mn!==omin||mx!==omax));
+    if(bad||!changed){delete draft.edits[f.key];delete draft.edits[fx.key]}
     else if(on){ed(f.key,mn,omin);ed(fx.key,mx,oraw)}
-    else{ed(f.key,0,omin);delete EDITS[fx.key]}
-    a.classList.toggle("chg",on&&(bad||BASE_STALE||mn!==omin));b.classList.toggle("chg",on&&(bad||BASE_STALE||mx!==omax));
-    const pn=BASE_STALE||on!==on0;if(pn!==sw.classList.contains("pending"))pend(sw,pn);rowChg(tr);upd()};
+    else{ed(f.key,0,omin);delete draft.edits[fx.key]}
+    a.classList.toggle("chg",on&&(bad||draft.isChanged(mn,omin)));b.classList.toggle("chg",on&&(bad||draft.isChanged(mx,omax)));
+    const pn=draft.isChanged(on,on0);if(pn!==sw.classList.contains("pending"))pend(sw,pn);rowChg(tr);draft.changed()};
   sw.addEventListener("change",()=>{if(sw.checked&&!(+a.value>=1&&+b.value>=+a.value&&+b.value<=60)){a.value=String(RZ_ON[0]);b.value=String(RZ_ON[1])}apply();if(sw.checked)a.focus()});
   for(const e of [a,b]){e.addEventListener("input",apply);e.addEventListener("change",apply)}
   const set=x=>{const n=Number(x)||0;sw.checked=n>0;if(n>0){a.value=String(n);if(+b.value<n)b.value=String(n)}apply()};
   return {el:h("div",null,h("div","zo rz",sw,a,h("span","unit","–"),b,st),fe),set}}
-function zinput(f,v,tr){const [offt,fb0]=ZO[f.key],d=CFG&&CFG.defaults?Number(CFG.defaults[f.key]):0,fb=d>0?d:fb0,orig=Number(v)||0,on0=orig>0,u=unit(f);
+function zinput(f,v,tr){const [offt,fb0]=ZO[f.key],d=draft.base&&draft.base.defaults?Number(draft.base.defaults[f.key]):0,fb=d>0?d:fb0,orig=Number(v)||0,on0=orig>0,u=unit(f);
   const sw=h("input",{type:"checkbox",class:"sw","aria-label":f.desc+"：开启","data-fk":f.key+"|on"});sw.checked=on0;sw.addEventListener("animationend",()=>sw.classList.remove("anim"));
   const e=h("input",{type:"number",step:f.kind==="int"?"1":"any",min:"0","aria-label":f.desc,"data-fk":f.key});e.value=String(on0?v:fb);e.disabled=!on0;
   const st=h("span","unit",on0?u:offt),fe=h("div",{class:"xs c-err hide",id:"fe-"+f.key.replace(/\W/g,"_")});e.setAttribute("aria-describedby",fe.id);
   const apply=()=>{const on=sw.checked;e.disabled=!on;st.textContent=on?u:offt;let val=0,bad=false;
     if(on){const t=e.value.trim();bad=e.validity.badInput||t===""||(f.kind==="int"?!/^\d+$/.test(t):!(Number(t)>=0));val=f.kind==="int"?parseInt(t,10):parseFloat(t);if(!bad&&!(val>0))bad=true}
     fe.textContent=bad?"需要大于 0 的"+(f.kind==="int"?"整数":"数字")+"；关闭请使用左侧开关":"";fe.classList.toggle("hide",!bad);e.setAttribute("aria-invalid",String(bad));
-    if(bad)BAD.add(f.key);else BAD.delete(f.key);const changed=BASE_STALE||val!==orig;
-    if(bad||!changed)delete EDITS[f.key];else EDITS[f.key]=val;
-    e.classList.toggle("chg",(changed||bad)&&on);const pn=BASE_STALE||on!==on0;if(pn!==sw.classList.contains("pending"))pend(sw,pn);rowChg(tr);upd()};
+    draft.invalidate(f.key,bad);const changed=draft.isChanged(val,orig);
+    if(bad||!changed)delete draft.edits[f.key];else draft.edits[f.key]=val;
+    e.classList.toggle("chg",(changed||bad)&&on);const pn=draft.isChanged(on,on0);if(pn!==sw.classList.contains("pending"))pend(sw,pn);rowChg(tr);draft.changed()};
   sw.addEventListener("change",()=>{if(sw.checked&&!(Number(e.value)>0))e.value=String(fb);apply();if(sw.checked)e.focus()});
   e.addEventListener("input",apply);e.addEventListener("change",apply);
   const set=x=>{const n=Number(x)||0;sw.checked=n>0;if(n>0)e.value=String(x);apply()};
@@ -729,12 +346,12 @@ function zinput(f,v,tr){const [offt,fb0]=ZO[f.key],d=CFG&&CFG.defaults?Number(CF
 // when to pick it, visible before choosing (also on touch).
 function choices(f,v,tr){const g=h("div",{class:"chs",role:"radiogroup","aria-label":f.desc});
   for(const c of f.choices){const id="ch-"+(f.key+"-"+c.value).replace(/\W/g,"_"),rb=h("input",{type:"radio",name:"r-"+f.key,value:c.value,id,"data-fk":f.key+"="+c.value,"aria-describedby":id+"-h"});rb.checked=c.value===v;
-    rb.addEventListener("change",()=>{if(!rb.checked)return;const changed=BASE_STALE||c.value!==v;if(!changed)delete EDITS[f.key];else EDITS[f.key]=c.value;mark(g,tr,changed);upd()});
+    rb.addEventListener("change",()=>{if(!rb.checked)return;const changed=draft.edit(f.key,c.value,v);mark(g,tr,changed);draft.changed()});
     g.appendChild(h("label",{class:"ch",for:id},rb,h("span",null,h("b",null,c.label),h("code",null,c.value)),h("span",{class:"chh",id:id+"-h"},c.help)))}
   return g}
 function choiceOf(f,v){return(f.choices||[]).find(c=>c.value===v)}
 // Default of a key as shown in the changed-item bar.
-function dflt(f){const d=CFG.defaults?CFG.defaults[f.key]:undefined;if(d===undefined||f.kind==="keys")return null;
+function dflt(f){const d=draft.base.defaults?draft.base.defaults[f.key]:undefined;if(d===undefined||f.kind==="keys")return null;
   if(f.kind==="bool")return d?"开启":"关闭";if(ZO[f.key]&&Number(d)===0)return ZO[f.key][0];const ch=choiceOf(f,d);if(ch)return ch.label+"（"+d+"）";
   if(d==="")return"空";if(d===null)return null;const u=unit(f);return String(d)+(u?" "+u:"")}
 const DOCS="https://github.com/Seia-Yurizono/ciallopa#how-an-account-is-chosen";
@@ -785,15 +402,15 @@ const COOL=[{n:"5xx 服务器错误",t:"同一账号连续 3 次",ks:["upstream_
 const BOXES={pricebox:$("pricebox"),keybox:$("keybox"),auditbox:$("auditbox")};
 const REG=new Map(),PAGE_OF=new Map(),DEPS=[],ADVS=[],PG=[],NAV={};
 let CURP=null,CUR=null,PK=new Set(),ACCN=null,FP=null,PST=null,PLINK=null,AUD_LAST=null,AUD_T=0;
-function fld(k){return CFG&&CFG.schema.find(f=>f.key===k)}
-function cur(k){if(k in EDITS)return EDITS[k];const s=CFG&&(CFG.values||CFG.running);return s?s[k]:undefined}
+function fld(k){return draft.base&&draft.base.schema.find(f=>f.key===k)}
+function cur(k){if(k in draft.edits)return draft.edits[k];const s=draft.base&&(draft.base.values||draft.base.running);return s?s[k]:undefined}
 function on(k){const v=cur(k);return typeof v==="number"?v>0:k==="proxy_enabled"?v!==false:!!v}
 function same(a,b){if(typeof a==="number"||typeof b==="number")return Number(a)===Number(b);return JSON.stringify(a??null)===JSON.stringify(b??null)}
-function isMod(k){const f=fld(k);if(!f||!f.editable||!CFG.defaults||!(k in CFG.defaults))return false;const v=cur(k);return v!==undefined&&!same(v,CFG.defaults[k])}
-function editPages(){const n=new Map();for(const k of new Set([...Object.keys(EDITS),...BAD])){const p=PAGE_OF.get(k);if(p)n.set(p.name,(n.get(p.name)||0)+1)}return [...n].map(([a,b])=>a+" "+b)}
+function isMod(k){const f=fld(k);if(!f||!f.editable||!draft.base.defaults||!(k in draft.base.defaults))return false;const v=cur(k);return v!==undefined&&!same(v,draft.base.defaults[k])}
+function editPages(){const n=new Map();for(const k of new Set([...Object.keys(draft.edits),...draft.invalid])){const p=PAGE_OF.get(k);if(p)n.set(p.name,(n.get(p.name)||0)+1)}return [...n].map(([a,b])=>a+" "+b)}
 function reg(k,o){REG.set(k,o);if(CURP){PAGE_OF.set(k,CURP);CURP.keys.push(k)}}
 // One control (or read-only value) for a key, plus its notes; shared by rows and the cooldown table.
-function ctl(f,tr){const c=CFG,run=c.running[f.key],file=c.values?c.values[f.key]:run,b=h("div","cv");let set=null;
+function ctl(f,tr){const c=draft.base,run=c.running[f.key],file=c.values?c.values[f.key]:run,b=h("div","cv");let set=null;
   if(IMM[f.key]&&c.write_enabled){const t=immToggle(f.key,f.key==="proxy_enabled"?file!==false:file===true);b.appendChild(t)}
   else if(c.write_enabled&&f.editable&&RZ[f.key]&&fld(RZ[f.key])){const fx=fld(RZ[f.key]),z=rinput(f,fx,file,c.values?c.values[fx.key]:c.running[fx.key],tr);b.appendChild(z.el);set=z.set;if(CURP){PAGE_OF.set(fx.key,CURP);CURP.keys.push(fx.key)}}
   else if(c.write_enabled&&f.editable&&ZO[f.key]){const z=zinput(f,file,tr);b.appendChild(z.el);set=z.set}
@@ -812,7 +429,7 @@ function setCtl(b,f,v){if(f.kind==="bool"){const e=b.querySelector("input.sw");i
   const e=b.querySelector("input,select");if(e){e.value=v===null||v===undefined?"":String(v);e.dispatchEvent(new Event("input"))}}
 function rowFor(sp){if(typeof sp==="string")sp={k:sp};if(sp.fn)return sp.fn();const f=fld(sp.k);if(!f)return null;
   const r=h("div",{class:"srow"+(sp.p?" child":""),"data-ak":"cfg|"+f.key}),defs=h("span","defs"),why=h("div","why hide");
-  if(f.kind==="enum"&&f.choices&&f.choices.length&&CFG.write_enabled&&f.editable||f.key==="proxy_url")r.classList.add("wide");
+  if(f.kind==="enum"&&f.choices&&f.choices.length&&draft.base.write_enabled&&f.editable||f.key==="proxy_url")r.classList.add("wide");
   const {b,set}=ctl(f,r),sc=h("fieldset","sc",b);
   r.append(h("div","sl",h("div","st",h("b",null,f.desc),f.effect==="restart"?eff(f):null,f.key==="ui.allow_reset_consume"?h("span",{class:"tag err",title:"重置卡使用后无法撤销"},"不可逆"):null),
     f.help?h("div","hp",f.help):null,h("div","kd",h("code",null,f.key),RZ[f.key]?h("code",null,RZ[f.key]):null,defs),why),sc);
@@ -836,7 +453,7 @@ function infoRow(name,q,help,val){return h("div",{class:"srow","data-q":q.toLowe
 function priceLink(){PLINK=h("div","sm");priceSum();return infoRow("模型价格","模型价格 价格 定价 未定价 prices","按 API 标价估算费用；可以检查更新、给未定价的模型设置价格或忽略",h("div",null,PLINK,h("a",{href:"#prices"},"管理价格 ›")))}
 function priceSum(){if(!PLINK)return;const p=PST;PLINK.textContent=!p?"":!p.usage_enabled?"用量记录已关闭，不计算费用":(p.models?p.models+" 个模型":"尚无价格表")+((p.unpriced||[]).length?" · "+p.unpriced.length+" 个未定价":"")}
 function acctLink(){return infoRow("单个账号的设置","账号 accounts 权重 优先级 代理 重置卡","启用、权重、优先级、单独代理、刷新额度和使用重置卡都在账号页，各账号分别设置",h("div",null,h("div",{class:"sm",id:"accn"},ACCN===null?"":ACCN+" 个账号"),h("a",{href:"/ui/accounts"},"前往账号页 ›")))}
-function fileInfo(){const c=CFG;return infoRow("配置文件","配置文件 版本 config path",c.write_enabled?"可在此修改，保存时写回该文件":"只读：在配置文件中设置 [ui] allow_config_write = true 才能在此修改",h("div",null,h("div","mono sm",c.path||"（未使用配置文件）"),h("div","xs mut","版本 "+c.version)))}
+function fileInfo(){const c=draft.base;return infoRow("配置文件","配置文件 版本 config path",c.write_enabled?"可在此修改，保存时写回该文件":"只读：在配置文件中设置 [ui] allow_config_write = true 才能在此修改",h("div",null,h("div","mono sm",c.path||"（未使用配置文件）"),h("div","xs mut","版本 "+c.version)))}
 function tzInfo(){let n="";try{n=Intl.DateTimeFormat().resolvedOptions().timeZone||""}catch(_){}
   return infoRow("时区","时区 timezone utc","页面时间按本浏览器的时区显示；图表按范围结束时的 UTC 偏移分桶",h("span","mono",(n?n+" ":"")+"("+tzOff(new Date())+")"))}
 function fpInfo(){const v=h("div",{id:"fpv"});fpShow(v);return infoRow("内部请求 UA","内部请求 ua user-agent originator 指纹 fingerprint","ciallopa 自己发往上游的请求（刷新令牌、额度、重置卡）使用的指纹，从客户端请求中学习",v)}
@@ -860,19 +477,19 @@ function buildPage(P,extra){const el=h("div",{class:"spage",id:"pg-"+P.id,"data-
   CURP=null;PG.push(o);return o}
 // Recomputed after every edit: changed-from-default bars, dependency greying, nav dots,
 // 高级 summaries and the phone list's one-line summaries. Values are never cleared.
-function sync(){if(!CFG||!REG.size)return;const W=CFG.write_enabled,rows=new Set();
+function sync(){if(!draft.base||!REG.size)return;const W=draft.base.write_enabled,rows=new Set();
   for(const o of REG.values()){if(o.row)rows.add(o.row);clear(o.defs)}
   for(const r of rows)r.classList.remove("mod");
   for(const [k,o] of REG){if(!isMod(k))continue;o.row.classList.add("mod");const d=dflt(o.f);
     const s=h("span",null,(o.multi?o.f.desc+" ":"")+"默认 "+(d===null?"（空）":d));
-    if(W&&o.set){const b=h("button",{type:"button",class:"lnk","data-fk":"rst|"+k,title:"改回默认值（保存后生效）"},"恢复");b.addEventListener("click",()=>{o.set(CFG.defaults[k]);b.blur()});s.append(" · ",b)}
+    if(W&&o.set){const b=h("button",{type:"button",class:"lnk","data-fk":"rst|"+k,title:"改回默认值（保存后生效）"},"恢复");b.addEventListener("click",()=>{o.set(draft.base.defaults[k]);b.blur()});s.append(" · ",b)}
     o.defs.append(s)}
   for(const d of DEPS){const f=fld(d.p),off=!on(d.p);d.fs.disabled=off;if(d.row)d.row.classList.toggle("dis",off);
     d.why.textContent=off?(d.p==="upstream_opts.overload_streak"?"overloaded 冷却已关闭，下面的值保留":"开启「"+(f?f.desc:d.p)+"」后生效，当前值保留"):"";d.why.classList.toggle("hide",!off)}
-  for(const a of ADVS){const m=a.ks.filter(isMod).length,e=a.ks.filter(k=>k in EDITS||BAD.has(k)).length;
+  for(const a of ADVS){const m=a.ks.filter(isMod).length,e=a.ks.filter(k=>k in draft.edits||draft.invalid.has(k)).length;
     a.sum.textContent=a.ks.length+" 项"+(e?" · "+e+" 项未保存":"")+(m?" · "+m+" 项不是默认值":" · 都是默认值");
     if((m||e)&&!a.el._auto){a.el._auto=true;a.el.open=true}}
-  for(const id in NAV){const n=NAV[id],ks=PG.filter(p=>p.id===id||p.up===id).flatMap(p=>p.keys),dirty=ks.some(k=>k in EDITS||BAD.has(k));
+  for(const id in NAV){const n=NAV[id],ks=PG.filter(p=>p.id===id||p.up===id).flatMap(p=>p.keys),dirty=ks.some(k=>k in draft.edits||draft.invalid.has(k));
     n.dot.classList.toggle("hide",!dirty);n.a.title=dirty?"有未保存的改动":"";n.sum.textContent=summ(id)}
   const an=$("accn");if(an)an.textContent=ACCN===null?"":ACCN+" 个账号"}
 function summ(id){const yn=k=>on(k)?"开":"关";
@@ -884,13 +501,13 @@ function summ(id){const yn=k=>on(k)?"开":"关";
     case"usage":{const r=Number(cur("usage.retention_days"))||0,u=PST&&(PST.unpriced||[]).length;return on("usage.enabled")?"保留 "+(r?r+" 天":"永久")+(u?" · "+u+" 个未定价":""):"已关闭"}
     case"accounts":{const m=rzRange("ui.reset_credits_refresh_mins",cur),q=rzRange("ui.quota_refresh_mins",cur);return (ACCN===null?"":ACCN+" 个账号 · ")+"重置卡"+(m?rzText(m)+"刷新":"只手动刷新")+" · 额度"+(q?rzText(q)+"刷新":"只手动刷新")+" · 自动使用提前 "+(Number(cur("ui.reset_credits_auto_lead_mins"))||10)+" 分钟"}
     case"general":return (cur("instance_id")||"未命名实例")+" · 日志 "+(cur("log.level")||"");
-    case"keys":return ((CFG.running.api_keys||[]).length)+" 个密钥";
+    case"keys":return ((draft.base.running.api_keys||[]).length)+" 个密钥";
     case"audit":return AUD_LAST?"最近 "+fmtTime(AUD_LAST):"暂无记录";
     default:return""}}
 // ---- egress proxy / IPv6: the switch writes the file at once; the toast's 撤销 writes the old value back
 const IMM={proxy_enabled:["启用出口代理","已启用出口代理：新请求立即走代理，进行中的 WebSocket 会话在本轮结束后重连","已关闭出口代理：新请求立即直连，进行中的 WebSocket 会话在本轮结束后重连"],
   ipv6:["允许 IPv6 出口","已允许 IPv6：新连接 IPv6/IPv4 竞速，进行中的 WebSocket 会话在本轮结束后重连","已改为只用 IPv4：新连接只走 IPv4，进行中的 WebSocket 会话在本轮结束后重连"]};
-async function writeImm(k,v){await call("PUT","/admin/v1/config",{changes:{[k]:v}},{"If-Match":ETAG});await load()}
+async function writeImm(k,v){await call("PUT","/admin/v1/config",{changes:{[k]:v}},{"If-Match":draft.etag});await load()}
 function immToggle(k,on){const e=h("input",{type:"checkbox",class:"sw","aria-label":IMM[k][0],"data-fk":k}),t=h("span",null,on?"已开启":"已关闭");e.checked=on;
   e.addEventListener("change",async()=>{const v=e.checked;if(nEdits()){e.checked=!v;toast("请先保存或放弃其他未保存的改动",{kind:"err"});return}
     e.disabled=true;try{await writeImm(k,v);ok(v?IMM[k][1]:IMM[k][2],{undo:async()=>{if(nEdits())throw new Error("有未保存的改动，请先保存或放弃");await writeImm(k,!v);toast("已改回："+IMM[k][0]+(v?"已关闭":"已开启"))}})}
@@ -900,14 +517,15 @@ function proxyExtra(c){const eg=c.egress||{},box=h("div","xs mut");
   box.append(h("div",null,"当前出口："+(eg.direct?"直连":"代理 "+eg.proxy)),h("div",null,"socks5:// 按 socks5h:// 处理，域名由代理解析。https:// 代理只用于 HTTP 请求，WebSocket 不支持，请用 http:// 或 socks5h://。"));
   const btn=h("button",{class:"xs",type:"button","data-fk":"ptest"},"测试连接"),res=h("span",{class:"mono xs",role:"status"});box.appendChild(h("div","ptest",btn,res));
   btn.addEventListener("click",()=>busyRun(btn,"测试连接",async()=>{res.textContent="";res.className="mono xs";try{
-    const {j}=await call("POST","/admin/v1/proxy/test","proxy_url" in EDITS?{proxy_url:EDITS.proxy_url}:{});const via=j.direct?"直连":"经代理";
+    const {j}=await call("POST","/admin/v1/proxy/test","proxy_url" in draft.edits?{proxy_url:draft.edits.proxy_url}:{});const via=j.direct?"直连":"经代理";
     res.textContent=j.ok?(via+" · 出口 IP "+j.ip+(j.loc?" · "+j.loc:"")+(j.colo?" · "+j.colo:"")+" · "+j.latency_ms+" ms"):(via+" 失败"+(j.status?"（HTTP "+j.status+"）":"")+"："+(j.error||"未知错误"));
     res.className="mono xs "+(j.ok?"c-ok":"c-err")}catch(e){res.textContent="";fail(e)}},"测试中…"));
   return box}
 // ---- navigation and cross-page search
 function phone(){return matchMedia("(max-width:760px)").matches}
 function route(){if(!PG.length)return;let id=decodeURIComponent(location.hash.slice(1));id=ALIAS[id]||id;const P=PG.find(p=>p.id===id);show(P?P.id:(phone()?"":PG[0].id))}
-function show(id){CUR=id;const P=PG.find(p=>p.id===id);for(const p of PG)p.el.classList.toggle("on",p.id===id);
+function stopAudit(){clearInterval(AUD_T);AUD_T=0}
+function show(id){if(id!=="audit")stopAudit();CUR=id;const P=PG.find(p=>p.id===id);for(const p of PG)p.el.classList.toggle("on",p.id===id);
   for(const k in NAV){if(k===(P&&(P.up||P.id)))NAV[k].a.setAttribute("aria-current","page");else NAV[k].a.removeAttribute("aria-current")}
   $("slay").classList.toggle("home",!P);document.title=(P?P.name+" · ":"")+"ciallopa 设置";
   if(id==="audit"){loadAudit().catch(()=>{});if(!AUD_T)AUD_T=setInterval(()=>{if(CUR==="audit"&&!document.hidden&&!$("slay").classList.contains("q"))loadAudit().catch(()=>{})},15000)}}
@@ -929,8 +547,8 @@ $("q").addEventListener("input",filt);
 $("q").addEventListener("keydown",e=>{if(e.key==="Escape"&&$("q").value){$("q").value="";filt()}});
 $("qmod").addEventListener("click",()=>{$("q").value=$("q").value==="@modified"?"":"@modified";filt()});
 function render(){steady([$("pages"),$("navl")],renderNow);route();filt()}
-function renderNow(){const c=CFG;for(const k in BOXES)$("stash").appendChild(BOXES[k]);clear($("pages"));clear($("navl"));
-  EDITS={};BAD.clear();BASE_STALE=false;REG.clear();PAGE_OF.clear();DEPS.length=0;ADVS.length=0;PG.length=0;PLINK=null;for(const k in NAV)delete NAV[k];upd();
+function renderNow(){const c=draft.base;for(const k in BOXES)$("stash").appendChild(BOXES[k]);clear($("pages"));clear($("navl"));
+  REG.clear();PAGE_OF.clear();DEPS.length=0;ADVS.length=0;PG.length=0;PLINK=null;for(const k in NAV)delete NAV[k];upd();
   $("mode").textContent=c.write_enabled?"配置可编辑":"配置只读";$("mode").className="tag "+(c.write_enabled?"ok":"off");
   $("mode").title=c.write_enabled?"配置文件中 [ui] allow_config_write = true":"在配置文件中设置 [ui] allow_config_write = true 才能在此修改（此开关只能在配置文件中修改）";
   $("meta").textContent=(c.path||"（未使用配置文件）")+" · 版本 "+c.version;
@@ -1010,60 +628,59 @@ $("pcheck").addEventListener("click",()=>busyRun($("pcheck"),"检查更新",asyn
     box.appendChild(h("p","mut","写入 "+PPATH+" 前会把原文件备份为 .bak；新价格立即用于所有费用统计（含历史记录）。"));
     dialog("新增 "+j.added+" 个、变化 "+j.updated+" 个模型的价格",box,"应用","pri",async()=>{const {j:r}=await call("POST","/admin/v1/prices/apply",{token:j.token});loadAudit().catch(()=>{});await loadPrices();ok("已更新 "+r.applied+" 项价格"+(r.backup?"，原文件已备份为 "+r.backup:""))},b)}
   catch(e){fail(e)}finally{loadPrices().catch(()=>{})}},"正在下载…"));
-async function load(discard=false){const seq=++LOAD_SEQ,auth=key(),rev=EDIT_REV;let reply;
-  try{reply=await call("GET","/admin/v1/config")}catch(e){if(seq!==LOAD_SEQ||auth!==key())return false;throw e}
-  if(seq!==LOAD_SEQ||auth!==key())return false;
-  const {j,r}=reply;ETAG=r.headers.get("etag")||"";
-  // Keep the actual controls: invalid numeric text cannot be reconstructed from parsed EDITS.
-  const keep=nEdits()>0&&(!discard||rev!==EDIT_REV);
-  if(keep){if(CFG&&j.version!==CFG.version)BASE_STALE=true;renderKeys(j);$("draft").textContent="最新配置已读取，未保存的编辑已保留。检查并保存时会显示最新值与草稿的差异；放弃后载入最新配置。";$("draft").classList.remove("hide")}
-  else{CFG=j;render()}
-  egressTag(j);loadPrices().catch(()=>{});get("/usage/v1/client-fingerprint").then(f=>{FP=f;fpShow()}).catch(()=>{});get("/usage/v1/quota").then(q=>{ACCN=q.accounts.filter(a=>a.configured!==false).length;setTabCount(ACCN);sync()}).catch(()=>{});loadAudit().catch(()=>{});return !keep}
-onLogout=()=>{LOAD_SEQ++;$("nkv").textContent="";$("newkey").classList.add("hide")};
+async function load(discard=false){const current=draft.beginLoad();let reply;
+  try{reply=await call("GET","/admin/v1/config")}catch(e){if(!current(false))return false;throw e}
+  if(!current(false))return false;
+  const {j,r}=reply;draft.etag=r.headers.get("etag")||"";
+  // Keep the actual controls: invalid numeric text cannot be reconstructed from parsed draft.edits.
+  const keep=nEdits()>0&&(!discard||!current());
+  if(keep){draft.preserve(j);renderKeys(j);$("draft").textContent="最新配置已读取，未保存的编辑已保留。检查并保存时会显示最新值与草稿的差异；放弃后载入最新配置。";$("draft").classList.remove("hide")}
+  else{draft.rebase(j);render()}
+  egressTag();loadPrices().catch(()=>{});get("/usage/v1/client-fingerprint").then(f=>{if(current(false)){FP=f;fpShow()}}).catch(()=>{});get("/usage/v1/quota").then(q=>{if(current(false)){ACCN=q.accounts.filter(a=>a.configured!==false).length;setTabCount(ACCN);sync()}}).catch(()=>{});loadAudit().catch(()=>{});return !keep}
+onLogout=()=>{stopAudit();draft.loadSeq++;draft.epoch++;$("nkv").textContent="";$("newkey").classList.add("hide")};
 async function loadAudit(){const j=await get("/admin/v1/config/audit?limit=20"),tb=$("arows");clear(tb);AUD_LAST=j.entries.length?j.entries[0].ts_ms:null;sync();
   for(const e of j.entries)tb.appendChild(h("tr",null,h("td","mono mut",fmtTime(e.ts_ms)),h("td","sm",e.actor||"（文件/信号）"),h("td","sm",e.action+" · "+e.source),h("td","mono c",(e.changes||[]).map(c=>c.key+": "+fmt(c.old)+" → "+fmt(c.new)).join("；"))));
   if(!j.entries.length)tb.appendChild(h("tr",null,h("td",{colspan:"4",class:"empty"},"暂无变更记录")))}
 // o.irrev: the action cannot be undone, shown as 「不可逆」 next to the title.
 function dialog(title,body,yes,cls,cb,from,o){$("dlgt").textContent=title;if(o&&o.irrev)$("dlgt").append(" ",h("span",{class:"tag err",title:"确认后不能撤销"},"不可逆"));clear($("dlgc"));$("dlgc").appendChild(body);$("dyes").textContent=yes;$("dyes").className=cls;$("dyes").toggleAttribute("data-arm",cls.includes("danger"));$("dyes").classList.toggle("hide",!cb);$("dno").textContent=cb?"取消":"确定";
   $("dlgb").classList.toggle("dz",cls.includes("danger"));$("dlgb").classList.toggle("wide",!!body.querySelector("table"));$("dlg")._yes=cb;openModal($("dlg"),$("dno"),from)}
+$("dlg")._onclose=()=>draft.settle();
 $("dno").addEventListener("click",()=>closeModal($("dlg")));
 $("dyes").addEventListener("click",()=>{const f=$("dlg")._yes;if(!f)return;const t=$("dyes").textContent;busyRun($("dyes"),t,async()=>{try{if(await f()!==false)closeModal($("dlg"))}catch(e){closeModal($("dlg"));fail(e)}},"处理中…")});
-async function reviewEdits(){const changes={...EDITS},rev=EDIT_REV,auth=key();const {j}=await call("POST","/admin/v1/config/validate",{changes});
-  if(auth!==key())return;if(rev!==EDIT_REV){toast("编辑已变化，请重新检查后保存");return}clearServerErrors();const box=h("div");
-  if(!j.ok){const errors=j.errors.map(e=>{const raw=String(e.message||"检查失败").replace(/^invalid:\s*/,""),f=e.key?fld(e.key):(CFG&&CFG.schema||[]).find(f=>raw.startsWith(f.key+" ")),k=f?f.key:e.key,detail=f&&raw.startsWith(f.key+" ")?raw.slice(f.key.length+1):raw,message=detail.replace(/^must be in (\d+)\.\.=(\d+)$/,"需要在 $1 到 $2 之间"),field=k&&document.querySelector('input[type=number][data-fk="'+CSS.escape(k)+'"]'),hint=k&&$("fe-"+k.replace(/\W/g,"_"));
-    if(field&&hint){field.setAttribute("aria-invalid","true");hint.textContent=message;hint.classList.remove("hide");SERVER_ERRORS.set(k,{field,hint})}
+async function reviewEdits(){const {changes,current}=draft.beginReview();let j;try{({j}=await call("POST","/admin/v1/config/validate",{changes}))}catch(e){if(!current(false))return;draft.settle();throw e}
+  if(!current(false))return;if(!current()){draft.settle();toast("编辑已变化，请重新检查后保存");return}clearServerErrors();const box=h("div");
+  if(!j.ok){const errors=j.errors.map(e=>{const raw=String(e.message||"检查失败").replace(/^invalid:\s*/,""),f=e.key?fld(e.key):(draft.base&&draft.base.schema||[]).find(f=>raw.startsWith(f.key+" ")),k=f?f.key:e.key,detail=f&&raw.startsWith(f.key+" ")?raw.slice(f.key.length+1):raw,message=detail.replace(/^must be in (\d+)\.\.=(\d+)$/,"需要在 $1 到 $2 之间"),field=k&&document.querySelector('input[type=number][data-fk="'+CSS.escape(k)+'"]'),hint=k&&$("fe-"+k.replace(/\W/g,"_"));
+    if(field&&hint){field.setAttribute("aria-invalid","true");hint.textContent=message;hint.classList.remove("hide");draft.serverErrors.set(k,{field,hint})}
     return h("li",null,(f?f.desc+"：":k?k+"：":"")+message)});box.append(h("p",null,"有错误，无法保存："),h("ul",null,errors));dialog("检查未通过",box,"","",null,$("check"));return}
   box.appendChild(h("div","tw",h("table",null,h("thead",null,h("tr",null,["设置项","原值","新值","生效方式"].map(x=>h("th",{scope:"col"},x)))),h("tbody",null,j.diff.map(d=>h("tr",null,h("td","mono",d.key),h("td","mono",fmt(d.old)),h("td","mono",fmt(d.new)),h("td",null,eff(d))))))));
   if(j.diff.some(d=>d.effect==="restart"))box.appendChild(h("p","mut","标为「需重启」的项会写入文件，重启 ciallopa 后才生效。"));
-  if(CFG&&j.version!==CFG.version)box.prepend(h("p","hintp","配置已更新。下方「原值」来自最新配置，请确认要用草稿覆盖这些值。"));
+  if(draft.base&&j.version!==draft.base.version)box.prepend(h("p","hintp","配置已更新。下方「原值」来自最新配置，请确认要用草稿覆盖这些值。"));
   dialog("保存 "+j.diff.length+" 项改动？",box,"写入配置文件并应用","pri",async()=>{
-    if(auth!==key()||rev!==EDIT_REV)throw new Error("编辑或登录已变化，请重新检查后保存");
-    const {j:r}=await call("PUT","/admin/v1/config",{changes},{"If-Match":'"'+j.version+'"'});
-    if(auth!==key())return;
-    // Until a fresh render, the controls' original values are no longer a safe baseline.
-    BASE_STALE=true;
-    try{await load(rev===EDIT_REV)}catch(e){if(auth!==key())return;const m="已保存，但重新读取最新配置失败："+why(e)+"。草稿已保留，请刷新后重新检查。";$("msg").textContent=m;toast(m,{kind:"err"});return}
-    if(auth!==key())return;
+    if(!current())throw new Error("编辑或登录已变化，请重新检查后保存");
+    const {j:r}=await draft.commit(()=>call("PUT","/admin/v1/config",{changes},{"If-Match":'"'+j.version+'"'}),current);
+    if(!current(false))return;
+    try{await load(current())}catch(e){if(!current(false))return;const m="已保存，但重新读取最新配置失败："+why(e)+"。草稿已保留，请刷新后重新检查。";$("msg").textContent=m;toast(m,{kind:"err"});return}
+    if(!current(false))return;
     ok("已保存："+r.applied.length+" 项已应用"+(r.pending_restart.length?"，"+r.pending_restart.length+" 项需重启":"")+(nEdits()?"；后续编辑已保留":""))},$("check"))}
 $("check").addEventListener("click",()=>busyRun($("check"),"检查",()=>reviewEdits().catch(fail),"检查中…"));
 // Discarding typed work needs explicit confirmation, without a reading deadline.
-$("discard").addEventListener("click",()=>{const rev=EDIT_REV,auth=key(),field=Object.keys(EDITS)[0]||[...BAD][0];
+$("discard").addEventListener("click",()=>{const current=draft.guard(),field=Object.keys(draft.edits)[0]||[...draft.invalid][0];
   dialog("放弃 "+nEdits()+" 项未保存的改动？",h("p",null,"草稿将丢弃并载入最新配置，已保存的配置不会改变。"),"放弃改动并载入","danger solid",async()=>{
-    if(auth!==key()||rev!==EDIT_REV)throw new Error("编辑或登录已变化，请重新确认放弃");
-    if(await load(true)){const target=(field&&document.querySelector('[data-fk="'+CSS.escape(field)+'"]'))||$("refresh");$("dlg")._opener=target;closeModal($("dlg"));
+    if(!current())throw new Error("编辑或登录已变化，请重新确认放弃");
+    if(await draft.discard()){const target=(field&&document.querySelector('[data-fk="'+CSS.escape(field)+'"]'))||$("refresh");$("dlg")._opener=target;closeModal($("dlg"));
       const r=target.getBoundingClientRect(),head=document.querySelector("header").getBoundingClientRect(),tabs=document.querySelector("nav.tabs").getBoundingClientRect(),bottom=tabs.top>innerHeight/2?tabs.top:innerHeight;
       if(r.top<head.bottom+8||r.bottom>bottom-8)target.scrollIntoView({block:"center",inline:"nearest"});
       ok("已放弃未保存的改动，已载入最新配置")}
     else toast("载入期间有新的编辑，草稿已保留")},$("discard"))});
 $("reload").addEventListener("click",()=>busyRun($("reload"),"重新加载",async()=>{try{const {j}=await call("POST","/admin/v1/config/reload",{});await load();ok("已重新加载："+(j.applied.length?j.applied.length+" 项改动已生效":"没有需要应用的改动"))}catch(e){fail(e);load().catch(()=>{})}},"加载中…"));
 function delKey(label,from){const b=h("div",null,h("p",null,"使用它的客户端会立即无法访问；此操作会写回配置文件。要恢复只能生成新密钥并更新客户端。"));
-  dialog("删除密钥 "+label+"？",b,"删除密钥 "+label,"danger solid",async()=>{await call("DELETE","/admin/v1/config/keys/"+encodeURIComponent(label),{},{"If-Match":ETAG});await load();ok("已删除密钥 "+label)},from,{irrev:true})}
-$("kf").addEventListener("submit",e=>{e.preventDefault();const auth=key();busyRun($("kf").querySelector("button"),"生成密钥",async()=>{try{const {j}=await call("POST","/admin/v1/config/keys",{label:$("klabel").value},{"If-Match":ETAG});if(auth!==key())return;$("klabel").value="";await load();if(auth!==key())return;$("nkv").textContent=j.key;$("newkey").classList.remove("hide");$("nkc").focus()}catch(err){if(auth===key())fail(err)}},"生成中…")});
+  dialog("删除密钥 "+label+"？",b,"删除密钥 "+label,"danger solid",async()=>{await call("DELETE","/admin/v1/config/keys/"+encodeURIComponent(label),{},{"If-Match":draft.etag});await load();ok("已删除密钥 "+label)},from,{irrev:true})}
+$("kf").addEventListener("submit",e=>{e.preventDefault();const auth=key();busyRun($("kf").querySelector("button"),"生成密钥",async()=>{try{const {j}=await call("POST","/admin/v1/config/keys",{label:$("klabel").value},{"If-Match":draft.etag});if(auth!==key())return;$("klabel").value="";await load();if(auth!==key())return;$("nkv").textContent=j.key;$("newkey").classList.remove("hide");$("nkc").focus()}catch(err){if(auth===key())fail(err)}},"生成中…")});
 $("nkc").addEventListener("click",()=>navigator.clipboard.writeText($("nkv").textContent).then(()=>toast("已复制新密钥"),()=>toast("复制失败，请手动选择复制",{kind:"err"})));
 $("nkx").addEventListener("click",()=>{$("nkv").textContent="";$("newkey").classList.add("hide")});
 $("refresh").addEventListener("click",()=>{$("msg").textContent="";load().catch(fail)});
 login(()=>call("GET","/admin/v1/config"),()=>load().catch(e=>{if(!needAdmin(e))fail(e)}));
-})();
+/*@end settings-section-82*/})();
 </script>
 </body>
 </html>
