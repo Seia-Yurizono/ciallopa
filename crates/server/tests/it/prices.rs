@@ -126,6 +126,20 @@ async fn check_apply_unchanged_stale_failure_and_source_reload() {
     assert_eq!(s["summary"]["total"]["unknown_price"], 1);
     assert_eq!(s["summary"]["unknown_price_models"], json!(["gpt-x"]));
 
+    // Price management keeps its existing availability when config writes are off.
+    assert!(!settings.running().ui.allow_config_write);
+    for path in ["/admin/v1/prices/check", "/admin/v1/prices/apply"] {
+        let rejected = http
+            .post(format!("http://{proxy}{path}"))
+            .bearer_auth(KEY)
+            .header("origin", "https://elsewhere.invalid")
+            .json(&json!({"token": "unused"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), 403, "{path}");
+    }
+
     // check: diff only, nothing written
     let c: Value = post("/admin/v1/prices/check", json!({}))
         .await

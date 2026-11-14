@@ -118,7 +118,7 @@ async fn learned_fingerprint_end_to_end() {
     ))
     .unwrap();
     let usage = ciallopa_usage::Recorder::open_as(&cfg.usage, "i").unwrap();
-    ciallopa::client_fp::install(&cfg, Some(usage.clone()));
+    let persisted = ciallopa::client_fp::install(&cfg, Some(usage.clone()));
     let state = AppState {
         accounts: Arc::new(Store),
         router: Arc::new(ciallopa_routing::CpaRouter::new(cfg.routing.clone())),
@@ -238,7 +238,7 @@ async fn learned_fingerprint_end_to_end() {
 
     // 5. persisted in the usage DB; restored after a restart
     // Debounced writer: flush the pending change (same path as graceful shutdown).
-    ciallopa::client_fp::flush();
+    persisted.flush();
     wait_persisted(|| {
         usage
             .kv_get("client_fingerprint")
@@ -258,12 +258,12 @@ async fn learned_fingerprint_end_to_end() {
     let mut cfg2 = cfg.clone();
     cfg2.usage.enabled = false;
     cfg2.usage.path = dir.path().join("off").join("u.db");
-    ciallopa::client_fp::install(&cfg2, None);
+    let persisted = ciallopa::client_fp::install(&cfg2, None);
     let mut h = HeaderMap::new();
     h.insert("user-agent", ua1.parse().unwrap());
     h.insert("originator", "codex_cli_rs".parse().unwrap());
     assert!(fingerprint::observe(&h, None));
-    ciallopa::client_fp::flush();
+    persisted.flush();
     let file = dir.path().join("off").join("client_fingerprint.json");
     wait_persisted(|| file.exists()).await;
     fingerprint::reset_for_tests();

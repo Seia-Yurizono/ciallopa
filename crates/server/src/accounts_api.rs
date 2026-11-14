@@ -3,7 +3,8 @@
 //! login and manual token refresh. Every change needs `[ui] allow_config_write = true` and the
 //! same CSRF rules as the reset-credit action; auth files are written under the same locks as
 //! token refresh.
-use crate::settings::{actor, csrf, err, Settings};
+use crate::http::{csrf, err};
+use crate::settings::{actor, Settings};
 use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
@@ -16,8 +17,8 @@ use ciallopa_core::{AccountPatch, AuthError, ImportOutcome};
 use ciallopa_forward::ClientKey;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::HashMap;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 type S = Arc<Settings>;
@@ -450,10 +451,65 @@ async fn import_files(
 
 // ---------------- device-code login ----------------
 
-static LOGINS: LazyLock<Mutex<HashMap<String, Value>>> = LazyLock::new(Default::default);
-
-fn logins() -> std::sync::MutexGuard<'static, HashMap<String, Value>> {
-    LOGINS.lock().unwrap_or_else(|e| e.into_inner())
+#[derive(Clone, serde::Serialize)]
+#[serde(tag = "status", rename_all = "lowercase")]
+enum Login {
+    Starting,
+    Pending { url: String, code: String },
+    Done { account: String },
+    Error { message: String },
+}
+impl Login {
+    fn active(&self) -> bool {
+        matches!(self, Self::Starting | Self::Pending { .. })
+    }
+}
+#[derive(Default)]
+struct LoginStates {
+    active: Option<(String, Login)>,
+    finished: VecDeque<(String, Login)>,
+}
+#[derive(Default)]
+pub(crate) struct Logins(Mutex<LoginStates>);
+impl Logins {
+    fn start(&self, id: String) -> bool {
+        let mut states = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if states.active.is_some() {
+            return false;
+        }
+        states.active = Some((id, Login::Starting));
+        true
+    }
+    /// Completion may race with the handler receiving the code; final states never regress.
+    fn transition(&self, id: &str, next: Login) {
+        let mut states = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let Some((current_id, current)) = &states.active else {
+            return;
+        };
+        if current_id != id || (matches!(current, Login::Pending { .. }) && next.active()) {
+            return;
+        }
+        if next.active() {
+            if matches!(next, Login::Pending { .. }) {
+                states.active = Some((id.to_string(), next));
+            }
+        } else {
+            states.active = None;
+            states.finished.push_back((id.to_string(), next));
+            while states.finished.len() > 16 {
+                states.finished.pop_front();
+            }
+        }
+    }
+    fn get(&self, id: &str) -> Option<Login> {
+        let states = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        states
+            .active
+            .iter()
+            .chain(states.finished.iter())
+            .find(|(i, _)| i == id)
+            .map(|(_, s)| s.clone())
+    }
 }
 
 /// Start the existing device-code flow (`ciallopa login`): returns the verification URL and
@@ -466,15 +522,6 @@ async fn device_start(
     if let Some(r) = s.write_guard(&headers) {
         return r;
     }
-    if logins()
-        .values()
-        .any(|v| v.get("status").and_then(Value::as_str) == Some("pending"))
-    {
-        return err(
-            StatusCode::CONFLICT,
-            "a device login is already in progress",
-        );
-    }
     let cfg = s.st.config.load();
     let oauth = match crate::oauth_client(&cfg) {
         Ok(o) => o,
@@ -484,8 +531,13 @@ async fn device_start(
     let (tx, rx) = tokio::sync::oneshot::channel::<(String, String)>();
     let dir = cfg.auth_dir.clone();
     let (s2, lid2, who) = (s.clone(), lid.clone(), actor(&key));
-    logins().insert(lid.clone(), json!({"status": "starting"}));
-    tokio::spawn(async move {
+    if !s.logins.start(lid.clone()) {
+        return err(
+            StatusCode::CONFLICT,
+            "a device login is already in progress",
+        );
+    }
+    let task = tokio::spawn(async move {
         let mut tx = Some(tx);
         let r = ciallopa_auth::login::device_code_with(
             &oauth,
@@ -502,38 +554,106 @@ async fn device_start(
             Ok(id) => {
                 let _ = s2.sync_accounts().await;
                 s2.audit_account(who.as_deref(), "account-login", &id, Value::Null);
-                json!({"status": "done", "account": id})
+                Login::Done { account: id }
             }
-            Err(e) => json!({"status": "error", "message": e.to_string()}),
+            Err(e) => Login::Error {
+                message: e.to_string(),
+            },
         };
-        logins().insert(lid2, v);
+        s2.logins.transition(&lid2, v);
     });
     match tokio::time::timeout(Duration::from_secs(30), rx).await {
         Ok(Ok((url, code))) => {
-            let v = json!({"status": "pending", "url": url, "code": code});
-            logins().insert(lid.clone(), v.clone());
-            let mut out = v;
+            s.logins.transition(&lid, Login::Pending { url, code });
+            let mut out = serde_json::to_value(s.logins.get(&lid).expect("current login retained"))
+                .expect("login serializes");
             out["login_id"] = json!(lid);
             Json(out).into_response()
         }
         _ => {
-            let msg = logins()
-                .get(&lid)
-                .and_then(|v| v.get("message").and_then(Value::as_str).map(str::to_owned))
-                .unwrap_or_else(|| "device code request failed".into());
-            logins().remove(&lid);
+            task.abort();
+            let msg = match s.logins.get(&lid) {
+                Some(Login::Error { message }) => message,
+                _ => "device code request failed".into(),
+            };
+            s.logins.transition(
+                &lid,
+                Login::Error {
+                    message: msg.clone(),
+                },
+            );
             err(StatusCode::BAD_GATEWAY, &msg)
         }
     }
 }
 
-async fn device_status(Path(lid): Path<String>) -> Response {
-    match logins().get(&lid) {
-        Some(v) => Json(v.clone()).into_response(),
+async fn device_status(State(s): State<S>, Path(lid): Path<String>) -> Response {
+    match s.logins.get(&lid) {
+        Some(v) => Json(v).into_response(),
         None => err(StatusCode::NOT_FOUND, "unknown login"),
     }
 }
 
 fn overload_json((attempts, overloaded): (u64, u64)) -> serde_json::Value {
     json!({"attempts": attempts, "overloaded": overloaded})
+}
+
+#[cfg(test)]
+mod login_tests {
+    use super::*;
+    #[test]
+    fn completion_before_code_delivery_never_regresses_or_blocks_next_login() {
+        let logins = Logins::default();
+        assert!(logins.start("first".into()));
+        assert!(
+            !logins.start("second".into()),
+            "starting also occupies the active slot"
+        );
+        logins.transition(
+            "first",
+            Login::Error {
+                message: "immediate failure".into(),
+            },
+        );
+        logins.transition(
+            "first",
+            Login::Pending {
+                url: "url".into(),
+                code: "code".into(),
+            },
+        );
+        assert!(matches!(logins.get("first"), Some(Login::Error { .. })));
+        assert!(logins.start("second".into()));
+        logins.transition(
+            "first",
+            Login::Done {
+                account: "late".into(),
+            },
+        );
+        assert!(matches!(logins.get("second"), Some(Login::Starting)));
+        logins.transition(
+            "second",
+            Login::Pending {
+                url: "url".into(),
+                code: "code".into(),
+            },
+        );
+        logins.transition(
+            "second",
+            Login::Done {
+                account: "a".into(),
+            },
+        );
+        for n in 0..20 {
+            let id = n.to_string();
+            assert!(logins.start(id.clone()));
+            logins.transition(
+                &id,
+                Login::Done {
+                    account: "a".into(),
+                },
+            );
+        }
+        assert!(logins.get("first").is_none());
+    }
 }

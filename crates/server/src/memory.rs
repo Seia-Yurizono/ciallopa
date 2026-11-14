@@ -5,7 +5,7 @@ use ciallopa_forward::AppState;
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// One sample every 10 s, the last 15 minutes.
@@ -127,39 +127,34 @@ fn sample(st: &AppState) -> (Sample, Proc) {
     )
 }
 
-fn ring() -> &'static Mutex<VecDeque<Sample>> {
-    static R: OnceLock<Mutex<VecDeque<Sample>>> = OnceLock::new();
-    R.get_or_init(|| Mutex::new(VecDeque::with_capacity(SAMPLES)))
-}
-
-fn push(s: Sample) {
-    let mut r = ring().lock().unwrap_or_else(|e| e.into_inner());
-    if r.len() == SAMPLES {
-        r.pop_front();
-    }
-    r.push_back(s);
-}
-
-/// Start the 10 s sampler once per process (a few syscalls; no disk writes).
-pub fn spawn_sampler(st: AppState) {
-    static STARTED: AtomicBool = AtomicBool::new(false);
-    if tokio::runtime::Handle::try_current().is_err() || STARTED.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    tokio::spawn(async move {
-        let mut t = tokio::time::interval(SAMPLE_EVERY);
-        t.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            t.tick().await;
-            push(sample(&st).0);
+#[derive(Clone, Default)]
+pub(crate) struct Memory(Arc<Mutex<VecDeque<Sample>>>);
+impl Memory {
+    fn push(&self, sample: Sample) {
+        let mut ring = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if ring.len() == SAMPLES {
+            ring.pop_front();
         }
-    });
+        ring.push_back(sample);
+    }
+    pub(crate) fn spawn_sampler(&self, st: AppState) -> tokio::task::JoinHandle<()> {
+        let memory = self.clone();
+        tokio::spawn(async move {
+            let mut t = tokio::time::interval(SAMPLE_EVERY);
+            t.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                t.tick().await;
+                memory.push(sample(&st).0);
+            }
+        })
+    }
 }
 
-async fn memory(State(st): State<AppState>) -> impl IntoResponse {
+async fn memory(State((st, memory)): State<(AppState, Memory)>) -> impl IntoResponse {
     let (now, p) = sample(&st);
     let cfg = st.config.load();
-    let history: Vec<Sample> = ring()
+    let history: Vec<Sample> = memory
+        .0
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .iter()
@@ -177,10 +172,10 @@ async fn memory(State(st): State<AppState>) -> impl IntoResponse {
     }))
 }
 
-pub fn routes(st: AppState) -> Router {
+pub(crate) fn routes(st: AppState, samples: Memory) -> Router {
     Router::new()
         .route("/admin/v1/memory", get(memory))
-        .with_state(st)
+        .with_state((st, samples))
 }
 
 #[cfg(test)]
@@ -189,13 +184,14 @@ mod tests {
 
     #[test]
     fn ring_keeps_the_last_samples() {
+        let memory = Memory::default();
         for i in 0..(SAMPLES as u64 + 5) {
-            push(Sample {
+            memory.push(Sample {
                 at_ms: i,
                 ..Default::default()
             });
         }
-        let r = ring().lock().unwrap();
+        let r = memory.0.lock().unwrap();
         assert_eq!(r.len(), SAMPLES);
         assert_eq!(r.front().unwrap().at_ms, 5);
     }

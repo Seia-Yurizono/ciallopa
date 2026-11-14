@@ -82,10 +82,52 @@ impl Schedule {
         self.slots.values().map(|s| s.next).min()
     }
 
-    /// Pending time of one key (tests and the list API).
-    pub fn next_of(&self, key: &str) -> Option<u64> {
+    #[cfg(test)]
+    fn next_of(&self, key: &str) -> Option<u64> {
         self.slots.get(key).map(|s| s.next)
     }
+}
+
+/// Both read-only pollers share scheduling and wake immediately after a switch/reload.
+pub(crate) fn spawn_scheduled<R, K, KF, F, FF>(
+    wake: std::sync::Arc<tokio::sync::Notify>,
+    range: R,
+    keys: K,
+    run: F,
+) -> tokio::task::JoinHandle<()>
+where
+    R: Fn() -> Option<(u64, u64)> + Send + 'static,
+    K: Fn() -> KF + Send + 'static,
+    KF: std::future::Future<Output = Vec<String>> + Send,
+    F: Fn(Vec<String>) -> FF + Send + 'static,
+    FF: std::future::Future<Output = ()> + Send,
+{
+    tokio::spawn(async move {
+        use rand::SeedableRng;
+        use std::time::Duration;
+        let start = tokio::time::Instant::now();
+        let mut rng = rand::rngs::StdRng::from_rng(&mut rand::rng());
+        let mut schedule = Schedule::default();
+        loop {
+            let range = range();
+            let ids = if range.is_some() {
+                keys().await
+            } else {
+                vec![]
+            };
+            let due = schedule.due(start.elapsed().as_millis() as u64, range, &ids, &mut rng);
+            if !due.is_empty() {
+                run(due).await;
+            }
+            let now = start.elapsed().as_millis() as u64;
+            let wait = schedule
+                .earliest()
+                .map(|t| Duration::from_millis(t.saturating_sub(now)))
+                .unwrap_or(Duration::from_secs(30))
+                .clamp(Duration::from_secs(1), Duration::from_secs(30));
+            tokio::select! { _ = tokio::time::sleep(wait) => {}, _ = wake.notified() => {} }
+        }
+    })
 }
 
 #[cfg(test)]

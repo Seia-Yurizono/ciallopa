@@ -1,17 +1,7 @@
-//! Reset credits (重置卡): read-only listing (on demand + periodic) and the consume action.
-//! [`consume_upstream`] has one caller, [`consume_locked`], which runs under the account's
-//! consume lock. It is reached from two places only: the manual admin handler below (an
-//! explicit client request) and the opt-in automatic use in [`crate::auto_reset`] (accounts
-//! whose 「快到期时自动使用」 switch is on, shortly before a card expires).
-//!
-//! Active quota (刷新额度): manual admin POST plus an optional background poll
-//! (`[ui] quota_refresh_mins..=quota_refresh_max_mins`, default off; each account at its own
-//! random time, see [`crate::refresh_sched`]) of accounts whose 「自动刷新额度」 switch is on.
-//! Both call [`quota_refresh_account`] (same `/wham/usage` path, snapshot, cooldown clear).
-//!
-//! Upstream calls mirror codex-rs `backend-client` (`client/rate_limit_resets.rs`): same paths,
-//! `User-Agent` + `originator` of the latest learned Codex client (`ciallopa_core::fingerprint`), `Authorization: Bearer`,
-//! `ChatGPT-Account-Id`; 5 s timeout for the listing, 10 s for consume.
+//! Reset-card listing and opt-in consumption share an account lock.
+//! Only the manual handler and the automatic sweep can enter the private consume path.
+//! Read-only card/quota polling uses bounded fan-out and live randomized schedules.
+use crate::http::{csrf, err, require_account};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -23,6 +13,8 @@ use ciallopa_usage::{now_ms, QuotaObs, Recorder};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap};
+use std::fmt;
+use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::Notify;
@@ -94,37 +86,47 @@ pub fn usage_extras(v: &Value) -> (Option<i64>, Option<bool>, Option<bool>) {
     (count, allowed, reached)
 }
 
-// ---------------- per-account 「自动刷新额度」 switches ----------------
+#[path = "auto_reset.rs"]
+pub mod auto_reset;
 
 const QUOTA_AUTO_KV: &str = "quota_refresh_auto_accounts";
-const QUOTA_AUTO_PERSIST_DEBOUNCE: Duration = Duration::from_secs(2);
+const PERSIST_DEBOUNCE: Duration = Duration::from_secs(2);
 
 #[derive(Default)]
-struct QuotaAutoFlags {
+struct Flags {
     on: BTreeSet<String>,
     gen: u64,
     saved: u64,
 }
 
-#[derive(Default)]
-struct QuotaAutoInner {
-    flags: Mutex<QuotaAutoFlags>,
+struct SwitchInner {
+    key: &'static str,
+    flags: Mutex<Flags>,
+    saving: Mutex<()>,
     dirty: Notify,
+    wake: Arc<Notify>,
 }
 
-/// Opt-in switches for background 刷新额度. Persisted in the usage KV (debounced), like
-/// [`crate::auto_reset::AutoState`]. Default off per account.
-#[derive(Clone, Default)]
-pub struct QuotaAutoState(Arc<QuotaAutoInner>);
+/// Persisted opt-in account switches. Each instance owns its wakeup and flush state.
+#[derive(Clone)]
+pub struct Switches(Arc<SwitchInner>);
 
-impl QuotaAutoState {
-    fn flags(&self) -> std::sync::MutexGuard<'_, QuotaAutoFlags> {
+impl Switches {
+    pub(crate) fn new(key: &'static str) -> Self {
+        Self(Arc::new(SwitchInner {
+            key,
+            flags: Default::default(),
+            saving: Default::default(),
+            dirty: Notify::new(),
+            wake: Arc::new(Notify::new()),
+        }))
+    }
+    fn flags(&self) -> std::sync::MutexGuard<'_, Flags> {
         self.0.flags.lock().unwrap_or_else(|e| e.into_inner())
     }
     pub fn is_on(&self, id: &str) -> bool {
         self.flags().on.contains(id)
     }
-    /// Returns whether anything changed. Changes are persisted (debounced).
     pub fn set(&self, id: &str, on: bool) -> bool {
         let mut f = self.flags();
         let changed = if on {
@@ -136,86 +138,99 @@ impl QuotaAutoState {
             f.gen += 1;
             drop(f);
             self.0.dirty.notify_one();
+            self.0.wake.notify_one();
         }
         changed
     }
     pub fn ids(&self) -> Vec<String> {
         self.flags().on.iter().cloned().collect()
     }
-    fn load(&self, ids: Vec<String>) {
-        let mut f = self.flags();
-        f.on = ids.into_iter().collect();
+    pub(crate) fn wake(&self) -> Arc<Notify> {
+        self.0.wake.clone()
     }
-    fn unsaved(&self) -> Option<(u64, String)> {
-        let f = self.flags();
-        (f.gen != f.saved).then(|| {
-            let ids: Vec<&String> = f.on.iter().collect();
+    pub(crate) fn load(&self, rec: &Recorder) {
+        match rec.kv_get(self.0.key) {
+            Ok(Some(v)) => self.flags().on = serde_json::from_str(&v).unwrap_or_default(),
+            Ok(None) => {}
+            Err(e) => tracing::warn!(key = self.0.key, error = %e, "account switches not loaded"),
+        }
+    }
+    /// Also used at shutdown, before the usage database is closed.
+    pub fn flush(&self, rec: &Recorder) {
+        // Serialize the snapshot and write together: an older debounce write must not
+        // overwrite a newer shutdown flush.
+        let _save = self.0.saving.lock().unwrap_or_else(|e| e.into_inner());
+        let (gen, value) = {
+            let f = self.flags();
+            if f.gen == f.saved {
+                return;
+            }
             (
                 f.gen,
-                serde_json::to_string(&ids).unwrap_or_else(|_| "[]".into()),
+                serde_json::to_string(&f.on).expect("string set serializes"),
             )
-        })
-    }
-    fn saved(&self, gen: u64) {
-        let mut f = self.flags();
-        f.saved = f.saved.max(gen);
-    }
-}
-
-static QUOTA_AUTO_REG: Mutex<Option<(Arc<Recorder>, QuotaAutoState)>> = Mutex::new(None);
-
-/// Graceful shutdown: write a switch change still waiting for the debounce.
-pub fn quota_auto_flush() {
-    let reg = QUOTA_AUTO_REG
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone();
-    if let Some((rec, a)) = reg {
-        if let Some((gen, v)) = a.unsaved() {
-            match rec.kv_set(QUOTA_AUTO_KV, &v) {
-                Ok(()) => a.saved(gen),
-                Err(e) => tracing::warn!(error = %e, "quota auto-refresh switches not saved"),
-            }
-        }
-    }
-}
-
-async fn quota_auto_persist(rec: Arc<Recorder>, a: QuotaAutoState) {
-    loop {
-        a.0.dirty.notified().await;
-        tokio::time::sleep(QUOTA_AUTO_PERSIST_DEBOUNCE).await;
-        let Some((gen, v)) = a.unsaved() else {
-            continue;
         };
-        let r = rec.clone();
-        match tokio::task::spawn_blocking(move || r.kv_set(QUOTA_AUTO_KV, &v)).await {
-            Ok(Ok(())) => a.saved(gen),
-            Ok(Err(e)) => tracing::warn!(error = %e, "quota auto-refresh switches not saved"),
-            Err(e) => tracing::warn!(error = %e, "quota auto-refresh switches not saved"),
+        match rec.kv_set(self.0.key, &value) {
+            Ok(()) => self.flags().saved = gen,
+            Err(e) => tracing::warn!(key = self.0.key, error = %e, "account switches not saved"),
         }
     }
-}
-
-fn quota_auto_load(rec: &Recorder, a: &QuotaAutoState) {
-    match rec.kv_get(QUOTA_AUTO_KV) {
-        Ok(Some(v)) => a.load(serde_json::from_str::<Vec<String>>(&v).unwrap_or_default()),
-        Ok(None) => {}
-        Err(e) => tracing::warn!(error = %e, "quota auto-refresh switches not loaded"),
+    pub(crate) fn spawn_persist(&self, rec: Arc<Recorder>) -> tokio::task::JoinHandle<()> {
+        let a = self.clone();
+        tokio::spawn(async move {
+            loop {
+                a.0.dirty.notified().await;
+                tokio::time::sleep(PERSIST_DEBOUNCE).await;
+                let (a, r) = (a.clone(), rec.clone());
+                if let Err(e) = tokio::task::spawn_blocking(move || a.flush(&r)).await {
+                    tracing::warn!(error = %e, "account switches not saved");
+                }
+            }
+        })
     }
 }
 
 /// Shared cache + per-account consume locks.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct ResetCredits {
     pub(crate) cache: Arc<Mutex<HashMap<String, Entry>>>,
     locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     /// Per-account automatic-use switches (see [`crate::auto_reset`]).
     pub(crate) auto: crate::auto_reset::AutoState,
-    /// Per-account 「自动刷新额度」 switches (see [`QuotaAutoState`]).
-    pub(crate) quota_auto: QuotaAutoState,
+    /// Per-account 「自动刷新额度」 switches (see [`Switches`]).
+    pub(crate) quota_auto: Switches,
+    quota_last: Arc<Mutex<HashMap<String, std::time::Instant>>>,
+    pub(crate) poll_wake: Arc<Notify>,
+}
+
+impl Default for ResetCredits {
+    fn default() -> Self {
+        Self {
+            cache: Default::default(),
+            locks: Default::default(),
+            auto: Default::default(),
+            quota_auto: Switches::new(QUOTA_AUTO_KV),
+            quota_last: Default::default(),
+            poll_wake: Default::default(),
+        }
+    }
 }
 
 impl ResetCredits {
+    pub(crate) fn load(&self, rec: &Recorder) {
+        self.auto.switches.load(rec);
+        self.quota_auto.load(rec);
+    }
+    pub fn flush(&self, rec: &Recorder) {
+        self.auto.switches.flush(rec);
+        self.quota_auto.flush(rec);
+    }
+    pub(crate) fn wake(&self) {
+        self.poll_wake.notify_one();
+        self.quota_auto.wake().notify_one();
+        self.auto.switches.wake().notify_one();
+    }
+
     /// Drop the cached listing and the automatic-use switch of a removed account.
     ///
     /// The consume lock is only dropped when nobody holds or waits for it: a consume still in
@@ -233,6 +248,10 @@ impl ResetCredits {
             locks.remove(account);
         }
         drop(locks);
+        self.quota_last
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(account);
         self.auto.set(account, false);
         self.quota_auto.set(account, false);
     }
@@ -241,7 +260,7 @@ impl ResetCredits {
         &self.auto
     }
     /// Per-account 「自动刷新额度」 switches.
-    pub fn quota_auto(&self) -> &QuotaAutoState {
+    pub fn quota_auto(&self) -> &Switches {
         &self.quota_auto
     }
     /// Keep the display-only `/wham/usage` fields of one account.
@@ -277,6 +296,33 @@ fn nearest(credits: &[Credit]) -> Option<String> {
         .min()
 }
 
+#[derive(Debug)]
+pub(crate) enum UpstreamErr {
+    Credentials(String),
+    Timeout(u64),
+    Send(String),
+    Body(String),
+}
+impl UpstreamErr {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Credentials(_) => "credentials",
+            Self::Timeout(_) => "timeout",
+            Self::Send(_) | Self::Body(_) => "network",
+        }
+    }
+}
+impl fmt::Display for UpstreamErr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Credentials(e) => write!(f, "credentials: {e}"),
+            Self::Timeout(s) => write!(f, "send: no answer within {s} s"),
+            Self::Send(e) => write!(f, "send: {e}"),
+            Self::Body(e) => write!(f, "read body: {e}"),
+        }
+    }
+}
+
 pub(crate) async fn upstream_req(
     st: &AppState,
     account: &str,
@@ -284,12 +330,12 @@ pub(crate) async fn upstream_req(
     path: &str,
     body: Option<Value>,
     timeout: Duration,
-) -> Result<(u16, String), String> {
+) -> Result<(u16, String), UpstreamErr> {
     let creds = st
         .accounts
         .credentials(&account.to_string())
         .await
-        .map_err(|e| format!("credentials: {e}"))?;
+        .map_err(|e| UpstreamErr::Credentials(e.to_string()))?;
     // Latest learned Codex client fingerprint (built-in default until one is seen).
     let (ua, originator) = ciallopa_core::fingerprint::headers();
     let url = st.upstream.url(path);
@@ -316,14 +362,17 @@ pub(crate) async fn upstream_req(
     }
     let r = req.send().await.map_err(|e| {
         if e.is_timeout() {
-            format!("send: no answer within {} s", timeout.as_secs())
+            UpstreamErr::Timeout(timeout.as_secs())
         } else {
-            format!("send: {e}")
+            UpstreamErr::Send(e.to_string())
         }
     })?;
     st.upstream.store_cookies(account, &url, r.headers());
     let s = r.status().as_u16();
-    let t = r.text().await.map_err(|e| format!("read body: {e}"))?;
+    let t = r
+        .text()
+        .await
+        .map_err(|e| UpstreamErr::Body(e.to_string()))?;
     Ok((s, t))
 }
 
@@ -365,108 +414,92 @@ pub async fn refresh_account(st: &AppState, rc: &ResetCredits, account: &str) ->
             e.error_ms = Some(now_ms());
         }
         Err(err) => {
-            e.error = Some(err);
+            e.error = Some(err.to_string());
             e.error_ms = Some(now_ms());
         }
     }
     e.clone()
 }
 
-/// Lists cards for every account with a usable token. Disabled accounts are included: they
-/// are only kept out of routing, and their cards can still be used from the management page.
+/// Keep at most `limit` futures in flight, without spawning waiting tasks per account.
+async fn for_each_bounded<I, F, Fut, T>(items: I, limit: usize, f: F) -> Vec<T>
+where
+    I: IntoIterator,
+    F: Fn(I::Item) -> Fut,
+    Fut: Future<Output = T>,
+{
+    let mut items = items.into_iter();
+    let mut active = Vec::new();
+    let mut out = Vec::new();
+    loop {
+        while active.len() < limit.max(1) {
+            let Some(item) = items.next() else { break };
+            active.push(Box::pin(f(item)));
+        }
+        if active.is_empty() {
+            return out;
+        }
+        let (index, value) = std::future::poll_fn(|cx| {
+            for (index, fut) in active.iter_mut().enumerate() {
+                if let std::task::Poll::Ready(value) = fut.as_mut().poll(cx) {
+                    return std::task::Poll::Ready((index, value));
+                }
+            }
+            std::task::Poll::Pending
+        })
+        .await;
+        drop(active.swap_remove(index));
+        out.push(value);
+    }
+}
+
+/// Lists cards for every account with a usable token, including disabled accounts.
 async fn refresh_all(st: &AppState, rc: &ResetCredits) {
     let relogin = st.accounts.relogin_required().await;
-    for a in st.accounts.list().await {
-        if relogin.contains(&a.id) {
-            continue;
-        }
-        refresh_account(st, rc, &a.id).await;
-    }
+    let ids = st
+        .accounts
+        .list()
+        .await
+        .into_iter()
+        .filter(|a| !relogin.contains(&a.id))
+        .map(|a| a.id);
+    for_each_bounded(ids, QUOTA_REFRESH_PARALLEL, |id| async move {
+        refresh_account(st, rc, &id).await;
+    })
+    .await;
 }
 
-/// Longest sleep of a poller between two looks at the live config (a reload takes effect
-/// within this) and the shortest (granularity of the random times).
-const POLL_MAX: Duration = Duration::from_secs(30);
-const POLL_MIN: Duration = Duration::from_secs(1);
-
-/// Sleep until the earliest pending time, but at most [`POLL_MAX`].
-fn poll_sleep(sched: &crate::refresh_sched::Schedule, now: u64) -> Duration {
-    sched
-        .earliest()
-        .map(|t| Duration::from_millis(t.saturating_sub(now)))
-        .unwrap_or(POLL_MAX)
-        .clamp(POLL_MIN, POLL_MAX)
-}
-
-fn sched_rng() -> rand::rngs::StdRng {
-    use rand::SeedableRng;
-    rand::rngs::StdRng::from_rng(&mut rand::rng())
-}
-
-/// Key of the reset-credit refresh: it runs as one round over all accounts.
-const ROUND_KEY: &str = "*";
-
-/// Periodic read-only refresh. Never consumes. The range is read from the live config on
-/// every pass (`[ui] reset_credits_refresh_mins..=reset_credits_refresh_max_mins`, `0` = on
-/// demand only), so a reload takes effect within 30 s. Each next round is drawn at random in
-/// the range, the first one too (see [`crate::refresh_sched`]).
-pub fn spawn_poller(st: AppState, rc: ResetCredits) {
-    if tokio::runtime::Handle::try_current().is_err() {
-        return;
-    }
-    tokio::spawn(async move {
-        let t0 = tokio::time::Instant::now();
-        let mut rng = sched_rng();
-        let mut sched = crate::refresh_sched::Schedule::default();
-        let key = [ROUND_KEY.to_string()];
-        loop {
-            let range = st.config.load().ui.reset_credits_refresh_range();
-            let now = t0.elapsed().as_millis() as u64;
-            if !sched.due(now, range, &key, &mut rng).is_empty() {
-                refresh_all(&st, &rc).await;
+pub(crate) fn spawn_poller(st: AppState, rc: ResetCredits) -> tokio::task::JoinHandle<()> {
+    let range_st = st.clone();
+    crate::refresh_sched::spawn_scheduled(
+        rc.poll_wake.clone(),
+        move || range_st.config.load().ui.reset_credits_refresh_range(),
+        || async { vec!["*".to_string()] },
+        {
+            let st = st.clone();
+            move |_| {
+                let (st, rc) = (st.clone(), rc.clone());
+                async move { refresh_all(&st, &rc).await }
             }
-            let now = t0.elapsed().as_millis() as u64;
-            tokio::time::sleep(poll_sleep(&sched, now)).await;
-        }
-    });
+        },
+    )
 }
 
-/// Background 刷新额度 for accounts with 「自动刷新额度」 on. Same work as the manual button
-/// ([`quota_refresh_account`]). Range from live `[ui] quota_refresh_mins..=quota_refresh_max_mins`
-/// (`0` = off); reload takes effect within 30 s. Every account has its own random next time
-/// (also the first, after start or after its switch is turned on), so accounts are not asked
-/// in lockstep. Needs `[usage]` to load/persist the switches; next times stay in memory.
-pub fn spawn_quota_poller(st: AppState, rc: ResetCredits) {
-    if tokio::runtime::Handle::try_current().is_err() {
-        return;
-    }
-    let Some(rec) = st.usage.clone() else {
-        return;
-    };
-    quota_auto_load(&rec, &rc.quota_auto);
-    *QUOTA_AUTO_REG.lock().unwrap_or_else(|e| e.into_inner()) =
-        Some((rec.clone(), rc.quota_auto.clone()));
-    tokio::spawn(quota_auto_persist(rec, rc.quota_auto.clone()));
-    tokio::spawn(async move {
-        let t0 = tokio::time::Instant::now();
-        let mut rng = sched_rng();
-        let mut sched = crate::refresh_sched::Schedule::default();
-        loop {
-            let range = st.config.load().ui.quota_refresh_range();
-            let ids = if range.is_some() {
-                quota_opted_in_ids(&st, &rc).await
-            } else {
-                vec![]
-            };
-            let now = t0.elapsed().as_millis() as u64;
-            let due = sched.due(now, range, &ids, &mut rng);
-            if !due.is_empty() {
-                quota_refresh_ids(&st, &rc, due).await;
-            }
-            let now = t0.elapsed().as_millis() as u64;
-            tokio::time::sleep(poll_sleep(&sched, now)).await;
-        }
-    });
+pub(crate) fn spawn_quota_poller(st: AppState, rc: ResetCredits) -> tokio::task::JoinHandle<()> {
+    let range_st = st.clone();
+    let (key_st, key_rc) = (st.clone(), rc.clone());
+    crate::refresh_sched::spawn_scheduled(
+        rc.quota_auto.wake(),
+        move || range_st.config.load().ui.quota_refresh_range(),
+        move || {
+            let (st, rc) = (key_st.clone(), key_rc.clone());
+            async move { quota_opted_in_ids(&st, &rc).await }
+        },
+        move |ids| {
+            let (st, rc) = (st.clone(), rc.clone());
+            async move { quota_refresh_ids(&st, &rc, ids).await }
+        },
+    )
 }
 
 /// Opted-in accounts that still exist (disabled included).
@@ -492,20 +525,17 @@ async fn quota_refresh_ids(st: &AppState, rc: &ResetCredits, ids: Vec<String>) {
         return;
     }
     let relogin = st.accounts.relogin_required().await;
-    let sem = Arc::new(tokio::sync::Semaphore::new(QUOTA_REFRESH_PARALLEL));
-    let mut set = tokio::task::JoinSet::new();
-    for id in ids {
-        let (st, rc, sem, skip) = (st.clone(), rc.clone(), sem.clone(), relogin.contains(&id));
-        set.spawn(async move {
+    for_each_bounded(ids, QUOTA_REFRESH_PARALLEL, |id| {
+        let skip = relogin.contains(&id);
+        async move {
             if skip {
                 tracing::debug!(%id, "quota auto-refresh skipped: re-login required");
-                return;
+            } else {
+                quota_refresh_account(st, rc, &id).await;
             }
-            let _p = sem.acquire_owned().await;
-            let _ = quota_refresh_account(&st, &rc, &id).await;
-        });
-    }
-    let _ = set.join_all().await;
+        }
+    })
+    .await;
 }
 
 #[derive(Clone)]
@@ -534,10 +564,6 @@ pub fn routes(st: AppState, rc: ResetCredits) -> Router {
         .with_state(S { st, rc })
 }
 
-fn err(status: StatusCode, msg: &str) -> Response {
-    (status, Json(json!({"error": {"message": msg}}))).into_response()
-}
-
 /// Non-admin callers get counts and the earliest expiry only — not the card list.
 fn credits_public(e: &Entry, admin: bool) -> Value {
     if admin {
@@ -559,20 +585,29 @@ fn credits_public(e: &Entry, admin: bool) -> Value {
 async fn list_body(s: &S, admin: bool) -> Value {
     let cfg = s.st.config.load();
     let snap = s.rc.snapshot();
+    let accounts = s.st.accounts.list().await;
+    let need_history = admin || accounts.iter().any(|a| s.rc.auto.is_on(&a.id));
     let mut attempts = match &s.st.usage {
-        Some(r) => r
+        Some(r) if need_history => r
             .reset_attempts(crate::auto_reset::HISTORY_ROWS)
             .await
             .unwrap_or_default(),
-        None => vec![],
+        _ => vec![],
     };
+    let mut grouped: HashMap<&str, Vec<&ciallopa_usage::reset::ConsumeAttempt>> = HashMap::new();
+    for row in &attempts {
+        grouped.entry(&row.account).or_default().push(row);
+    }
     let lead_ms = crate::auto_reset::lead_ms(&cfg);
     let now = now_ms();
     let mut out = vec![];
-    for a in s.st.accounts.list().await {
+    for a in accounts {
         let auto = s.rc.auto.is_on(&a.id);
         let next = snap.get(&a.id).filter(|_| auto).and_then(|e| {
-            let hist = s.rc.auto.history(&attempts, &a.id);
+            let hist = s.rc.auto.history(
+                grouped.get(a.id.as_str()).into_iter().flatten().copied(),
+                &a.id,
+            );
             crate::auto_reset::next_due(&e.credits, &hist, lead_ms, now)
         });
         let alias = ciallopa_core::a(&a.id);
@@ -589,6 +624,7 @@ async fn list_body(s: &S, admin: bool) -> Value {
         }
         out.push(row);
     }
+    drop(grouped);
     if admin {
         attempts.truncate(20);
     } else {
@@ -642,14 +678,14 @@ async fn refresh(
         )
             .into_response();
     }
-    if let Some(r) = crate::settings::csrf(&headers) {
+    if let Some(r) = csrf(&headers) {
         return r;
     }
     let q = body.map(|b| b.0).unwrap_or_default();
     match q.account {
         Some(a) => {
-            if !s.st.accounts.list().await.iter().any(|x| x.id == a) {
-                return err(StatusCode::NOT_FOUND, "unknown account");
+            if let Err(r) = require_account(&s.st, &a).await {
+                return r;
             }
             refresh_account(&s.st, &s.rc, &a).await;
         }
@@ -664,61 +700,36 @@ struct AutoReq {
     enabled: bool,
 }
 
-/// Per-account 「快到期时自动使用」 switch. A setting-like change: needs
-/// `[ui] allow_config_write = true` and the CSRF rules (not `allow_reset_consume`, which only
-/// gates the manual button). Kept in the usage DB, written debounced.
+#[derive(Clone, Copy)]
+enum SwitchKind {
+    Auto,
+    Quota,
+}
+
 async fn set_auto(
     State(s): State<S>,
     Path(account): Path<String>,
     headers: HeaderMap,
     body: Option<Json<AutoReq>>,
 ) -> Response {
-    if !s.st.config.load().ui.allow_config_write {
-        return err(
-            StatusCode::FORBIDDEN,
-            "changes from the management page are disabled; set [ui] allow_config_write = true in the config file",
-        );
-    }
-    if let Some(r) = crate::settings::csrf(&headers) {
-        return r;
-    }
-    let Some(Json(req)) = body else {
-        return err(
-            StatusCode::BAD_REQUEST,
-            "body must be JSON {\"enabled\": true|false}",
-        );
-    };
-    if s.st.usage.is_none() {
-        return err(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "automatic use needs [usage] enabled (attempts are recorded there)",
-        );
-    }
-    if !s.st.accounts.list().await.iter().any(|a| a.id == account) {
-        return err(StatusCode::NOT_FOUND, "unknown account");
-    }
-    let changed = s.rc.auto.set(&account, req.enabled);
-    if changed {
-        tracing::info!(%account, enabled = req.enabled, "auto reset-card switch changed");
-    }
-    Json(json!({"account": account, "auto": req.enabled, "changed": changed})).into_response()
+    set_switch(SwitchKind::Auto, s, account, headers, body).await
 }
-
-/// Per-account 「自动刷新额度」 switch. Needs `[ui] allow_config_write = true` and `[usage]`
-/// (switches are persisted there). Same CSRF rules as other management POSTs.
 async fn set_quota_auto(
     State(s): State<S>,
     Path(account): Path<String>,
     headers: HeaderMap,
     body: Option<Json<AutoReq>>,
 ) -> Response {
-    if !s.st.config.load().ui.allow_config_write {
-        return err(
-            StatusCode::FORBIDDEN,
-            "changes from the management page are disabled; set [ui] allow_config_write = true in the config file",
-        );
-    }
-    if let Some(r) = crate::settings::csrf(&headers) {
+    set_switch(SwitchKind::Quota, s, account, headers, body).await
+}
+async fn set_switch(
+    kind: SwitchKind,
+    s: S,
+    account: String,
+    headers: HeaderMap,
+    body: Option<Json<AutoReq>>,
+) -> Response {
+    if let Some(r) = crate::http::write_guard(&s.st.config.load(), &headers) {
         return r;
     }
     let Some(Json(req)) = body else {
@@ -730,17 +741,38 @@ async fn set_quota_auto(
     if s.st.usage.is_none() {
         return err(
             StatusCode::SERVICE_UNAVAILABLE,
-            "automatic quota refresh needs [usage] enabled (switches are stored there)",
+            match kind {
+                SwitchKind::Auto => {
+                    "automatic use needs [usage] enabled (attempts are recorded there)"
+                }
+                SwitchKind::Quota => {
+                    "automatic quota refresh needs [usage] enabled (switches are stored there)"
+                }
+            },
         );
     }
-    if !s.st.accounts.list().await.iter().any(|a| a.id == account) {
-        return err(StatusCode::NOT_FOUND, "unknown account");
+    if let Err(r) = crate::http::require_account(&s.st, &account).await {
+        return r;
     }
-    let changed = s.rc.quota_auto.set(&account, req.enabled);
-    if changed {
-        tracing::info!(%account, enabled = req.enabled, "quota auto-refresh switch changed");
-    }
-    Json(json!({"account": account, "quota_auto": req.enabled, "changed": changed})).into_response()
+    let (changed, field) = match kind {
+        SwitchKind::Auto => {
+            let changed = s.rc.auto.set(&account, req.enabled);
+            if changed {
+                tracing::info!(%account, enabled = req.enabled, "auto reset-card switch changed");
+            }
+            (changed, "auto")
+        }
+        SwitchKind::Quota => {
+            let changed = s.rc.quota_auto.set(&account, req.enabled);
+            if changed {
+                tracing::info!(%account, enabled = req.enabled, "quota auto-refresh switch changed");
+            }
+            (changed, "quota_auto")
+        }
+    };
+    let mut out = json!({"account": account, "changed": changed});
+    out[field] = json!(req.enabled);
+    Json(out).into_response()
 }
 
 #[derive(Deserialize)]
@@ -780,7 +812,7 @@ async fn consume_upstream(
     account: &str,
     rid: &str,
     credit_id: Option<&str>,
-) -> Result<(u16, String), String> {
+) -> Result<(u16, String), UpstreamErr> {
     let mut body = json!({"redeem_request_id": rid});
     if let Some(c) = credit_id {
         body["credit_id"] = json!(c);
@@ -796,7 +828,155 @@ async fn consume_upstream(
     .await
 }
 
-const CODES: [&str; 4] = ["reset", "nothing_to_reset", "no_credit", "already_redeemed"];
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsumeCode {
+    Reset,
+    NothingToReset,
+    NoCredit,
+    AlreadyRedeemed,
+}
+impl ConsumeCode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Reset => "reset",
+            Self::NothingToReset => "nothing_to_reset",
+            Self::NoCredit => "no_credit",
+            Self::AlreadyRedeemed => "already_redeemed",
+        }
+    }
+    fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "reset" => Self::Reset,
+            "nothing_to_reset" => Self::NothingToReset,
+            "no_credit" => Self::NoCredit,
+            "already_redeemed" => Self::AlreadyRedeemed,
+            _ => return None,
+        })
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsumeStatus {
+    Pending,
+    Done,
+    Failed,
+    Superseded,
+}
+impl ConsumeStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Done => "done",
+            Self::Failed => "failed",
+            Self::Superseded => "superseded",
+        }
+    }
+    pub(crate) fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "pending" => Self::Pending,
+            "done" => Self::Done,
+            "failed" => Self::Failed,
+            "superseded" => Self::Superseded,
+            _ => return None,
+        })
+    }
+}
+
+struct Classified {
+    status: ConsumeStatus,
+    code: Option<ConsumeCode>,
+    outcome: ConsumeOutcome,
+    http: StatusCode,
+    body: Value,
+}
+
+/// One interpretation of an upstream answer, shared by persistence and both callers.
+fn classify(res: Result<(u16, String), UpstreamErr>) -> Classified {
+    let mut code = None;
+    let (state, http_status, windows_reset, error, http, body) = match res {
+        Ok((http @ 200..=299, body)) => {
+            let v: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            code = v
+                .get("code")
+                .and_then(Value::as_str)
+                .and_then(ConsumeCode::parse);
+            match code {
+                Some(c) => {
+                    let w = v.get("windows_reset").and_then(Value::as_i64).unwrap_or(0);
+                    (
+                        ConsumeStatus::Done,
+                        Some(http),
+                        Some(w),
+                        None,
+                        StatusCode::OK,
+                        json!({"code": c.as_str(), "windows_reset": w}),
+                    )
+                }
+                None => (
+                    ConsumeStatus::Pending,
+                    Some(http),
+                    None,
+                    Some(format!("unexpected body: {}", short(&body))),
+                    StatusCode::BAD_GATEWAY,
+                    json!({"error": {"message": "unexpected upstream body; retry reuses the same redeem_request_id"}}),
+                ),
+            }
+        }
+        Ok((http, body)) if (400..500).contains(&http) && http != 408 && http != 429 => (
+            ConsumeStatus::Failed,
+            Some(http),
+            None,
+            Some(short(&body)),
+            StatusCode::BAD_GATEWAY,
+            json!({"error": {"message": format!("upstream {http}: {}", short(&body))}}),
+        ),
+        Ok((http, body)) => (
+            ConsumeStatus::Pending,
+            Some(http),
+            None,
+            Some(short(&body)),
+            StatusCode::BAD_GATEWAY,
+            json!({"error": {"message": format!("upstream {http}; outcome unknown, retry reuses the same redeem_request_id")}}),
+        ),
+        Err(e) => (
+            ConsumeStatus::Pending,
+            None,
+            None,
+            Some(e.to_string()),
+            StatusCode::BAD_GATEWAY,
+            json!({"error": {"message": format!("{e}; outcome unknown, retry reuses the same redeem_request_id")}}),
+        ),
+    };
+    Classified {
+        status: state,
+        code,
+        outcome: ConsumeOutcome {
+            status: state.as_str(),
+            http_status,
+            code: code.map(|c| c.as_str().to_string()),
+            windows_reset,
+            error,
+        },
+        http,
+        body,
+    }
+}
+
+struct ConsumeResult {
+    status: Option<ConsumeStatus>,
+    code: Option<ConsumeCode>,
+    http: StatusCode,
+    body: Value,
+}
+impl ConsumeResult {
+    fn error(http: StatusCode, msg: String) -> Self {
+        Self {
+            status: None,
+            code: None,
+            http,
+            body: json!({"error": {"message": msg}}),
+        }
+    }
+}
 
 async fn consume(
     State(s): State<S>,
@@ -813,7 +993,7 @@ async fn consume(
     }
     // CSRF: key in a header (checked by the middleware), JSON body, same-origin when a browser
     // says where the call comes from. Same rules as every other write action.
-    if let Some(r) = crate::settings::csrf(&headers) {
+    if let Some(r) = csrf(&headers) {
         return r;
     }
     let Some(Json(req)) = body else {
@@ -831,8 +1011,8 @@ async fn consume(
             "consume needs [usage] enabled (idempotency key is persisted there)",
         );
     };
-    if !s.st.accounts.list().await.iter().any(|a| a.id == account) {
-        return err(StatusCode::NOT_FOUND, "unknown account");
+    if let Err(r) = require_account(&s.st, &account).await {
+        return r;
     }
     if let Some(r) = &req.redeem_request_id {
         if !valid_rid(r) {
@@ -843,7 +1023,7 @@ async fn consume(
     let lock = s.rc.lock_for(&account);
     let g = lock.lock().await;
     let label = key.as_ref().map(|k| k.0.label.to_string());
-    let (status, out) = consume_locked(
+    let out = consume_locked(
         &s.st,
         &s.rc,
         &rec,
@@ -854,14 +1034,14 @@ async fn consume(
         &g,
     )
     .await;
-    (status, Json(out)).into_response()
+    (out.http, Json(out.body)).into_response()
 }
 
 /// One consume (or a retry of the pending one) of `account`, shared by the manual button and
 /// the automatic use. The caller holds the account's [`ResetCredits::lock_for`] lock (`_held`)
 /// for the whole call. Returns the HTTP status and body the manual handler answers with.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn consume_locked(
+async fn consume_locked(
     st: &AppState,
     rc: &ResetCredits,
     rec: &Recorder,
@@ -870,8 +1050,8 @@ pub(crate) async fn consume_locked(
     req_rid: Option<&str>,
     label: Option<&str>,
     _held: &tokio::sync::MutexGuard<'_, ()>,
-) -> (StatusCode, Value) {
-    let fail = |status: StatusCode, msg: String| (status, json!({"error": {"message": msg}}));
+) -> ConsumeResult {
+    let fail = ConsumeResult::error;
     let pending = match rec.reset_pending(account).await {
         Ok(p) => p,
         Err(e) => return fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
@@ -882,9 +1062,11 @@ pub(crate) async fn consume_locked(
         let same_credit = p.credit_id.as_deref() == credit;
         let same_rid = req_rid.is_none_or(|r| r == p.redeem_request_id);
         if !same_credit || !same_rid {
-            return (
-                StatusCode::CONFLICT,
-                json!({
+            return ConsumeResult {
+                status: Some(ConsumeStatus::Pending),
+                code: None,
+                http: StatusCode::CONFLICT,
+                body: json!({
                     "error": {"type": "pending_consume", "message": "an earlier consume on this account has an unknown outcome; retry it with the same redeem_request_id and credit_id"},
                     "status": "pending",
                     "pending": {
@@ -894,7 +1076,7 @@ pub(crate) async fn consume_locked(
                         "started_ms": p.started_ms,
                     }
                 }),
-            );
+            };
         }
     }
     let (rid, reused) = match (req_rid, &pending) {
@@ -916,7 +1098,7 @@ pub(crate) async fn consume_locked(
                 .reset_finish(
                     p.id,
                     ConsumeOutcome {
-                        status: "superseded",
+                        status: ConsumeStatus::Superseded.as_str(),
                         error: Some(format!("retried as attempt {row}")),
                         ..Default::default()
                     },
@@ -927,80 +1109,27 @@ pub(crate) async fn consume_locked(
     let auto = label == Some(crate::auto_reset::AUTO_LABEL);
     tracing::warn!(%account, redeem_request_id = %rid, reused, auto, "reset-credit consume");
     let res = consume_upstream(st, account, &rid, credit).await;
-    let (outcome, status, payload) = match res {
-        Ok((code @ 200..=299, body)) => {
-            let v: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
-            let c = v.get("code").and_then(Value::as_str).map(str::to_string);
-            let w = v.get("windows_reset").and_then(Value::as_i64).unwrap_or(0);
-            match c {
-                Some(c) if CODES.contains(&c.as_str()) => (
-                    ConsumeOutcome {
-                        status: "done",
-                        http_status: Some(code),
-                        code: Some(c.clone()),
-                        windows_reset: Some(w),
-                        error: None,
-                    },
-                    StatusCode::OK,
-                    json!({"code": c, "windows_reset": w}),
-                ),
-                _ => (
-                    ConsumeOutcome {
-                        status: "pending",
-                        http_status: Some(code),
-                        error: Some(format!("unexpected body: {}", short(&body))),
-                        ..Default::default()
-                    },
-                    StatusCode::BAD_GATEWAY,
-                    json!({"error": {"message": "unexpected upstream body; retry reuses the same redeem_request_id"}}),
-                ),
-            }
-        }
-        Ok((code, body)) if (400..500).contains(&code) && code != 408 && code != 429 => (
-            ConsumeOutcome {
-                status: "failed",
-                http_status: Some(code),
-                error: Some(short(&body)),
-                ..Default::default()
-            },
-            StatusCode::BAD_GATEWAY,
-            json!({"error": {"message": format!("upstream {code}: {}", short(&body))}}),
-        ),
-        Ok((code, body)) => (
-            ConsumeOutcome {
-                status: "pending",
-                http_status: Some(code),
-                error: Some(short(&body)),
-                ..Default::default()
-            },
-            StatusCode::BAD_GATEWAY,
-            json!({"error": {"message": format!("upstream {code}; outcome unknown, retry reuses the same redeem_request_id")}}),
-        ),
-        Err(e) => (
-            ConsumeOutcome {
-                status: "pending",
-                error: Some(e.clone()),
-                ..Default::default()
-            },
-            StatusCode::BAD_GATEWAY,
-            json!({"error": {"message": format!("{e}; outcome unknown, retry reuses the same redeem_request_id")}}),
-        ),
-    };
-    let st_name = outcome.status;
-    let was_reset = outcome.code.as_deref() == Some("reset");
+    let Classified {
+        status,
+        code,
+        outcome,
+        http,
+        body: payload,
+    } = classify(res);
+    let was_reset = code == Some(ConsumeCode::Reset);
     if let Err(e) = rec.reset_finish(row, outcome).await {
         tracing::warn!(error = %e, "reset consume log write failed");
     }
     // Refresh credits (and fetch the usage windows) after any definitive answer.
     let mut extra = json!({});
-    if st_name == "done" && was_reset {
+    if status == ConsumeStatus::Done && was_reset {
         // The usage windows were just reset upstream: a usage-limit cooldown taken earlier no
         // longer holds. Other cooldowns (auth, 402, 404, 5xx, overload) are kept.
         let cleared = st.router.clear_quota_cooldown(&account.to_string());
         tracing::info!(%account, cleared, "reset credit used: usage-limit cooldown cleared");
         extra["cooldown_cleared"] = json!(cleared);
     }
-    if st_name == "done" {
+    if status == ConsumeStatus::Done {
         let entry = refresh_account(st, rc, account).await;
         extra["reset_credits"] = json!(entry);
         if was_reset {
@@ -1032,14 +1161,19 @@ pub(crate) async fn consume_locked(
         "redeem_request_id": rid,
         "reused_redeem_request_id": reused,
         "attempt": row,
-        "status": st_name,
+        "status": status.as_str(),
     });
     for src in [payload, extra] {
         if let (Some(o), Value::Object(m)) = (out.as_object_mut(), src) {
             o.extend(m);
         }
     }
-    (status, out)
+    ConsumeResult {
+        status: Some(status),
+        code,
+        http,
+        body: out,
+    }
 }
 
 // ---------------- active quota query (刷新额度) ----------------
@@ -1049,15 +1183,6 @@ pub const QUOTA_REFRESH_MIN: Duration = Duration::from_secs(30);
 const QUOTA_REFRESH_PARALLEL: usize = 4;
 /// Observer stored with snapshots read on request (`observed_by`).
 pub const QUOTA_MANUAL: &str = "manual";
-
-static QUOTA_LAST: std::sync::LazyLock<Mutex<HashMap<String, std::time::Instant>>> =
-    std::sync::LazyLock::new(Default::default);
-
-/// Drop the per-account 刷新额度 throttle. Integration tests only (`#[doc(hidden)]`).
-#[doc(hidden)]
-pub fn quota_refresh_reset_throttle_for_tests() {
-    QUOTA_LAST.lock().unwrap_or_else(|e| e.into_inner()).clear();
-}
 
 /// `GET /wham/usage` (codex-rs `backend-client` `get_rate_limits`) → snapshot. Windows map like
 /// the `x-codex-{primary,secondary}-*` headers: primary = short window, secondary = weekly.
@@ -1134,7 +1259,7 @@ fn upstream_msg(body: &str) -> String {
 /// snapshot (batched with the usage writer). Returns the per-account result object.
 async fn quota_refresh_account(st: &AppState, rc: &ResetCredits, account: &str) -> Value {
     {
-        let mut last = QUOTA_LAST.lock().unwrap_or_else(|e| e.into_inner());
+        let mut last = rc.quota_last.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(t) = last.get(account) {
             let left = QUOTA_REFRESH_MIN.saturating_sub(t.elapsed());
             if !left.is_zero() {
@@ -1185,17 +1310,15 @@ async fn quota_refresh_account(st: &AppState, rc: &ResetCredits, account: &str) 
             out
         }
         Ok((code, body)) => fail("http", Some(code), upstream_msg(&body)),
-        Err(e) if e.starts_with("credentials:") => fail("credentials", None, e),
-        Err(e) if e.starts_with("send: no answer") => fail("timeout", None, e),
-        Err(e) => fail("network", None, e),
+        Err(e) => fail(e.kind(), None, e.to_string()),
     }
 }
 
 async fn quota_one(State(s): State<S>, Path(id): Path<String>, headers: HeaderMap) -> Response {
-    if let Some(r) = crate::settings::csrf(&headers) {
+    if let Some(r) = csrf(&headers) {
         return r;
     }
-    if !s.st.accounts.list().await.iter().any(|a| a.id == id) {
+    if require_account(&s.st, &id).await.is_err() {
         return err(StatusCode::NOT_FOUND, "account not found");
     }
     if s.st.accounts.relogin_required().await.contains(&id) {
@@ -1207,7 +1330,7 @@ async fn quota_one(State(s): State<S>, Path(id): Path<String>, headers: HeaderMa
 /// Every account with a usable token, a few at a time. Accounts asked within the last 30 s
 /// are reported as `rate_limited` and counted in `skipped`, not in `failed`.
 async fn quota_all(State(s): State<S>, headers: HeaderMap) -> Response {
-    if let Some(r) = crate::settings::csrf(&headers) {
+    if let Some(r) = csrf(&headers) {
         return r;
     }
     let relogin = s.st.accounts.relogin_required().await;
@@ -1218,24 +1341,15 @@ async fn quota_all(State(s): State<S>, headers: HeaderMap) -> Response {
             .into_iter()
             .map(|a| a.id)
             .collect();
-    let sem = Arc::new(tokio::sync::Semaphore::new(QUOTA_REFRESH_PARALLEL));
-    let mut set = tokio::task::JoinSet::new();
-    for id in ids {
-        let (st, rc, sem, skip) = (
-            s.st.clone(),
-            s.rc.clone(),
-            sem.clone(),
-            relogin.contains(&id),
-        );
-        set.spawn(async move {
+    let mut results = for_each_bounded(ids, QUOTA_REFRESH_PARALLEL, |id| {
+        let skip = relogin.contains(&id);
+        let s = &s;
+        async move {
             if skip {
-                return json!({"account": id, "ok": false, "error": {"kind": "token_invalid", "message": "refresh token rejected; log in again"}});
-            }
-            let _p = sem.acquire_owned().await;
-            quota_refresh_account(&st, &rc, &id).await
-        });
-    }
-    let mut results: Vec<Value> = set.join_all().await;
+                json!({"account": id, "ok": false, "error": {"kind": "token_invalid", "message": "refresh token rejected; log in again"}})
+            } else { quota_refresh_account(&s.st, &s.rc, &id).await }
+        }
+    }).await;
     results.sort_by(|a, b| a["account"].as_str().cmp(&b["account"].as_str()));
     let ok = results.iter().filter(|r| r["ok"] == true).count();
     let skipped = results
@@ -1249,6 +1363,141 @@ async fn quota_all(State(s): State<S>, headers: HeaderMap) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn refresh_fanout_is_bounded_and_concurrent() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let running = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        let start = tokio::time::Instant::now();
+        let mut out = for_each_bounded(0..10, 4, |id| {
+            let (running, peak) = (&running, &peak);
+            async move {
+                let n = running.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(n, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                running.fetch_sub(1, Ordering::SeqCst);
+                id
+            }
+        })
+        .await;
+        out.sort();
+        assert_eq!(out, (0..10).collect::<Vec<_>>());
+        assert_eq!(peak.load(Ordering::SeqCst), 4);
+        assert_eq!(start.elapsed(), Duration::from_secs(15));
+    }
+
+    #[test]
+    fn consume_classification_table() {
+        for (name, code) in [
+            ("reset", ConsumeCode::Reset),
+            ("nothing_to_reset", ConsumeCode::NothingToReset),
+            ("no_credit", ConsumeCode::NoCredit),
+            ("already_redeemed", ConsumeCode::AlreadyRedeemed),
+        ] {
+            let c = classify(Ok((
+                201,
+                json!({"code": name, "windows_reset": 2}).to_string(),
+            )));
+            assert_eq!(
+                (c.status, c.code, c.http),
+                (ConsumeStatus::Done, Some(code), StatusCode::OK)
+            );
+            assert_eq!(c.outcome.status, "done");
+            assert_eq!(c.outcome.http_status, Some(201));
+            assert_eq!(c.outcome.code.as_deref(), Some(name));
+            assert_eq!(c.body, json!({"code": name, "windows_reset": 2}));
+        }
+        for (reply, expected) in [
+            ((200, "garbled"), ConsumeStatus::Pending),
+            ((200, r#"{"code":"unknown"}"#), ConsumeStatus::Pending),
+            ((400, "bad request"), ConsumeStatus::Failed),
+            ((401, "unauthorized"), ConsumeStatus::Failed),
+            ((408, "timeout"), ConsumeStatus::Pending),
+            ((429, "limited"), ConsumeStatus::Pending),
+            ((500, "server error"), ConsumeStatus::Pending),
+        ] {
+            let c = classify(Ok((reply.0, reply.1.into())));
+            assert_eq!(c.status, expected, "{reply:?}");
+            assert_eq!(c.http, StatusCode::BAD_GATEWAY);
+            assert_eq!(c.outcome.status, expected.as_str());
+            assert!(c.code.is_none());
+            assert!(c.outcome.error.is_some());
+        }
+        for (error, kind, text) in [
+            (
+                UpstreamErr::Credentials("missing".into()),
+                "credentials",
+                "credentials: missing",
+            ),
+            (
+                UpstreamErr::Timeout(10),
+                "timeout",
+                "send: no answer within 10 s",
+            ),
+            (
+                UpstreamErr::Send("offline".into()),
+                "network",
+                "send: offline",
+            ),
+            (
+                UpstreamErr::Body("closed".into()),
+                "network",
+                "read body: closed",
+            ),
+        ] {
+            assert_eq!(error.kind(), kind);
+            assert_eq!(error.to_string(), text);
+            let c = classify(Err(error));
+            assert_eq!(c.status, ConsumeStatus::Pending);
+            assert_eq!(c.outcome.error.as_deref(), Some(text));
+            assert!(c.outcome.http_status.is_none());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn switch_debounce_coalesces_and_flush_is_instance_owned() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = ciallopa_core::config::UsageConfig {
+            path: dir.path().join("u.db"),
+            ..Default::default()
+        };
+        let rec = Recorder::open_as(&cfg, "test").unwrap();
+        let switches = Switches::new("test_switches");
+        assert!(switches.set("x", true));
+        assert!(!switches.set("x", true));
+        let task = switches.spawn_persist(rec.clone());
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert_eq!(rec.kv_get("test_switches").unwrap(), None);
+        switches.set("y", true);
+        tokio::time::advance(Duration::from_secs(1)).await;
+        // Await the persister's blocking write without advancing a real wall clock.
+        for _ in 0..100 {
+            let r = rec.clone();
+            if tokio::task::spawn_blocking(move || r.kv_get("test_switches"))
+                .await
+                .unwrap()
+                .unwrap()
+                .is_some()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            rec.kv_get("test_switches").unwrap().as_deref(),
+            Some(r#"["x","y"]"#)
+        );
+        switches.set("x", false);
+        switches.flush(&rec);
+        assert_eq!(
+            rec.kv_get("test_switches").unwrap().as_deref(),
+            Some(r#"["y"]"#)
+        );
+        task.abort();
+        rec.shutdown();
+    }
 
     #[test]
     fn wham_usage_to_snapshot() {
