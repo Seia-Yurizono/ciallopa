@@ -45,7 +45,7 @@ flowchart LR
 | 层 | 实现入口 | 保持的职责 |
 | --- | --- | --- |
 | 服务装配 | `server/src/{lib,main}.rs` | 监听、客户端鉴权、控制面、静态 UI、进程生命周期 |
-| 请求编排 | `forward/src/{lib,proxy,response_body,ws,images}.rs` | 协议检查、响应解码、尝试与重放、输出提交、取消及记录 |
+| 请求编排 | `forward/src/{lib,proxy,classify,sse,response_body}.rs`、`forward/src/attempt/mod.rs`、`forward/src/http/{exchange,pump}.rs`、`forward/src/ws/{mod,connect,session,frames}.rs`、`forward/src/images/{mod,request,wrapper}.rs` | 协议检查、响应解码、尝试与重放、输出提交、取消及记录 |
 | 准入与停机 | `forward/src/admission.rs`、`upstream/src/drain.rs` | 一次操作的共享租约、运行状态、结束等待与强制取消 |
 | 路由 | `routing`，`core::Router` | 无网络/磁盘 I/O 的账号选择与结果反馈；绑定、权重、冷却 |
 | 上游传输 | `upstream` | 每账号连接池、HTTP/WS、TLS 兼容、出口代理和有限 cookie 状态 |
