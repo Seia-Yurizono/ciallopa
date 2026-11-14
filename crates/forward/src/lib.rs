@@ -193,7 +193,13 @@ async fn forward(
     let expect_sse = inspect && client_wants_sse(&path, &headers, parsed.as_ref());
     // The parsed request is as large as the body; free it before making another copy.
     drop(parsed);
-    let upstream_opts = st.config.load().upstream_opts.clone();
+    let (compress_requests, gzip_responses) = {
+        let config = st.config.load();
+        (
+            config.upstream_opts.compress_requests,
+            config.upstream_opts.gzip_responses,
+        )
+    };
     let decode_response =
         inspect && method == Method::POST && path.split('?').next() == Some("/codex/responses");
     let (mut headers, body) = if inspect {
@@ -202,7 +208,7 @@ async fn forward(
             &method,
             headers,
             req.bytes.clone(),
-            upstream_opts.compress_requests,
+            compress_requests,
             |z| req.wrap(z),
         )
     } else {
@@ -213,11 +219,7 @@ async fn forward(
         // Retries and pre-output replays keep the same choice in Outbound.
         headers.insert(
             ::http::header::ACCEPT_ENCODING,
-            ::http::HeaderValue::from_static(if upstream_opts.gzip_responses {
-                "gzip"
-            } else {
-                "identity"
-            }),
+            ::http::HeaderValue::from_static(if gzip_responses { "gzip" } else { "identity" }),
         );
     }
     drop(req);
