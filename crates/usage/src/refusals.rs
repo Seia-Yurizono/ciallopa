@@ -345,3 +345,230 @@ mod tests {
         );
     }
 }
+
+use crate::filter::{contains_filters, label_map};
+use crate::write::WriterState;
+use crate::Transport;
+use rusqlite::{params, params_from_iter, types::Value, Connection};
+
+/// Merge aggregated refusal groups into their per-minute rows (one transaction).
+pub(crate) fn upsert_refusals(
+    c: &mut Connection,
+    ws: &mut WriterState,
+    rows: &HashMap<crate::refusals::Group, crate::refusals::Agg>,
+) -> rusqlite::Result<()> {
+    let tx = c.transaction()?;
+    {
+        let mut st = tx.prepare_cached(
+            "INSERT INTO refusals(minute,reason,transport,key,route,ua,model,account,instance,lim,\
+             count,first_ms,last_ms,max_inflight,max_ws,max_buffered,max_bytes,sum_bytes) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18) \
+             ON CONFLICT(minute,reason,transport,key,route,ua,model,account,instance,lim) DO UPDATE SET \
+             count = count + excluded.count, first_ms = min(first_ms, excluded.first_ms), \
+             last_ms = max(last_ms, excluded.last_ms), max_inflight = max(max_inflight, excluded.max_inflight), \
+             max_ws = max(max_ws, excluded.max_ws), max_buffered = max(max_buffered, excluded.max_buffered), \
+             max_bytes = CASE WHEN max_bytes IS NULL THEN excluded.max_bytes WHEN excluded.max_bytes IS NULL THEN max_bytes ELSE max(max_bytes, excluded.max_bytes) END, \
+             sum_bytes = CASE WHEN sum_bytes IS NULL AND excluded.sum_bytes IS NULL THEN NULL ELSE coalesce(sum_bytes,0) + coalesce(excluded.sum_bytes,0) END",
+        )?;
+        let instance_name = ws.instance.clone();
+        let instance = ws.label(&tx, Some(&instance_name))?.unwrap_or(0);
+        for (g, a) in rows {
+            let key = ws.label(&tx, g.key.as_deref())?.unwrap_or(0);
+            let route = ws
+                .label(&tx, Some(g.route.as_str()).filter(|r| !r.is_empty()))?
+                .unwrap_or(0);
+            let ua = ws.label(&tx, g.ua.as_deref())?.unwrap_or(0);
+            let model = ws.label(&tx, g.model.as_deref())?.unwrap_or(0);
+            let account = ws.label(&tx, g.account.as_deref())?.unwrap_or(0);
+            let as_i = |v: u64| i64::try_from(v).unwrap_or(i64::MAX);
+            st.execute(params![
+                g.minute,
+                g.reason.code(),
+                if g.ws {
+                    Transport::Ws as i64
+                } else {
+                    Transport::Http as i64
+                },
+                key,
+                route,
+                ua,
+                model,
+                account,
+                instance,
+                as_i(g.limit),
+                as_i(a.count),
+                a.first_ms,
+                a.last_ms,
+                as_i(a.max_inflight),
+                as_i(a.max_ws),
+                as_i(a.max_buffered),
+                a.max_bytes.map(as_i),
+                a.sum_bytes.map(as_i),
+            ])?;
+        }
+    }
+    tx.commit()
+}
+
+/// Range and filters for refusal reads. Only key and instance apply (a refusal happens
+/// before the account and, for HTTP, the model are known).
+#[derive(Debug, Clone, Default)]
+pub struct RefusalQuery {
+    pub from_ms: i64,
+    pub to_ms: i64,
+    pub key: Option<String>,
+    pub instance: Option<String>,
+    pub reason: Option<crate::refusals::Reason>,
+    pub limit: usize,
+    pub offset: usize,
+}
+
+fn refusal_where(
+    c: &Connection,
+    q: &RefusalQuery,
+) -> rusqlite::Result<Option<(String, Vec<Value>)>> {
+    // A row covers [minute, minute + 60 s); keep minutes overlapping the range.
+    let mut s = String::from(" WHERE minute > ? AND minute <= ?");
+    let mut p = vec![(q.from_ms - 60_000).into(), q.to_ms.into()];
+    if !contains_filters(
+        c,
+        &mut s,
+        &mut p,
+        &[("key", &q.key), ("instance", &q.instance)],
+    )? {
+        return Ok(None);
+    }
+    if let Some(r) = q.reason {
+        s.push_str(" AND reason = ?");
+        p.push(r.code().into());
+    }
+    Ok(Some((s, p)))
+}
+
+pub(crate) fn refusal_totals(
+    c: &Connection,
+    q: &RefusalQuery,
+) -> rusqlite::Result<crate::refusals::RefusalTotals> {
+    let mut t = crate::refusals::RefusalTotals::default();
+    let Some((w, p)) = refusal_where(c, q)? else {
+        return Ok(t);
+    };
+    let mut st = c.prepare(&format!(
+        "SELECT reason, sum(count), count(*) FROM refusals{w} GROUP BY reason"
+    ))?;
+    let mut rows = st.query(params_from_iter(p))?;
+    while let Some(r) = rows.next()? {
+        if let Some(reason) = crate::refusals::Reason::from_code(r.get(0)?) {
+            t.add(
+                reason,
+                r.get::<_, i64>(1)?.max(0) as u64,
+                r.get::<_, i64>(2)?.max(0) as u64,
+            );
+        }
+    }
+    Ok(t)
+}
+
+/// `(minute, reason, count)` per minute and reason, for bucketing.
+pub(crate) fn refusal_minutes(
+    c: &Connection,
+    q: &RefusalQuery,
+) -> rusqlite::Result<Vec<(i64, crate::refusals::Reason, u64)>> {
+    let Some((w, p)) = refusal_where(c, q)? else {
+        return Ok(vec![]);
+    };
+    let mut st = c.prepare(&format!(
+        "SELECT minute, reason, sum(count) FROM refusals{w} GROUP BY minute, reason"
+    ))?;
+    let rows = st.query_map(params_from_iter(p), |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, i64>(2)?,
+        ))
+    })?;
+    let mut out = vec![];
+    for row in rows {
+        let (m, reason, n) = row?;
+        if let Some(reason) = crate::refusals::Reason::from_code(reason) {
+            out.push((m, reason, n.max(0) as u64));
+        }
+    }
+    Ok(out)
+}
+
+pub(crate) fn refusal_rows(
+    c: &Connection,
+    q: &RefusalQuery,
+) -> rusqlite::Result<Vec<crate::refusals::RefusalRow>> {
+    let Some((w, mut p)) = refusal_where(c, q)? else {
+        return Ok(vec![]);
+    };
+    let labels = label_map(c)?;
+    let name = |id: i64| (id != 0).then(|| labels.get(&id).cloned()).flatten();
+    p.push((q.limit.clamp(1, 500) as i64).into());
+    p.push((q.offset as i64).into());
+    let mut st = c.prepare(&format!(
+        "SELECT minute,reason,transport,key,route,ua,model,account,instance,lim,count,first_ms,last_ms,\
+         max_inflight,max_ws,max_buffered,max_bytes,sum_bytes FROM refusals{w} \
+         ORDER BY minute DESC, last_ms DESC, count DESC LIMIT ? OFFSET ?"
+    ))?;
+    let u = |v: i64| v.max(0) as u64;
+    let rows = st.query_map(params_from_iter(p), |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, i64>(2)?,
+            [
+                r.get::<_, i64>(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+                r.get(7)?,
+                r.get(8)?,
+            ],
+            [
+                r.get::<_, i64>(9)?,
+                r.get(10)?,
+                r.get(11)?,
+                r.get(12)?,
+                r.get(13)?,
+                r.get(14)?,
+                r.get(15)?,
+            ],
+            (r.get::<_, Option<i64>>(16)?, r.get::<_, Option<i64>>(17)?),
+        ))
+    })?;
+    let mut out = vec![];
+    for row in rows {
+        let (minute, reason, transport, l, n, (max_bytes, sum_bytes)) = row?;
+        let Some(reason) = crate::refusals::Reason::from_code(reason) else {
+            continue;
+        };
+        out.push(crate::refusals::RefusalRow {
+            minute_ms: minute,
+            reason,
+            transport: if transport == Transport::Ws as i64 {
+                "ws"
+            } else {
+                "http"
+            },
+            key: name(l[0]),
+            route: name(l[1]),
+            ua: name(l[2]),
+            model: name(l[3]),
+            account: name(l[4]),
+            instance: name(l[5]),
+            limit: u(n[0]),
+            count: u(n[1]),
+            first_ms: n[2],
+            last_ms: n[3],
+            max_inflight: u(n[4]),
+            max_ws: u(n[5]),
+            max_buffered_bytes: u(n[6]),
+            max_bytes: max_bytes.map(u),
+            sum_bytes: sum_bytes.map(u),
+        });
+    }
+    Ok(out)
+}
