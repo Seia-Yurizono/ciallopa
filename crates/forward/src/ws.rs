@@ -290,8 +290,7 @@ async fn connect(
                             _ => None,
                         };
                         let cause = crate::errors::chain(&e);
-                        st.router
-                            .report(route, &id, &Outcome::Transient { status: None });
+                        st.router.report(route, &id, &Outcome::Transport);
                         if let Some(code) = proxy_code {
                             // Shared by every account: no switching, no retry here.
                             tracing::warn!(account = %ciallopa_core::a(&id), error = %cause, code, "egress proxy error (ws)");
@@ -376,17 +375,19 @@ async fn connect(
                             last = Some(resp);
                             break;
                         }
-                        s if s == 408 || is_retryable_status(s) => {
+                        s if is_retryable_status(s) => {
                             let others = proxy::others_usable(st, &accounts, route, &id);
                             let secs = st.config.load().upstream_opts.transient_cooldown_secs;
                             let ra = h
                                 .get(http::header::RETRY_AFTER)
                                 .and_then(|v| v.to_str().ok())
                                 .and_then(|v| {
-                                    ciallopa_routing::parse_retry_after_header(
+                                    ciallopa_core::retry_after::parse(
                                         v,
                                         std::time::SystemTime::now(),
+                                        ciallopa_core::retry_after::Format::Http,
                                     )
+                                    .map(|d| d.min(ciallopa_routing::quota::MAX_HEADER_RETRY_AFTER))
                                 });
                             let cooldown = (others && secs > 0)
                                 .then(|| ra.unwrap_or(Duration::from_secs(secs)));
@@ -917,7 +918,7 @@ async fn relay(
                             t.fail_msg("upstream_ws_close", format!("upstream websocket closed mid-turn (code {code}) {reason}").trim_end().to_string()); t.source(crate::errors::SRC_STREAM);
                         }
                         if code != 1000 {
-                            st.router.report(&route, &account, &Outcome::Transient { status: None });
+                            st.router.report(&route, &account, &Outcome::Transport);
                         }
                         for h in held.drain(..) { let _ = send_down(&mut dtx, h, turn.as_mut()).await; }
                         if let Some(d) = to_down(WsMessage::Close(f)) {
@@ -1201,7 +1202,7 @@ async fn relay(
                             tracing::info!(account = %ciallopa_core::a(&account), error_class = class, "upstream websocket transport error between turns");
                         }
                         if let Some(t) = turn.as_mut() { t.fail_msg(code, msg); t.source(crate::errors::SRC_NETWORK); }
-                        st.router.report(&route, &account, &Outcome::Transient { status: None });
+                        st.router.report(&route, &account, &Outcome::Transport);
                         let _ = dtx.send(close(CLOSE_INTERNAL, "upstream disconnected")).await;
                         break;
                     }
@@ -1230,7 +1231,7 @@ async fn relay(
             _ = &mut sleep, if awaiting => {
                 progress.warn("ws", "idle_timeout", &account, upstream_request_id.as_deref(), turn.as_ref());
                 if let Some(t) = turn.as_mut() { t.fail_msg("idle_timeout", format!("upstream websocket idle for {}s (timeout)", idle.as_secs())); t.source(crate::errors::SRC_NETWORK); }
-                st.router.report(&route, &account, &Outcome::Transient { status: None });
+                st.router.report(&route, &account, &Outcome::Transport);
                 let _ = dtx.send(close(CLOSE_INTERNAL, "stream idle timeout")).await;
                 let _ = utx.send(WsMessage::Close(None)).await;
                 break;

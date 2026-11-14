@@ -5,6 +5,7 @@
 use axum::extract::ws::{Message, WebSocketUpgrade};
 use axum::{response::Response, routing::get, Router};
 use ciallopa::settings::Settings;
+use ciallopa_core::Router as _;
 use ciallopa_core::*;
 use ciallopa_forward::AppState;
 use futures::{SinkExt, StreamExt};
@@ -672,12 +673,15 @@ async fn account_management_and_removal_cleanup() {
                     ..Default::default()
                 },
                 &"a".to_string(),
-                &Outcome::Transient { status: Some(503) },
+                &Outcome::ServerError {
+                    status: 503,
+                    cooldown: Some(ciallopa_routing::TRANSIENT_COOLDOWN),
+                },
             );
         }
     };
     cool_a();
-    assert!(e.router.cooling_until_any(&"a".to_string()).is_some());
+    assert!(e.router.cooling_until(&"a".to_string()).is_some());
     // Manual clear: CSRF (JSON) required; the list shows the reason while cooling.
     let l: serde_json::Value = e
         .req(reqwest::Method::GET, "/admin/v1/accounts")
@@ -711,9 +715,9 @@ async fn account_management_and_removal_cleanup() {
         .await
         .unwrap();
     assert_eq!(r["cleared"], true);
-    assert!(e.router.cooling_until_any(&"a".to_string()).is_none());
+    assert!(e.router.cooling_until(&"a".to_string()).is_none());
     cool_a();
-    assert!(e.router.cooling_until_any(&"a".to_string()).is_some());
+    assert!(e.router.cooling_until(&"a".to_string()).is_some());
     let r = e
         .req(reqwest::Method::DELETE, "/admin/v1/accounts/a")
         .json(&json!({"confirm": "b"}))
@@ -730,7 +734,7 @@ async fn account_management_and_removal_cleanup() {
     assert_eq!(r.status(), 200);
     assert!(!e.auth.join("a.json").exists());
     assert_eq!(e.upstream.pools.len(), 1, "pool of a dropped, b kept");
-    assert!(e.router.cooling_until_any(&"a".to_string()).is_none());
+    assert!(e.router.cooling_until(&"a".to_string()).is_none());
     let l: Value = e
         .req(reqwest::Method::GET, "/admin/v1/accounts")
         .send()
@@ -1033,7 +1037,7 @@ async fn rescan_and_watcher_keep_accounts_whose_file_exists_but_cannot_load() {
         &a,
         &Outcome::AuthFailed,
     );
-    let until = e.router.cooling_until_any(&a).unwrap();
+    let until = e.router.cooling_until(&a).unwrap();
     let fa = e.auth.join("a.json");
     let full = std::fs::read_to_string(&fa).unwrap();
     let rescan = || async {
@@ -1054,7 +1058,7 @@ async fn rescan_and_watcher_keep_accounts_whose_file_exists_but_cannot_load() {
         assert_eq!(sk["reason"], reason, "{r}");
         assert_eq!(sk["kept"], true, "{r}");
         assert!(!r.to_string().contains("tok-"), "{r}");
-        assert_eq!(e.router.cooling_until_any(&a), Some(until));
+        assert_eq!(e.router.cooling_until(&a), Some(until));
         assert!(!e.upstream.pools.is_empty(), "pool of a kept");
     };
     // Half-written in place (non-atomic writer): the watcher fires on the partial write.
@@ -1074,7 +1078,7 @@ async fn rescan_and_watcher_keep_accounts_whose_file_exists_but_cannot_load() {
     let r = rescan().await;
     assert_eq!(r["removed"], json!(["a"]), "{r}");
     assert_eq!(r["auth_files"]["skipped"], json!([]), "{r}");
-    assert!(e.router.cooling_until_any(&a).is_none());
+    assert!(e.router.cooling_until(&a).is_none());
     assert!(e.upstream.pools.is_empty(), "pool of a dropped");
 }
 

@@ -9,7 +9,10 @@
 //! third-party clients, `codex_exec`, IDE/desktop originators are ignored).
 use http::HeaderMap;
 use serde::{Deserialize, Serialize};
-use std::sync::{LazyLock, RwLock};
+use std::sync::{
+    atomic::{AtomicI64, Ordering},
+    LazyLock, RwLock,
+};
 
 /// Built-in fallback (Codex version the network stack is pinned to).
 pub const DEFAULT_ORIGINATOR: &str = "codex_cli_rs";
@@ -66,6 +69,8 @@ struct State {
     last_log_ms: i64,
 }
 
+static LEARNED_AT_MS: AtomicI64 = AtomicI64::new(0);
+
 static STATE: LazyLock<RwLock<State>> = LazyLock::new(|| {
     RwLock::new(State {
         fp: Fingerprint::builtin(),
@@ -121,6 +126,18 @@ pub fn observe(h: &HeaderMap, key_label: Option<&str>) -> bool {
         return false;
     };
     let now = now_ms();
+    {
+        let r = STATE.read().unwrap_or_else(|e| e.into_inner());
+        if r.fp.user_agent == ua
+            && r.fp.originator == orig
+            && r.fp.source == "learned"
+            && r.fp.key.as_deref() == key_label
+            && (r.dirty || now - r.persisted_ms < PERSIST_EVERY_MS)
+        {
+            LEARNED_AT_MS.store(now, Ordering::Relaxed);
+            return true;
+        }
+    }
     let mut w = STATE.write().unwrap_or_else(|e| e.into_inner());
     let changed = w.fp.user_agent != ua || w.fp.originator != orig || w.fp.source != "learned";
     if changed {
@@ -133,7 +150,7 @@ pub fn observe(h: &HeaderMap, key_label: Option<&str>) -> bool {
             tracing::info!(user_agent = %w.fp.user_agent, originator = %w.fp.originator, "learned client fingerprint");
         }
     }
-    w.fp.learned_at_ms = Some(now);
+    LEARNED_AT_MS.store(now, Ordering::Relaxed);
     if w.fp.key.as_deref() != key_label {
         w.fp.key = key_label.map(str::to_string);
     }
@@ -149,7 +166,14 @@ pub fn observe(h: &HeaderMap, key_label: Option<&str>) -> bool {
 
 /// Current fingerprint (learned or built-in default).
 pub fn current() -> Fingerprint {
-    STATE.read().unwrap_or_else(|e| e.into_inner()).fp.clone()
+    snapshot(&STATE.read().unwrap_or_else(|e| e.into_inner()))
+}
+
+fn snapshot(state: &State) -> Fingerprint {
+    let mut fp = state.fp.clone();
+    let learned = LEARNED_AT_MS.load(Ordering::Relaxed);
+    fp.learned_at_ms = (learned != 0 || fp.learned_at_ms.is_some()).then_some(learned);
+    fp
 }
 
 /// `(User-Agent, originator)` for internal upstream requests.
@@ -165,6 +189,7 @@ pub fn restore(fp: Fingerprint) -> bool {
     }
     let mut w = STATE.write().unwrap_or_else(|e| e.into_inner());
     w.persisted_ms = fp.learned_at_ms.unwrap_or(0);
+    LEARNED_AT_MS.store(w.persisted_ms, Ordering::Relaxed);
     w.dirty = false;
     w.fp = fp;
     true
@@ -177,8 +202,9 @@ fn take_dirty() -> Option<Fingerprint> {
         return None;
     }
     w.dirty = false;
-    w.persisted_ms = w.fp.learned_at_ms.unwrap_or_else(now_ms);
-    Some(w.fp.clone())
+    let fp = snapshot(&w);
+    w.persisted_ms = fp.learned_at_ms.unwrap_or_else(now_ms);
+    Some(fp)
 }
 
 /// Install the persistence hook: starts the single writer thread. `save` runs only on that
@@ -228,6 +254,7 @@ pub fn flush_with(save: impl Fn(&Fingerprint)) {
 pub fn reset_for_tests() {
     let mut w = STATE.write().unwrap_or_else(|e| e.into_inner());
     w.fp = Fingerprint::builtin();
+    LEARNED_AT_MS.store(0, Ordering::Relaxed);
     w.persisted_ms = 0;
     w.dirty = false;
     w.notify = None;

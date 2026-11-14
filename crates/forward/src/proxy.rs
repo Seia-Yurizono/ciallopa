@@ -454,8 +454,7 @@ async fn send_inner(
                     a.body = Some(cause.chars().take(300).collect());
                     info.attempts.push(a);
                     // Network errors never cool the account.
-                    st.router
-                        .report(&route, &id, &Outcome::Transient { status: None });
+                    st.router.report(&route, &id, &Outcome::Transport);
                     // Local retries only fail over to another account; the client owns
                     // same-backend retries and their backoff (no layered amplification).
                     // The egress proxy is shared by every account: switching cannot help.
@@ -617,7 +616,7 @@ async fn send_inner(
                     route.exclude.push(id.clone());
                     break;
                 }
-                s if s == 408 || is_retryable_status(s) => {
+                s if is_retryable_status(s) => {
                     let h = r.headers().clone();
                     let b = r.bytes().await.unwrap_or_default();
                     let others = others_usable(st, &accounts, &route, &id);
@@ -625,7 +624,12 @@ async fn send_inner(
                         .get(http::header::RETRY_AFTER)
                         .and_then(|v| v.to_str().ok())
                         .and_then(|v| {
-                            ciallopa_routing::parse_retry_after_header(v, SystemTime::now())
+                            ciallopa_core::retry_after::parse(
+                                v,
+                                SystemTime::now(),
+                                ciallopa_core::retry_after::Format::Http,
+                            )
+                            .map(|d| d.min(ciallopa_routing::quota::MAX_HEADER_RETRY_AFTER))
                         });
                     // Never cool the last usable account; 0 disables 5xx cooldown entirely.
                     let cooldown = (others && cool_secs > 0)
@@ -998,7 +1002,7 @@ fn stream_body(
                     } else {
                         tracing::warn!(account = %ciallopa_core::a(&account), record_id = trk.as_ref().map(Tracker::record_id), upstream_request_id = upstream_request_id.as_deref(), "upstream stream idle timeout");
                     }
-                    router.report(&route, &account, &Outcome::Transient { status: None });
+                    router.report(&route, &account, &Outcome::Transport);
                     if let Some(t) = trk.as_mut() {
                         t.source(errors::SRC_NETWORK);
                     }
@@ -1077,7 +1081,7 @@ fn stream_body(
                         t.source(source);
                     }
                     if !crate::response_body::is_decode_error(&e) {
-                        router.report(&route, &account, &Outcome::Transient { status: None });
+                        router.report(&route, &account, &Outcome::Transport);
                     }
                     if let Some(rest) = align.finish() {
                         let _ = tx.send(Ok(rest)).await;
@@ -1807,8 +1811,7 @@ pub(crate) async fn send_streaming(
                         t.source(source);
                     }
                     if !crate::response_body::is_decode_error(&e) {
-                        st.router
-                            .report(&route, &account, &Outcome::Transient { status: None });
+                        st.router.report(&route, &account, &Outcome::Transport);
                     }
                     let err_body = async_stream(st.upstream.drain.clone(), move |tx| async move {
                         if !buf.is_empty() {
@@ -1842,8 +1845,7 @@ pub(crate) async fn send_streaming(
                         errors::request_id(&up_headers).as_deref(),
                         trk.as_ref(),
                     );
-                    st.router
-                        .report(&route, &account, &Outcome::Transient { status: None });
+                    st.router.report(&route, &account, &Outcome::Transport);
                     let err_body = async_stream(st.upstream.drain.clone(), move |tx| async move {
                         if !buf.is_empty() {
                             let _ = tx.send(Ok(Bytes::from(buf))).await;
@@ -2153,7 +2155,10 @@ pub(crate) fn classify_error(
     let retry_after = || {
         h.get(http::header::RETRY_AFTER)
             .and_then(|v| v.to_str().ok())
-            .and_then(|v| ciallopa_routing::parse_retry_after_header(v, now))
+            .and_then(|v| {
+                ciallopa_core::retry_after::parse(v, now, ciallopa_core::retry_after::Format::Http)
+                    .map(|d| d.min(ciallopa_routing::quota::MAX_HEADER_RETRY_AFTER))
+            })
     };
     match status {
         402 => {

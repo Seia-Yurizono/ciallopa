@@ -30,6 +30,4 @@ pub enum RouteError {
         quota: bool,
         earliest_quota: bool,
     },
-    #[error("not implemented")]
-    Unimplemented,
 }

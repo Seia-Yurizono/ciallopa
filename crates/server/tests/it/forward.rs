@@ -2168,10 +2168,7 @@ async fn idle_timeout_aborts_stream() {
     assert!(b.contains("event: response.failed"), "{b}");
     assert!(!b.contains("ciallopa"));
     assert!(t0.elapsed() < Duration::from_secs(4));
-    assert!(e
-        .outcomes()
-        .iter()
-        .any(|(_, o)| *o == Outcome::Transient { status: None }));
+    assert!(e.outcomes().iter().any(|(_, o)| *o == Outcome::Transport));
 }
 
 #[tokio::test]
@@ -2296,7 +2293,7 @@ async fn bounded_header_wait_can_fail_over_without_cooling_the_account() {
     assert!(e
         .outcomes()
         .iter()
-        .any(|(_, outcome)| matches!(outcome, Outcome::Transient { status: None })));
+        .any(|(_, outcome)| matches!(outcome, Outcome::Transport)));
     let rows = wait_rows(&e, 1).await;
     assert!(rows[0]["error"].is_null(), "{rows:?}");
     let detail: serde_json::Value = detail_of(&e, rows[0]["request_id"].as_str().unwrap(), true)
@@ -4876,10 +4873,7 @@ async fn bootstrap_transport_error_reaches_client() {
         b.contains("event: response.failed"),
         "client must see the stream error: {b}"
     );
-    assert!(e
-        .outcomes()
-        .iter()
-        .any(|(_, o)| *o == Outcome::Transient { status: None }));
+    assert!(e.outcomes().iter().any(|(_, o)| *o == Outcome::Transport));
 }
 
 #[tokio::test]
@@ -6167,7 +6161,7 @@ async fn ws_soft_error_frame_does_not_end_turn() {
     assert!(e
         .outcomes()
         .iter()
-        .all(|(_, o)| !matches!(o, Outcome::Transient { .. })));
+        .all(|(_, o)| !matches!(o, Outcome::Transport)));
 }
 
 async fn mode_post(e: &Env, mode: &str) -> reqwest::Response {
@@ -7594,10 +7588,9 @@ async fn ws_turn(e: &Env, tag: &str) {
 
 fn no_account_penalty(e: &Env) {
     assert!(
-        e.outcomes().iter().all(|(_, o)| matches!(
-            o,
-            Outcome::Success { .. } | Outcome::Transient { status: None }
-        )),
+        e.outcomes()
+            .iter()
+            .all(|(_, o)| matches!(o, Outcome::Success { .. } | Outcome::Transport)),
         "{:?}",
         e.outcomes()
     );

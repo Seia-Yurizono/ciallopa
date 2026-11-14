@@ -6,6 +6,7 @@
 use super::support::FixedStore as Store;
 use axum::{body::Body, http::HeaderMap, response::Response, routing::post, Router};
 use bytes::Bytes;
+use ciallopa_core::Router as _;
 use ciallopa_core::*;
 use ciallopa_forward::AppState;
 use std::sync::{Arc, Mutex};
@@ -141,7 +142,9 @@ async fn concurrent_compaction_same_account_no_cooldown() {
     assert!(used.len() > 1, "{used:?}");
     for a in ["a", "b", "c"] {
         assert!(
-            router.cooldown_until(&a.to_string(), "gpt-5.5").is_none(),
+            router
+                .model_cooling_until(&a.to_string(), "gpt-5.5")
+                .is_none(),
             "{a} cooled down"
         );
     }

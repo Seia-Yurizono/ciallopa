@@ -530,7 +530,7 @@ async fn d3_http_stops_on_last_account_transport_error_ws_retries_it() {
         assert_eq!(hits.load(Ordering::SeqCst), if websocket { 2 } else { 1 });
         let reports = env.rec.0.lock().unwrap();
         assert_eq!(reports[0].0, "a");
-        assert!(matches!(reports[0].1, Outcome::Transient { status: None }));
+        assert!(matches!(reports[0].1, Outcome::Transport));
         assert_eq!(reports.len(), if websocket { 2 } else { 1 });
         server.abort();
     }

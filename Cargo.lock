@@ -347,6 +347,7 @@ dependencies = [
  "async-trait",
  "base64",
  "http",
+ "httpdate",
  "rand 0.9.3",
  "regex",
  "serde",
@@ -392,7 +393,6 @@ dependencies = [
  "arc-swap",
  "ciallopa-core",
  "http",
- "httpdate",
  "serde_json",
  "sha2",
 ]

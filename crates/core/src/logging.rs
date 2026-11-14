@@ -1,6 +1,7 @@
 //! tracing init with a redacting writer: every formatted line passes through
 //! `redact()` before hitting stderr, so tokens can't leak even via Debug output.
 use regex::Regex;
+use std::borrow::Cow;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
@@ -46,10 +47,14 @@ fn email_re() -> &'static Regex {
 pub fn redact(s: &str) -> String {
     let mut out = s.to_string();
     for (re, rep) in patterns() {
-        out = re.replace_all(&out, *rep).into_owned();
+        if let Cow::Owned(redacted) = re.replace_all(&out, *rep) {
+            out = redacted;
+        }
     }
     if REDACT_EMAILS.load(Ordering::Relaxed) {
-        out = email_re().replace_all(&out, "[email]").into_owned();
+        if let Cow::Owned(redacted) = email_re().replace_all(&out, "[email]") {
+            out = redacted;
+        }
     }
     out
 }

@@ -176,7 +176,7 @@ async fn ws_turn_moves_off_an_account_cooling_for_its_model() {
     }
     // Another model is not affected by the cooldown: no redial is needed for it.
     assert!(router
-        .cooldown_until(&"a".to_string(), "gpt-other")
+        .model_cooling_until(&"a".to_string(), "gpt-other")
         .is_none());
 }
 

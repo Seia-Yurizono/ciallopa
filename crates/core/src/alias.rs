@@ -7,7 +7,7 @@
 use base64::Engine;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 /// Prefix of every alias (`acct_` + 8 hex chars, optional `-N` on collision).
 pub const ALIAS_PREFIX: &str = "acct_";
@@ -60,15 +60,18 @@ impl AsRef<str> for AccountAlias {
     }
 }
 
+#[derive(Default)]
+struct Inner {
+    forward: HashMap<String, String>,
+    reverse: HashMap<String, String>,
+    /// Base alias → number of accounts claiming it (for -2, -3, …).
+    collisions: HashMap<String, usize>,
+}
+
 /// HMAC-SHA256 account aliaser. Key is 32 random bytes, usually persisted in usage kv.
 pub struct Aliaser {
     key: [u8; KEY_LEN],
-    /// account_id → final alias (includes collision suffix).
-    forward: RwLock<HashMap<String, String>>,
-    /// alias → account_id for currently registered accounts.
-    reverse: RwLock<HashMap<String, String>>,
-    /// base alias (no suffix) → how many distinct ids claimed it (for -2, -3, …).
-    collisions: Mutex<HashMap<String, Vec<String>>>,
+    inner: RwLock<Inner>,
 }
 
 impl Aliaser {
@@ -76,9 +79,7 @@ impl Aliaser {
     pub fn from_key(key: [u8; KEY_LEN]) -> Arc<Self> {
         Arc::new(Self {
             key,
-            forward: RwLock::new(HashMap::new()),
-            reverse: RwLock::new(HashMap::new()),
-            collisions: Mutex::new(HashMap::new()),
+            inner: RwLock::new(Inner::default()),
         })
     }
 
@@ -153,42 +154,44 @@ impl Aliaser {
         if Self::looks_like_alias(account_id) {
             return account_id.to_string();
         }
-        if let Ok(fwd) = self.forward.read() {
-            if let Some(a) = fwd.get(account_id) {
-                return a.clone();
-            }
+        if let Some(alias) = self
+            .inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .forward
+            .get(account_id)
+        {
+            return alias.clone();
         }
         let base = self.base_alias(account_id);
-        let assigned = {
-            let mut cols = self.collisions.lock().unwrap_or_else(|e| e.into_inner());
-            let list = cols.entry(base.clone()).or_default();
-            if let Some(pos) = list.iter().position(|id| id == account_id) {
-                if pos == 0 {
-                    base.clone()
-                } else {
-                    format!("{base}-{}", pos + 1)
-                }
-            } else {
-                list.push(account_id.to_string());
-                if list.len() == 1 {
-                    base.clone()
-                } else {
-                    format!("{base}-{}", list.len())
-                }
-            }
+        let mut inner = self.inner.write().unwrap_or_else(|e| e.into_inner());
+        if let Some(alias) = inner.forward.get(account_id) {
+            return alias.clone();
+        }
+        let count = inner.collisions.entry(base.clone()).or_default();
+        *count += 1;
+        let assigned = if *count == 1 {
+            base
+        } else {
+            format!("{base}-{count}")
         };
-        if let Ok(mut fwd) = self.forward.write() {
-            fwd.insert(account_id.to_string(), assigned.clone());
-        }
-        if let Ok(mut rev) = self.reverse.write() {
-            rev.insert(assigned.clone(), account_id.to_string());
-        }
+        inner
+            .forward
+            .insert(account_id.to_string(), assigned.clone());
+        inner
+            .reverse
+            .insert(assigned.clone(), account_id.to_string());
         assigned
     }
 
     /// Reverse lookup among **currently registered** accounts only.
     pub fn resolve(&self, alias: &str) -> Option<String> {
-        self.reverse.read().ok().and_then(|m| m.get(alias).cloned())
+        self.inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .reverse
+            .get(alias)
+            .cloned()
     }
 
     /// For affinity load: resolve an alias, or keep a raw (pre-migration) id as-is.
