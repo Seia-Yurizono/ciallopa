@@ -1,29 +1,7 @@
-//! Price table and the per-request cost formula.
-//!
-//! Costs are **notional** for subscription (ChatGPT plan) traffic: they show what the same
-//! tokens would cost on the API, not what was billed.
-//!
-//! The table is a local TOML file (`[usage] prices`). It is filled and updated from a public
-//! price dataset on request only ([`parse_source`] → [`diff`] → [`apply`]): LiteLLM's
-//! `model_prices_and_context_window.json` or models.dev's `api.json`.
-//!
-//! ```text
-//! cost = (in − cached − cache_write)·P_in + cached·P_cache + cache_write·P_write + out·P_out
-//! ```
-//! `out` already contains reasoning tokens (not added again). Long context: when total input
-//! (incl. cached) > `long.threshold`, the three input-side prices × `long.in_x`, output ×
-//! `long.out_x`. Tier: an explicit entry for the tier wins, else the standard entry ×
-//! multiplier (`flex_x`, `fast_x`, `ultra_x`; per model or `[defaults]`); no multiplier ⇒ the
-//! tier is unpriced. Dated entries
-//! (`effective_from` / `effective_until`, inclusive, UTC) win over undated ones on the
-//! request's date. No match ⇒ `None` (never 0).
-//!
-//! Two local overrides the dataset never changes ([`diff`] skips them):
-//! - `ignore = ["auto", …]`: models that are never priced (free routers, local aliases).
-//!   They cost exactly 0 on every tier and date and do not count as unpriced. An exact 0
-//!   (not "excluded") keeps totals exact: excluding them would still mark every total that
-//!   contains them as a lower bound (≥).
-//! - `custom = true` on an entry: a price set by hand on the management page.
+//! Notional API-equivalent costs for subscription traffic; reasoning is already in output tokens.
+//! Input excludes cached/write tokens before charging their separate prices. Long context and
+//! tier multipliers follow dated local entries; missing prices stay unknown. Dataset updates
+//! preserve ignored models (exactly free) and custom prices. See docs/USAGE.md for the formula.
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -566,7 +544,7 @@ impl PriceTable {
 /// responses models). Long context comes from `*_above_<N>k_tokens`; Fast / Flex / Ultrafast
 /// from the `_priority` / `_flex` / `_ultrafast` prices: a multiplier when input and output
 /// scale alike, else an explicit tier entry.
-pub fn from_litellm(json: &serde_json::Value) -> Vec<Entry> {
+pub(crate) fn from_litellm(json: &serde_json::Value) -> Vec<Entry> {
     let mut out = vec![];
     let Some(obj) = json.as_object() else {
         return out;
@@ -650,7 +628,7 @@ pub fn from_litellm(json: &serde_json::Value) -> Vec<Entry> {
 
 /// Standard entries from a models.dev `api.json` for one provider (e.g. `openai`). Long
 /// context from the `context` tier; Fast from `experimental.modes.fast.cost`.
-pub fn from_models_dev(json: &serde_json::Value, provider: &str) -> Vec<Entry> {
+pub(crate) fn from_models_dev(json: &serde_json::Value, provider: &str) -> Vec<Entry> {
     let mut out = vec![];
     let Some(models) = json
         .get(provider)

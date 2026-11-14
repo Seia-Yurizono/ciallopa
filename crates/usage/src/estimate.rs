@@ -1,9 +1,5 @@
-//! Per-window capacity estimate: Δ%-weighted Theil–Sen of cumulative credits vs used_percent,
-//! with integer-quantization bounds and coverage-gap fallbacks.
-//!
-//! Show nothing rather than 0. An empty intersection of segment bounds is treated as a
-//! coverage gap (other clients / instances): fall back to the median of adjacent slopes,
-//! or only a lower bound if even that is scattered.
+//! Weighted Theil–Sen capacity with quantization bounds. Coverage gaps use adjacent-slope
+//! medians or a lower bound; insufficient evidence produces no estimate.
 use serde::Serialize;
 
 /// Minimum |Δ%| between a pair before it votes in Theil–Sen (same default as `min_delta_pct`).
@@ -258,7 +254,7 @@ pub fn points_from(obs: &[(i64, f64)], reqs: &[(i64, f64)]) -> Vec<Point> {
 }
 
 /// Historical-median band used to flag a capacity change (no smoothing).
-pub fn trend_flag(capacity: f64, historical_median: f64) -> Option<&'static str> {
+pub(crate) fn trend_flag(capacity: f64, historical_median: f64) -> Option<&'static str> {
     if historical_median <= 0.0 || !capacity.is_finite() {
         return None;
     }
@@ -273,7 +269,7 @@ pub fn trend_flag(capacity: f64, historical_median: f64) -> Option<&'static str>
 }
 
 /// Median of a slice of capacities (skips non-finite).
-pub fn median(xs: &[f64]) -> Option<f64> {
+pub(crate) fn median(xs: &[f64]) -> Option<f64> {
     let mut xs: Vec<f64> = xs
         .iter()
         .copied()

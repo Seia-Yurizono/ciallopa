@@ -1,5 +1,4 @@
-//! Manual reset-credit (重置卡) consume log. Rows are written synchronously (rare, admin-only)
-//! on their own connection; the request writer thread is not involved.
+//! Admin reset attempts use their own connection, independent of the request writer.
 use crate::{now_ms, schema, Recorder, UsageError};
 use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
@@ -39,11 +38,6 @@ impl TryFrom<&str> for ConsumeStatus {
         }
     }
 }
-impl PartialEq<&str> for ConsumeStatus {
-    fn eq(&self, other: &&str) -> bool {
-        self.as_str() == *other
-    }
-}
 impl rusqlite::types::FromSql for ConsumeStatus {
     fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
         Self::try_from(value.as_str()?)
@@ -52,24 +46,6 @@ impl rusqlite::types::FromSql for ConsumeStatus {
 impl rusqlite::ToSql for ConsumeStatus {
     fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
         Ok(self.as_str().into())
-    }
-}
-
-/// A consume can select a particular card or let the upstream choose for the account.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CreditRef {
-    Account,
-    Card(String),
-}
-impl CreditRef {
-    pub fn from_id(id: Option<&str>) -> Self {
-        id.map_or(Self::Account, |id| Self::Card(id.to_string()))
-    }
-    pub fn as_id(&self) -> Option<&str> {
-        match self {
-            Self::Account => None,
-            Self::Card(id) => Some(id),
-        }
     }
 }
 
@@ -93,8 +69,8 @@ pub struct ConsumeAttempt {
 
 /// Outcome written by [`Recorder::reset_finish`].
 #[derive(Debug, Clone, Default)]
-pub struct ConsumeOutcome<S = ConsumeStatus> {
-    pub status: S,
+pub struct ConsumeOutcome {
+    pub status: ConsumeStatus,
     pub http_status: Option<u16>,
     pub code: Option<String>,
     pub windows_reset: Option<i64>,
@@ -122,7 +98,7 @@ const COLS: &str = "id, account, credit_id, redeem_request_id, key, instance, st
                     finished_ms, status, http_status, code, windows_reset, error";
 
 impl Recorder {
-    /// Synchronous compatibility API for startup / shutdown. Reuses one non-migrating connection.
+    /// Startup/shutdown reuse one non-migrating KV connection.
     pub fn kv_get(&self, k: &str) -> Result<Option<String>, UsageError> {
         self.with_kv(|c| {
             Ok(c.prepare_cached("SELECT v FROM kv WHERE k=?1")?
@@ -149,15 +125,6 @@ impl Recorder {
         }
         f(conn.as_ref().expect("kv connection initialized"))
     }
-    pub async fn kv_get_async(&self, key: String) -> Result<Option<String>, UsageError> {
-        self.read(move |c| {
-            Ok(c.prepare_cached("SELECT v FROM kv WHERE k=?1")?
-                .query_row([key], |r| r.get(0))
-                .optional()?)
-        })
-        .await
-    }
-
     /// Latest recent `pending` attempt of `account` (any credit): while one exists, every
     /// consume on the account must retry exactly that attempt (same id and credit).
     pub async fn reset_pending(&self, account: &str) -> Result<Option<ConsumeAttempt>, UsageError> {
@@ -196,15 +163,7 @@ impl Recorder {
         .await?
     }
 
-    pub async fn reset_finish<S: TryInto<ConsumeStatus>>(
-        &self,
-        id: i64,
-        o: ConsumeOutcome<S>,
-    ) -> Result<(), UsageError> {
-        let status = o
-            .status
-            .try_into()
-            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    pub async fn reset_finish(&self, id: i64, o: ConsumeOutcome) -> Result<(), UsageError> {
         let p = self.path.clone();
         tokio::task::spawn_blocking(move || {
             let conn = schema::open_write(&p)?;
@@ -214,7 +173,7 @@ impl Recorder {
                 params![
                     id,
                     now_ms(),
-                    status,
+                    o.status,
                     o.http_status.map(i64::from),
                     o.code.map(|c| c.to_ascii_lowercase()),
                     o.windows_reset,
@@ -226,7 +185,6 @@ impl Recorder {
         .await?
     }
 
-    /// Newest first.
     pub async fn reset_attempts(&self, limit: usize) -> Result<Vec<ConsumeAttempt>, UsageError> {
         self.read(move |conn| {
             let mut st = conn.prepare_cached(&format!(
@@ -266,7 +224,7 @@ mod tests {
         r.reset_finish(
             id,
             ConsumeOutcome {
-                status: "done",
+                status: ConsumeStatus::Done,
                 http_status: Some(200),
                 code: Some("reset".into()),
                 windows_reset: Some(2),

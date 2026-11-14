@@ -1,9 +1,4 @@
-//! Account id aliases for write-time redaction.
-//!
-//! Internal routing still uses the real [`crate::types::AccountId`]. At every process
-//! boundary that persists or logs an account (usage DB labels, attempt chains, audit,
-//! affinity file, stderr), convert with [`Aliaser::alias`] so emails embedded in ids
-//! never land on disk.
+//! Alias account ids at persistence/log boundaries so embedded emails never reach disk.
 use base64::Engine;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -30,34 +25,8 @@ pub fn a(id: &str) -> String {
     }
 }
 
-/// Current process aliaser, if installed.
 pub fn current() -> Option<Arc<Aliaser>> {
     CURRENT.get().cloned()
-}
-
-/// Stable, non-reversible account label written to disk and logs.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct AccountAlias(String);
-
-impl AccountAlias {
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-    pub fn into_string(self) -> String {
-        self.0
-    }
-}
-
-impl std::fmt::Display for AccountAlias {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl AsRef<str> for AccountAlias {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
 }
 
 #[derive(Default)]
@@ -75,7 +44,6 @@ pub struct Aliaser {
 }
 
 impl Aliaser {
-    /// Build from a raw 32-byte key.
     pub fn from_key(key: [u8; KEY_LEN]) -> Arc<Self> {
         Arc::new(Self {
             key,
@@ -107,10 +75,6 @@ impl Aliaser {
         base64::engine::general_purpose::STANDARD.encode(self.key)
     }
 
-    pub fn key_bytes(&self) -> [u8; KEY_LEN] {
-        self.key
-    }
-
     /// Register currently loaded account ids so [`resolve`] works and collisions are stable.
     pub fn register(&self, account_id: &str) {
         let _ = self.alias(account_id);
@@ -126,7 +90,6 @@ impl Aliaser {
         }
     }
 
-    /// True when `s` already looks like an alias (`acct_` + hex…), including collision suffixes.
     pub fn looks_like_alias(s: &str) -> bool {
         let rest = match s.strip_prefix(ALIAS_PREFIX) {
             Some(r) => r,
@@ -201,11 +164,6 @@ impl Aliaser {
         } else {
             stored.to_string()
         }
-    }
-
-    /// Map a query/filter value that may be a raw id, an email-bearing id, or an alias → alias for SQL.
-    pub fn to_query_alias(&self, value: &str) -> String {
-        self.alias(value)
     }
 
     fn base_alias(&self, account_id: &str) -> String {

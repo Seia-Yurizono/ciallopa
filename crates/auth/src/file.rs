@@ -53,7 +53,7 @@ impl AuthFile {
 }
 
 /// `plan_type`, or the plan claim of the id / access token (CPA files do not store the plan).
-pub fn plan_of(v: &Value) -> Option<String> {
+pub(crate) fn plan_of(v: &Value) -> Option<String> {
     let s = |k: &str| v.get(k).and_then(Value::as_str).filter(|x| !x.is_empty());
     s("plan_type").map(str::to_owned).or_else(|| {
         ["id_token", "access_token"]
@@ -79,8 +79,7 @@ pub fn valid_account_id(id: &str) -> bool {
         && id.bytes().all(|b| b.is_ascii_graphic() && b != b'%')
 }
 
-/// Create the auth directory (and missing parents) with mode 0700 when it does not exist yet,
-/// so it can be watched from startup. An existing directory is left as it is.
+/// Create missing auth directories as 0700 so startup can watch them; preserve existing modes.
 pub fn ensure_auth_dir(dir: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::DirBuilderExt;
     if dir.is_dir() {
@@ -135,16 +134,6 @@ impl AuthFile {
             .and_then(|c| c.exp)
             .and_then(|e| DateTime::from_timestamp(e, 0))
     }
-    /// Why a proactive refresh is due, if it is: the expiry window wins over the interval.
-    pub fn refresh_reason(&self, now: DateTime<Utc>) -> Option<RefreshReason> {
-        refresh_reason(
-            self.expires_at(),
-            self.s("last_refresh")
-                .and_then(|t| DateTime::parse_from_rfc3339(&t).ok())
-                .map(|t| t.with_timezone(&Utc)),
-            now,
-        )
-    }
     fn needs_relogin(&self) -> bool {
         self.raw.get("needs_relogin").and_then(Value::as_bool) == Some(true)
     }
@@ -174,9 +163,8 @@ fn refresh_reason(
         .then_some(RefreshReason::Scheduled)
 }
 
-/// Build/merge a CPA-compatible codex auth JSON from a token response.
-/// Unknown fields of `prev` (priority, weight, ...) are kept; `disabled`/`needs_relogin` cleared.
-pub fn merge_tokens(prev: Option<&Value>, t: &TokenResponse) -> Value {
+/// Preserve unknown auth fields; a successful re-login clears its relogin state.
+pub(crate) fn merge_tokens(prev: Option<&Value>, t: &TokenResponse) -> Value {
     let mut v = prev.cloned().unwrap_or_else(|| serde_json::json!({}));
     let now = Utc::now();
     let obj = match v.as_object_mut() {
@@ -233,7 +221,7 @@ pub fn account_id_for(v: &Value) -> String {
     name_for(v, true)
 }
 /// Pre-hash name used by the first ciallopa version (and old CPA): `codex-<email>-<plan>`.
-pub fn legacy_account_id_for(v: &Value) -> String {
+pub(crate) fn legacy_account_id_for(v: &Value) -> String {
     name_for(v, false)
 }
 fn name_for(v: &Value, with_hash: bool) -> String {
@@ -293,7 +281,7 @@ pub(crate) fn existing_for(dir: &Path, v: &Value) -> (String, Option<Value>, Opt
 }
 
 /// Rename legacy `codex-<email>-<plan>.json` files to the hashed CPA name. Returns renamed count.
-pub fn migrate_legacy_names(dir: &Path) -> Result<usize, AuthError> {
+pub(crate) fn migrate_legacy_names(dir: &Path) -> Result<usize, AuthError> {
     let mut n = 0;
     for f in scan_dir(dir)?.files {
         if f.s("account_id").is_none() || f.id != legacy_account_id_for(&f.raw) {
@@ -314,8 +302,7 @@ pub fn migrate_legacy_names(dir: &Path) -> Result<usize, AuthError> {
     Ok(n)
 }
 
-/// Cross-process advisory lock (`flock(LOCK_EX)` on `<dir>/.<id>.json.lock`), like CPA filelock_unix.go.
-/// Not re-entrant across fds: never nest two locks for the same id.
+/// Cross-process flock; never nest locks for the same account.
 pub struct FileLock {
     f: std::fs::File,
 }
@@ -420,11 +407,7 @@ impl CachedAuth {
     }
 }
 
-#[derive(Default)]
-struct RefreshSlot {
-    last_ok: Option<Instant>,
-}
-type RefreshLock = Arc<tokio::sync::Mutex<RefreshSlot>>;
+type RefreshLock = Arc<tokio::sync::Mutex<Option<Instant>>>;
 
 #[derive(Debug, PartialEq)]
 enum CurrentReason {
@@ -551,14 +534,12 @@ pub struct FileAccountStore {
 /// What makes a skipped file worth logging again: its reason, owner, mode or content changed.
 type SkipKey = (SkippedAuthFile, Option<std::time::SystemTime>, u64);
 
-/// One pass over the auth directory.
 pub struct Scan {
     pub files: Vec<AuthFile>,
     pub skipped: Vec<(SkippedAuthFile, Option<std::time::SystemTime>, u64)>,
 }
 
-/// Classify one `*.json` entry: an account, or why it is not one. Never keeps file contents
-/// of skipped files.
+/// Skipped-file diagnostics retain metadata only, never contents.
 fn classify(p: &Path, name: &str) -> Result<AuthFile, SkippedAuthFile> {
     use std::os::unix::fs::MetadataExt;
     let md = std::fs::metadata(p).ok();
@@ -604,7 +585,7 @@ fn classify(p: &Path, name: &str) -> Result<AuthFile, SkippedAuthFile> {
 }
 
 /// Read every account file of `dir`; files that cannot be accounts are listed in `skipped`.
-pub fn scan_dir(dir: &Path) -> Result<Scan, AuthError> {
+pub(crate) fn scan_dir(dir: &Path) -> Result<Scan, AuthError> {
     let mut out = Scan {
         files: vec![],
         skipped: vec![],
@@ -709,9 +690,7 @@ impl FileAccountStore {
         m.entry(id.clone()).or_default().clone()
     }
 
-    /// Single-flight refresh per account.
-    /// `forced`: refresh even when the token is still fresh, sent with that reason;
-    /// `None` refreshes only when one is due (`proactive_expiry` / `scheduled`).
+    /// Serialize refresh per account; forced refreshes carry their explicit reason.
     async fn refresh(
         &self,
         id: &AccountId,
@@ -742,7 +721,7 @@ impl FileAccountStore {
             &current,
             &memory,
             forced,
-            slot.last_ok.is_some_and(|t| t.elapsed() < self.force_dedup),
+            slot.is_some_and(|t| t.elapsed() < self.force_dedup),
             now,
         ) {
             RefreshPlan::Relogin => return Err(AuthError::ReloginRequired),
@@ -780,7 +759,7 @@ impl FileAccountStore {
         &self,
         id: &AccountId,
         current: &CachedAuth,
-        slot: &mut RefreshSlot,
+        slot: &mut Option<Instant>,
         flock: FileLock,
         outcome: RefreshOutcome,
     ) -> Result<Credentials, AuthError> {
@@ -788,14 +767,14 @@ impl FileAccountStore {
             RefreshOutcome::Refreshed(file) => {
                 let credentials = file.credentials();
                 self.put(file, flock).await?;
-                slot.last_ok = Some(Instant::now());
+                *slot = Some(Instant::now());
                 tracing::info!(account = %ciallopa_core::a(id), "token refreshed");
                 credentials
             }
             RefreshOutcome::KeptForeign(file) => {
                 let credentials = file.credentials();
                 self.cache(file).await;
-                slot.last_ok = Some(Instant::now());
+                *slot = Some(Instant::now());
                 tracing::warn!(account = %ciallopa_core::a(id), "auth file changed during refresh; keeping disk version");
                 credentials
             }

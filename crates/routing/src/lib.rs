@@ -37,7 +37,6 @@ pub const MIN_QUOTA_COOLDOWN_FLOOR: Duration = Duration::from_secs(10);
 /// Default cooldown after `TRANSIENT_STREAK` consecutive upstream 5xx
 /// (`[upstream_opts] transient_cooldown_secs`).
 pub const TRANSIENT_COOLDOWN: Duration = Duration::from_secs(15);
-/// Upper bound for a 5xx cooldown, including one taken from `Retry-After`.
 pub const TRANSIENT_COOLDOWN_MAX: Duration = Duration::from_secs(60);
 /// Consecutive upstream 5xx on one account before it is cooled.
 pub const TRANSIENT_STREAK: u32 = 3;

@@ -1,12 +1,5 @@
-//! One global "latest Codex client" fingerprint (`User-Agent` + `originator`), learned from
-//! authenticated forwarded requests (HTTP and WS handshakes) and used for ciallopa's *own*
-//! upstream calls (token refresh / exchange, `/wham/*` usage + reset credits), so those look
-//! like the Codex build actually in use instead of a hard-coded one.
-//!
-//! Validation mirrors codex-rs `login/src/auth/default_client.rs`: the UA is
-//! `{originator}/{version} (...)`, so the UA prefix must equal the originator. Only the
-//! interactive first-party originators `codex_cli_rs` / `codex-tui` are accepted (curl,
-//! third-party clients, `codex_exec`, IDE/desktop originators are ignored).
+//! Learn authenticated first-party Codex fingerprints for the gateway's own upstream calls.
+//! Require a matching UA/originator; ignore other clients.
 use http::HeaderMap;
 use serde::{Deserialize, Serialize};
 use std::sync::{
@@ -51,11 +44,7 @@ impl Fingerprint {
     }
 }
 
-/// Persistence policy (see docs/USAGE.md "Disk writes"): `observe` never touches the disk.
-/// It only updates memory and, when the pair changed (or an unchanged pair's timestamp is
-/// older than [`PERSIST_EVERY_MS`]), marks the state dirty and pokes a single background
-/// writer. The writer coalesces to the latest value and saves at most once per
-/// [`MIN_SAVE_INTERVAL`], like Redis `save <seconds> <changes>` / a debounced settings store.
+/// Observation only marks memory dirty; one background writer coalesces saves at MIN_SAVE_INTERVAL.
 pub const MIN_SAVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
 type Saver = Box<dyn Fn(&Fingerprint) + Send + Sync>;

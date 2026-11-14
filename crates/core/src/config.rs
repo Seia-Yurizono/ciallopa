@@ -60,7 +60,6 @@ pub struct RoutingConfig {
     /// many seconds, the request is held and routed once it recovers. 0 = answer at once.
     pub cooldown_wait_secs: u64,
 }
-/// Upper bound for `routing.cooldown_wait_secs`.
 pub const MAX_COOLDOWN_WAIT_SECS: u64 = 120;
 impl Default for RoutingConfig {
     fn default() -> Self {
@@ -94,31 +93,16 @@ pub struct UpstreamOpts {
     /// Per HTTP attempt: sending the request and waiting for response headers. Successful
     /// streaming bodies keep their separate idle timeout, without an absolute generation limit.
     pub response_header_timeout_secs: u64,
-    /// Cumulative preparation time across retries and account switches: HTTP credentials,
-    /// response headers, error bodies and retry waits; WS credentials, handshakes and retry
-    /// waits. WS has one budget for the initial handshake and a fresh budget per turn's
-    /// pre-output reconnects. Successful stream reads and WS frame writes are not charged.
+    /// Cumulative credentials, headers, error-read and retry budget; successful streams are excluded.
     pub preparation_timeout_secs: u64,
-    /// Per-request budget of HTTP failovers for transport errors / 408 / 5xx, before output.
-    /// Each budgeted failover moves to another usable account. Default 1 permits one such
-    /// switch, not a total limit of two upstream attempts: account errors and recognized
-    /// overload use separate rules. Overload can retry once on the last usable account
-    /// according to `overload_retry_wait_secs`; WS handshakes have their own retry limit.
+    /// Transport/408/5xx failover budget; quota, overload and WS use separate rules.
     pub max_attempts: u32,
     pub connect_timeout_secs: u64,
-    /// zstd-compress (level 3) plaintext HTTP `POST /responses` bodies before forwarding, like
-    /// official Codex does with ChatGPT auth. Bodies that already carry a `Content-Encoding`
-    /// are forwarded untouched; models / images / passthrough / WebSocket are never compressed.
+    /// Compress plaintext POST /responses like Codex; preserve pre-encoded bodies.
     pub compress_requests: bool,
-    /// Ask for gzip on direct HTTP `POST /responses` requests, then decode incrementally
-    /// before error handling and SSE observation. False requests identity; returned gzip is
-    /// still decoded. A request and all its retries keep the same policy. This does not
-    /// change compact, models, Images, passthrough, OAuth or WebSocket traffic.
+    /// Direct Responses negotiate gzip and decode before inspection; retries retain this policy.
     pub gzip_responses: bool,
-    /// Keep an in-memory, per-account jar of ChatGPT infrastructure cookies (Cloudflare
-    /// `__cf_bm`/`__cflb`/`_cfuvid`/`cf_clearance`/`cf_chl_*`… and the `__oailb` routing
-    /// cookie) and replay them like official Codex. Off by default. Client `Cookie` headers are
-    /// never forwarded and upstream `Set-Cookie` never reaches clients either way.
+    /// Replay per-account ChatGPT infrastructure cookies; client cookies remain isolated.
     pub cloudflare_cookies: bool,
     /// Cooldown (seconds) after 3 consecutive upstream 5xx on one account; `Retry-After`
     /// overrides it, capped at 60. 0 = never cool on 5xx. The last usable account is never cooled.
@@ -128,11 +112,8 @@ pub struct UpstreamOpts {
     pub overload_streak: u32,
     /// First overload cooldown (seconds); doubles on each further cooldown until a success.
     pub overload_cooldown_secs: u64,
-    /// Upper bound of the overload cooldown (seconds).
     pub overload_cooldown_max_secs: u64,
-    /// When the only usable account (or every account) is overloaded before any output, wait
-    /// about this long (jittered to 2/3–5/3 of it; an upstream `Retry-After` is honored up to
-    /// 10 s) and retry once on the same account. 0 = no wait-and-retry.
+    /// One jittered pre-output retry when all usable accounts overload; 0 disables it.
     pub overload_retry_wait_secs: u64,
     /// Account cooldown (seconds) after an upstream 402 `deactivated_workspace` (the ChatGPT
     /// workspace was deactivated); the request moves to another account. 0 = never cool.
@@ -362,7 +343,6 @@ impl Default for QuotaWeights {
     }
 }
 
-/// Per-request usage log (SQLite, see docs/USAGE.md).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct UsageConfig {

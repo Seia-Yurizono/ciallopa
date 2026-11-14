@@ -42,15 +42,12 @@ pub struct SkippedAuthFile {
     pub kept: bool,
 }
 
-/// Why an auth file is not loaded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SkipReason {
     /// The server user may not read the file.
     PermissionDenied,
-    /// Any other read failure.
     ReadError,
-    /// Not a JSON object.
     InvalidJson,
     /// A CPA auth file of another provider (`type` other than `codex`).
     UnsupportedType,
@@ -72,10 +69,8 @@ impl SkipReason {
     }
 }
 
-/// Result of importing one auth document.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImportOutcome {
-    /// Written as a new account file.
     Added(AccountId),
     /// The same account is already present; nothing was written.
     Exists(AccountId),
@@ -90,7 +85,6 @@ pub struct AccountPatch {
     pub priority: Option<i32>,
 }
 
-/// What forwarding needs to call upstream on behalf of an account.
 #[derive(Clone, PartialEq)]
 pub struct Credentials {
     pub account: AccountId,

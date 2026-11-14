@@ -1,18 +1,11 @@
-//! Request problem buckets: the single place that decides which user-facing problem a stored
-//! request row shows under (报错 / 上游出错 / 没答完), its cause, whether a retry or account
-//! switch rescued it, and which next step to suggest. The record list (`problem`/`cause`
-//! filters), the per-bucket counts and every row's fields all use these rules, in Rust for one
-//! row ([`classify`]) and as SQL predicates for many ([`Preds`]); a test checks they agree.
-//!
-//! Refusals (本地拒绝) are not request rows; their counts come from the refusals table.
+//! Shared Rust/SQL classification for request problems, causes, rescued outcomes and next steps.
+//! Local refusals are aggregated separately from request rows.
 use crate::filter::label_id;
 use crate::PREWARM_ENDPOINT;
 use rusqlite::Connection;
 use serde::Serialize;
 
-/// Error codes that mean an account (or every account) is out of usage quota: the upstream
-/// 429 / in-stream `usage_limit_reached`, and the gateway's own answer when the first account
-/// to recover is out of quota.
+/// Account quota exhaustion, whether reported upstream or locally.
 pub(crate) const QUOTA_ERRORS: &[&str] = &[
     "usage_limit",
     "usage_limit_reached",
@@ -42,10 +35,7 @@ pub(crate) const LIFECYCLE_ERRORS: &[&str] = &[
     "previous_response_not_found",
 ];
 
-/// Why a failed request failed, coarse enough to chart: `quota` (usage limit, upstream or
-/// local), `rate_limit` (another 429 or an in-stream rate limit), `request` (the upstream
-/// rejected the request content), then by source: `upstream`, `network`, `stream`, `local`
-/// (the gateway itself), `other`. Cancellations are not failures and have no class.
+/// Bucket request failures by quota/rate-limit/request code, then by source.
 pub(crate) fn failure_class(
     status: u16,
     error: Option<&str>,
@@ -269,7 +259,7 @@ pub fn outcome(f: &Facts) -> Outcome {
 }
 
 /// 报错 cause from a [`failure_class`]: `local` and `other` are the gateway.
-pub fn error_cause(failure_class: &str) -> &'static str {
+pub(crate) fn error_cause(failure_class: &str) -> &'static str {
     match failure_class {
         "quota" => "quota",
         "rate_limit" => "rate_limit",
