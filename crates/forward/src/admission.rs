@@ -9,7 +9,7 @@ use axum::{
     middleware::Next,
     response::Response,
 };
-use ciallopa_upstream::drain::{Lease, Refused};
+use ciallopa_upstream::drain::{Lease, Refused, CUT_FLUSH_MAX};
 use hyper::body::{Body as HttpBody, Frame, SizeHint};
 use std::{
     future::Future,
@@ -78,14 +78,12 @@ pub(crate) async fn admit(
     let on_force = parts.extensions.remove::<OnForce>().map(|o| o.0);
     Response::from_parts(
         parts,
-        Body::new(LeasedBody {
-            inner: Some(body),
-            on_force,
-            flush_deadline: None,
-            cut: false,
-            lease: Some(lease),
+        Body::new(LeasedBody(Leased::Running {
+            body,
+            lease,
             forced: Box::pin(async move { drain.forced().await }),
-        }),
+            on_force,
+        })),
     )
 }
 
@@ -136,17 +134,26 @@ fn note_inflight(st: &AppState, req: &Request<Body>, limit: usize) {
 #[derive(Clone)]
 pub(crate) struct OnForce(pub(crate) Bytes);
 
-/// Longest a cut SSE body keeps passing on already-queued chunks before its terminal event.
-const CUT_FLUSH_MAX: std::time::Duration = std::time::Duration::from_millis(500);
+struct LeasedBody(Leased);
 
-struct LeasedBody {
-    inner: Option<Body>,
-    on_force: Option<Bytes>,
-    flush_deadline: Option<Pin<Box<tokio::time::Sleep>>>,
-    /// Shutdown force was observed.
-    cut: bool,
-    lease: Option<Lease>,
-    forced: Pin<Box<dyn Future<Output = ()> + Send>>,
+enum Leased {
+    Running {
+        body: Body,
+        lease: Lease,
+        forced: Pin<Box<dyn Future<Output = ()> + Send>>,
+        on_force: Option<Bytes>,
+    },
+    Flushing {
+        body: Body,
+        lease: Lease,
+        deadline: Pin<Box<tokio::time::Sleep>>,
+        event: Bytes,
+    },
+    /// Keep the slot while hyper writes the terminal event.
+    Terminal {
+        lease: Lease,
+    },
+    Done,
 }
 
 impl HttpBody for LeasedBody {
@@ -157,55 +164,192 @@ impl HttpBody for LeasedBody {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
-        if self.inner.is_none() {
-            return Poll::Ready(None);
-        }
-        // `forced` completes once and must not be polled again after that.
-        if self.cut || self.forced.as_mut().poll(cx).is_ready() {
-            self.cut = true;
-            if self.on_force.is_some() {
-                // A Responses SSE cut by shutdown: pass on everything the producer already
-                // queued (it stops on force, so the queue ends), then the retryable
-                // terminal event, then a clean end of body.
-                let deadline = self
-                    .flush_deadline
-                    .get_or_insert_with(|| Box::pin(tokio::time::sleep(CUT_FLUSH_MAX)));
-                let timed_out = deadline.as_mut().poll(cx).is_ready();
-                if !timed_out {
-                    let inner = self.inner.as_mut().expect("body present");
-                    match Pin::new(inner).poll_frame(cx) {
-                        Poll::Ready(Some(Ok(frame))) => return Poll::Ready(Some(Ok(frame))),
-                        Poll::Pending => return Poll::Pending,
-                        Poll::Ready(None | Some(Err(_))) => {}
+        loop {
+            match std::mem::replace(&mut self.0, Leased::Done) {
+                Leased::Running {
+                    mut body,
+                    lease,
+                    mut forced,
+                    on_force,
+                } => {
+                    if forced.as_mut().poll(cx).is_ready() {
+                        if let Some(event) = on_force {
+                            self.0 = Leased::Flushing {
+                                body,
+                                lease,
+                                deadline: Box::pin(tokio::time::sleep(CUT_FLUSH_MAX)),
+                                event,
+                            };
+                            continue;
+                        }
+                        drop(body);
+                        drop(lease);
+                        return Poll::Ready(Some(Err(axum::Error::new(std::io::Error::new(
+                            std::io::ErrorKind::Interrupted,
+                            "server shutdown",
+                        )))));
                     }
+                    let frame = Pin::new(&mut body).poll_frame(cx);
+                    if !matches!(&frame, Poll::Ready(None | Some(Err(_)))) {
+                        self.0 = Leased::Running {
+                            body,
+                            lease,
+                            forced,
+                            on_force,
+                        };
+                    } else {
+                        drop(body);
+                        drop(lease);
+                    }
+                    return frame;
                 }
-                self.inner.take();
-                let event = self.on_force.take().expect("checked above");
-                return Poll::Ready(Some(Ok(Frame::data(event))));
+                Leased::Flushing {
+                    mut body,
+                    lease,
+                    mut deadline,
+                    event,
+                } => {
+                    if deadline.as_mut().poll(cx).is_pending() {
+                        match Pin::new(&mut body).poll_frame(cx) {
+                            frame @ (Poll::Ready(Some(Ok(_))) | Poll::Pending) => {
+                                self.0 = Leased::Flushing {
+                                    body,
+                                    lease,
+                                    deadline,
+                                    event,
+                                };
+                                return frame;
+                            }
+                            Poll::Ready(None | Some(Err(_))) => {}
+                        }
+                    }
+                    self.0 = Leased::Terminal { lease };
+                    return Poll::Ready(Some(Ok(Frame::data(event))));
+                }
+                Leased::Terminal { lease } => {
+                    drop(lease);
+                    return Poll::Ready(None);
+                }
+                Leased::Done => return Poll::Ready(None),
             }
-            self.inner.take();
-            self.lease.take();
-            return Poll::Ready(Some(Err(axum::Error::new(std::io::Error::new(
-                std::io::ErrorKind::Interrupted,
-                "server shutdown",
-            )))));
         }
-        let result = Pin::new(self.inner.as_mut().expect("body present")).poll_frame(cx);
-        if matches!(&result, Poll::Ready(None | Some(Err(_)))) {
-            self.inner.take();
-            self.lease.take();
-        }
-        result
     }
 
     fn is_end_stream(&self) -> bool {
-        self.inner.as_ref().is_none_or(HttpBody::is_end_stream)
+        match &self.0 {
+            Leased::Running { body, .. } | Leased::Flushing { body, .. } => body.is_end_stream(),
+            Leased::Terminal { .. } | Leased::Done => true,
+        }
     }
 
     fn size_hint(&self) -> SizeHint {
-        self.inner
-            .as_ref()
-            .map(HttpBody::size_hint)
-            .unwrap_or_default()
+        match &self.0 {
+            Leased::Running { body, .. } | Leased::Flushing { body, .. } => body.size_hint(),
+            Leased::Terminal { .. } | Leased::Done => SizeHint::default(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ciallopa_upstream::drain::Drain;
+    use std::sync::Arc;
+
+    fn leased(drain: &Arc<Drain>, body: Body, on_force: Option<Bytes>) -> LeasedBody {
+        let lease = drain.admit(1).unwrap();
+        let drain = drain.clone();
+        LeasedBody(Leased::Running {
+            body,
+            lease,
+            forced: Box::pin(async move { drain.forced().await }),
+            on_force,
+        })
+    }
+
+    async fn frame(body: &mut LeasedBody) -> Option<Result<Frame<Bytes>, axum::Error>> {
+        std::future::poll_fn(|cx| Pin::new(&mut *body).poll_frame(cx)).await
+    }
+
+    #[tokio::test]
+    async fn eof_and_read_error_release_the_lease() {
+        for error in [false, true] {
+            let drain = Arc::new(Drain::default());
+            let chunks = error.then(|| Err::<Bytes, _>(std::io::Error::other("read error")));
+            let mut body = leased(
+                &drain,
+                Body::from_stream(futures::stream::iter(chunks)),
+                None,
+            );
+            let end = frame(&mut body).await;
+            assert_eq!(end.is_some(), error);
+            if let Some(end) = end {
+                assert!(end.is_err());
+            }
+            assert_eq!(drain.inflight(), 0);
+            assert!(frame(&mut body).await.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn force_without_terminal_event_interrupts_and_releases_the_lease() {
+        let drain = Arc::new(Drain::default());
+        let mut body = leased(&drain, Body::from("queued"), None);
+        drain.force();
+        let error = frame(&mut body).await.unwrap().unwrap_err();
+        assert!(error.to_string().contains("server shutdown"));
+        assert_eq!(drain.inflight(), 0);
+        assert!(frame(&mut body).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn force_flushes_queued_data_and_holds_the_lease_through_the_terminal_event() {
+        let drain = Arc::new(Drain::default());
+        let mut body = leased(
+            &drain,
+            Body::from("queued"),
+            Some(Bytes::from_static(b"terminal")),
+        );
+        drain.force();
+        let queued = frame(&mut body)
+            .await
+            .unwrap()
+            .unwrap()
+            .into_data()
+            .unwrap();
+        assert_eq!(queued, "queued");
+        assert_eq!(drain.inflight(), 1);
+        let terminal = frame(&mut body)
+            .await
+            .unwrap()
+            .unwrap()
+            .into_data()
+            .unwrap();
+        assert_eq!(terminal, "terminal");
+        assert!(body.is_end_stream());
+        assert_eq!(drain.inflight(), 1);
+        assert!(frame(&mut body).await.is_none());
+        assert_eq!(drain.inflight(), 0);
+    }
+
+    #[tokio::test]
+    async fn expired_flush_deadline_emits_terminal_event_without_polling_the_inner_body() {
+        let drain = Arc::new(Drain::default());
+        let mut body = LeasedBody(Leased::Flushing {
+            body: Body::from_stream(futures::stream::pending::<Result<Bytes, std::io::Error>>()),
+            lease: drain.admit(1).unwrap(),
+            deadline: Box::pin(tokio::time::sleep_until(
+                tokio::time::Instant::now() - std::time::Duration::from_secs(1),
+            )),
+            event: Bytes::from_static(b"terminal"),
+        });
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        let Poll::Ready(Some(Ok(terminal))) = Pin::new(&mut body).poll_frame(&mut cx) else {
+            panic!("expired flush emits immediately");
+        };
+        assert_eq!(terminal.into_data().unwrap(), "terminal");
+        assert_eq!(drain.inflight(), 1);
+        drop(body);
+        assert_eq!(drain.inflight(), 0);
     }
 }

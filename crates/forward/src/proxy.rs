@@ -9,7 +9,7 @@ pub(crate) use crate::classify::{
 };
 pub(crate) use crate::http::exchange::send_streaming;
 pub(crate) use crate::http::pump::{
-    async_stream, shutdown_failed_event, stream_back, stream_image_body, SHUTDOWN_RETRY_AFTER_SECS,
+    shutdown_failed_event, stream_back, stream_image_body, SHUTDOWN_RETRY_AFTER_SECS,
 };
 pub(crate) use crate::sse::{memfind, BOOTSTRAP_MAX};
 use axum::response::{IntoResponse, Response};

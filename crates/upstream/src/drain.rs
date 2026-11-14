@@ -10,6 +10,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{watch, Notify};
 
+/// Longest a cut SSE body or WS turn flushes queued output before its terminal event.
+pub const CUT_FLUSH_MAX: Duration = Duration::from_millis(500);
+
 /// Drain phase broadcast to sessions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Phase {

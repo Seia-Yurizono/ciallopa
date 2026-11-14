@@ -8,7 +8,7 @@ use crate::ws_upgrade::DownWs;
 use crate::{proxy, AppState};
 use ciallopa_core::{AccountId, Outcome, RouteRequest};
 use ciallopa_routing::parse_quota_event_headers;
-use ciallopa_upstream::drain::Phase;
+use ciallopa_upstream::drain::{Phase, CUT_FLUSH_MAX};
 use ciallopa_upstream::{UpstreamWs, WsMessage};
 use ciallopa_usage::Transport;
 use futures::{SinkExt, StreamExt};
@@ -812,12 +812,6 @@ enum ShutdownClose {
     /// A new turn arrived while draining: retryable `response.failed`, then 1001.
     Refused,
 }
-
-/// How long the cut of a running turn keeps forwarding upstream frames before it ends the
-/// turn. Frames that already reached the gateway's socket are not dropped (a single poll
-/// can miss them until the reactor reports readiness); the Responses SSE cut uses the same
-/// window.
-const CUT_FLUSH_MAX: Duration = Duration::from_millis(500);
 
 /// Next upstream item for the relay loop, or the end of a shutdown cut.
 enum Upstream<T> {
