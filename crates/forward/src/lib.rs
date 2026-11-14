@@ -7,13 +7,16 @@
 //! `/v1/responses/compact`, `/v1/models` (mapped to `/codex/*`). Everything else under
 //! `/backend-api/*` is a sticky passthrough.
 mod admission;
+mod attempt;
 mod budget;
+mod classify;
 pub mod codes;
 pub(crate) mod downstream;
 mod egress;
 mod encrypted;
 mod errors;
 mod headers;
+mod http;
 mod image_events;
 mod images;
 mod limits;
@@ -23,6 +26,7 @@ mod proxy;
 mod refusal;
 mod reqbody;
 mod response_body;
+mod sse;
 mod turn_state;
 mod usage;
 mod ws;
@@ -112,7 +116,7 @@ pub fn map_path(path_and_query: &str) -> Option<String> {
     None
 }
 
-fn pq(uri: &http::Uri) -> &str {
+fn pq(uri: &::http::Uri) -> &str {
     uri.path_and_query().map(|p| p.as_str()).unwrap_or("/")
 }
 
@@ -160,13 +164,13 @@ async fn forward(
     st: AppState,
     key: Key,
     method: Method,
-    uri: &http::Uri,
+    uri: &::http::Uri,
     headers: HeaderMap,
     req: reqbody::ReqBody,
     inspect: bool,
 ) -> Response {
     let Some(path) = map_path(pq(uri)) else {
-        return proxy::json_error(http::StatusCode::NOT_FOUND, "not_found", "unknown path");
+        return proxy::json_error(::http::StatusCode::NOT_FOUND, "not_found", "unknown path");
     };
     let parsed = if inspect {
         let limit = st.config.load().max_body_mb.saturating_mul(1024 * 1024);
@@ -208,8 +212,8 @@ async fn forward(
         // This hop has its own encoding contract, independent of the downstream client.
         // Retries and pre-output replays keep the same choice in Outbound.
         headers.insert(
-            http::header::ACCEPT_ENCODING,
-            http::HeaderValue::from_static(if upstream_opts.gzip_responses {
+            ::http::header::ACCEPT_ENCODING,
+            ::http::HeaderValue::from_static(if upstream_opts.gzip_responses {
                 "gzip"
             } else {
                 "identity"
@@ -240,7 +244,7 @@ pub(crate) fn client_wants_sse(
         return false;
     }
     let accept = headers
-        .get_all(http::header::ACCEPT)
+        .get_all(::http::header::ACCEPT)
         .iter()
         .filter_map(|v| v.to_str().ok())
         .any(|v| v.to_ascii_lowercase().contains("text/event-stream"));
@@ -266,13 +270,13 @@ pub(crate) fn prepare_responses_body(
     compress: bool,
     wrap: impl FnOnce(Vec<u8>) -> Bytes,
 ) -> (HeaderMap, Bytes) {
-    headers.remove(http::header::ACCEPT_ENCODING);
+    headers.remove(::http::header::ACCEPT_ENCODING);
     let route = path.split('?').next().unwrap_or(path);
     if !compress || method != Method::POST || route != "/codex/responses" || body.is_empty() {
         return (headers, body);
     }
     let encs: Vec<String> = headers
-        .get_all(http::header::CONTENT_ENCODING)
+        .get_all(::http::header::CONTENT_ENCODING)
         .iter()
         .map(|v| v.to_str().unwrap_or("?").trim().to_ascii_lowercase())
         .collect();
@@ -281,11 +285,11 @@ pub(crate) fn prepare_responses_body(
     }
     match zstd::stream::encode_all(&body[..], ZSTD_LEVEL) {
         Ok(z) => {
-            headers.remove(http::header::CONTENT_ENCODING);
-            headers.remove(http::header::CONTENT_LENGTH);
+            headers.remove(::http::header::CONTENT_ENCODING);
+            headers.remove(::http::header::CONTENT_LENGTH);
             headers.insert(
-                http::header::CONTENT_ENCODING,
-                http::HeaderValue::from_static("zstd"),
+                ::http::header::CONTENT_ENCODING,
+                ::http::HeaderValue::from_static("zstd"),
             );
             (headers, wrap(z))
         }
@@ -299,11 +303,17 @@ pub(crate) fn prepare_responses_body(
 #[cfg(test)]
 mod tests {
     use bytes::Bytes as B;
-    fn prep(p: &str, m: &http::Method, h: http::HeaderMap, b: B, c: bool) -> (http::HeaderMap, B) {
+    fn prep(
+        p: &str,
+        m: &::http::Method,
+        h: ::http::HeaderMap,
+        b: B,
+        c: bool,
+    ) -> (::http::HeaderMap, B) {
         super::prepare_responses_body(p, m, h, b, c, B::from)
     }
+    use ::http::{HeaderMap, HeaderValue, Method};
     use bytes::Bytes;
-    use http::{HeaderMap, HeaderValue, Method};
 
     fn hm(kv: &[(&'static str, &'static str)]) -> HeaderMap {
         let mut h = HeaderMap::new();

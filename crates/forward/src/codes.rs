@@ -107,11 +107,29 @@ mod tests {
         ];
         // errors.rs / egress.rs are classifiers: every returned literal is a code.
         const RETURNS: &[&str] = &["=> \"", "return \"", "else { \""];
-        let sources: [(&str, &str, bool); 7] = [
+        let sources: [(&str, &str, bool); 17] = [
             ("proxy.rs", include_str!("proxy.rs"), false),
-            ("ws.rs", include_str!("ws.rs"), false),
+            ("attempt/mod.rs", include_str!("attempt/mod.rs"), false),
+            ("classify.rs", include_str!("classify.rs"), false),
+            ("sse.rs", include_str!("sse.rs"), false),
+            ("http/exchange.rs", include_str!("http/exchange.rs"), false),
+            ("http/pump.rs", include_str!("http/pump.rs"), false),
+            ("ws/mod.rs", include_str!("ws/mod.rs"), false),
+            ("ws/connect.rs", include_str!("ws/connect.rs"), false),
+            ("ws/session.rs", include_str!("ws/session.rs"), false),
+            ("ws/frames.rs", include_str!("ws/frames.rs"), false),
             ("usage.rs", include_str!("usage.rs"), false),
-            ("images.rs", include_str!("images.rs"), false),
+            ("images/mod.rs", include_str!("images/mod.rs"), false),
+            (
+                "images/request.rs",
+                include_str!("images/request.rs"),
+                false,
+            ),
+            (
+                "images/wrapper.rs",
+                include_str!("images/wrapper.rs"),
+                false,
+            ),
             ("budget.rs", include_str!("budget.rs"), false),
             ("errors.rs", include_str!("errors.rs"), true),
             ("egress.rs", include_str!("egress.rs"), true),
