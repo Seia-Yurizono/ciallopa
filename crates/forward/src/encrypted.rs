@@ -1,25 +1,9 @@
-//! Upstream rejection of the encrypted reasoning content carried in a conversation's history
-//! (`invalid_encrypted_content`).
-//!
-//! Codex replays the `encrypted_content` of earlier reasoning / compaction items on every turn.
-//! The upstream refuses it when it was produced under another account or organization (or is
-//! corrupt), which no retry on any account can fix: the request itself must change. Like
-//! official Codex, nothing in the history is stripped or rewritten, and the request is not
-//! retried, switched or held against the account. Only the error is made clear:
-//!
-//! * HTTP, before any output: the upstream sends `200` + an SSE `error` event, which Codex
-//!   ignores and then retries the closed stream five times. It is answered with an HTTP `400`
-//!   in the upstream's error shape instead, which Codex shows once and does not retry.
-//! * HTTP, after output: the event becomes a `response.failed` with the same code and message.
-//! * WebSocket: the upstream `error` frame (`status: 400`, fatal for Codex) is passed through
-//!   with the clear message.
-//!
-//! The upstream message (with its `Reason: …`) is kept in the usage log detail.
+//! Rejected encrypted history is a request error: never retry or penalize the account.
+//! Before output answer 400; after output send response.failed. Preserve upstream detail in the log.
 
-use axum::body::Body;
 use axum::response::Response;
 use bytes::Bytes;
-use http::{HeaderValue, StatusCode};
+use http::StatusCode;
 use serde_json::Value;
 
 /// Upstream error code, kept in every rewritten error and used as the usage-log error code.
@@ -48,10 +32,7 @@ fn rejection_text(m: &str) -> bool {
             || m.contains("did not match"))
 }
 
-/// The upstream message when `v` (an SSE `data:` payload, a WS frame or an HTTP error body)
-/// is an encrypted-content rejection: code `invalid_encrypted_content`, or the upstream
-/// wording under no code / `thinking_signature_invalid`. Only `error` / `response.failed`
-/// events and bare error bodies are inspected, never output events.
+/// Detect encrypted-history rejection only in error envelopes, never model output.
 pub(crate) fn rejection(v: &Value) -> Option<String> {
     let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
     let errorish =
@@ -116,14 +97,10 @@ fn error_obj(v: Option<&Value>) -> Value {
 
 /// HTTP `400` answer for a rejection seen before any output (`upstream`: the original event).
 pub(crate) fn http_response(upstream: Option<&Value>) -> Response {
-    let body = serde_json::json!({ "error": error_obj(upstream) }).to_string();
-    let mut r = Response::new(Body::from(body));
-    *r.status_mut() = StatusCode::BAD_REQUEST;
-    r.headers_mut().insert(
-        http::header::CONTENT_TYPE,
-        HeaderValue::from_static("application/json"),
-    );
-    r
+    crate::errors::with_json(
+        StatusCode::BAD_REQUEST,
+        serde_json::json!({"error": error_obj(upstream)}),
+    )
 }
 
 /// SSE `response.failed` replacing a rejection seen after output was already streamed.
@@ -173,10 +150,8 @@ pub(crate) fn ws_frame(upstream: &Value) -> String {
     v.to_string()
 }
 
-/// One SSE event's joined `data:` payload (None when it has none).
-pub(crate) fn sse_data(ev: &[u8]) -> Option<std::borrow::Cow<'_, str>> {
-    crate::sse::data(ev)
-}
+#[cfg(test)]
+use crate::sse::data as sse_data;
 
 #[cfg(test)]
 mod tests {

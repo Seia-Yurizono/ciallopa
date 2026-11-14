@@ -1,7 +1,7 @@
 //! `/codex/models` passthrough with a 5 minute cache (successful responses only).
 use crate::headers::downstream_headers;
 use crate::limits::{read_body, BODY_TIMEOUT, MODELS_BODY_LIMIT};
-use crate::{map_path, pq, proxy, session_route, AppState};
+use crate::{errors, map_path, pq, session_route, AppState};
 use axum::body::Body;
 use axum::extract::{OriginalUri, State};
 use axum::response::Response;
@@ -60,7 +60,7 @@ pub(crate) async fn handler(
     headers: HeaderMap,
 ) -> Response {
     let Some(path) = map_path(pq(&uri)) else {
-        return proxy::json_error(StatusCode::NOT_FOUND, "not_found", "unknown path");
+        return errors::json_error(StatusCode::NOT_FOUND, "not_found", "unknown path");
     };
     let path = with_client_version(path);
     // Conditional requests go straight through (client ETag semantics).
@@ -75,7 +75,7 @@ pub(crate) async fn handler(
         }
     }
     let route = session_route(&headers, None);
-    let ob = proxy::Outbound {
+    let ob = crate::attempt::Outbound {
         method: Method::GET,
         path: path.clone(),
         headers,
@@ -84,12 +84,12 @@ pub(crate) async fn handler(
         expect_sse: false,
         decode_response: false,
     };
-    let c = match proxy::send(&st, ob).await {
+    let c = match crate::attempt::send(&st, ob).await {
         Ok(c) => c,
         Err(r) => return r,
     };
     if c.resp.status() != StatusCode::OK {
-        return proxy::stream_back(&st, c);
+        return crate::http::pump::stream_back_tracked(&st, c, None, false, false);
     }
     let mut h = downstream_headers(c.resp.headers());
     h.remove(http::header::CONTENT_LENGTH);

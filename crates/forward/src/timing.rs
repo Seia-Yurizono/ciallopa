@@ -1,7 +1,6 @@
 //! Production seconds stay unchanged; loopback integration tests can use shorter units.
 use crate::AppState;
 use ciallopa_core::Config;
-use http::HeaderMap;
 use std::time::Duration;
 
 pub(crate) struct Timing {
@@ -38,10 +37,6 @@ pub(crate) fn scale(st: &AppState, duration: Duration) -> Duration {
 
 pub(crate) fn switch_jitter(st: &AppState) -> Duration {
     scale(st, ciallopa_upstream::retry::switch_jitter())
-}
-
-pub(crate) fn delay_for(st: &AppState, attempt: u64, headers: Option<&HeaderMap>) -> Duration {
-    scale(st, ciallopa_upstream::retry::delay_for(attempt, headers))
 }
 
 #[cfg(test)]

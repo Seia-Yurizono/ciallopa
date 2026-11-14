@@ -1,15 +1,10 @@
-//! Response decoding for the explicit Responses policy, not a shared-client default.
-//!
-//! The stream owns the upstream body and decoder. Dropping it cancels both; there is no
-//! background reader, response-sized buffer or total response-size limit here. Existing
-//! bootstrap, observation and error-body bounds consequently apply to decoded bytes.
+//! Decode Responses incrementally; dropping the stream cancels upstream reads.
 use bytes::{Buf, Bytes};
 use flate2::{Decompress, FlushDecompress, Status};
 use futures::{Stream, StreamExt};
 use http::header::{CONTENT_ENCODING, CONTENT_LENGTH, ETAG};
 use reqwest::ResponseBuilderExt;
 use std::error::Error;
-use std::fmt;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -21,41 +16,18 @@ const STEPS_PER_POLL: usize = 16;
 type BoxError = Box<dyn Error + Send + Sync>;
 type Upstream = Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>;
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("upstream response uses an unsupported content encoding")]
 pub(crate) struct UnsupportedEncoding;
 
-impl fmt::Display for UnsupportedEncoding {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("upstream response uses an unsupported content encoding")
-    }
-}
-
-impl Error for UnsupportedEncoding {}
-
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 enum DecodeError {
-    Invalid(flate2::DecompressError),
+    #[error("invalid gzip response body")]
+    Invalid(#[source] flate2::DecompressError),
+    #[error("truncated gzip response body")]
     Truncated,
+    #[error("gzip response decoder made no progress")]
     NoProgress,
-}
-
-impl fmt::Display for DecodeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Invalid(_) => f.write_str("invalid gzip response body"),
-            Self::Truncated => f.write_str("truncated gzip response body"),
-            Self::NoProgress => f.write_str("gzip response decoder made no progress"),
-        }
-    }
-}
-
-impl Error for DecodeError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Invalid(error) => Some(error),
-            Self::Truncated | Self::NoProgress => None,
-        }
-    }
 }
 
 /// `reqwest::Body` adds error wrappers. Inspect the chain rather than `is_decode()`,

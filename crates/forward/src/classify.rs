@@ -1,4 +1,3 @@
-use crate::usage::StreamObservation;
 use ciallopa_core::{AccountId, Outcome};
 use ciallopa_routing::{
     is_usage_limit, parse_quota, parse_quota_event_headers, retry_after_for_429,
@@ -75,36 +74,6 @@ impl Classified<'_> {
     }
 }
 
-/// What a Responses stream event means for bootstrap / failover.
-#[derive(Debug, PartialEq)]
-pub(crate) enum EventKind {
-    /// Envelope only (`response.created`, `in_progress`, rate-limit snapshots, keepalive).
-    Preamble,
-    /// Account-level quota / rate-limit failure: cool down and switch.
-    Quota(Outcome),
-    /// Upstream capacity / per-account throttling (`server_is_overloaded`, `slow_down`, …):
-    /// switch account if another one is usable, else pass through. Carries the logged code.
-    Overloaded(String),
-    /// The upstream rejected the encrypted reasoning content in the request's history
-    /// (`invalid_encrypted_content`): a request problem, never retried or held against the
-    /// account. Carries the upstream message.
-    Encrypted(String),
-    /// Anything else: real output (or a non-quota terminal event).
-    Content,
-}
-
-impl From<Class> for EventKind {
-    fn from(class: Class) -> Self {
-        match class {
-            Class::Preamble | Class::RateLimits(_) | Class::Created => Self::Preamble,
-            Class::Terminal(Terminal::Quota(o)) => Self::Quota(o),
-            Class::Terminal(Terminal::Overloaded(code)) => Self::Overloaded(code),
-            Class::Terminal(Terminal::Encrypted(message)) => Self::Encrypted(message),
-            Class::Output | Class::SoftError | Class::Terminal(_) => Self::Content,
-        }
-    }
-}
-
 /// Quota-type error codes that justify switching accounts.
 const QUOTA_CODES: [&str; 3] = [
     "usage_limit_reached",
@@ -132,12 +101,7 @@ fn rate_limit_code(v: Option<&serde_json::Value>) -> bool {
         .is_some_and(|c| RATE_LIMIT_CODES.contains(&c.trim()))
 }
 
-/// Structured quota check shared by HTTP SSE, WS and the usage tracker. Only these fields
-/// count (never free text such as instructions / messages):
-/// `error` event: `status`/`status_code == 429`, `error.type|code`, top-level `type|code`;
-/// `response.failed`: `response.error.type|code`. A [`RATE_LIMIT_CODES`] code (either
-/// shape) is a rate limit without a quota code: it cools the model, never the account.
-/// Returns `(is_quota, has_quota_code)`.
+/// Returns (rate limited, quota code); inspect structured errors, never model output.
 pub(crate) fn quota_event(v: &serde_json::Value) -> (bool, bool) {
     match v.get("type").and_then(|t| t.as_str()).unwrap_or("") {
         "error" => {
@@ -169,11 +133,7 @@ const OVERLOAD_CODES: [&str; 4] = [
     "policy_capacity_unavailable",
 ];
 
-/// Overload detection on an error event (`error`, `response.failed`, or an event whose own
-/// `type`/`code` is an overload code) or an HTTP error body. Structured `code`/`type` first;
-/// a bare `message` ("…currently overloaded…", "…at capacity…") counts only when the error
-/// object carries no other code. Output events (deltas, items) are never inspected.
-/// Returns the code to log (`server_is_overloaded` for message-only matches).
+/// Inspect only errors; explicit codes beat message-only overload wording.
 pub(crate) fn overload_code(v: &serde_json::Value) -> Option<String> {
     let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
     let errorish = ty == "error"
@@ -222,29 +182,7 @@ pub(crate) fn overload_body(status: u16, b: &[u8]) -> Option<String> {
     if !(status == 400 || status == 429 || status >= 500) {
         return None;
     }
-    let mut v: serde_json::Value = serde_json::from_slice(b).ok()?;
-    if v.get("type").is_none() && v.get("error").is_some() {
-        if let Some(o) = v.as_object_mut() {
-            o.insert("type".into(), "error".into());
-        }
-    }
-    overload_code(&v)
-}
-
-/// Classify one Responses event JSON (`data:` payload of SSE, or a WS text frame).
-pub(crate) fn event_kind(text: &str) -> EventKind {
-    event_kind_observed(text, None)
-}
-
-pub(crate) fn event_kind_observed(
-    text: &str,
-    progress: Option<&mut StreamObservation>,
-) -> EventKind {
-    let classified = classify(None, text);
-    if let (Some(progress), Some(ty)) = (progress, classified.ty.as_deref()) {
-        progress.event(ty);
-    }
-    classified.class.into()
+    overload_code(&serde_json::from_slice(b).ok()?)
 }
 
 fn needs_value(ty: &str) -> bool {
@@ -356,12 +294,7 @@ fn classify_value(ty: &str, text: &str, v: &serde_json::Value) -> Class {
     }
 }
 
-/// An item or part announced before it carries anything: a `message` with no content, a
-/// `reasoning` item with no summary / content, or an empty text part. chatgpt sends these
-/// right before a possible `server_is_overloaded`; they are not output, so holding them keeps
-/// the pre-output account switch possible; a switch drops them, so the client never sees them.
-/// Same set as CPA 9e79552f: also a `function_call` with empty arguments and a
-/// `custom_tool_call` with empty input. Non-empty items / parts and unknown types stay Content.
+/// Empty announcements precede possible overloads; holding them preserves pre-output failover.
 fn empty_announcement(ty: &str, v: &serde_json::Value) -> bool {
     let empty = |x: Option<&serde_json::Value>| match x {
         None | Some(serde_json::Value::Null) => true,
@@ -399,8 +332,7 @@ fn empty_announcement(ty: &str, v: &serde_json::Value) -> bool {
     }
 }
 
-/// Account-level failure classification (shared with WS handshake).
-/// Account-scoped outcome of an upstream 401/402/403/404/429 (cooldowns from `[upstream_opts]`).
+/// Classify account/model failures using the captured upstream policy.
 pub(crate) fn classify_error(
     status: u16,
     h: &HeaderMap,
@@ -408,17 +340,12 @@ pub(crate) fn classify_error(
     opts: &ciallopa_core::config::UpstreamOpts,
 ) -> Outcome {
     let now = SystemTime::now();
-    let retry_after = || {
-        h.get(http::header::RETRY_AFTER)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| {
-                ciallopa_core::retry_after::parse(v, now, ciallopa_core::retry_after::Format::Http)
-                    .map(|d| d.min(ciallopa_routing::quota::MAX_HEADER_RETRY_AFTER))
-            })
-    };
     match status {
         402 => {
-            let deactivated = is_workspace_deactivated(body);
+            let deactivated = error_texts(body)
+                .0
+                .iter()
+                .any(|c| c == "deactivated_workspace");
             let secs = if deactivated {
                 opts.deactivated_cooldown_secs
             } else {
@@ -430,7 +357,7 @@ pub(crate) fn classify_error(
             }
         }
         404 if !is_model_unsupported(body) => Outcome::NotFound {
-            retry_after: retry_after(),
+            retry_after: ciallopa_routing::quota::header_retry_after(h, now),
             cooldown: Duration::from_secs(opts.not_found_cooldown_secs),
         },
         429 => Outcome::RateLimited {
@@ -440,13 +367,12 @@ pub(crate) fn classify_error(
         },
         403 if crate::egress::detect(status, h, body).is_some() => Outcome::EgressBlocked,
         404 => Outcome::ModelUnsupported {
-            retry_after: retry_after(),
+            retry_after: ciallopa_routing::quota::header_retry_after(h, now),
         },
         _ => Outcome::AuthFailed,
     }
 }
 
-/// One warn line for account-level upstream problems an operator has to act on.
 pub(crate) fn log_account_error(account: &AccountId, o: &Outcome) {
     match o {
         Outcome::PaymentRequired {
@@ -489,17 +415,7 @@ fn error_texts(body: &[u8]) -> (Vec<String>, Vec<String>) {
     (codes, msgs)
 }
 
-/// 402 `deactivated_workspace`: the ChatGPT workspace of this account was deactivated.
-pub(crate) fn is_workspace_deactivated(body: &[u8]) -> bool {
-    error_texts(body)
-        .0
-        .iter()
-        .any(|c| c == "deactivated_workspace")
-}
-
-/// A 404 whose body explicitly says the requested model is unsupported / unknown for this
-/// account (`model_not_found`, "model … not supported / does not exist"). A bare
-/// `{"detail":"Not Found"}` is not.
+/// Match explicit model unavailability; a bare Not Found is insufficient.
 pub(crate) fn is_model_unsupported(body: &[u8]) -> bool {
     let (codes, msgs) = error_texts(body);
     codes.iter().any(|c| {
@@ -521,11 +437,54 @@ pub(crate) fn is_model_unsupported(body: &[u8]) -> bool {
     })
 }
 
+#[cfg(test)]
+use crate::usage::StreamObservation;
+
+#[cfg(test)]
+#[derive(Debug, PartialEq)]
+pub(crate) enum EventKind {
+    Preamble,
+    Quota(Outcome),
+    Overloaded(String),
+    Encrypted(String),
+    Content,
+}
+
+#[cfg(test)]
+impl From<Class> for EventKind {
+    fn from(class: Class) -> Self {
+        match class {
+            Class::Preamble | Class::RateLimits(_) | Class::Created => Self::Preamble,
+            Class::Terminal(Terminal::Quota(o)) => Self::Quota(o),
+            Class::Terminal(Terminal::Overloaded(code)) => Self::Overloaded(code),
+            Class::Terminal(Terminal::Encrypted(message)) => Self::Encrypted(message),
+            Class::Output | Class::SoftError | Class::Terminal(_) => Self::Content,
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn event_kind(text: &str) -> EventKind {
+    event_kind_observed(text, None)
+}
+
+#[cfg(test)]
+pub(crate) fn event_kind_observed(
+    text: &str,
+    progress: Option<&mut crate::usage::StreamObservation>,
+) -> EventKind {
+    let classified = classify(None, text);
+    if let (Some(progress), Some(ty)) = (progress, classified.ty.as_deref()) {
+        progress.event(ty);
+    }
+    classified.class.into()
+}
+
 /// Compatibility view for the existing WS session driver.
 #[cfg(test)]
 pub(crate) fn classify_observed(
     text: &str,
-    progress: &mut StreamObservation,
+    progress: &mut crate::usage::StreamObservation,
 ) -> (EventKind, bool, Option<Outcome>) {
     let classified = classify(None, text).ws_view(text);
     if let Some(ty) = classified.ty.as_deref() {
@@ -553,10 +512,7 @@ fn error_frame_ends_turn(v: &serde_json::Value) -> bool {
     if status.is_some_and(|s| !(200..300).contains(&s)) {
         return true;
     }
-    let code = v
-        .get("error")
-        .and_then(|e| e.get("code"))
-        .and_then(|c| c.as_str());
+    let code = v.pointer("/error/code").and_then(|c| c.as_str());
     matches!(
         code,
         Some(

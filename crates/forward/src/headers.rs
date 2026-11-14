@@ -100,7 +100,6 @@ pub fn upstream_headers(client: &HeaderMap, creds: &Credentials) -> HeaderMap {
     out
 }
 
-/// Response headers copied downstream minus hop-by-hop.
 pub fn downstream_headers(up: &HeaderMap) -> HeaderMap {
     let mut out = HeaderMap::with_capacity(up.len());
     for (name, value) in up.iter() {

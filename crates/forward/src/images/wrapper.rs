@@ -3,14 +3,14 @@ use super::request::{
     bad, build_tool, multipart_edit_to_json, out_headers, parse_multipart, responses_request, Kind,
     DEFAULT_TOOL_MODEL, DIRECT_MODELS,
 };
+use crate::attempt::Outbound;
 use crate::downstream::observed;
-use crate::proxy::{self, json_error, Outbound};
+use crate::errors::json_error;
 use crate::{
     errors,
     usage::{End, Tracker},
 };
 use crate::{session_route, AppState};
-use axum::body::Body;
 use axum::response::Response;
 use bytes::Bytes;
 use futures::StreamExt;
@@ -161,8 +161,8 @@ pub(super) async fn run(
             expect_sse: false,
             decode_response: false,
         };
-        return match proxy::send_tracked(&st, ob, trk).await {
-            Ok(c) => proxy::stream_image_body(&st, c, trk.take()),
+        return match crate::attempt::send_tracked(&st, ob, trk).await {
+            Ok(c) => crate::http::pump::stream_back_tracked(&st, c, trk.take(), false, true),
             Err(r) => r,
         };
     }
@@ -217,9 +217,9 @@ pub(super) async fn run(
         expect_sse: false,
         decode_response: false,
     };
-    let c = match proxy::send_tracked(&st, ob, trk).await {
+    let c = match crate::attempt::send_tracked(&st, ob, trk).await {
         Ok(c) if c.resp.status().is_success() => c,
-        Ok(c) => return proxy::stream_image_body(&st, c, trk.take()),
+        Ok(c) => return crate::http::pump::stream_back_tracked(&st, c, trk.take(), false, true),
         Err(r) => return r,
     };
     let events = sse_events(c.resp, c.idle);
@@ -254,12 +254,7 @@ enum ImageStep {
     Truncated,
 }
 
-#[derive(Default)]
-struct ImageReducer {
-    col: Collector,
-}
-
-impl ImageReducer {
+impl Collector {
     fn step(&mut self, event: Result<Value, ImageReadError>) -> Option<ImageStep> {
         let event = match event {
             Ok(event) => event,
@@ -285,11 +280,11 @@ impl ImageReducer {
                 })
             }
             "response.output_item.done" => {
-                self.col.item_done(&event);
+                self.item_done(&event);
                 None
             }
             ty @ ("response.completed" | "response.incomplete") => {
-                let (results, created, usage) = self.col.extract(&event);
+                let (results, created, usage) = self.extract(&event);
                 if results.is_empty() {
                     return Some(ImageStep::NoImage {
                         ty: if ty == "response.incomplete" {
@@ -390,12 +385,12 @@ fn stream_images(
         "image_generation"
     };
     if let Some(t) = trk.as_mut() {
-        t.status(200);
-        t.sse_response();
+        t.rec.status = 200;
+        t.rec.transport = ciallopa_usage::Transport::Sse;
     }
     let body = observed(st.upstream.drain.clone(), None, move |tx| async move {
         let mut events = Box::pin(events);
-        let mut reducer = ImageReducer::default();
+        let mut reducer = Collector::default();
         loop {
             let step = reducer.next(&mut events).await;
             match &step {
@@ -465,7 +460,7 @@ async fn buffered_images(
     trk: &mut Option<Tracker>,
 ) -> Response {
     let mut events = Box::pin(events);
-    let mut reducer = ImageReducer::default();
+    let mut reducer = Collector::default();
     loop {
         let step = reducer.next(&mut events).await;
         step.record(trk);
@@ -505,12 +500,7 @@ async fn buffered_images(
                         })
                         .collect(),
                 );
-                let mut response = Response::new(Body::from(out.to_string()));
-                response.headers_mut().insert(
-                    http::header::CONTENT_TYPE,
-                    HeaderValue::from_static("application/json"),
-                );
-                return response;
+                return errors::with_json(StatusCode::OK, out);
             }
             step => {
                 let status = if matches!(&step, ImageStep::ReadError(error) if error.code == "idle_timeout")
@@ -650,7 +640,7 @@ fn sse_events(
             loop {
                 while let Some(event) = events.pop_front() {
                     let text = String::from_utf8_lossy(&event);
-                    if let Some(value) = crate::encrypted::sse_data(text.as_bytes())
+                    if let Some(value) = crate::sse::data(text.as_bytes())
                         .and_then(|data| serde_json::from_str(&data).ok())
                     {
                         return Some((Ok(value), (up, framer, events, done)));
@@ -700,6 +690,8 @@ fn sse_events(
         },
     )
 }
+#[cfg(test)]
+type ImageReducer = Collector;
 
 #[cfg(test)]
 mod tests {

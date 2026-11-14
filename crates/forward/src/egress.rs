@@ -1,8 +1,4 @@
-//! Cloudflare challenge / block pages in front of the upstream (e.g. error 1010, browser
-//! signature banned). They block this host's egress (IP, TLS or HTTP fingerprint), not an
-//! account: no account is cooled, the request is not moved to another account (every account
-//! shares the egress), the client gets a neutral upstream-style 502 and the operator sees a
-//! warning in the log and on the overview. State is in memory only.
+//! Cloudflare blocks affect shared egress: report them without switching or cooling accounts.
 use axum::response::Response;
 use ciallopa_routing::{cloudflare_block, CloudflareBlock};
 use http::{HeaderMap, StatusCode};
@@ -14,7 +10,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// A warn line at most this often while the block lasts (plus one when it changes kind).
 const LOG_EVERY_MS: u64 = 60_000;
 
-/// A Cloudflare page detected in an upstream answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Block {
     /// Record / log code: `challenge` (managed challenge) or `cf_blocked` (Cloudflare error).
@@ -50,7 +45,6 @@ impl Block {
     }
 }
 
-/// Snapshot for the management API.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Seen {
     pub code: &'static str,
@@ -73,7 +67,6 @@ struct Inner {
     logged_ms: u64,
 }
 
-/// Last Cloudflare block seen by this instance.
 #[derive(Default)]
 pub struct EgressStatus {
     inner: Mutex<Inner>,

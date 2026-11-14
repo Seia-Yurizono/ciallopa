@@ -6,7 +6,7 @@ use crate::attempt::{
     others_usable, overload_outcome, rebuild, report_cooling, send_info, Action, Next, Outbound,
     OverloadPlan, Policy, Preparation, SendInfo,
 };
-use crate::classify::{event_kind_observed, EventKind};
+use crate::classify::{classify, Class, Terminal};
 use crate::downstream::observed;
 use crate::errors;
 use crate::headers::downstream_headers;
@@ -67,15 +67,25 @@ impl Prelude {
                         crate::sse::sse_events_after(&prelude.buf, parsed, search_from);
                     parsed = used;
                     let end = events.into_iter().find_map(|event| {
-                        match event_kind_observed(&event, Some(&mut prelude.progress)) {
-                            EventKind::Preamble => None,
-                            EventKind::Content => Some(PreludeEnd::Commit(Commit::Content)),
-                            EventKind::Quota(outcome) => Some(PreludeEnd::Quota(outcome)),
-                            EventKind::Overloaded(code) => Some(PreludeEnd::Overloaded(code)),
-                            EventKind::Encrypted(message) => Some(PreludeEnd::Encrypted {
-                                message,
-                                event: event.into_owned(),
-                            }),
+                        let classified = classify(None, &event);
+                        if let Some(ty) = classified.ty.as_deref() {
+                            prelude.progress.event(ty);
+                        }
+                        match classified.class {
+                            Class::Preamble | Class::RateLimits(_) | Class::Created => None,
+                            Class::Terminal(Terminal::Quota(outcome)) => {
+                                Some(PreludeEnd::Quota(outcome))
+                            }
+                            Class::Terminal(Terminal::Overloaded(code)) => {
+                                Some(PreludeEnd::Overloaded(code))
+                            }
+                            Class::Terminal(Terminal::Encrypted(message)) => {
+                                Some(PreludeEnd::Encrypted {
+                                    message,
+                                    event: event.into_owned(),
+                                })
+                            }
+                            _ => Some(PreludeEnd::Commit(Commit::Content)),
                         }
                     });
                     if let Some(end) = end {
@@ -168,7 +178,7 @@ pub(crate) async fn send_streaming(
             chain.push(a);
         }
         if let Some(t) = trk.as_mut() {
-            t.retries(info.retries);
+            t.rec.retries = info.retries;
             t.attempts(&chain);
             // A failed request that never switched still ran on one account: log it.
             let last_tried = chain
@@ -211,8 +221,8 @@ pub(crate) async fn send_streaming(
                 if let Some(msg) = v.as_ref().and_then(crate::encrypted::rejection) {
                     tracing::info!(account = %ciallopa_core::a(&c.account), "upstream rejected the encrypted content in the request history (HTTP 400)");
                     if let Some(t) = trk.as_mut() {
-                        t.status(400);
-                        t.http_response();
+                        t.rec.status = 400;
+                        t.rec.transport = ciallopa_usage::Transport::Http;
                         t.error_headers(&h);
                         t.upstream_error(400, &h);
                         t.encrypted_rejected(&msg, &b, &h);
@@ -221,7 +231,7 @@ pub(crate) async fn send_streaming(
                 }
                 c.resp = rebuild(400, &h, b);
             }
-            return stream_back_tracked(st, c, trk, ob.expect_sse);
+            return stream_back_tracked(st, c, trk, ob.expect_sse, false);
         }
         let status = c.resp.status();
         let up_headers = c.resp.headers().clone();
@@ -320,8 +330,8 @@ pub(crate) async fn send_streaming(
                 chain.push(attempt);
                 if let Some(t) = trk.as_mut() {
                     t.attempts(&chain);
-                    t.status(400);
-                    t.http_response();
+                    t.rec.status = 400;
+                    t.rec.transport = ciallopa_usage::Transport::Http;
                     t.encrypted_rejected(&message, event.as_bytes(), &up_headers);
                 }
                 return crate::encrypted::http_response(value.as_ref());
@@ -331,7 +341,7 @@ pub(crate) async fn send_streaming(
                     unreachable!()
                 };
                 if let Some(mut t) = trk.take() {
-                    t.status(status.as_u16());
+                    t.rec.status = status.as_u16();
                     t.error_body(&prelude.buf);
                     t.finish(End::Failed {
                         code: errors::quota_outcome_code(&outcome).into(),
@@ -370,7 +380,7 @@ pub(crate) async fn send_streaming(
                     trk.as_ref(),
                 );
                 if let Some(mut t) = trk.take() {
-                    t.status(status.as_u16());
+                    t.rec.status = status.as_u16();
                     t.finish(End::Failed {
                         code: code.into(),
                         source,
@@ -394,7 +404,7 @@ pub(crate) async fn send_streaming(
             }
             PreludeVerdict::Stream { account_reported } => {
                 if let Some(t) = trk.as_mut() {
-                    t.status(status.as_u16());
+                    t.rec.status = status.as_u16();
                     if let PreludeEnd::Overloaded(code) = &end {
                         t.fail_msg(code, "upstream overloaded on every usable account");
                         t.source(errors::SRC_STREAM);

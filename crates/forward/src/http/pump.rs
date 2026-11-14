@@ -1,5 +1,5 @@
 use crate::attempt::{overload_outcome, Chosen};
-use crate::classify::{event_kind, EventKind};
+use crate::classify::{classify, Class, Terminal};
 use crate::errors;
 use crate::headers::downstream_headers;
 use crate::sse::{Frame, Framer};
@@ -14,29 +14,40 @@ use http::{HeaderMap, HeaderValue, StatusCode};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Stream an upstream response downstream untouched, with a per-chunk idle timeout.
-/// In-stream `usage_limit_reached` (e.g. `response.failed`) is reported to the router.
-pub(crate) fn stream_back(st: &AppState, c: Chosen) -> Response {
-    stream_back_tracked(st, c, None, false)
-}
-
-/// Images SSE has a different event vocabulary. Observe only explicit error events;
-/// never apply Responses terminal detection, replay or error rewriting.
-pub(crate) fn stream_image_body(st: &AppState, c: Chosen, mut trk: Option<Tracker>) -> Response {
+// Images have their own event vocabulary and must not use Responses terminal policy.
+pub(crate) fn stream_back_tracked(
+    st: &AppState,
+    c: Chosen,
+    mut trk: Option<Tracker>,
+    expect_sse: bool,
+    images: bool,
+) -> Response {
     let status = c.resp.status();
-    let image_sse = status.is_success() && is_sse(c.resp.headers(), false);
+    let is_sse = is_sse(c.resp.headers(), expect_sse);
+    let sse = status.is_success() && is_sse;
+    let mut headers = downstream_headers(c.resp.headers());
+    if sse && !images {
+        ensure_sse_content_type(&mut headers);
+    }
     if let Some(t) = trk.as_mut() {
-        t.status(status.as_u16());
-        if is_sse(c.resp.headers(), false) {
-            t.sse_response();
-        } else {
-            t.http_response();
-        }
+        t.rec.status = status.as_u16();
         if status.as_u16() >= 400 {
+            if !images {
+                t.error_headers(c.resp.headers());
+            }
             t.upstream_error(status.as_u16(), c.resp.headers());
         }
+        if images && is_sse {
+            t.rec.transport = ciallopa_usage::Transport::Sse;
+        } else if images || !sse {
+            t.rec.transport = ciallopa_usage::Transport::Http;
+        }
     }
-    let headers = downstream_headers(c.resp.headers());
+    let observation = match (sse, images) {
+        (false, _) => Observation::Http,
+        (true, true) => Observation::Images,
+        (true, false) => Observation::Responses(StreamObservation::new()),
+    };
     stream_body(
         st,
         status,
@@ -46,53 +57,7 @@ pub(crate) fn stream_image_body(st: &AppState, c: Chosen, mut trk: Option<Tracke
         Bytes::new(),
         Up::Live(c.resp.bytes_stream().boxed()),
         trk,
-        if image_sse {
-            Observation::Images
-        } else {
-            Observation::Http
-        },
-        c.idle,
-        false,
-    )
-}
-
-pub(crate) fn stream_back_tracked(
-    st: &AppState,
-    c: Chosen,
-    mut trk: Option<Tracker>,
-    expect_sse: bool,
-) -> Response {
-    let status = c.resp.status();
-    let sse = status.is_success() && is_sse(c.resp.headers(), expect_sse);
-    let mut headers = downstream_headers(c.resp.headers());
-    if sse {
-        ensure_sse_content_type(&mut headers);
-    }
-    if let Some(t) = trk.as_mut() {
-        t.status(status.as_u16());
-        if status.as_u16() >= 400 {
-            t.error_headers(c.resp.headers());
-            t.upstream_error(status.as_u16(), c.resp.headers());
-        }
-        if !sse {
-            t.http_response();
-        }
-    }
-    let up = c.resp.bytes_stream().boxed();
-    stream_body(
-        st,
-        status,
-        headers,
-        c.route,
-        c.account,
-        Bytes::new(),
-        Up::Live(up),
-        trk,
-        if sse {
-            Observation::Responses(crate::usage::StreamObservation::new())
-        } else {
-            Observation::Http
-        },
+        observation,
         c.idle,
         false,
     )
@@ -115,7 +80,7 @@ pub(crate) enum Observation {
     Images,
 }
 
-/// The upstream is never replaced by a fabricated empty stream after EOF.
+/// Retain EOF explicitly so later reads cannot invent a new upstream.
 pub(crate) enum Up {
     Live(UpStream),
     Ended,
@@ -178,7 +143,7 @@ impl ResponsesObserver {
         late_overload: &Outcome,
     ) -> Option<Outcome> {
         let text = String::from_utf8_lossy(event);
-        let data = crate::encrypted::sse_data(text.as_bytes()).unwrap_or_default();
+        let data = crate::sse::data(text.as_bytes()).unwrap_or_default();
         let ty = crate::usage::event_type(&data);
         if let Some(ty) = ty.as_deref() {
             if *observed > 0 {
@@ -199,15 +164,15 @@ impl ResponsesObserver {
                 None | Some("error" | "response.failed" | "service_unavailable_error")
             )
         {
-            match event_kind(&data) {
-                EventKind::Quota(outcome) => {
+            match classify(ty.as_deref(), &data).class {
+                Class::Terminal(Terminal::Quota(outcome)) => {
                     self.account_reported = true;
                     if let Some(t) = trk.as_mut() {
                         t.fail(errors::quota_outcome_code(&outcome));
                     }
                     return Some(outcome);
                 }
-                EventKind::Overloaded(_) => {
+                Class::Terminal(Terminal::Overloaded(_)) => {
                     self.account_reported = true;
                     return Some(late_overload.clone());
                 }
@@ -325,7 +290,7 @@ struct Finish {
     tail: Tail,
 }
 
-/// The end-of-body contract is independent of sockets, timers and the recorder.
+/// Keep terminal outcomes independent of subsequent body failures.
 fn finish(observer: &Observer, end: &BodyEnd) -> Finish {
     let responses = matches!(observer, Observer::Responses(_));
     let mut result = Finish {
@@ -470,22 +435,9 @@ impl BodyPump {
     }
 
     fn observe_end(&mut self, result: &Finish) {
-        // Keep failures visible if the producer is cancelled while flushing its tail.
-        if let (
-            Some(t),
-            End::Failed {
-                code,
-                source,
-                message,
-            },
-        ) = (self.trk.as_mut(), &result.record)
-        {
-            if let Some(message) = message {
-                t.fail_msg(code, message);
-            } else {
-                t.fail(code);
-            }
-            t.source(source);
+        // Preserve the upstream failure if cancellation interrupts the tail flush.
+        if let (Some(t), end @ End::Failed { .. }) = (self.trk.as_mut(), &result.record) {
+            t.conclude(end.clone());
         }
         if let Some(reason) = result.warn {
             if let Some(progress) = self.observer.progress() {
@@ -611,7 +563,7 @@ pub(crate) fn stream_body(
     let link = if let (true, Some(t)) = (sse, trk.as_mut()) {
         t.obs_upstream_request_id(upstream_request_id.as_deref());
         t.obs_up_bytes(prefix.len());
-        let link = crate::downstream::DownLink::new(t.start_instant());
+        let link = crate::downstream::DownLink::new(t.start);
         t.defer_to(link.clone());
         Some(link)
     } else {
@@ -658,9 +610,7 @@ pub(crate) fn stream_body(
 
 const OBSERVATION_MAX: usize = 8 << 20;
 
-/// SSE if the upstream says `text/event-stream`, or if it sent no / an unrecognised
-/// `Content-Type` and the client asked for a stream. chatgpt.com's Codex endpoint currently
-/// omits `Content-Type` on `/responses` SSE; an explicit JSON / text / HTML type always wins.
+/// Missing/unknown Content-Type uses the SSE hint; explicit JSON/text/HTML/XML wins.
 pub(crate) fn is_sse(h: &HeaderMap, expect_sse: bool) -> bool {
     let ct = h
         .get(http::header::CONTENT_TYPE)
@@ -679,8 +629,7 @@ pub(crate) fn is_sse(h: &HeaderMap, expect_sse: bool) -> bool {
     }
 }
 
-/// Clients other than Codex (browsers, SDKs) need the media type to parse a stream; Codex itself
-/// parses SSE regardless of `Content-Type`, so adding it is harmless.
+/// Browsers and SDKs need an explicit SSE media type.
 pub(crate) fn ensure_sse_content_type(h: &mut HeaderMap) {
     // SSE error/timeout handling can replace or append events on every exit path.
     h.remove(http::header::CONTENT_LENGTH);
@@ -699,8 +648,7 @@ pub(crate) fn ensure_sse_content_type(h: &mut HeaderMap) {
 /// Seconds a client should wait before replaying a turn cut by shutdown (restart time).
 pub(crate) const SHUTDOWN_RETRY_AFTER_SECS: u64 = 2;
 
-/// Terminal event for a turn cut by shutdown: an unknown `response.failed` code is retryable
-/// in Codex (sse/responses_error.rs), with `error.headers.retry-after` as the delay.
+/// Codex retries unknown response.failed codes using error.headers.retry-after.
 pub(crate) fn shutdown_failed_event() -> serde_json::Value {
     serde_json::json!({
         "type": "response.failed",

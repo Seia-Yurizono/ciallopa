@@ -56,8 +56,8 @@ async fn tracked(st: AppState, key: crate::Key, h: HeaderMap, b: Bytes, kind: Ki
     }
     let r = run(st, h, b, kind, &mut trk).await;
     let Some(mut t) = trk else { return r };
-    t.status(r.status().as_u16());
-    t.http_response();
+    t.rec.status = r.status().as_u16();
+    t.rec.transport = ciallopa_usage::Transport::Http;
     if let Some(meta) = r.extensions().get::<errors::ErrMeta>() {
         t.meta_err(meta);
     }
@@ -69,26 +69,19 @@ async fn tracked(st: AppState, key: crate::Key, h: HeaderMap, b: Bytes, kind: Ki
     }
     Response::from_parts(
         parts,
-        Body::new(RecordedBody::Open {
+        Body::new(RecordedBody {
             body,
-            tracker: t,
+            tracker: Some(t),
             capture_error,
         }),
     )
 }
 
-/// Ready-made JSON/errors have no detached producer to own their tracker.
-// The tracker stays in the body's existing allocation until completion.
-#[allow(clippy::large_enum_variant)]
-enum RecordedBody {
-    Open {
-        body: Body,
-        tracker: Tracker,
-        capture_error: bool,
-    },
-    Closed {
-        body: Body,
-    },
+// Buffered responses keep their tracker until body completion or drop.
+struct RecordedBody {
+    body: Body,
+    tracker: Option<Tracker>,
+    capture_error: bool,
 }
 
 impl HttpBody for RecordedBody {
@@ -98,60 +91,37 @@ impl HttpBody for RecordedBody {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
-        let (frame, end) = match &mut *self {
-            Self::Open {
-                body,
-                tracker,
-                capture_error,
-            } => {
-                let frame = Pin::new(&mut *body).poll_frame(cx);
-                let end = match &frame {
-                    Poll::Ready(Some(Ok(frame))) => {
-                        if *capture_error {
-                            if let Some(data) = frame.data_ref() {
-                                tracker.error_body(data);
-                            }
+        let this = &mut *self;
+        let frame = Pin::new(&mut this.body).poll_frame(cx);
+        if let Some(tracker) = this.tracker.as_mut() {
+            let end = match &frame {
+                Poll::Ready(Some(Ok(frame))) => {
+                    if this.capture_error {
+                        if let Some(data) = frame.data_ref() {
+                            tracker.error_body(data);
                         }
-                        body.is_end_stream().then_some(End::Completed)
                     }
-                    Poll::Ready(Some(Err(e))) => Some(End::Failed {
-                        code: "stream_read_error".into(),
-                        source: errors::SRC_NETWORK,
-                        message: Some(format!("response body error: {e}")),
-                    }),
-                    Poll::Ready(None) => Some(End::Completed),
-                    Poll::Pending => None,
-                };
-                (frame, end)
-            }
-            Self::Closed { body } => return Pin::new(body).poll_frame(cx),
-        };
-        if let Some(end) = end {
-            match std::mem::replace(
-                &mut *self,
-                Self::Closed {
-                    body: Body::empty(),
-                },
-            ) {
-                Self::Open { body, tracker, .. } => {
-                    *self = Self::Closed { body };
-                    tracker.finish(end);
+                    this.body.is_end_stream().then_some(End::Completed)
                 }
-                closed => *self = closed,
+                Poll::Ready(Some(Err(e))) => Some(End::Failed {
+                    code: "stream_read_error".into(),
+                    source: errors::SRC_NETWORK,
+                    message: Some(format!("response body error: {e}")),
+                }),
+                Poll::Ready(None) => Some(End::Completed),
+                Poll::Pending => None,
+            };
+            if let Some(end) = end {
+                this.tracker.take().expect("active tracker").finish(end);
             }
         }
         frame
     }
     fn is_end_stream(&self) -> bool {
-        match self {
-            Self::Open { .. } => false,
-            Self::Closed { body } => body.is_end_stream(),
-        }
+        self.tracker.is_none() && self.body.is_end_stream()
     }
     fn size_hint(&self) -> SizeHint {
-        match self {
-            Self::Open { body, .. } | Self::Closed { body } => body.size_hint(),
-        }
+        self.body.size_hint()
     }
 }
 

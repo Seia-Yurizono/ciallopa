@@ -1,9 +1,7 @@
-//! Occupancy sampler: about once a second, read the drain counters and their exact peaks
-//! since the previous sample and hand them to the usage log (in-memory per-minute
-//! aggregate; the usage writer stores complete minutes). No I/O on this task.
+//! Sample drain counters and exact peaks in memory; the usage writer persists minute aggregates.
 use crate::AppState;
 
-/// One sample of `st` now. `None` when the usage log is disabled.
+/// Take peaks only when usage is enabled.
 pub fn sample(st: &AppState) -> Option<ciallopa_usage::OccupancySample> {
     st.usage.as_ref()?;
     let d = &st.upstream.drain;
@@ -23,7 +21,6 @@ pub fn sample(st: &AppState) -> Option<ciallopa_usage::OccupancySample> {
     })
 }
 
-/// Take one sample and record it.
 pub fn record(st: &AppState) {
     if let (Some(s), Some(u)) = (sample(st), st.usage.as_ref()) {
         u.occupancy(s);

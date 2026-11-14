@@ -1,4 +1,4 @@
-use crate::proxy::json_error;
+use crate::errors::json_error;
 use axum::response::Response;
 use base64::Engine;
 use http::{HeaderMap, HeaderValue, StatusCode};

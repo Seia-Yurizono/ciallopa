@@ -1,7 +1,7 @@
 use super::policy::{classify, decide, Ctx, Final, RetryWait, Seen, Verdict};
 use super::*;
 use crate::classify::log_account_error;
-use crate::timing::{delay_for, switch_jitter};
+use crate::timing::{scale, switch_jitter};
 use ciallopa_core::Credentials;
 use std::future::Future;
 use std::time::SystemTime;
@@ -264,7 +264,13 @@ impl<T: Transport> Loop<'_, T> {
                         Dialed::Refused { headers, .. } => Some(headers),
                         _ => None,
                     };
-                    delay_for(self.st, u64::from(self.info.retries) + 1, headers)
+                    scale(
+                        self.st,
+                        ciallopa_upstream::retry::delay_for(
+                            u64::from(self.info.retries) + 1,
+                            headers,
+                        ),
+                    )
                 } else {
                     Duration::ZERO
                 };

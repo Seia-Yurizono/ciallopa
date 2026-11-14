@@ -1,10 +1,4 @@
-//! Buffered HTTP request bodies, bounded per request (`max_body_mb`) and in total
-//! (`max_buffered_body_mb`).
-//!
-//! A body reserves its declared `Content-Length` before any byte is read (chunked bodies
-//! reserve as they arrive), waiting at most [`BUDGET_WAIT`] for room. The returned bytes own
-//! the reservation, so it lasts as long as any clone (retries, in-stream replay) or a
-//! compressed copy made with [`ReqBody::wrap`]; the JSON inspected from it lives inside it.
+//! Body bytes and compressed copies retain their budget reservation across retries.
 use crate::timing;
 use crate::AppState;
 use axum::extract::{FromRequest, Request};
@@ -18,7 +12,6 @@ use std::time::Duration;
 
 /// Bounded wait for budget room before 503 `gateway_busy` (`Retry-After: 3`).
 pub(crate) const BUDGET_WAIT: Duration = Duration::from_secs(1);
-/// Upper bound for [`discard`].
 const DISCARD_TIME: Duration = Duration::from_secs(10);
 const MIB: u64 = 1024 * 1024;
 
@@ -51,7 +44,7 @@ impl ReqBody {
 }
 
 fn too_large() -> Response {
-    crate::proxy::json_error(
+    crate::errors::json_error(
         StatusCode::PAYLOAD_TOO_LARGE,
         "invalid_request_error",
         "Request body is too large.",
@@ -59,16 +52,14 @@ fn too_large() -> Response {
 }
 
 fn unreadable() -> Response {
-    crate::proxy::json_error(
+    crate::errors::json_error(
         StatusCode::BAD_REQUEST,
         "invalid_request_error",
         "Failed to read the request body.",
     )
 }
 
-/// Read and drop what the client is still sending (bounded by [`DISCARD_TIME`]) before
-/// answering, so a client that writes its whole body first sees the response instead of
-/// a reset connection (nginx's lingering close). Nothing is kept in memory.
+/// Drain with a deadline so clients that finish writing before reading receive the error.
 async fn discard(mut stream: axum::body::BodyDataStream, r: Response) -> Response {
     let _ = tokio::time::timeout(DISCARD_TIME, async {
         while let Some(Ok(_)) = stream.next().await {}
@@ -102,10 +93,7 @@ pub async fn read_limited(
     Err(discard(stream, too_large()).await)
 }
 
-/// Reserve a WebSocket client message that is already buffered (tungstenite reads whole
-/// messages) in the same budget, with the same bounded wait. A message larger than the whole
-/// budget waits for all of it instead of never fitting, so WS message limits stay unchanged.
-/// `None` = still no room after [`BUDGET_WAIT`] (counted as rejected).
+/// Oversized WS messages reserve the whole budget so they can still fit.
 pub(crate) async fn reserve_message(st: &AppState, n: usize) -> Option<BodyPermit> {
     let budget = st.config.load().max_buffered_body_mb.saturating_mul(MIB);
     let drain = &st.upstream.drain;

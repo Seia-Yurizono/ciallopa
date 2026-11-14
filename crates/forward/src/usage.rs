@@ -1,6 +1,4 @@
-//! Glue between forwarding and the usage log: one `Tracker` per HTTP request / WS turn.
-//! The record is emitted when the tracker is dropped (stream end, client disconnect, error),
-//! via a non-blocking `try_send`; forwarding never waits for the persistence queue.
+//! Per-request/turn usage: Drop submits without waiting for persistence.
 use crate::AppState;
 use ciallopa_core::AccountId;
 use ciallopa_usage::{
@@ -14,9 +12,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 pub(crate) struct Tracker {
-    rec: Record,
+    pub(crate) rec: Record,
     sink: Arc<Recorder>,
-    start: Instant,
+    pub(crate) start: Instant,
     outcome: Outcome,
     response_meta: ResponseMeta,
     drain: Arc<ciallopa_upstream::drain::Drain>,
@@ -24,14 +22,10 @@ pub(crate) struct Tracker {
     /// WS turn replays (switch / wait+retry); allocated on the first replay only, so a turn
     /// without one stores no attempt chain.
     replays: Option<crate::errors::Attempts>,
-    /// Last upstream data (body chunk / WS frame) for this request or turn. A client close is
-    /// recorded with how long the upstream had been silent, so a client-side idle timeout
-    /// (Codex: 300 s) is distinguishable from a user cancel.
+    /// Silence at cancellation distinguishes client idle timeout from user cancellation.
     last_upstream: Option<Instant>,
-    /// Gateway stream observation, attached to the record when non-empty.
     obs: Observation,
-    /// `duration_ms` fixed early (WS: before the terminal frame's downstream send, so the
-    /// observed send does not change the existing duration semantics).
+    /// Freeze before the terminal WS send to exclude downstream wait.
     frozen_ms: Option<u32>,
 }
 
@@ -39,7 +33,6 @@ pub(crate) struct Tracker {
 enum Outcome {
     Open,
     Completed,
-    /// A terminal Responses event makes the outcome immutable.
     Settled,
 }
 
@@ -56,6 +49,7 @@ enum ResponseMeta {
     Final,
 }
 
+#[derive(Clone)]
 pub(crate) enum End {
     Completed,
     ClientGone,
@@ -68,15 +62,12 @@ pub(crate) enum End {
     ObservationIncomplete,
 }
 
-/// Capture the record ID and monotonic start together.
 pub(crate) struct Started {
     id: i64,
     at: Instant,
 }
 
-/// Passive upstream observations for one HTTP attempt / WS turn attempt. These are
-/// protocol observations, not socket traffic measurements: SSE comments and WS
-/// ping/pong count as activity, but only complete JSON envelopes count as events.
+/// SSE comments and WS ping/pong are activity; only complete envelopes are events.
 #[derive(Clone, Copy)]
 pub(crate) struct StreamObservation {
     started: Instant,
@@ -143,8 +134,7 @@ impl StreamObservation {
         });
     }
 
-    /// A single metadata-only warning at a known abnormal upstream exit. Error classes
-    /// are local static labels, never upstream messages, close reasons or response bodies.
+    /// Warn with static metadata only; never log upstream payloads or close reasons.
     pub(crate) fn warn(
         &self,
         transport: &'static str,
@@ -185,7 +175,6 @@ impl Started {
     }
 }
 
-/// Map an upstream path (`/codex/responses/compact?..`) to a short endpoint label.
 pub(crate) fn endpoint_of(path: &str) -> Option<&'static str> {
     let p = path.split('?').next().unwrap_or(path);
     Some(match p {
@@ -196,7 +185,6 @@ pub(crate) fn endpoint_of(path: &str) -> Option<&'static str> {
 }
 
 impl Tracker {
-    /// Existing usage record ID, in the same form shown by the request inspector.
     pub(crate) fn record_id(&self) -> String {
         format!("{:016x}", self.rec.id)
     }
@@ -235,8 +223,7 @@ impl Tracker {
         })
     }
 
-    /// Successful WS handshakes are represented by their turns. Keep cancellation
-    /// observable while preparing, then discard this provisional handshake record.
+    /// Discard successful handshakes: turns own usage, but preparation cancellation remains observable.
     pub(crate) fn discard(mut self) {
         self.emit = Emit::Never;
     }
@@ -271,7 +258,7 @@ impl Tracker {
         let Some(b) = body else { return };
         if let Some(t) = b
             .get("service_tier")
-            .and_then(|v| v.as_str())
+            .and_then(Value::as_str)
             .and_then(short)
         {
             let t = if t.eq_ignore_ascii_case("fast") {
@@ -293,16 +280,11 @@ impl Tracker {
         if let Some(m) = b.get("model").and_then(|v| v.as_str()) {
             self.rec.model = Some(m.to_string());
         }
-        if let Some(e) = b
-            .get("reasoning")
-            .and_then(|r| r.get("effort"))
-            .and_then(|v| v.as_str())
-        {
+        if let Some(e) = b.pointer("/reasoning/effort").and_then(|v| v.as_str()) {
             self.rec.effort = Some(e.to_string());
         }
     }
 
-    /// Final account plus the accounts tried (and abandoned) before it.
     pub(crate) fn accounts(&mut self, tried: &[AccountId], fin: Option<&AccountId>) {
         self.rec.switches = tried.len() as u32;
         let first = tried.first().or(fin);
@@ -312,23 +294,15 @@ impl Tracker {
         }
     }
 
-    /// A WS turn left `account` before any output (`code`; `action` is `switch` or
-    /// `wait+retry`) and is replayed. Builds this turn's attempt chain, stored when the turn
-    /// ends (see `Drop`); retry / switch counters are kept by the caller as before.
-    pub(crate) fn replay(
-        &mut self,
-        account: &str,
-        code: &str,
-        action: impl Into<crate::attempt::Action>,
-    ) {
-        let action = action.into();
+    /// Record pre-output replay; reset observations for the final attempt.
+    pub(crate) fn replay(&mut self, account: &str, code: &str, action: crate::attempt::Next) {
         let chain = self.replays.get_or_insert_with(|| crate::errors::Attempts {
             start: self.start,
             ..Default::default()
         });
         let mut a = crate::errors::attempt(account, "stream");
         a.code = Some(code.to_string());
-        a.action = action;
+        a.action = action.into();
         chain.push(a);
         // Upstream observation describes the final attempt only.
         self.reset_upstream_obs();
@@ -346,18 +320,9 @@ impl Tracker {
         o.response_id = None;
     }
 
-    fn obs_now(&self) -> u32 {
-        elapsed_ms(self.start)
-    }
-
-    pub(crate) fn start_instant(&self) -> Instant {
-        self.start
-    }
-
-    /// One complete upstream event / text frame of type `ty` (any type, also after terminal).
-    /// Returns the event's timestamp so callers stamp TTFT with the same instant.
+    /// Use one timestamp for event observation and TTFT, including post-terminal events.
     pub(crate) fn obs_event(&mut self, ty: &str) -> u32 {
-        let now = self.obs_now();
+        let now = elapsed_ms(self.start);
         let o = &mut self.obs;
         o.up_events = Some(o.up_events.unwrap_or(0).saturating_add(1));
         o.up_last_event_ms = Some(now);
@@ -380,7 +345,6 @@ impl Tracker {
         now
     }
 
-    /// Upstream payload bytes of the final attempt.
     pub(crate) fn obs_up_bytes(&mut self, n: usize) {
         let o = &mut self.obs;
         o.up_bytes = Some(o.up_bytes.unwrap_or(0).saturating_add(n as u64));
@@ -407,7 +371,7 @@ impl Tracker {
             self.obs.down_incomplete = Some(true);
             return;
         }
-        let now = self.obs_now();
+        let now = elapsed_ms(self.start);
         let b = blocked.map(crate::downstream::us).unwrap_or(0);
         let o = &mut self.obs;
         o.ws_first_send_ms.get_or_insert(now);
@@ -419,18 +383,15 @@ impl Tracker {
         o.down_incomplete.get_or_insert(false);
     }
 
-    /// WS: negotiated permessage-deflate per leg (answers; None = not agreed).
     pub(crate) fn obs_ws_negotiation(&mut self, down: Option<&str>, up: Option<&str>) {
         (self.obs.ws_deflate_down, self.obs.ws_ext_down) = crate::downstream::negotiation(down);
         (self.obs.ws_deflate_up, self.obs.ws_ext_up) = crate::downstream::negotiation(up);
     }
 
-    /// Fix `duration_ms` now (the record is still emitted on drop).
     pub(crate) fn freeze_duration(&mut self) {
         self.frozen_ms.get_or_insert_with(|| elapsed_ms(self.start));
     }
 
-    /// SSE: hand the finished record to the response body's observer.
     pub(crate) fn defer_to(&mut self, link: Arc<crate::downstream::DownLink>) {
         self.emit = Emit::ViaBody(link);
     }
@@ -450,35 +411,11 @@ impl Tracker {
         }
     }
 
-    /// Cumulative transport / 5xx retries for this request, including earlier SSE attempts.
-    pub(crate) fn retries(&mut self, n: u32) {
-        self.rec.retries = n;
-    }
-
-    pub(crate) fn status(&mut self, s: u16) {
-        self.rec.status = s;
-    }
-
-    /// The response completed; this is independent of HTTP / SSE / WS transport.
-    pub(crate) fn finish_response(&mut self) {
-        self.conclude(End::Completed);
-    }
-
-    /// The actual client response is ordinary HTTP, even when a Responses request was
-    /// initially expected to stream. Keep header timing separate from SSE/WS output timing.
-    pub(crate) fn http_response(&mut self) {
-        self.rec.transport = Transport::Http;
-    }
-
-    pub(crate) fn sse_response(&mut self) {
-        self.rec.transport = Transport::Sse;
-    }
-
     pub(crate) fn finish(mut self, end: End) {
         self.conclude(end);
     }
 
-    fn conclude(&mut self, end: End) {
+    pub(crate) fn conclude(&mut self, end: End) {
         match end {
             End::Completed if self.outcome != Outcome::Settled => {
                 self.outcome = Outcome::Completed;
@@ -522,11 +459,11 @@ impl Tracker {
 
     /// Buffered responses are complete; WS handshake/turn errors keep their transport.
     pub(crate) fn record_response(&mut self, parts: &http::response::Parts, body: &[u8]) {
-        self.status(parts.status.as_u16());
+        self.rec.status = parts.status.as_u16();
         if self.rec.transport != Transport::Ws {
-            self.http_response();
+            self.rec.transport = Transport::Http;
         }
-        self.finish_response();
+        self.conclude(End::Completed);
         self.error_headers(&parts.headers);
         if let Some(meta) = parts.extensions.get::<crate::errors::ErrMeta>() {
             self.meta_err(meta);
@@ -534,15 +471,8 @@ impl Tracker {
         self.error_body(body);
     }
 
-    /// The upstream sent data (a body chunk or WS frame) for this request / turn.
     pub(crate) fn upstream_activity(&mut self) {
         self.last_upstream = Some(Instant::now());
-    }
-
-    /// Codex WS prewarm (`generate:false`): logged under its own endpoint so it stays out of
-    /// request counts, error rate and latency percentiles while its tokens still count.
-    pub(crate) fn prewarm(&mut self) {
-        self.rec.endpoint = ciallopa_usage::PREWARM_ENDPOINT;
     }
 
     pub(crate) fn ttft(&mut self) {
@@ -587,7 +517,6 @@ impl Tracker {
         }
     }
 
-    /// The upstream answered with an error status that is passed through to the client.
     pub(crate) fn upstream_error(&mut self, status: u16, h: &HeaderMap) {
         self.rec.upstream_status = Some(status);
         self.source(crate::errors::SRC_UPSTREAM);
@@ -596,8 +525,7 @@ impl Tracker {
         }
     }
 
-    /// The upstream rejected the encrypted reasoning content in the request history: logged as
-    /// an upstream error (`invalid_encrypted_content`) with the upstream message and event.
+    /// Keep the upstream encrypted-history rejection and original event in the log.
     pub(crate) fn encrypted_rejected(&mut self, msg: &str, event: &[u8], h: &HeaderMap) {
         self.fail_msg(crate::encrypted::CODE, msg);
         self.source(crate::errors::SRC_UPSTREAM);
@@ -607,7 +535,6 @@ impl Tracker {
         }
     }
 
-    /// Provenance attached to a ready-made error response.
     pub(crate) fn meta_err(&mut self, m: &crate::errors::ErrMeta) {
         if self.outcome == Outcome::Settled {
             return;
@@ -651,12 +578,10 @@ impl Tracker {
         }
     }
 
-    /// Raw error body bytes (capped / redacted when written).
     pub(crate) fn error_body(&mut self, b: &[u8]) {
         self.detail().push_body(b);
     }
 
-    /// A WS error frame / handshake failure body.
     pub(crate) fn error_text(&mut self, b: &[u8]) {
         self.detail().set_body(b);
     }
@@ -681,8 +606,7 @@ impl Tracker {
             }
         }
         if let Some(e) = r
-            .get("reasoning")
-            .and_then(|x| x.get("effort"))
+            .pointer("/reasoning/effort")
             .and_then(|v| v.as_str())
             .and_then(short)
         {
@@ -698,15 +622,13 @@ impl Tracker {
         }
     }
 
-    /// Records only the `response.incomplete` reason (no tokens or error), for callers that
-    /// answer from the event themselves.
+    /// Keep the incomplete reason when the caller constructs its own response.
     pub(crate) fn incomplete(&mut self, v: &Value) {
         if self.outcome != Outcome::Settled {
             self.rec.incomplete = Some(incomplete_reason(v));
         }
     }
 
-    /// A terminal Responses event (`response.completed` / `failed` / `incomplete` / `error`).
     pub(crate) fn terminal_event(&mut self, v: &Value) {
         if self.outcome == Outcome::Settled {
             return;
@@ -723,15 +645,9 @@ impl Tracker {
             let n = |v: Option<&Value>| v.and_then(|x| x.as_i64());
             self.rec.input_tokens = n(u.get("input_tokens"));
             self.rec.output_tokens = n(u.get("output_tokens"));
-            self.rec.cached_tokens = n(u
-                .get("input_tokens_details")
-                .and_then(|d| d.get("cached_tokens")));
-            self.rec.reasoning_tokens = n(u
-                .get("output_tokens_details")
-                .and_then(|d| d.get("reasoning_tokens")));
-            self.rec.cache_write_tokens = n(u
-                .get("input_tokens_details")
-                .and_then(|d| d.get("cache_write_tokens")));
+            self.rec.cached_tokens = n(u.pointer("/input_tokens_details/cached_tokens"));
+            self.rec.reasoning_tokens = n(u.pointer("/output_tokens_details/reasoning_tokens"));
+            self.rec.cache_write_tokens = n(u.pointer("/input_tokens_details/cache_write_tokens"));
         }
         // The tier actually used (e.g. `priority` may be downgraded) wins over the request's.
         if let Some(r) = resp {
@@ -762,7 +678,7 @@ impl Tracker {
                 self.source(crate::errors::SRC_STREAM);
                 // Same split as the router outcome: quota code or usage-limit text cools
                 // the account (`usage_limit`); any other 429 is a rate limit.
-                if crate::proxy::quota_event(v).0
+                if crate::classify::quota_event(v).0
                     && ciallopa_routing::is_usage_limit(text.as_bytes())
                 {
                     self.fail("usage_limit");
@@ -773,8 +689,7 @@ impl Tracker {
         }
     }
 
-    /// Observe one complete SSE data payload. The forwarding observer owns its bounded
-    /// event buffer; only created / terminal events need a full JSON value here.
+    /// Only created/terminal events need a JSON tree; the forwarder owns the bounded event buffer.
     pub(crate) fn sse_event(&mut self, text: &str, ty: Option<&str>) {
         let Some(ty) = ty else { return };
         let now = self.obs_event(ty);
@@ -796,8 +711,7 @@ impl Tracker {
     }
 }
 
-/// Read the actual top-level type without allocating the rest of an event's payload.
-/// A type-looking string in model output or nested metadata has no protocol meaning.
+/// Read only the top-level type so quoted/nested strings have no protocol meaning.
 pub(crate) fn event_type(text: &str) -> Option<Cow<'_, str>> {
     #[derive(serde::Deserialize)]
     struct Envelope<'a> {
@@ -817,10 +731,7 @@ fn is_output_event(ev: &[u8]) -> bool {
         .is_some_and(|ty| is_output_type(&ty))
 }
 
-/// First token = first event carrying generated output: any `*.delta` (output text, reasoning
-/// summary / text, tool-call arguments, …) or a finished output item (items streamed without
-/// deltas). `response.created`, `in_progress`, `output_item.added`, `codex.*` metadata and
-/// rate-limit events are not output.
+/// TTFT starts on generated deltas or output_item.done, excluding protocol metadata.
 fn is_output_type(ty: &str) -> bool {
     !ty.starts_with("codex.")
         && !ty.starts_with("responsesapi.")
