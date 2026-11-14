@@ -1,7 +1,7 @@
 //! WebSocket turns honour per-model cooldowns: the handshake has no model, so each
 //! `response.create` re-checks its model on the pinned account (review item 16).
 #![allow(clippy::unwrap_used)]
-use super::support::FixedStore as Store;
+use super::support::{serve, FixedStore as Store};
 use axum::extract::ws::{Message, WebSocketUpgrade};
 use axum::{body::Body, response::Response, routing::post, Router};
 use ciallopa_core::Router as _;
@@ -16,13 +16,6 @@ const KEY: &str = "sk-cpa-0123456789abcdef";
 const MODEL: &str = "gpt-5.5";
 
 type Log = Arc<Mutex<Vec<(String, &'static str, Duration)>>>;
-
-async fn serve(app: Router) -> String {
-    let ln = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = ln.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(ln, app).await.unwrap() });
-    format!("127.0.0.1:{}", addr.port())
-}
 
 fn acct(h: &axum::http::HeaderMap) -> String {
     h.get("chatgpt-account-id")

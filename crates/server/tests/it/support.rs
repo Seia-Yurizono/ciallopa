@@ -118,3 +118,17 @@ impl Router for RecordingRouter {
     fn note_attempt(&self, _: &AccountId) {}
     fn content_ok(&self, _: &AccountId) {}
 }
+
+pub async fn serve(app: axum::Router) -> String {
+    let ln = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = ln.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(
+            ln,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap()
+    });
+    format!("127.0.0.1:{}", addr.port())
+}

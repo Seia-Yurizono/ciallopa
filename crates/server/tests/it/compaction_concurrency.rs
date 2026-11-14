@@ -3,7 +3,7 @@
 //! session headers. With the real router (round-robin + session affinity) both must land on the
 //! same account, and concurrency alone must never cool an account down.
 #![allow(clippy::unwrap_used)]
-use super::support::FixedStore as Store;
+use super::support::{serve, FixedStore as Store};
 use axum::{body::Body, http::HeaderMap, response::Response, routing::post, Router};
 use bytes::Bytes;
 use ciallopa_core::Router as _;
@@ -56,13 +56,6 @@ async fn up(
         .unwrap()
 }
 
-async fn serve(app: Router) -> std::net::SocketAddr {
-    let ln = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let a = ln.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(ln, app).await.unwrap() });
-    a
-}
-
 #[tokio::test]
 async fn concurrent_compaction_same_account_no_cooldown() {
     let hits: Hits = Default::default();
@@ -89,6 +82,7 @@ async fn concurrent_compaction_same_account_no_cooldown() {
     let http = reqwest::Client::new();
     let send = |sid: String, compact: bool, path: &'static str| {
         let http = http.clone();
+        let p = p.clone();
         async move {
             let input = if compact {
                 r#"[{"type":"message","role":"user","content":"hi"},{"type":"compaction_trigger"}]"#
