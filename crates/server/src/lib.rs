@@ -199,6 +199,7 @@ pub fn build_app_with(s: Arc<settings::Settings>) -> Router {
     let live_cfg = state.config.clone();
     let admin = usage
         .merge(resets)
+        .merge(ui::runtime_routes(state.clone()))
         .merge(client_fp::routes())
         .merge(memory::routes(state.clone()))
         .merge(settings::routes(s.clone()))

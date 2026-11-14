@@ -13,6 +13,10 @@ use base64::Engine;
 use sha2::{Digest, Sha256};
 use std::sync::LazyLock;
 
+#[path = "runtime_api.rs"]
+mod runtime_api;
+pub use runtime_api::routes as runtime_routes;
+
 pub const PAGE: &str = include_str!("ui.html");
 pub const SETTINGS_PAGE: &str = include_str!("settings.html");
 pub const ACCOUNTS_PAGE: &str = include_str!("accounts.html");

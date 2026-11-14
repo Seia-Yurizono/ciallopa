@@ -9,6 +9,7 @@ mod forward;
 mod http;
 mod prices;
 mod reset_credits;
+mod runtime_api;
 mod settings;
 mod shutdown;
 mod ui_labels;
