@@ -1,25 +1,145 @@
 use super::pump::{
     ensure_sse_content_type, is_sse, response_read_failure, stream_back_tracked, stream_body,
-    Observation, UpStream,
+    Observation, Up,
 };
 use crate::attempt::{
-    others_usable, overload_outcome, quota_plan, rebuild, report_cooling, send_info, Action, Next,
-    Outbound, OverloadPlan, Policy, Preparation, SendInfo,
+    others_usable, overload_outcome, rebuild, report_cooling, send_info, Action, Next, Outbound,
+    OverloadPlan, Policy, Preparation, SendInfo,
 };
 use crate::classify::{event_kind_observed, EventKind};
 use crate::downstream::observed;
 use crate::errors;
 use crate::headers::downstream_headers;
-use crate::sse::{sse_events, BOOTSTRAP_MAX};
+use crate::sse::BOOTSTRAP_MAX;
 use crate::timing::switch_jitter;
-use crate::usage::Tracker;
+use crate::usage::{End, StreamObservation, Tracker};
 use crate::AppState;
 use axum::body::Body;
 use axum::response::Response;
-use bytes::Bytes;
+use bytes::BytesMut;
 use ciallopa_core::Outcome;
 use futures::StreamExt;
 use http::{HeaderMap, StatusCode};
+
+#[derive(Debug)]
+enum PreludeEnd {
+    Commit(Commit),
+    Quota(Outcome),
+    Overloaded(String),
+    Encrypted { message: String, event: String },
+    ReadError(reqwest::Error),
+    Idle,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Commit {
+    Content,
+    Oversize,
+    UpstreamEof,
+}
+
+struct Prelude {
+    buf: BytesMut,
+    up: Up,
+    progress: StreamObservation,
+}
+
+impl Prelude {
+    async fn read(up: Up, idle: std::time::Duration) -> (Self, PreludeEnd) {
+        let mut prelude = Self {
+            buf: BytesMut::new(),
+            up,
+            progress: StreamObservation::new(),
+        };
+        let mut parsed = 0;
+        let end = loop {
+            if prelude.buf.len() > BOOTSTRAP_MAX {
+                break PreludeEnd::Commit(Commit::Oversize);
+            }
+            match tokio::time::timeout(idle, prelude.up.next()).await {
+                Ok(Some(Ok(chunk))) => {
+                    if !chunk.is_empty() {
+                        prelude.progress.activity();
+                    }
+                    let search_from = prelude.buf.len().saturating_sub(3);
+                    prelude.buf.extend_from_slice(&chunk);
+                    let (events, used) =
+                        crate::sse::sse_events_after(&prelude.buf, parsed, search_from);
+                    parsed = used;
+                    let end = events.into_iter().find_map(|event| {
+                        match event_kind_observed(&event, Some(&mut prelude.progress)) {
+                            EventKind::Preamble => None,
+                            EventKind::Content => Some(PreludeEnd::Commit(Commit::Content)),
+                            EventKind::Quota(outcome) => Some(PreludeEnd::Quota(outcome)),
+                            EventKind::Overloaded(code) => Some(PreludeEnd::Overloaded(code)),
+                            EventKind::Encrypted(message) => Some(PreludeEnd::Encrypted {
+                                message,
+                                event: event.into_owned(),
+                            }),
+                        }
+                    });
+                    if let Some(end) = end {
+                        break end;
+                    }
+                }
+                Ok(None) => break PreludeEnd::Commit(Commit::UpstreamEof),
+                Ok(Some(Err(error))) => break PreludeEnd::ReadError(error),
+                Err(_) => break PreludeEnd::Idle,
+            }
+        };
+        (prelude, end)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Replay {
+    SwitchAfterQuota,
+    SwitchAfterOverload,
+    WaitRetry(std::time::Duration),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreludeVerdict {
+    Stream { account_reported: bool },
+    Replay(Replay),
+    Answer400Encrypted,
+    DeliverBuffered,
+    TruncatedTail { code: &'static str },
+}
+
+struct ReplayCtx {
+    others: bool,
+    overload_wait: Option<std::time::Duration>,
+    quota_switches_left: bool,
+}
+
+fn prelude_verdict(end: &PreludeEnd, ctx: &ReplayCtx) -> PreludeVerdict {
+    match end {
+        PreludeEnd::Commit(_) => PreludeVerdict::Stream {
+            account_reported: false,
+        },
+        PreludeEnd::Encrypted { .. } => PreludeVerdict::Answer400Encrypted,
+        PreludeEnd::Overloaded(_) if ctx.others => {
+            PreludeVerdict::Replay(Replay::SwitchAfterOverload)
+        }
+        PreludeEnd::Overloaded(_) => match ctx.overload_wait {
+            Some(wait) => PreludeVerdict::Replay(Replay::WaitRetry(wait)),
+            None => PreludeVerdict::Stream {
+                account_reported: true,
+            },
+        },
+        PreludeEnd::Quota(_) if ctx.quota_switches_left => {
+            PreludeVerdict::Replay(Replay::SwitchAfterQuota)
+        }
+        PreludeEnd::Quota(_) => PreludeVerdict::DeliverBuffered,
+        PreludeEnd::ReadError(error) => PreludeVerdict::TruncatedTail {
+            code: response_read_failure(error).0,
+        },
+        PreludeEnd::Idle => PreludeVerdict::TruncatedTail {
+            code: "idle_timeout",
+        },
+    }
+}
 
 fn is_json(h: &HeaderMap) -> bool {
     h.get(http::header::CONTENT_TYPE)
@@ -71,19 +191,11 @@ pub(crate) async fn send_streaming(
             Ok(c) => c,
             Err(r) => {
                 let Some(t) = trk.as_mut() else { return r };
-                t.status(r.status().as_u16());
-                t.http_response();
-                // Local / buffered upstream errors are already complete and small.
-                t.finish_response();
                 let (parts, body) = r.into_parts();
-                t.error_headers(&parts.headers);
-                if let Some(m) = parts.extensions.get::<errors::ErrMeta>() {
-                    t.meta_err(m);
-                }
                 let b = axum::body::to_bytes(body, 1 << 20)
                     .await
                     .unwrap_or_default();
-                t.error_body(&b);
+                t.record_response(&parts, &b);
                 return Response::from_parts(parts, Body::from(b));
             }
         };
@@ -116,261 +228,329 @@ pub(crate) async fn send_streaming(
         let mut headers = downstream_headers(c.resp.headers());
         ensure_sse_content_type(&mut headers);
         let (route, account) = (c.route, c.account);
-        let mut up: UpStream = c.resp.bytes_stream().boxed();
-        let mut buf: Vec<u8> = Vec::new();
-        let mut parsed = 0usize;
-        let mut switch: Option<Outcome> = None;
-        let mut overload: Option<String> = None;
-        let mut rejected: Option<(String, String)> = None;
-        let mut ended = false;
-        let mut progress = crate::usage::StreamObservation::new();
-        'boot: loop {
-            if buf.len() > BOOTSTRAP_MAX {
-                break;
-            }
-            match tokio::time::timeout(idle, up.next()).await {
-                Ok(Some(Ok(chunk))) => {
-                    if !chunk.is_empty() {
-                        progress.activity();
-                    }
-                    buf.extend_from_slice(&chunk);
-                    let (evs, np) = sse_events(&buf, parsed);
-                    parsed = np;
-                    for e in evs {
-                        match event_kind_observed(&e, Some(&mut progress)) {
-                            EventKind::Preamble => {}
-                            EventKind::Content => {
-                                st.router.content_ok(&account);
-                                break 'boot;
-                            }
-                            EventKind::Quota(o) => {
-                                switch = Some(o);
-                                break 'boot;
-                            }
-                            EventKind::Overloaded(code) => {
-                                overload = Some(code);
-                                break 'boot;
-                            }
-                            EventKind::Encrypted(m) => {
-                                rejected = Some((m, e.into_owned()));
-                                break 'boot;
-                            }
-                        }
-                    }
-                }
-                Ok(None) => {
-                    ended = true;
-                    break;
-                }
-                Ok(Some(Err(e))) => {
-                    progress.warn(
-                        "sse",
-                        "read_error",
-                        &account,
-                        errors::request_id(&up_headers).as_deref(),
-                        trk.as_ref(),
-                    );
-                    // Consuming the Err means stream_body would only see EOF — surface it here.
-                    if let Some(t) = trk.as_mut() {
-                        t.status(status.as_u16());
-                        let (code, source) = response_read_failure(&e);
-                        t.fail_msg(code, format!("upstream stream error: {e}"));
-                        t.source(source);
-                    }
-                    if !crate::response_body::is_decode_error(&e) {
-                        st.router.report(&route, &account, &Outcome::Transport);
-                    }
-                    let err_body =
-                        observed(st.upstream.drain.clone(), None, move |tx| async move {
-                            if !buf.is_empty() {
-                                let _ = tx.send(Ok(Bytes::from(buf))).await;
-                            }
-                            let _ = tx.send(Ok(errors::truncated_event())).await;
-                        });
-                    let mut r = Response::new(err_body);
-                    *r.status_mut() = status;
-                    *r.headers_mut() = headers;
-                    return r;
-                }
-                Err(_) => {
-                    // Bootstrap already waited one full idle; do not hand over to stream_body
-                    // (that would wait another idle — L1).
-                    if let Some(t) = trk.as_mut() {
-                        t.status(status.as_u16());
-                        t.fail_msg(
-                            "idle_timeout",
-                            format!(
-                                "upstream response body produced no data for {}s (idle timeout)",
-                                idle.as_secs()
-                            ),
-                        );
-                        t.source(errors::SRC_NETWORK);
-                    }
-                    progress.warn(
-                        "sse",
-                        "idle_timeout",
-                        &account,
-                        errors::request_id(&up_headers).as_deref(),
-                        trk.as_ref(),
-                    );
-                    st.router.report(&route, &account, &Outcome::Transport);
-                    let err_body =
-                        observed(st.upstream.drain.clone(), None, move |tx| async move {
-                            if !buf.is_empty() {
-                                let _ = tx.send(Ok(Bytes::from(buf))).await;
-                            }
-                            let _ = tx.send(Ok(errors::truncated_event())).await;
-                        });
-                    let mut r = Response::new(err_body);
-                    *r.status_mut() = status;
-                    *r.headers_mut() = headers;
-                    return r;
-                }
-            }
+        let (prelude, end) = Prelude::read(Up::Live(c.resp.bytes_stream().boxed()), idle).await;
+        if matches!(end, PreludeEnd::Commit(Commit::Content)) {
+            st.router.content_ok(&account);
         }
-        if let Some((msg, ev)) = rejected {
-            // Nothing reached the client: answer with a plain 400 (Codex shows it once instead
-            // of retrying the stream). No account outcome: the request content is at fault.
-            drop(up);
-            let v = serde_json::from_str::<serde_json::Value>(&ev).ok();
-            tracing::info!(account = %ciallopa_core::a(&account), "upstream rejected the encrypted content in the request history");
-            let mut a = errors::attempt(&account, "stream");
-            a.status = Some(status.as_u16());
-            a.code = Some(crate::encrypted::CODE.into());
-            a.body = errors::body_snippet(ev.as_bytes());
-            a.action = Next::Stop.into();
-            chain.push(a);
-            if let Some(t) = trk.as_mut() {
-                t.attempts(&chain);
-                t.status(StatusCode::BAD_REQUEST.as_u16());
-                t.http_response();
-                t.encrypted_rejected(&msg, ev.as_bytes(), &up_headers);
-            }
-            return crate::encrypted::http_response(v.as_ref());
-        }
-        if let Some(code) = overload {
-            // In-stream overload before any output: nothing reached the client yet, so the same
-            // request is replayed on another usable account (each account at most once).
-            let accounts = st.accounts.accounts();
-            let others = others_usable(st, &accounts, &route, &account);
-            let cooled = report_cooling(st, &route, &account, &overload_outcome(st, others));
-            let mut a = errors::attempt(&account, "stream");
-            a.status = Some(status.as_u16());
-            a.code = Some(code.clone());
-            a.body = errors::body_snippet(&buf);
-            let plan = Policy::http(&st.config.load().upstream_opts).overload_plan(
+        let others = matches!(end, PreludeEnd::Overloaded(_))
+            && others_usable(st, &st.accounts.accounts(), &route, &account);
+        let overload = if matches!(end, PreludeEnd::Overloaded(_)) {
+            Policy::http(&st.config.load().upstream_opts).overload_plan(
                 others,
                 info.overload_waited,
                 &up_headers,
                 st.config.load().upstream_opts.overload_retry_wait_secs,
                 switches,
                 max_switches,
-            );
-            a.action = Action {
-                cooled,
-                next: plan.next(),
-            };
-            chain.push(a);
+            )
+        } else {
+            OverloadPlan::PassThrough
+        };
+        let ctx = ReplayCtx {
+            others,
+            overload_wait: match overload {
+                OverloadPlan::WaitRetry(wait) => Some(wait),
+                _ => None,
+            },
+            quota_switches_left: switches + 1 < max_switches,
+        };
+        let verdict = prelude_verdict(&end, &ctx);
+        // Report and record once, before choosing replay or downstream delivery.
+        let failure = match &end {
+            PreludeEnd::Overloaded(code) => {
+                Some((overload_outcome(st, others), code.clone(), overload.next()))
+            }
+            PreludeEnd::Quota(outcome) => {
+                switches += 1;
+                Some((
+                    outcome.clone(),
+                    errors::quota_outcome_code(outcome).into(),
+                    if ctx.quota_switches_left {
+                        Next::Switch
+                    } else {
+                        Next::Stop
+                    },
+                ))
+            }
+            _ => None,
+        };
+        if let Some((outcome, code, next)) = failure {
+            let cooled = report_cooling(st, &route, &account, &outcome);
+            let mut attempt = errors::attempt(&account, "stream");
+            attempt.status = Some(status.as_u16());
+            attempt.code = Some(code);
+            attempt.body = errors::body_snippet(&prelude.buf);
+            attempt.action = Action { cooled, next };
+            chain.push(attempt);
             if let Some(t) = trk.as_mut() {
                 t.attempts(&chain);
             }
-            if plan == OverloadPlan::Switch {
-                tracing::info!(account = %ciallopa_core::a(&account), code = %code, "overloaded before first output; switching account");
-                ob.route = route;
-                ob.route.exclude.push(account);
-                // Exhaustion is handled at the next send_info before it polls an attempt.
-                let _ = budget.run(tokio::time::sleep(switch_jitter(st))).await;
-                continue;
-            }
-            if let OverloadPlan::WaitRetry(w) = plan {
-                // Only usable account left: nothing reached the client, so wait once and replay
-                // on the same account (Codex does not retry an in-stream overload itself).
-                tracing::info!(account = %ciallopa_core::a(&account), code = %code, wait_ms = w.as_millis() as u64, "overloaded before first output on last usable account; waiting to retry once");
-                info.overload_waited = true;
-                drop(up);
-                ob.route = route;
-                let _ = budget
-                    .run(tokio::time::sleep(crate::timing::scale(st, w)))
-                    .await;
-                continue;
-            }
-            // Last usable account: the upstream error goes to the client verbatim (rest of the
-            // stream included); the tracker logs it as stream / <code>.
-            if let Some(t) = trk.as_mut() {
-                t.status(status.as_u16());
-                t.fail_msg(&code, "upstream overloaded on every usable account");
-                t.source(errors::SRC_STREAM);
-            }
-            if ended {
-                up = futures::stream::empty().boxed();
-            }
-            return stream_body(
-                st,
-                status,
-                headers,
-                route,
-                account,
-                Bytes::from(buf),
-                up,
-                trk,
-                Observation::Responses(progress),
-                idle,
-                true,
-            );
         }
-        if let Some(o) = switch {
-            let cooled = report_cooling(st, &route, &account, &o);
-            let next = quota_plan(&mut switches, max_switches);
-            // Recorded so a request rescued by this switch shows how (attempt chain).
-            let mut a = errors::attempt(&account, "stream");
-            a.status = Some(status.as_u16());
-            a.code = Some(errors::quota_outcome_code(&o).into());
-            a.body = errors::body_snippet(&buf);
-            a.action = Action { cooled, next };
-            chain.push(a);
-            if let Some(t) = trk.as_mut() {
-                t.attempts(&chain);
-            }
-            if next == Next::Switch {
-                tracing::info!(account = %ciallopa_core::a(&account), "quota error before first output; switching account");
+        match verdict {
+            PreludeVerdict::Replay(replay) => {
+                drop(prelude);
                 ob.route = route;
-                ob.route.exclude.push(account);
-                continue;
+                match replay {
+                    Replay::SwitchAfterQuota => {
+                        ob.route.exclude.push(account);
+                    }
+                    Replay::SwitchAfterOverload => {
+                        ob.route.exclude.push(account);
+                        let _ = budget.run(tokio::time::sleep(switch_jitter(st))).await;
+                    }
+                    Replay::WaitRetry(wait) => {
+                        info.overload_waited = true;
+                        let _ = budget
+                            .run(tokio::time::sleep(crate::timing::scale(st, wait)))
+                            .await;
+                    }
+                }
             }
-            // Out of accounts: deliver what we have (the quota error) as-is.
-            if let Some(t) = trk.as_mut() {
-                t.status(status.as_u16());
-                t.fail_msg(
-                    errors::quota_outcome_code(&o),
-                    "usage limit reached on every available account",
+            PreludeVerdict::Answer400Encrypted => {
+                let PreludeEnd::Encrypted { message, event } = end else {
+                    unreachable!()
+                };
+                let value = serde_json::from_str::<serde_json::Value>(&event).ok();
+                tracing::info!(account = %ciallopa_core::a(&account), "upstream rejected the encrypted content in the request history");
+                let mut attempt = errors::attempt(&account, "stream");
+                attempt.status = Some(status.as_u16());
+                attempt.code = Some(crate::encrypted::CODE.into());
+                attempt.body = errors::body_snippet(event.as_bytes());
+                attempt.action = Next::Stop.into();
+                chain.push(attempt);
+                if let Some(t) = trk.as_mut() {
+                    t.attempts(&chain);
+                    t.status(400);
+                    t.http_response();
+                    t.encrypted_rejected(&message, event.as_bytes(), &up_headers);
+                }
+                return crate::encrypted::http_response(value.as_ref());
+            }
+            PreludeVerdict::DeliverBuffered => {
+                let PreludeEnd::Quota(outcome) = end else {
+                    unreachable!()
+                };
+                if let Some(mut t) = trk.take() {
+                    t.status(status.as_u16());
+                    t.error_body(&prelude.buf);
+                    t.finish(End::Failed {
+                        code: errors::quota_outcome_code(&outcome).into(),
+                        source: errors::SRC_STREAM,
+                        message: Some("usage limit reached on every available account".into()),
+                    });
+                }
+                let mut response = Response::new(Body::from(prelude.buf.freeze()));
+                *response.status_mut() = status;
+                *response.headers_mut() = headers;
+                return response;
+            }
+            PreludeVerdict::TruncatedTail { code } => {
+                let (source, message, warn, report) = match &end {
+                    PreludeEnd::ReadError(error) => (
+                        response_read_failure(error).1,
+                        format!("upstream stream error: {error}"),
+                        "read_error",
+                        !crate::response_body::is_decode_error(error),
+                    ),
+                    _ => (
+                        errors::SRC_NETWORK,
+                        format!(
+                            "upstream response body produced no data for {}s (idle timeout)",
+                            idle.as_secs()
+                        ),
+                        "idle_timeout",
+                        true,
+                    ),
+                };
+                prelude.progress.warn(
+                    "sse",
+                    warn,
+                    &account,
+                    errors::request_id(&up_headers).as_deref(),
+                    trk.as_ref(),
                 );
-                t.source(errors::SRC_STREAM);
-                t.finish_response();
-                t.error_body(&buf);
+                if let Some(mut t) = trk.take() {
+                    t.status(status.as_u16());
+                    t.finish(End::Failed {
+                        code: code.into(),
+                        source,
+                        message: Some(message),
+                    });
+                }
+                if report {
+                    st.router.report(&route, &account, &Outcome::Transport);
+                }
+                let buf = prelude.buf.freeze();
+                let body = observed(st.upstream.drain.clone(), None, move |tx| async move {
+                    if !buf.is_empty() {
+                        let _ = tx.send(Ok(buf)).await;
+                    }
+                    let _ = tx.send(Ok(errors::truncated_event())).await;
+                });
+                let mut response = Response::new(body);
+                *response.status_mut() = status;
+                *response.headers_mut() = headers;
+                return response;
             }
-            let mut r = Response::new(Body::from(buf));
-            *r.status_mut() = status;
-            *r.headers_mut() = headers;
-            return r;
+            PreludeVerdict::Stream { account_reported } => {
+                if let Some(t) = trk.as_mut() {
+                    t.status(status.as_u16());
+                    if let PreludeEnd::Overloaded(code) = &end {
+                        t.fail_msg(code, "upstream overloaded on every usable account");
+                        t.source(errors::SRC_STREAM);
+                    }
+                }
+                return stream_body(
+                    st,
+                    status,
+                    headers,
+                    route,
+                    account,
+                    prelude.buf.freeze(),
+                    prelude.up,
+                    trk,
+                    Observation::Responses(prelude.progress),
+                    idle,
+                    account_reported,
+                );
+            }
         }
-        if ended {
-            up = futures::stream::empty().boxed();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    async fn read_error(decode: bool) -> reqwest::Error {
+        let body = if decode {
+            reqwest::Body::from("invalid gzip")
+        } else {
+            reqwest::Body::wrap_stream(futures::stream::iter([Err::<BytesMut, _>(
+                std::io::Error::other("read failed"),
+            )]))
+        };
+        let mut response = http::Response::new(body);
+        if decode {
+            response.headers_mut().insert(
+                http::header::CONTENT_ENCODING,
+                http::HeaderValue::from_static("gzip"),
+            );
         }
-        if let Some(t) = trk.as_mut() {
-            t.status(status.as_u16());
+        crate::response_body::prepare(response.into())
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap_err()
+    }
+
+    #[tokio::test]
+    async fn prelude_verdict_covers_the_complete_replay_table() {
+        let wait = Duration::from_secs(2);
+        let quota = Outcome::RateLimited {
+            retry_after: None,
+            usage_limit: true,
+            quota: None,
+        };
+        let ends = [
+            PreludeEnd::Commit(Commit::Content),
+            PreludeEnd::Commit(Commit::Oversize),
+            PreludeEnd::Commit(Commit::UpstreamEof),
+            PreludeEnd::Encrypted {
+                message: String::new(),
+                event: String::new(),
+            },
+            PreludeEnd::Overloaded("overloaded".into()),
+            PreludeEnd::Quota(quota),
+            PreludeEnd::ReadError(read_error(false).await),
+            PreludeEnd::ReadError(read_error(true).await),
+            PreludeEnd::Idle,
+        ];
+        for others in [false, true] {
+            for wait_available in [false, true] {
+                for quota_switches_left in [false, true] {
+                    let ctx = ReplayCtx {
+                        others,
+                        overload_wait: wait_available.then_some(wait),
+                        quota_switches_left,
+                    };
+                    let overloaded = if others {
+                        PreludeVerdict::Replay(Replay::SwitchAfterOverload)
+                    } else if wait_available {
+                        PreludeVerdict::Replay(Replay::WaitRetry(wait))
+                    } else {
+                        PreludeVerdict::Stream {
+                            account_reported: true,
+                        }
+                    };
+                    let expected = [
+                        PreludeVerdict::Stream {
+                            account_reported: false,
+                        },
+                        PreludeVerdict::Stream {
+                            account_reported: false,
+                        },
+                        PreludeVerdict::Stream {
+                            account_reported: false,
+                        },
+                        PreludeVerdict::Answer400Encrypted,
+                        overloaded,
+                        if quota_switches_left {
+                            PreludeVerdict::Replay(Replay::SwitchAfterQuota)
+                        } else {
+                            PreludeVerdict::DeliverBuffered
+                        },
+                        PreludeVerdict::TruncatedTail {
+                            code: "stream_read_error",
+                        },
+                        PreludeVerdict::TruncatedTail {
+                            code: "response_decode_error",
+                        },
+                        PreludeVerdict::TruncatedTail {
+                            code: "idle_timeout",
+                        },
+                    ];
+                    for (end, expected) in ends.iter().zip(expected) {
+                        assert_eq!(prelude_verdict(end, &ctx), expected, "{end:?}; others={others}, wait={wait_available}, quota={quota_switches_left}");
+                    }
+                }
+            }
         }
-        return stream_body(
-            st,
-            status,
-            headers,
-            route,
-            account,
-            Bytes::from(buf),
-            up,
-            trk,
-            Observation::Responses(progress),
-            idle,
-            false,
+    }
+
+    #[tokio::test]
+    async fn prelude_read_preserves_the_bootstrap_exit_and_bytes() {
+        for (wire, expected) in [
+            ("data: {\"type\":\"response.created\"}\n\n", "eof"),
+            ("data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n", "content"),
+            ("data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"usage_limit_reached\"}}}\n\n", "quota"),
+            ("data: {\"type\":\"service_unavailable_error\"}\n\n", "overload"),
+        ] {
+            let up = Up::Live(futures::stream::iter(wire.bytes().map(|byte| Ok(bytes::Bytes::from(vec![byte]))).collect::<Vec<_>>()).boxed());
+            let (prelude, end) = Prelude::read(up, Duration::from_secs(1)).await;
+            let actual = match end {
+                PreludeEnd::Commit(Commit::UpstreamEof) => "eof",
+                PreludeEnd::Commit(Commit::Content) => "content",
+                PreludeEnd::Quota(_) => "quota",
+                PreludeEnd::Overloaded(_) => "overload",
+                other => panic!("unexpected exit: {other:?}"),
+            };
+            assert_eq!(actual, expected);
+            assert_eq!(prelude.buf, wire);
+            assert_eq!(prelude.progress.events, 1);
+            if expected == "eof" {
+                assert!(matches!(prelude.up, Up::Ended));
+            }
+        }
+        let wire = bytes::Bytes::from(vec![b'x'; BOOTSTRAP_MAX + 1]);
+        let up = Up::Live(
+            futures::stream::iter([Ok(wire.clone())])
+                .chain(futures::stream::pending())
+                .boxed(),
         );
+        let (prelude, end) = Prelude::read(up, Duration::from_secs(1)).await;
+        assert!(matches!(end, PreludeEnd::Commit(Commit::Oversize)));
+        assert_eq!(prelude.buf, wire);
     }
 }
