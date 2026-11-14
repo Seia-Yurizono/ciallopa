@@ -570,56 +570,40 @@ async fn force_refresh_adopts_newer_disk_token() {
 }
 
 #[tokio::test]
-async fn foreign_write_during_refresh_is_not_clobbered() {
+async fn refresh_preserves_foreign_rotations_on_success_and_rejection() {
     let (m, oauth) = spawn().await;
     let d = tempfile::tempdir().unwrap();
     valid_file(d.path(), "cur", "rt-0");
     let s = FileAccountStore::open_with(d.path().into(), oauth)
-        .await
-        .unwrap();
-    let mut foreign = valid_file(d.path(), "cur", "rt-0");
-    foreign["access_token"] = "foreign".into();
-    foreign["refresh_token"] = "rt-f".into();
-    *m.foreign.lock().unwrap() = Some((d.path().into(), foreign));
-    let c = s.force_refresh(&"acct".to_string()).await.unwrap();
-    assert_eq!(c.access_token, "foreign");
-    let v: Value =
-        serde_json::from_slice(&std::fs::read(d.path().join("acct.json")).unwrap()).unwrap();
-    assert_eq!(
-        (v["access_token"].as_str(), v["refresh_token"].as_str()),
-        (Some("foreign"), Some("rt-f"))
-    );
-    // normal case: disk unchanged during refresh → our tokens written, other keys kept
-    tokio::time::sleep(Duration::from_millis(10)).await;
-    let s2 = FileAccountStore::open_with(d.path().into(), spawn().await.1)
         .await
         .unwrap()
         .with_force_dedup(Duration::ZERO);
-    let c = s2.force_refresh(&"acct".to_string()).await.unwrap();
-    assert_ne!(c.access_token, "foreign");
-    let v: Value =
+    for (i, mode) in ["ok", "reused"].into_iter().enumerate() {
+        *m.mode.lock().unwrap() = mode.into();
+        let mut foreign = valid_file(d.path(), "cur", "rt-0");
+        // Reload first: this write happens during refresh, rather than before it.
+        s.reload().await.unwrap();
+        foreign["access_token"] = format!("foreign-{i}").into();
+        foreign["refresh_token"] = format!("rt-f-{i}").into();
+        *m.foreign.lock().unwrap() = Some((d.path().into(), foreign.clone()));
+        let c = s.force_refresh(&"acct".into()).await.unwrap();
+        assert_eq!(c.access_token, format!("foreign-{i}"));
+        let disk: Value =
+            serde_json::from_slice(&std::fs::read(d.path().join("acct.json")).unwrap()).unwrap();
+        assert_eq!(disk, foreign);
+        assert!(s.relogin_required().await.is_empty());
+        assert!(!s.list().await[0].disabled);
+    }
+    // With no competing writer, our refreshed tokens persist and other keys survive.
+    *m.mode.lock().unwrap() = "ok".into();
+    assert_ne!(
+        s.force_refresh(&"acct".into()).await.unwrap().access_token,
+        "foreign-1"
+    );
+    let disk: Value =
         serde_json::from_slice(&std::fs::read(d.path().join("acct.json")).unwrap()).unwrap();
-    assert_eq!(v["refresh_token"], "rt-1");
-    assert_eq!(v["priority"], 2);
-}
-
-#[tokio::test]
-async fn rejected_but_rotated_elsewhere_adopts_disk() {
-    let (m, oauth) = spawn().await;
-    *m.mode.lock().unwrap() = "reused".into();
-    let d = tempfile::tempdir().unwrap();
-    valid_file(d.path(), "cur", "rt-0");
-    let s = FileAccountStore::open_with(d.path().into(), oauth)
-        .await
-        .unwrap();
-    let mut foreign = valid_file(d.path(), "cur", "rt-0");
-    foreign["access_token"] = "rotated".into();
-    foreign["refresh_token"] = "rt-r".into();
-    *m.foreign.lock().unwrap() = Some((d.path().into(), foreign));
-    let c = s.force_refresh(&"acct".to_string()).await.unwrap();
-    assert_eq!(c.access_token, "rotated");
-    assert!(s.relogin_required().await.is_empty());
-    assert!(!s.list().await[0].disabled);
+    assert_eq!(disk["refresh_token"], "rt-3");
+    assert_eq!(disk["priority"], 2);
 }
 
 fn reason(m: &Mock) -> String {

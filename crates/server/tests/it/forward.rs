@@ -34,5 +34,4 @@ mod retry;
 mod shutdown;
 mod sse;
 mod usage;
-mod usage_api;
 mod ws;

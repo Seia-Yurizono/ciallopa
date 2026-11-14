@@ -57,7 +57,6 @@ pub(super) type Seen = (Vec<(String, String)>, Bytes);
 #[derive(Clone, Default)]
 pub(super) struct Mock {
     pub(super) hits: Arc<AtomicUsize>,
-    scripts: Arc<Mutex<std::collections::HashMap<String, std::collections::VecDeque<Reply>>>>,
     pub(super) seen: Arc<Mutex<Vec<Seen>>>,
     /// (authorization, client peer port) per `/responses` hit: one port = one connection.
     pub(super) peers: Arc<Mutex<Vec<(String, u16)>>>,
@@ -73,77 +72,6 @@ impl Mock {
             .collect();
         self.seen.lock().unwrap().push((hs, b.clone()));
         self.hits.fetch_add(1, Ordering::SeqCst)
-    }
-}
-
-/// Per-account replies let a test describe attempts without adding another mode branch.
-#[derive(Default)]
-pub(super) struct Script(std::collections::HashMap<String, std::collections::VecDeque<Reply>>);
-
-impl Script {
-    pub(super) fn for_account(
-        mut self,
-        account: &str,
-        replies: impl IntoIterator<Item = Reply>,
-    ) -> Self {
-        self.0
-            .insert(format!("acct-{account}"), replies.into_iter().collect());
-        self
-    }
-}
-
-pub(super) enum Reply {
-    Status(u16, &'static str),
-    Sse(Vec<Step>),
-}
-
-pub(super) enum Step {
-    Data(&'static str),
-    Wait(Duration),
-    Stall,
-    Cut,
-}
-
-impl Reply {
-    fn response(self) -> Response {
-        match self {
-            Self::Status(status, body) => Response::builder()
-                .status(status)
-                .body(Body::from(body))
-                .unwrap(),
-            Self::Sse(steps) => {
-                let stream = futures::stream::unfold(steps.into_iter(), |mut steps| async move {
-                    loop {
-                        match steps.next()? {
-                            Step::Data(data) => {
-                                return Some((
-                                    Ok::<_, std::io::Error>(Bytes::from_static(data.as_bytes())),
-                                    steps,
-                                ))
-                            }
-                            Step::Wait(duration) => tokio::time::sleep(duration).await,
-                            Step::Stall => futures::future::pending::<()>().await,
-                            Step::Cut => {
-                                return Some((
-                                    Err(std::io::Error::other("scripted upstream cut")),
-                                    steps,
-                                ))
-                            }
-                        }
-                    }
-                });
-                Response::builder()
-                    .header("content-type", "text/event-stream")
-                    .body(Body::from_stream(stream))
-                    .unwrap()
-            }
-        }
-    }
-}
-
-impl Mock {
-    pub(super) fn script(&self, script: Script) {
-        self.scripts.lock().unwrap().extend(script.0);
     }
 }
 
@@ -181,40 +109,16 @@ pub(super) async fn gzip_fixture(response: Response, mode: &str) -> Response {
     parts
         .headers
         .insert("content-encoding", "gzip".parse().unwrap());
-    let body = if mode == "stream" {
-        let input = body.into_data_stream();
-        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
-        let stream = futures::stream::unfold(Some((input, encoder)), |state| async move {
-            let (mut input, mut encoder) = state?;
-            match input.next().await {
-                Some(Ok(chunk)) => {
-                    encoder.write_all(&chunk).unwrap();
-                    encoder.flush().unwrap();
-                    let bytes = Bytes::from(std::mem::take(encoder.get_mut()));
-                    Some((Ok::<_, std::io::Error>(bytes), Some((input, encoder))))
-                }
-                Some(Err(error)) => Some((Err(std::io::Error::other(error)), None)),
-                None => Some((Ok(Bytes::from(encoder.finish().unwrap())), None)),
-            }
-        });
-        Body::from_stream(stream)
-    } else {
-        let plain = axum::body::to_bytes(body, 16 * 1024 * 1024).await.unwrap();
-        let mut encoded = gzip_bytes(&plain);
-        match mode {
-            "truncated" => encoded.truncate(encoded.len() - 8),
-            "bad_crc" => {
-                let crc = encoded.len() - 8;
-                encoded[crc] ^= 1;
-            }
-            "trailing" => encoded.extend_from_slice(b"not another gzip member"),
-            _ => {}
-        }
-        parts
-            .headers
-            .insert("content-length", encoded.len().to_string().parse().unwrap());
-        Body::from(encoded)
-    };
+    let plain = axum::body::to_bytes(body, 16 * 1024 * 1024).await.unwrap();
+    let mut encoded = gzip_bytes(&plain);
+    if mode == "bad_crc" {
+        let crc = encoded.len() - 8;
+        encoded[crc] ^= 1;
+    }
+    parts
+        .headers
+        .insert("content-length", encoded.len().to_string().parse().unwrap());
+    let body = Body::from(encoded);
     Response::from_parts(parts, body)
 }
 
@@ -260,14 +164,7 @@ pub(super) async fn up_responses(
         r = gzip_fixture(r, &mode).await;
     }
     if let Some(encoding) = encoding {
-        if encoding == "duplicate" {
-            r.headers_mut()
-                .append("content-encoding", "gzip".parse().unwrap());
-            r.headers_mut()
-                .append("content-encoding", "gzip".parse().unwrap());
-        } else {
-            r.headers_mut().insert("content-encoding", encoding);
-        }
+        r.headers_mut().insert("content-encoding", encoding);
     }
     r
 }
@@ -284,21 +181,6 @@ pub(super) async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: B
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    let reply = {
-        let account = h
-            .get("chatgpt-account-id")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        let mut scripts = m.scripts.lock().unwrap();
-        scripts.get_mut(account).map(|replies| {
-            replies
-                .pop_front()
-                .expect("unexpected extra upstream attempt")
-        })
-    };
-    if let Some(reply) = reply {
-        return reply.response();
-    }
     const OVER: &str = concat!(
         "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-a\"}}\n\n",
         "event: error\ndata: {\"type\":\"service_unavailable_error\",\"code\":\"server_is_overloaded\",\"message\":\"Our servers are currently overloaded. Please try again later.\",\"sequence_number\":1}\n\n",
@@ -311,7 +193,7 @@ pub(super) async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: B
     );
     match mode.as_str() {
         "retry" if n < 1 => return Response::builder().status(503).body(Body::from("busy")).unwrap(),
-        "gzip_flush_held" | "gzip_late_truncated" | "gzip_terminal_bad_crc" | "gzip_terminal_truncated" | "gzip_terminal_drop" => {
+        "gzip_flush_held" | "gzip_late_truncated" | "gzip_terminal_bad_crc" => {
             let terminal = mode == "gzip_flush_held";
             let terminal_before_trailer = mode.starts_with("gzip_terminal_");
             let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
@@ -395,17 +277,7 @@ pub(super) async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: B
                 }));
             return Response::builder().header("content-type", "text/event-stream").body(Body::from_stream(s)).unwrap();
         }
-        "event_literal_complete" => return sse_resp(concat!(
-            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"response.completed\"}\n\n",
-            "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":7,\"output_tokens\":3}}}\n\n"
-        )),
         "event_literal_truncated" => return sse_resp("data: {\"type\":\"response.output_text.delta\",\"delta\":\"response.completed\"}\n\n"),
-        "event_metadata_only" => return sse_resp(concat!(
-            "data: {\"type\":\"response.metadata\",\"note\":\"synthetic.delta\"}\n\n",
-            "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":7,\"output_tokens\":0}}}\n\n"
-        )),
-        "event_done" => return sse_resp("data: {\"type\":\"response.done\",\"response\":{\"usage\":{\"input_tokens\":7,\"output_tokens\":0}}}\n\n"),
-        "event_spaced_error" => return sse_resp("data: { \"type\": \"error\", \"error\": {\"code\":\"bad_request\",\"message\":\"fixture rejected\"}}\n\n"),
         mode @ ("event_large_completed" | "event_large_literal" | "event_large_plain" | "event_large_held" | "event_large_delta_completed") => {
             let mut text = if mode == "event_large_completed" {
                 String::from("data: {\"type\":\"response.completed\",\"response\":{\"padding\":\"")
@@ -541,17 +413,6 @@ pub(super) async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: B
         }
         // chatgpt Codex SSE: moderation / queue bookkeeping before any model output, then
         // overload or encrypted rejection (sub2api #8139).
-        "metaover" if auth.contains("tok-a") => {
-            return sse_resp(concat!(
-                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-a\"}}\n\n",
-                "data: {\"type\":\"response.queued\",\"response\":{\"id\":\"r-a\",\"status\":\"queued\"}}\n\n",
-                "data: {\"type\":\"response.metadata\",\"response_id\":\"r-a\",\"metadata\":{\"openai_chatgpt_moderation_metadata\":{\"prompt\":{}}}}\n\n",
-                "event: error\ndata: {\"type\":\"service_unavailable_error\",\"code\":\"server_is_overloaded\",\"message\":\"Our servers are currently overloaded. Please try again later.\",\"sequence_number\":1}\n\n",
-                "data: {\"type\":\"response.failed\",\"sequence_number\":2,\"response\":{\"id\":\"r-a\",\"error\":{\"code\":\"server_is_overloaded\",\"message\":\"Our servers are currently overloaded.\"}}}\n\n"
-            ))
-        }
-        "metaover" => return sse_resp(OK_B),
-        // Real chatgpt shape: empty item / part announcements, then an overload (no output yet).
         "emptyadded_over" if auth.contains("tok-a") => {
             return sse_resp(concat!(
                 "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-a\"}}\n\n",
@@ -565,14 +426,6 @@ pub(super) async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: B
         }
         "emptyadded_over" => return sse_resp(OK_B),
         // Tool-call arguments already streamed are real output: never replayed.
-        "tooladded_over" => {
-            return sse_resp(concat!(
-                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-a\"}}\n\n",
-                "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"fc_a\",\"type\":\"function_call\",\"name\":\"shell\",\"call_id\":\"call_a\",\"arguments\":\"\"}}\n\n",
-                "data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_a\",\"output_index\":0,\"delta\":\"{\\\"cmd\"}\n\n",
-                "event: error\ndata: {\"type\":\"service_unavailable_error\",\"code\":\"server_is_overloaded\",\"message\":\"overloaded\"}\n\n"
-            ))
-        }
         "repro_cf1010_text" | "repro_cf1010_json" | "repro_cf_challenge" => {
             let (ct, body) = match mode.as_str() {
                 "repro_cf1010_text" => ("text/plain; charset=UTF-8", "error code: 1010".to_string()),
@@ -602,15 +455,6 @@ pub(super) async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: B
                 .unwrap();
         }
         "real403" => return sse_resp(OK_B),
-        "metaenc" => {
-            return sse_resp(concat!(
-                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-e\"}}\n\n",
-                "data: {\"type\":\"response.metadata\",\"response_id\":\"r-e\",\"metadata\":{\"openai_chatgpt_moderation_metadata\":{\"prompt\":{}}}}\n\n",
-                "event: error\ndata: ",
-                enc_error!(),
-                "\n\n"
-            ))
-        }
         "metaok" => {
             return sse_resp(concat!(
                 "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-m\"}}\n\n",
@@ -630,12 +474,6 @@ pub(super) async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: B
         }
         // Codex 0.166 `policy_capacity_unavailable` and the upstream's per-turn capacity limit
         // (`turn_rate_limit_exceeded`, "Codex is at capacity"), both before any output.
-        "pre_policycap" if auth.contains("tok-a") => {
-            return sse_resp(concat!(
-                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-a\"}}\n\n",
-                "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"r-a\",\"error\":{\"code\":\"policy_capacity_unavailable\",\"message\":\"fake capacity notice\"}}}\n\n"
-            ))
-        }
         "pre_turnrl" if auth.contains("tok-a") => {
             return sse_resp(concat!(
                 "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-a\"}}\n\n",
@@ -652,9 +490,7 @@ pub(super) async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: B
                 .unwrap()
         }
         "http_turnrl" => return sse_resp(OK_B),
-        "midover" if auth.contains("tok-a") => return sse_resp(OVER),
         "allover" => return sse_resp(OVER),
-        "midover" => return sse_resp(OK_B),
         "lateover" => {
             return sse_resp(concat!(
                 "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-a\"}}\n\n",
@@ -673,12 +509,6 @@ pub(super) async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: B
         "over400" => return sse_resp(OK_B),
         "overonce" if n < 2 => return sse_resp(OVER),
         "overonce" => return sse_resp(OK_B),
-        "overnmr" => {
-            let mut r = sse_resp(OVER);
-            r.headers_mut()
-                .insert("x-retry-metadata", "NO_MORE_RETRY".parse().unwrap());
-            return r;
-        }
         _ => {}
     }
     match mode.as_str() {
@@ -739,10 +569,6 @@ pub(super) async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: B
             ))
             .unwrap(),
         "unauth" if auth.ends_with("-1") => Response::builder().status(401).body(Body::empty()).unwrap(),
-        "instrlimit" => sse_resp(concat!(
-            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-i\"}}\n\n",
-            "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_error\"},\"instructions\":\"see usage_limit_reached\"}}\n\n"
-        )),
         "textlimit" => sse_resp(concat!(
             "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-t\"}}\n\n",
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"grep usage_limit_reached in proxy.rs\"}\n\n",
@@ -776,14 +602,6 @@ pub(super) async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: B
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"x\"}\n\n",
             "event: error\ndata: {\"type\":\"error\",\"status\":429,\"error\":{\"type\":\"rate_limit_error\",\"code\":\"rate_limit_exceeded\",\"message\":\"slow down\"}}\n\n"
         )),
-        "late_failed_rate_limit" => sse_resp(concat!(
-            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"x\"}\n\n",
-            "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"Please try again in 11s.\"}}}\n\n"
-        )),
-        "late_429_nocode" => sse_resp(concat!(
-            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"x\"}\n\n",
-            "event: error\ndata: {\"type\":\"error\",\"status\":429,\"error\":{\"message\":\"slow down\"}}\n\n"
-        )),
         mode @ ("delta_then_reset" | "reset_first") => {
             let first = mode == "delta_then_reset";
             let s = futures::stream::unfold(0, move |i| async move {
@@ -798,24 +616,6 @@ pub(super) async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: B
             });
             Response::builder().header("content-type", "text/event-stream").body(Body::from_stream(s)).unwrap()
         }
-        "completed_then_reset" => {
-            let s = futures::stream::unfold(0, |i| async move {
-                match i {
-                    0 => Some((Ok::<_, std::io::Error>(Bytes::from_static(COMPLETED_HI)), 1)),
-                    1 => {
-                        tokio::time::sleep(millis(100)).await;
-                        Some((Err(std::io::Error::other("reset after completed")), 2))
-                    }
-                    _ => None,
-                }
-            });
-            Response::builder().header("content-type", "text/event-stream").body(Body::from_stream(s)).unwrap()
-        }
-        "completed_then_idle" => {
-            let s = futures::stream::once(async { Ok::<_, std::io::Error>(Bytes::from_static(COMPLETED_HI)) })
-                .chain(futures::stream::pending());
-            Response::builder().header("content-type", "text/event-stream").body(Body::from_stream(s)).unwrap()
-        }
         "idle_after_output" => {
             let s = futures::stream::once(async {
                 Ok::<_, std::io::Error>(Bytes::from_static(
@@ -825,14 +625,9 @@ pub(super) async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: B
             Response::builder().header("content-type", "text/event-stream").body(Body::from_stream(s)).unwrap()
         }
         "idle" => {
-            let s = futures::stream::unfold(0, |i| async move {
-                if i == 0 {
-                    Some((Ok::<_, std::io::Error>(Bytes::from_static(b"data: {\"type\":\"response.created\"}\n\n")), 1))
-                } else {
-                    tokio::time::sleep(units(5)).await;
-                    None
-                }
-            });
+            let s = futures::stream::once(async {
+                Ok::<_, std::io::Error>(Bytes::from_static(b"data: {\"type\":\"response.created\"}\n\n"))
+            }).chain(futures::stream::pending());
             Response::builder().header("content-type", "text/event-stream").body(Body::from_stream(s)).unwrap()
         }
         "usage" => {
@@ -1244,8 +1039,6 @@ pub(super) async fn up_ws(State(m): State<Mock>, h: HeaderMap, ws: WebSocketUpgr
         .insert("set-cookie2", "__oailb=secret".parse().unwrap());
     r
 }
-
-pub(super) const COMPLETED_HI: &[u8] = b"data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-x\"}}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r-x\",\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}}\n\n";
 
 pub(super) struct Env {
     pub(super) proxy: String,
@@ -1693,16 +1486,6 @@ pub(super) async fn ws_turn(e: &Env, tag: &str) {
         }
     }
     let _ = ws.close(None).await;
-}
-
-pub(super) fn no_account_penalty(e: &Env) {
-    assert!(
-        e.outcomes()
-            .iter()
-            .all(|(_, o)| matches!(o, Outcome::Success { .. } | Outcome::Transport)),
-        "{:?}",
-        e.outcomes()
-    );
 }
 
 pub(super) async fn ws_frames(e: &Env, tag: &str) -> Vec<String> {

@@ -1,0 +1,98 @@
+{
+  "base": "ce28b23",
+  "origin_main_tests": 566,
+  "totals": {
+    "tests_before": 597,
+    "tests_after": 536,
+    "test_lines_before": 28336,
+    "test_lines_after": 26426
+  },
+  "crates": {
+    "auth": [
+      26,
+      25,
+      1050,
+      1034
+    ],
+    "core": [
+      34,
+      34,
+      649,
+      649
+    ],
+    "forward": [
+      100,
+      99,
+      3970,
+      3877
+    ],
+    "routing": [
+      53,
+      52,
+      2113,
+      2108
+    ],
+    "server": [
+      278,
+      222,
+      15952,
+      14266
+    ],
+    "upstream": [
+      20,
+      20,
+      509,
+      509
+    ],
+    "usage": [
+      86,
+      84,
+      4093,
+      3983
+    ]
+  },
+  "runs": {
+    "before": [
+      {
+        "run": 1,
+        "seconds": 15.6861474920006,
+        "exit": 0
+      },
+      {
+        "run": 2,
+        "seconds": 15.525607120998757,
+        "exit": 0
+      },
+      {
+        "run": 3,
+        "seconds": 15.603111192998767,
+        "exit": 0
+      }
+    ],
+    "after": [
+      {
+        "run": 1,
+        "seconds": 12.352181417998509,
+        "exit": 0
+      },
+      {
+        "run": 2,
+        "seconds": 12.229994086999795,
+        "exit": 0
+      },
+      {
+        "run": 3,
+        "seconds": 12.223832888998004,
+        "exit": 0
+      }
+    ]
+  },
+  "median_seconds": {
+    "before": 15.603111192998767,
+    "after": 12.229994086999795
+  },
+  "command": "cargo test --workspace --all-targets --locked --offline",
+  "toolchain": "rustc 1.95.0 (59807616e 2026-04-14)",
+  "test_lines_definition": "Physical Rust lines in integration/test modules including scaffolds, comments and blanks; inline source counts only cfg(test) items; report files and unchanged JS/Python scripts excluded.",
+  "test_commit": "302564f"
+}

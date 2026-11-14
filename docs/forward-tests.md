@@ -2,18 +2,22 @@
 
 `crates/server/tests/it/main.rs` remains the single server integration-test binary.
 `forward.rs` declares topic modules in `forward/`: admission, cookies, gzip, images,
-models, retry, shutdown, SSE, usage, usage API, and WS. Shared forwarding fixtures live
+models, retry, shutdown, SSE, usage, and WS. Shared forwarding fixtures live
 in `forward/scaffold.rs`. `it/support.rs` supplies the fixed store, recording router,
 listener, default HTTP client and AppState factory; the cooldown and compaction tests
 reuse these helpers too.
 
-The mock accepts per-account `Script`s of `Reply::Status` or `Reply::Sse`, with data,
-wait, stall and cut steps. Retry and basic SSE fault tests declare their scripts next
-to the assertions. Specialized legacy modes remain for the larger protocol fixtures.
-Only `sse_overload_after_output_is_forwarded` was removed: the retained
-`sse_overload_after_output_is_recorded_as_failure` checks the same body and attempt
-count, plus the usage record and router outcome. Other proposed clusters retain their
-coverage until their pure policy replacements exist.
+The mock selects protocol fixtures with `x-test-mode` or WS turn tags. Unused modes
+and the script interpreter were removed during WP8. Seeded usage API checks live in
+`it/usage_api.rs` without a mock upstream; live refusal/occupancy sampling tests live
+with admission, and forwarded record tests live with usage. UI page contracts use
+the in-process app in `it/http.rs`.
+
+WP8 reduced forwarding tests from 153 to 106, and the full workspace from 597 to 536.
+Decision/classification variants stay in the pure tables, with representative e2e
+tests proving transport, persistence and lifecycle wiring. The complete per-test
+coverage ledger, per-file counts and three-run full-suite measurements are in the
+[WP8 report](test-reduction-20261114.md).
 
 ## Clock and synchronization
 
@@ -30,11 +34,14 @@ Budget tests establish the account clients' real HTTP connections with an unreco
 keep their original physical two-second preparation budget while scaling retry delays.
 
 Compaction overlap uses a two-party barrier with a watchdog. Two waits intentionally
-use physical time: natural cookie expiry (2.1 seconds), and silence diagnostics (300 ms)
+use physical time: natural cookie expiry (2.1 seconds), and silence diagnostics (200–300 ms)
 whose message rounds seconds to one decimal place. The process-level signal/shutdown
 test remains unchanged. Recorder polling intervals remain physical readiness checks.
 
-## Timing method
+## Historical WP4 timing method and results
+
+These measurements predate WP8 and refer to the test inventory at that stage. See
+the WP8 report above for the current full-workspace measurements.
 
 Build with `cargo test -p ciallopa --test it --locked --no-run`, then run the emitted
 binary directly, excluding compilation. Measure complete runs with the default test

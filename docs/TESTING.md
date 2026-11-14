@@ -11,7 +11,7 @@ relevant edit, failure or new concern. Automated tests use synthetic data and lo
 cargo test --locked -p ciallopa-usage
 
 # A forwarding behavior; omit the final filter to run the integration file.
-cargo test --locked -p ciallopa --test it forward::sse_disconnect
+cargo test --locked -p ciallopa --test it forward::sse::sse_observation_on_client_disconnect
 
 # Embedded UI query and asynchronous state behavior; no npm install needed.
 node scripts/ui-state-check.cjs
@@ -38,7 +38,7 @@ Choose the layer whose behavior is in question rather than running every scenari
 | 429/503, Retry-After, exhausted retries, delayed WS handshake | `cli-smoke.py --suite recovery` | Actual Codex attempts, gateway records, elapsed recovery and WS-to-SSE fallback. |
 | Disconnect after a completed tool result reaches the following generation | `cli-smoke.py --suite tool-recovery` | Actual local callback count, original call/result in recovery input and client/gateway outcomes, on SSE and WS. |
 | Pending tool disconnect/cancel and client crash before tool-result acknowledgement | `cli-smoke.py --suite tool-faults` | Local execution count versus persisted history and resumed request input; distinguishes an unexecuted tool from an executed but unacknowledged side effect. |
-| SSE EOF, missing terminal event, silence, client cancellation | `crates/server/tests/it/forward.rs`; for example `cargo test --locked -p ciallopa --test it forward::idle_timeout_aborts_stream` | Forwarded result, failure classification and released request occupancy. |
+| SSE EOF, missing terminal event, silence, client cancellation | `crates/server/tests/it/forward.rs`; for example `cargo test --locked -p ciallopa --test it forward::sse::idle_timeout_aborts_stream` | Forwarded result, failure classification and released request occupancy. |
 | WS abrupt upstream close, preparation cancellation and blocked writes | Forwarding integration tests and focused socket probes described in [PERFORMANCE.md](PERFORMANCE.md) | Close/error behavior and bounded cancellation at the tested boundary; not cancellation of every possible blocked operation. |
 | Proxy reload during an active WS | `caddy-smoke.py` | Real Codex recovery through a real Caddy process with a local upstream. |
 | Process drain and forced shutdown with active SSE/WS | `compose-smoke.py` | Owned container signals, client results, final SQLite records and restart visibility. |

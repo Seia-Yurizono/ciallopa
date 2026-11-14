@@ -424,64 +424,41 @@ async fn shutdown_drain_closes_idle_ws_normally() {
 #[tokio::test]
 async fn rejected_reload_leaves_running_config_unchanged() {
     let e = env("").await;
-    let (before, v1) = e.config().await;
-    e.write("[ui]\nallow_config_write = true\n[log]\nlevel = \"info\"\n[upstream_opts]\nmax_attempts = 0\n");
-    let r = e.reload().await;
-    assert_eq!(r.status(), 422);
-    let (after, v2) = e.config().await;
-    assert_eq!(before["running"], after["running"]);
-    assert_ne!(v1, v2, "version follows the file");
-    assert_eq!(after["last_reload"]["ok"], false);
-    assert!(after["file_error"]
-        .as_str()
-        .unwrap()
-        .contains("max_attempts"));
-    // broken TOML too
-    std::fs::write(&e.path, "listen = ").unwrap();
-    assert_eq!(e.reload().await.status(), 422);
-    assert!(!e.settings.running().ui.allow_config_write);
-}
-
-#[tokio::test]
-async fn broken_toml_file_error_hides_source_line() {
-    let e = env("").await;
-    let secret = "sk-cpa-SECRETVALUE1234567890abcd";
-    // Unterminated string so toml Display would normally echo the source line.
-    std::fs::write(
-        &e.path,
-        format!("proxy_url = \"socks5h://user:{secret}@host:1080\n"),
-    )
-    .unwrap();
-    assert_eq!(e.reload().await.status(), 422);
-    let (after, _) = e.config().await;
-    let fe = after["file_error"].as_str().unwrap();
-    let lr = after["last_reload"]["error"].as_str().unwrap();
-    for (label, s) in [("file_error", fe), ("last_reload.error", lr)] {
-        assert!(
-            !s.contains(secret) && !s.contains("user:") && !s.contains("host:1080"),
-            "{label} leaked config text: {s}"
-        );
-        assert!(
-            s.contains("line") && s.contains("column"),
-            "{label} lost location: {s}"
-        );
-    }
-}
-
-#[tokio::test]
-async fn reload_rejects_the_example_key() {
-    let e = env("").await;
     let (before, _) = e.config().await;
-    let text = base(&e.up, &e.auth, "").replace(KEY, ciallopa_core::config::EXAMPLE_API_KEY);
-    std::fs::write(&e.path, text).unwrap();
-    let r = e.reload().await;
-    assert_eq!(r.status(), 422);
-    let (after, _) = e.config().await;
-    assert_eq!(before["running"], after["running"]);
-    assert!(after["file_error"]
-        .as_str()
-        .unwrap()
-        .contains("example key"));
+    let secret = "sk-cpa-SECRETVALUE1234567890abcd";
+    for (text, hint) in [
+        (
+            base(&e.up, &e.auth, "[upstream_opts]\nmax_attempts = 0\n"),
+            "max_attempts",
+        ),
+        (
+            base(&e.up, &e.auth, "").replace(KEY, ciallopa_core::config::EXAMPLE_API_KEY),
+            "example key",
+        ),
+        (
+            format!("proxy_url = \"socks5h://user:{secret}@host:1080\n"),
+            "line",
+        ),
+    ] {
+        let (_, old_version) = e.config().await;
+        std::fs::write(&e.path, text).unwrap();
+        assert_eq!(e.reload().await.status(), 422);
+        let (after, version) = e.config().await;
+        assert_eq!(before["running"], after["running"]);
+        assert_ne!(old_version, version);
+        assert_eq!(after["last_reload"]["ok"], false);
+        for field in [&after["file_error"], &after["last_reload"]["error"]] {
+            let error = field.as_str().unwrap();
+            assert!(error.contains(hint), "{error}");
+            assert!(
+                !error.contains(secret) && !error.contains("user:") && !error.contains("host:1080"),
+                "{error}"
+            );
+            if hint == "line" {
+                assert!(error.contains("column"), "{error}");
+            }
+        }
+    }
 }
 
 #[tokio::test]

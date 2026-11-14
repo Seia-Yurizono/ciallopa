@@ -70,63 +70,6 @@ async fn pending_connect_keeps_its_egress_classification_across_reload() {
 }
 
 #[tokio::test]
-async fn retries_5xx_then_succeeds() {
-    let e = env(300).await;
-    e.mock.script(
-        Script::default()
-            .for_account("a", [Reply::Status(503, "busy")])
-            .for_account(
-                "b",
-                [Reply::Sse(vec![Step::Data(
-                    "data: {\"type\":\"response.completed\"}\n\n",
-                )])],
-            ),
-    );
-    let r = e.post("/v1/responses").body("{}").send().await.unwrap();
-    assert_eq!(r.status(), 200);
-    // One 503, then a failover to another account succeeds.
-    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 2);
-    let o = e.outcomes();
-    assert!(matches!(o[0].1, Outcome::ServerError { status: 503, .. }));
-    assert!(matches!(o[1].1, Outcome::Success { .. }));
-    assert_ne!(o[0].0, o[1].0);
-}
-
-#[tokio::test]
-async fn rate_limit_fails_over() {
-    let e = env(300).await;
-    let r = e
-        .post("/backend-api/codex/responses")
-        .header("x-test-mode", "limit")
-        .body("{}")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status(), 200);
-    let o = e.outcomes();
-    assert_eq!(o[0].0, "a");
-    assert!(
-        matches!(o[0].1, Outcome::RateLimited { usage_limit: true, retry_after: Some(d), .. } if d == Duration::from_secs(30))
-    );
-    assert_eq!(o[1].0, "b");
-}
-
-#[tokio::test]
-async fn unauthorized_forces_refresh_once() {
-    let e = env(300).await;
-    let r = e
-        .post("/backend-api/codex/responses")
-        .header("x-test-mode", "unauth")
-        .body("{}")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status(), 200);
-    assert_eq!(e.store.refreshed.load(Ordering::SeqCst), 1);
-    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 2);
-}
-
-#[tokio::test]
 async fn bounded_header_wait_can_fail_over_without_cooling_the_account() {
     let d = tempfile::tempdir().unwrap();
     let e = env_cfg(
@@ -269,47 +212,6 @@ async fn bounded_header_wait_preserves_nonstream_json_and_http_timing() {
     assert!(
         rows[0]["ttft_ms"].is_u64(),
         "legacy HTTP header timing stays available: {rows:?}"
-    );
-}
-
-#[tokio::test]
-async fn bounded_error_body_keeps_upstream_identity_without_forwarding_a_partial_body() {
-    let d = tempfile::tempdir().unwrap();
-    let e = env_usage(30, Some(usage_recorder(d.path()))).await;
-    e.warm_http().await;
-    let response = e
-        .post("/v1/responses")
-        .header("x-test-mode", "error_too_large")
-        .body(r#"{"model":"gpt-5.5","input":[]}"#)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 502);
-    let body = response.text().await.unwrap();
-    assert!(body.len() < 1024 && body.contains("Bad gateway"), "{body}");
-    assert_eq!(
-        e.mock.hits.load(Ordering::SeqCst),
-        1,
-        "an incomplete body cannot classify a safe failover"
-    );
-    let rows = wait_rows(&e, 1).await;
-    assert_eq!(rows[0]["error"], "error_body_too_large", "{rows:?}");
-    assert_eq!(rows[0]["upstream_status"], 503, "{rows:?}");
-    let detail: serde_json::Value = detail_of(&e, rows[0]["request_id"].as_str().unwrap(), true)
-        .await
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(
-        detail["upstream_request_id"], "oversized-upstream",
-        "{detail}"
-    );
-    assert!(
-        detail["message"]
-            .as_str()
-            .unwrap()
-            .contains("body incomplete"),
-        "{detail}"
     );
 }
 
@@ -512,6 +414,7 @@ async fn retried_success_keeps_attempt_chain() {
     sse_text(&e, "retry").await;
     let rows = wait_rows(&e, 1).await;
     let row = &rows[0];
+    assert_eq!(row["retries"], 1, "{row}");
     assert!(row["error"].is_null(), "{row}");
     assert!(row["err_source"].is_null());
     assert_eq!(row["has_detail"], true);
@@ -524,87 +427,80 @@ async fn retried_success_keeps_attempt_chain() {
 }
 
 #[tokio::test]
-async fn http_400_overload_message_switches_despite_no_more_retry() {
-    let e = env(300).await;
-    let t = sse_text(&e, "over400").await;
-    assert!(t.contains("r-b"), "{t}");
-    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 2);
-    assert!(e
-        .outcomes()
-        .iter()
-        .any(|(a, o)| a == "a" && matches!(o, Outcome::Overloaded { .. })));
-}
-
-#[tokio::test]
-async fn payment_required_402_fails_over_and_cools() {
-    let e = env(300).await;
-    // deactivated_workspace: long account cooldown, transparent switch to b.
-    let r = mode_post(&e, "deact").await;
-    assert_eq!(r.status(), 200);
-    assert!(r.text().await.unwrap().contains("response.completed"));
-    let o = e.outcomes();
-    assert_eq!(o[0].0, "a");
-    assert!(matches!(
-        o[0].1,
-        Outcome::PaymentRequired { deactivated: true, cooldown } if cooldown == Duration::from_secs(86_400)
-    ));
-    assert_eq!(o[1].0, "b");
-    assert!(matches!(o[1].1, Outcome::Success { .. }));
-    // Any other 402: shorter account cooldown, also switches.
-    let r = mode_post(&e, "pay402").await;
-    assert_eq!(r.status(), 200);
-    let o = e.outcomes();
-    assert!(matches!(
-        o[2].1,
-        Outcome::PaymentRequired { deactivated: false, cooldown } if cooldown == Duration::from_secs(1_800)
-    ));
-    assert_eq!(o[3].0, "b");
-    // Hot reload: the next request uses the new duration.
-    let mut c = (*e.config.load()).clone();
-    c.upstream_opts.deactivated_cooldown_secs = 120;
-    e.config.store(c);
-    assert_eq!(mode_post(&e, "deact").await.status(), 200);
-    assert!(matches!(
-        e.outcomes()[4].1,
-        Outcome::PaymentRequired { deactivated: true, cooldown } if cooldown == Duration::from_secs(120)
-    ));
-}
-
-#[tokio::test]
-async fn payment_required_402_on_every_account_passes_upstream_error() {
-    let e = env(300).await;
-    let r = mode_post(&e, "deactall").await;
-    assert_eq!(r.status(), 402);
-    let body = r.text().await.unwrap();
-    assert_eq!(body, r#"{"detail":{"code":"deactivated_workspace"}}"#);
-    let o = e.outcomes();
-    assert_eq!(o.len(), 2);
-    assert!(o.iter().all(|(_, o)| matches!(
-        o,
-        Outcome::PaymentRequired {
-            deactivated: true,
-            ..
+async fn account_error_families_fail_over() {
+    let e = env_cfg(300, None, "overload_retry_wait_secs = 0\n").await;
+    for mode in [
+        "unauth",
+        "retry",
+        "limit",
+        "over400",
+        "deact",
+        "pay402",
+        "nf404",
+        "nfmodel",
+        "real403",
+        "http_turnrl",
+    ] {
+        // The retry fixture fails its first request; all rows share the same servers.
+        e.mock.hits.store(0, Ordering::SeqCst);
+        let start = e.outcomes().len();
+        let r = e
+            .post("/v1/responses")
+            .header("x-test-mode", mode)
+            .header("x-test-gzip", "1")
+            .body(r#"{"model":"gpt-5.5","stream":true,"input":[]}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200, "{mode}");
+        assert!(
+            r.text().await.unwrap().contains("response.completed"),
+            "{mode}"
+        );
+        assert_eq!(e.mock.hits.load(Ordering::SeqCst), 2, "{mode}");
+        let outcomes = e.outcomes();
+        if mode == "unauth" {
+            assert_eq!(e.store.refreshed.load(Ordering::SeqCst), 1);
+        } else {
+            let (account, outcome) = &outcomes[start];
+            assert_eq!(account, "a", "{mode}");
+            assert!(
+                match mode {
+                    "retry" => matches!(outcome, Outcome::ServerError { .. }),
+                    "limit" => matches!(
+                        outcome,
+                        Outcome::RateLimited {
+                            usage_limit: true,
+                            ..
+                        }
+                    ),
+                    "http_turnrl" => matches!(
+                        outcome,
+                        Outcome::RateLimited {
+                            usage_limit: false,
+                            ..
+                        }
+                    ),
+                    "over400" => matches!(outcome, Outcome::Overloaded { .. }),
+                    "deact" | "pay402" => matches!(outcome, Outcome::PaymentRequired { .. }),
+                    "nf404" => matches!(outcome, Outcome::NotFound { .. }),
+                    "nfmodel" => matches!(outcome, Outcome::ModelUnsupported { .. }),
+                    "real403" => matches!(outcome, Outcome::AuthFailed),
+                    _ => unreachable!(),
+                },
+                "{mode}: {outcome:?}"
+            );
+            assert_eq!(outcomes.last().unwrap().0, "b", "{mode}");
         }
-    )));
-}
-
-#[tokio::test]
-async fn not_found_404_short_unless_model_unsupported() {
-    let e = env(300).await;
-    assert_eq!(mode_post(&e, "nf404").await.status(), 200);
-    let o = e.outcomes();
-    assert!(matches!(
-        o[0].1,
-        Outcome::NotFound { retry_after: None, cooldown } if cooldown == Duration::from_secs(600)
-    ));
-    assert_eq!(o[1].0, "b");
-    assert_eq!(mode_post(&e, "nfmodel").await.status(), 200);
-    let o = e.outcomes();
-    assert!(matches!(
-        o[2].1,
-        Outcome::ModelUnsupported { retry_after: None }
-    ));
-    assert_eq!(o[3].0, "b");
+    }
+    // A changed duration must reach the next request, beyond the pure classification table.
+    let mut cfg = (*e.config.load()).clone();
+    cfg.upstream_opts.deactivated_cooldown_secs = 120;
+    e.config.store(cfg);
+    let start = e.outcomes().len();
+    assert_eq!(mode_post(&e, "deact").await.status(), 200);
+    assert!(matches!(e.outcomes()[start].1,
+        Outcome::PaymentRequired { cooldown, .. } if cooldown == Duration::from_secs(120)));
 }
 
 #[tokio::test]
@@ -678,18 +574,6 @@ async fn cloudflare_block_is_egress_not_auth() {
         .unwrap();
     assert_eq!(q["egress_block"]["active"], false, "{q}");
     rec.shutdown();
-}
-
-#[tokio::test]
-async fn real_403_still_auth_failed_and_switches() {
-    let e = env(300).await;
-    let r = mode_post(&e, "real403").await;
-    assert_eq!(r.status(), 200);
-    let o = e.outcomes();
-    assert_eq!(o[0].0, "a");
-    assert!(matches!(o[0].1, Outcome::AuthFailed), "{o:?}");
-    assert_eq!(o[1].0, "b");
-    assert!(matches!(o[1].1, Outcome::Success { .. }));
 }
 
 /// `turn_rate_limit_exceeded` ("Codex is at capacity") before any output cools the model on

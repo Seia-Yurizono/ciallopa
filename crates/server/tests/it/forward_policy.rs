@@ -579,49 +579,28 @@ async fn d5_http_stops_on_last_account_ws_uses_its_own_retry_budget() {
 
 #[tokio::test]
 async fn d4_ws_server_cooldown_honors_retry_after_like_http() {
+    // Parsing/caps/status aliases live in retry_after and policy tables; this proves
+    // both transports wire a Retry-After longer than the configured default through.
     for websocket in [false, true] {
-        for status in [408, 503] {
-            for (retry_after, configured, expected) in [
-                (Some("2"), 15, Some(2)),
-                (Some("120"), 15, Some(120)),
-                (Some("999999"), 15, Some(6 * 3600)),
-                (Some("Wed, 21 Oct 2015 07:28:00 GMT"), 15, Some(0)),
-                (Some("invalid"), 15, Some(15)),
-                (None, 15, Some(15)),
-                (Some("2"), 0, None),
-            ] {
-                let env = Env::new(
-                    Scenario::Server {
-                        status,
-                        retry_after,
-                        no_more_retry: true,
-                    },
-                    2,
-                    &format!("transient_cooldown_secs = {configured}"),
-                )
-                .await;
-                if websocket {
-                    assert_eq!(rejected(env.ws().await.unwrap_err()).status(), 400);
-                } else {
-                    assert_eq!(env.post().await.status(), 400);
-                }
-                assert_eq!(*env.mock.hits.lock().unwrap(), ["a", "b"]);
-                let reports = env.rec.0.lock().unwrap();
-                let Outcome::ServerError {
-                    status: actual_status,
-                    cooldown,
-                } = &reports[0].1
-                else {
-                    panic!("missing server error: {reports:?}");
-                };
-                assert_eq!(*actual_status, status);
-                assert_eq!(
-                    *cooldown,
-                    expected.map(Duration::from_secs),
-                    "ws={websocket}, status={status}, Retry-After={retry_after:?}"
-                );
-            }
-        }
+        let env = Env::new(
+            Scenario::Server {
+                status: 503,
+                retry_after: Some("120"),
+                no_more_retry: true,
+            },
+            2,
+            "transient_cooldown_secs = 15",
+        )
+        .await;
+        let status = if websocket {
+            rejected(env.ws().await.unwrap_err()).status()
+        } else {
+            env.post().await.status()
+        };
+        assert_eq!(status, 400);
+        assert_eq!(*env.mock.hits.lock().unwrap(), ["a", "b"]);
+        assert!(matches!(env.rec.0.lock().unwrap()[0].1,
+            Outcome::ServerError { status: 503, cooldown: Some(d) } if d == Duration::from_secs(120)));
     }
 }
 

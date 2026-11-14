@@ -57,15 +57,9 @@ async fn sse_passthrough_headers_and_zstd() {
 #[tokio::test]
 async fn idle_timeout_aborts_stream() {
     let e = env(1).await;
-    e.mock.script(Script::default().for_account(
-        "a",
-        [Reply::Sse(vec![
-            Step::Data("data: {\"type\":\"response.created\"}\n\n"),
-            Step::Stall,
-        ])],
-    ));
     let r = e
         .post("/backend-api/codex/responses")
+        .header("x-test-mode", "idle")
         .body("{}")
         .send()
         .await
@@ -76,7 +70,7 @@ async fn idle_timeout_aborts_stream() {
     let b = r.text().await.unwrap();
     assert!(b.contains("event: response.failed"), "{b}");
     assert!(!b.contains("ciallopa"));
-    assert!(t0.elapsed() < units(4));
+    assert!(t0.elapsed() < millis(1800));
     assert!(e.outcomes().iter().any(|(_, o)| *o == Outcome::Transport));
 }
 
@@ -142,42 +136,6 @@ async fn stream_diagnostics_distinguish_heartbeat_activity_from_events_without_p
     assert_eq!(logs.len(), 1);
     assert_eq!(logs[0]["error_class"], "eof");
     assert!(logs[0].get("record_id").is_none());
-}
-
-#[tokio::test]
-async fn sse_quota_before_output_switches_transparently() {
-    let e = env(300).await;
-    let t = sse_text(&e, "midlimit").await;
-    assert!(!t.contains("usage_limit_reached"), "{t}");
-    assert!(t.contains("r-b") && t.contains("response.completed"), "{t}");
-    assert!(!t.contains("r-a"), "{t}");
-    let seen = e.mock.seen.lock().unwrap();
-    assert_eq!(seen.len(), 2);
-    assert_eq!(seen[0].1, seen[1].1, "same body replayed");
-    drop(seen);
-    assert!(e.outcomes().iter().any(|(a, o)| a == "a" && matches!(
-        o,
-        Outcome::RateLimited { usage_limit: true, retry_after: Some(d), .. } if *d == Duration::from_secs(45)
-    )));
-}
-
-#[tokio::test]
-async fn sse_quota_after_output_is_forwarded_and_cools() {
-    let e = env(300).await;
-    let t = sse_text(&e, "latelimit").await;
-    assert!(
-        t.contains("delta") && t.contains("usage_limit_reached"),
-        "{t}"
-    );
-    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 1);
-    assert!(e.outcomes().iter().any(|(a, o)| a == "a"
-        && matches!(
-            o,
-            Outcome::RateLimited {
-                usage_limit: true,
-                ..
-            }
-        )));
 }
 
 #[tokio::test]
@@ -261,49 +219,6 @@ async fn oversized_sse_observation_keeps_real_client_cancellation() {
 }
 
 #[tokio::test]
-async fn sse_observation_uses_event_type_not_payload_strings() {
-    for (mode, error, output) in [
-        ("event_literal_complete", None, Some(3)),
-        ("event_literal_truncated", Some("stream_truncated"), None),
-        ("event_metadata_only", None, Some(0)),
-        ("event_done", None, Some(0)),
-        // The upstream code is kept, like an HTTP error body.
-        ("event_spaced_error", Some("bad_request"), None),
-    ] {
-        let d = tempfile::tempdir().unwrap();
-        let rec = usage_recorder(d.path());
-        let e = env_usage(300, Some(rec.clone())).await;
-        let text = e
-            .post("/v1/responses")
-            .header("x-test-mode", mode)
-            .body(r#"{"model":"gpt-5.5","stream":true,"input":[]}"#)
-            .send()
-            .await
-            .unwrap()
-            .text()
-            .await
-            .unwrap();
-        assert_eq!(
-            text.contains("stream disconnected before completion"),
-            mode == "event_literal_truncated",
-            "{mode}: {text}"
-        );
-        let rows = wait_rows(&e, 1).await;
-        assert_eq!(rows[0]["error"].as_str(), error, "{mode}: {}", rows[0]);
-        assert_eq!(
-            rows[0]["output_tokens"].as_i64(),
-            output,
-            "{mode}: {}",
-            rows[0]
-        );
-        if matches!(mode, "event_metadata_only" | "event_done") {
-            assert!(rows[0]["ttft_ms"].is_null(), "{mode}: {}", rows[0]);
-        }
-        rec.shutdown();
-    }
-}
-
-#[tokio::test]
 async fn sse_without_content_type_usage_and_failover() {
     let d = tempfile::tempdir().unwrap();
     let e = env_usage(300, Some(usage_recorder(d.path()))).await;
@@ -358,93 +273,6 @@ async fn no_content_type_without_stream_hint_stays_passthrough() {
 }
 
 #[tokio::test]
-async fn bootstrap_transport_error_reaches_client() {
-    // M2: an upstream error after `response.created` must not look like a clean EOF.
-    let e = env(300).await;
-    e.mock.script(Script::default().for_account(
-        "a",
-        [Reply::Sse(vec![
-            Step::Data("data: {\"type\":\"response.created\"}\n\n"),
-            Step::Wait(millis(200)),
-            Step::Cut,
-        ])],
-    ));
-    let r = e
-        .post("/backend-api/codex/responses")
-        .body("{}")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status(), 200);
-    let b = r.text().await.unwrap();
-    assert!(
-        b.contains("event: response.failed"),
-        "client must see the stream error: {b}"
-    );
-    assert!(e.outcomes().iter().any(|(_, o)| *o == Outcome::Transport));
-}
-
-#[tokio::test]
-async fn bootstrap_idle_timeout_not_doubled() {
-    // L1: idle=2s must fail after ~2s, not ~4s.
-    let e = env(2).await;
-    e.mock.script(Script::default().for_account(
-        "a",
-        [Reply::Sse(vec![
-            Step::Data("data: {\"type\":\"response.created\"}\n\n"),
-            Step::Stall,
-        ])],
-    ));
-    let r = e
-        .post("/backend-api/codex/responses")
-        .body("{}")
-        .send()
-        .await
-        .unwrap();
-    let t0 = std::time::Instant::now();
-    assert!(r.text().await.unwrap().contains("response.failed"));
-    let el = t0.elapsed();
-    assert!(el < millis(3500), "took {el:?}");
-}
-
-#[tokio::test]
-async fn response_failed_instructions_mention_is_not_quota() {
-    let e = env(300).await;
-    let t = sse_text(&e, "instrlimit").await;
-    assert!(
-        t.contains("server_error") && t.contains("usage_limit_reached"),
-        "{t}"
-    );
-    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 1, "must not failover");
-    assert!(
-        !e.outcomes()
-            .iter()
-            .any(|(_, o)| matches!(o, Outcome::RateLimited { .. })),
-        "{:?}",
-        e.outcomes()
-    );
-}
-
-#[tokio::test]
-async fn sse_overload_before_output_switches() {
-    let e = env(300).await;
-    let t = sse_text(&e, "midover").await;
-    assert!(!t.contains("overloaded"), "{t}");
-    assert!(
-        t.contains("r-b") && t.contains("response.completed") && !t.contains("r-a"),
-        "{t}"
-    );
-    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 2);
-    let o = e.outcomes();
-    assert!(o
-        .iter()
-        .any(|(a, o)| a == "a" && matches!(o, Outcome::Overloaded { cool: true, .. })));
-    assert!(!o
-        .iter()
-        .any(|(_, o)| matches!(o, Outcome::RateLimited { .. } | Outcome::AuthFailed)));
-}
-
-#[tokio::test]
 async fn sse_overload_everywhere_passes_through_verbatim() {
     let e = env(300).await;
     let t = sse_text(&e, "allover").await;
@@ -481,96 +309,6 @@ async fn sse_overload_last_account_waits_and_retries_once() {
     assert!(t.contains("r-b") && !t.contains("overloaded"), "{t}");
     assert_eq!(e.mock.hits.load(Ordering::SeqCst), 3);
     assert!(t0.elapsed() >= millis(600));
-}
-
-#[tokio::test]
-async fn sse_overload_no_more_retry_skips_wait() {
-    let e = env_cfg(300, None, "overload_retry_wait_secs = 1\n").await;
-    let t = sse_text(&e, "overnmr").await;
-    assert!(t.contains("server_is_overloaded"), "{t}");
-    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 2);
-}
-
-#[tokio::test]
-async fn sse_overload_wait_retry_disabled() {
-    let e = env_cfg(300, None, "overload_retry_wait_secs = 0\n").await;
-    let t = sse_text(&e, "allover").await;
-    assert!(t.contains("server_is_overloaded"), "{t}");
-    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 2);
-}
-
-/// Codex drops the connection as soon as it has `response.completed`; the upstream body still
-/// has a tail. That is a normal end, not `client_closed`. TTFT is the first output event.
-#[tokio::test]
-async fn sse_close_after_completed_is_not_an_error() {
-    let d = tempfile::tempdir().unwrap();
-    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
-    let mut r = e
-        .post("/v1/responses")
-        .header("x-test-mode", "slowtail")
-        .body(r#"{"model":"gpt-5.5","input":[]}"#)
-        .send()
-        .await
-        .unwrap();
-    let mut got = Vec::new();
-    while let Some(c) = r.chunk().await.unwrap() {
-        got.extend_from_slice(&c);
-        if String::from_utf8_lossy(&got).contains("response.completed") {
-            break;
-        }
-    }
-    drop(r);
-    tokio::time::sleep(millis(500)).await;
-    let rows = wait_rows(&e, 1).await;
-    let u = &rows[0];
-    assert!(u["error"].is_null(), "{u}");
-    assert!(u["err_source"].is_null(), "{u}");
-    assert!(
-        u["ttft_ms"].as_u64().unwrap() >= millis(250).as_millis() as u64,
-        "{u}"
-    );
-}
-
-#[tokio::test]
-async fn sse_disconnect_while_upstream_idle_records_client_close_promptly() {
-    let d = tempfile::tempdir().unwrap();
-    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
-    let mut response = e
-        .post("/v1/responses")
-        .header("x-test-mode", "idle_after_output")
-        .body(r#"{"model":"gpt-5.5","input":[]}"#)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200);
-    assert!(response.chunk().await.unwrap().is_some());
-    // The diagnostic rounds physical silence to tenths of a second.
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    drop(response);
-
-    // The upstream never yields another chunk; client closure must finish the tracker
-    // well before the configured 300 s upstream idle timeout.
-    let rows = tokio::time::timeout(Duration::from_secs(5), usage_rows(&e))
-        .await
-        .expect("client disconnect releases the tracker promptly");
-    assert_eq!(rows.len(), 1, "{rows:?}");
-    assert_eq!(rows[0]["error"], "client_closed", "{rows:?}");
-    assert_eq!(rows[0]["err_source"], "client", "{rows:?}");
-    // The detail records how long the upstream had been silent when the client left,
-    // which tells a Codex idle-timeout disconnect apart from a user cancel.
-    let v: serde_json::Value = detail_of(&e, rows[0]["request_id"].as_str().unwrap(), true)
-        .await
-        .json()
-        .await
-        .unwrap();
-    let msg = v["message"].as_str().unwrap_or_default();
-    let secs: f64 = msg
-        .split("upstream silent for ")
-        .nth(1)
-        .and_then(|r| r.split('s').next())
-        .and_then(|n| n.parse().ok())
-        .unwrap_or_else(|| panic!("no silent duration: {v}"));
-    assert!((0.2..5.0).contains(&secs), "{v}");
 }
 
 #[tokio::test]
@@ -612,154 +350,113 @@ async fn http_idle_snapshot_survives_reload_before_headers() {
     }
 }
 
-/// HTTP: a 200 + SSE `error` rejection before output becomes an upstream-shaped 400 (Codex
-/// shows it once instead of retrying the stream), with no retry, switch or cooldown.
 #[tokio::test]
-async fn encrypted_rejection_sse_becomes_400() {
+async fn encrypted_rejections_preserve_transport_contracts() {
+    use tokio_tungstenite::tungstenite::Message as M;
     let d = tempfile::tempdir().unwrap();
     let e = env_usage(300, Some(usage_recorder(d.path()))).await;
-    let r = post_mode(&e, "enc").await;
-    assert_eq!(r.status(), 400);
-    assert_eq!(r.headers()["content-type"], "application/json");
-    let v: serde_json::Value = r.json().await.unwrap();
-    let err = &v["error"];
-    assert_eq!(err["code"], "invalid_encrypted_content");
-    assert_eq!(err["type"], "invalid_request_error");
-    assert_eq!(err["param"], "input");
-    let msg = err["message"].as_str().unwrap();
-    assert!(
-        msg.contains("encrypted reasoning content") && msg.contains(ENC_HINT),
-        "{msg}"
-    );
-    assert!(
-        !msg.to_ascii_lowercase().contains("ciallopa")
-            && !msg.to_ascii_lowercase().contains("proxy")
-    );
-    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 1, "no retry / switch");
-    assert_no_account_outcome(&e);
-    // The account keeps serving.
-    let _ = sse_text(&e, "").await;
-    assert!(e.mock.seen.lock().unwrap()[1]
-        .0
-        .iter()
-        .any(|(k, v)| k == "authorization" && v.contains("tok-a")));
-    let rows = wait_rows(&e, 2).await;
-    let row = &rows[1];
-    assert_eq!(row["status"], 400, "{row}");
-    assert_eq!(row["error"], "invalid_encrypted_content", "{row}");
-    assert_eq!(row["err_source"], "upstream", "{row}");
-    assert_eq!(row["switches"], 0, "{row}");
-    let dv: serde_json::Value = detail_of(&e, row["request_id"].as_str().unwrap(), true)
-        .await
-        .json()
-        .await
-        .unwrap();
-    assert!(
-        dv["message"]
-            .as_str()
-            .unwrap()
-            .contains("organization_id did not match"),
-        "{dv}"
-    );
-    assert!(dv["body"].as_str().unwrap().contains("rs_0abc"), "{dv}");
-}
-
-/// HTTP: a plain upstream 400 rejection gets the same clear message.
-#[tokio::test]
-async fn encrypted_rejection_http_400_clear_message() {
-    let d = tempfile::tempdir().unwrap();
-    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
-    let r = post_mode(&e, "enc400").await;
-    assert_eq!(r.status(), 400);
-    let v: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(v["error"]["code"], "invalid_encrypted_content");
-    assert!(v["error"]["message"].as_str().unwrap().contains(ENC_HINT));
-    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 1);
-    assert_no_account_outcome(&e);
-    let rows = wait_rows(&e, 1).await;
-    assert_eq!(rows[0]["error"], "invalid_encrypted_content");
-    assert_eq!(rows[0]["err_source"], "upstream");
-    // Other 400 bodies still pass through verbatim.
+    for (i, mode) in ["enc", "enc400", "lateenc", "ws"].into_iter().enumerate() {
+        let (status, text) = if mode == "ws" {
+            let (mut ws, _) = tokio_tungstenite::connect_async(ws_req(&e)).await.unwrap();
+            ws.send(M::text(r#"{"type":"response.create","tag":"enc"}"#))
+                .await
+                .unwrap();
+            let mut frames = Vec::new();
+            loop {
+                let frame = ws_text(&mut ws).await;
+                let done = frame.contains("invalid_encrypted_content");
+                frames.push(frame);
+                if done {
+                    break;
+                }
+            }
+            assert_eq!(frames.len(), 3, "{frames:?}");
+            assert!(frames[0].contains("codex.rate_limits"));
+            assert!(frames[1].contains("codex.response.metadata"));
+            let v: serde_json::Value = serde_json::from_str(frames.last().unwrap()).unwrap();
+            assert_eq!(v["type"], "error");
+            assert_eq!(v["status"], 400);
+            // Rejection ends this turn while leaving the same connection usable.
+            ws.send(M::text(r#"{"type":"response.create","n":2}"#))
+                .await
+                .unwrap();
+            assert!(ws_text(&mut ws).await.contains("response.completed"));
+            (400, frames.pop().unwrap())
+        } else {
+            let r = post_mode(&e, mode).await;
+            let status = r.status().as_u16();
+            if mode != "lateenc" {
+                assert_eq!(r.headers()["content-type"], "application/json");
+            }
+            (status, r.text().await.unwrap())
+        };
+        assert_eq!(status, if mode == "lateenc" { 200 } else { 400 }, "{mode}");
+        assert!(
+            text.contains("invalid_encrypted_content") && text.contains(ENC_HINT),
+            "{mode}: {text}"
+        );
+        if mode == "lateenc" {
+            assert!(
+                text.contains(r#""delta":"hi""#) && text.contains("event: response.failed"),
+                "{text}"
+            );
+            assert!(!text.contains("could not be verified") && !text.contains("event: error"));
+            assert!(text.ends_with("\n\n"));
+        } else {
+            let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(v["error"]["type"], "invalid_request_error");
+            assert_eq!(v["error"]["param"], "input");
+            let msg = v["error"]["message"].as_str().unwrap().to_ascii_lowercase();
+            assert!(
+                msg.contains("encrypted reasoning content")
+                    && !msg.contains("ciallopa")
+                    && !msg.contains("proxy")
+            );
+        }
+        assert_eq!(
+            e.mock.hits.load(Ordering::SeqCst),
+            i + 1,
+            "no replay: {mode}"
+        );
+        assert_no_account_outcome(&e);
+        let rows = wait_rows(&e, i + 1 + usize::from(mode == "ws")).await;
+        let row = if mode == "ws" {
+            rows.iter()
+                .find(|r| r["error"] == "invalid_encrypted_content" && r["transport"] == "ws")
+                .unwrap()
+        } else {
+            &rows[0]
+        };
+        assert_eq!(row["error"], "invalid_encrypted_content", "{mode}: {row}");
+        assert_eq!(row["err_source"], "upstream");
+        assert_eq!(row["switches"], 0);
+        let detail: serde_json::Value = detail_of(&e, row["request_id"].as_str().unwrap(), true)
+            .await
+            .json()
+            .await
+            .unwrap();
+        assert!(
+            detail["message"]
+                .as_str()
+                .unwrap()
+                .contains("could not be verified"),
+            "{detail}"
+        );
+    }
     let r = post_mode(&e, "errbody").await;
     assert_eq!(r.status(), 400);
     assert!(r.text().await.unwrap().contains("bad input"));
-}
-
-/// HTTP: after output the rejection ends the stream as `response.failed` with the clear message
-/// (the upstream wording stays out of the client stream, but in the log detail).
-#[tokio::test]
-async fn encrypted_rejection_after_output_is_clear_failed_event() {
-    let d = tempfile::tempdir().unwrap();
-    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
-    let t = sse_text(&e, "lateenc").await;
-    assert!(t.contains("\"delta\":\"hi\""), "{t}");
-    assert!(t.contains("event: response.failed"), "{t}");
-    assert!(
-        t.contains("invalid_encrypted_content") && t.contains(ENC_HINT),
-        "{t}"
-    );
-    assert!(
-        !t.contains("could not be verified") && !t.contains("event: error"),
-        "{t}"
-    );
-    assert!(t.ends_with("\n\n"), "{t}");
-    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 1);
-    assert_no_account_outcome(&e);
-    let rows = wait_rows(&e, 1).await;
-    assert_eq!(rows[0]["status"], 200);
-    assert_eq!(rows[0]["error"], "invalid_encrypted_content");
-    assert_eq!(rows[0]["err_source"], "upstream");
-    let dv: serde_json::Value = detail_of(&e, rows[0]["request_id"].as_str().unwrap(), true)
-        .await
-        .json()
-        .await
-        .unwrap();
-    assert!(
-        dv["message"]
-            .as_str()
-            .unwrap()
-            .contains("could not be verified"),
-        "{dv}"
-    );
-}
-
-/// Bookkeeping events (`response.queued` / `response.metadata` / `keepalive`) before an
-/// in-stream overload must not commit output: switch account and succeed (sub2api #8139).
-#[tokio::test]
-async fn sse_metadata_before_overload_still_switches() {
-    let e = env(300).await;
-    let t = sse_text(&e, "metaover").await;
-    assert!(
-        !t.contains("overloaded") && !t.contains("openai_chatgpt_moderation_metadata"),
-        "first-account preamble+error must be discarded on switch: {t}"
-    );
-    assert!(
-        t.contains("r-b") && t.contains("response.completed") && !t.contains("r-a"),
-        "{t}"
-    );
-    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 2);
+    sse_text(&e, "").await;
     assert!(e
-        .outcomes()
+        .mock
+        .seen
+        .lock()
+        .unwrap()
+        .last()
+        .unwrap()
+        .0
         .iter()
-        .any(|(a, o)| a == "a" && matches!(o, Outcome::Overloaded { cool: true, .. })));
-}
-
-/// Same bookkeeping before `invalid_encrypted_content` must still become HTTP 400 (not
-/// `response.failed` after a false "output started").
-#[tokio::test]
-async fn sse_metadata_before_encrypted_still_400() {
-    let d = tempfile::tempdir().unwrap();
-    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
-    let r = post_mode(&e, "metaenc").await;
-    assert_eq!(r.status(), 400, "expected HTTP 400, not a 200 stream");
-    let v: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(v["error"]["code"], "invalid_encrypted_content");
-    assert!(
-        v["error"]["message"].as_str().unwrap().contains(ENC_HINT),
-        "{v}"
-    );
-    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 1);
-    assert_no_account_outcome(&e);
+        .any(|(k, v)| k == "authorization" && v.contains("tok-a")));
 }
 
 /// After we commit, the same bookkeeping events are forwarded to the client unchanged.
@@ -803,136 +500,87 @@ async fn sse_empty_added_before_overload_switches() {
     assert_eq!(rows[0]["account"], "b", "{}", rows[0]);
 }
 
-/// Streamed tool-call arguments are real output: the overload after them is forwarded, never
-/// replayed, and the request is recorded as a failure (not a success) on the account.
 #[tokio::test]
-async fn sse_overload_after_tool_call_arguments_is_a_failure() {
+async fn committed_errors_are_forwarded_and_recorded() {
     let d = tempfile::tempdir().unwrap();
     let e = env_usage(300, Some(usage_recorder(d.path()))).await;
-    let t = sse_text(&e, "tooladded_over").await;
-    assert!(
-        t.contains("fc_a") && t.contains("server_is_overloaded"),
-        "{t}"
-    );
-    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 1);
-    let rows = wait_rows(&e, 1).await;
-    assert_eq!(rows[0]["error"], "server_is_overloaded", "{}", rows[0]);
-    assert_eq!(rows[0]["err_source"], "stream", "{}", rows[0]);
-    let o = e.outcomes();
-    assert!(
-        o.iter()
-            .any(|(a, o)| a == "a" && matches!(o, Outcome::Overloaded { .. })),
-        "a late overload still counts against the account: {o:?}"
-    );
-}
-
-/// Late overload (after real text) is recorded as a failure as well.
-#[tokio::test]
-async fn sse_overload_after_output_is_recorded_as_failure() {
-    let d = tempfile::tempdir().unwrap();
-    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
-    let t = sse_text(&e, "lateover").await;
-    assert!(
-        t.contains("delta") && t.contains("server_is_overloaded"),
-        "{t}"
-    );
-    let rows = wait_rows(&e, 1).await;
-    assert_eq!(rows[0]["error"], "server_is_overloaded", "{}", rows[0]);
-    assert!(e
-        .outcomes()
-        .iter()
-        .any(|(a, o)| a == "a" && matches!(o, Outcome::Overloaded { .. })));
-}
-
-#[tokio::test]
-async fn read_error_after_completed_is_a_normal_end() {
-    let d = tempfile::tempdir().unwrap();
-    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
-    read_all(&e, "completed_then_reset").await;
-    tokio::time::sleep(millis(300)).await;
-    let rows = wait_rows(&e, 1).await;
-    assert!(rows[0]["error"].is_null(), "{}", rows[0]);
-    assert!(rows[0]["err_source"].is_null(), "{}", rows[0]);
-    assert_eq!(rows[0]["output_tokens"], 1);
-    assert!(
-        e.outcomes()
-            .iter()
-            .all(|(_, o)| matches!(o, Outcome::Success { .. })),
-        "{:?}",
-        e.outcomes()
-    );
-}
-
-#[tokio::test]
-async fn idle_after_completed_is_a_normal_end() {
-    let d = tempfile::tempdir().unwrap();
-    let e = env_usage(1, Some(usage_recorder(d.path()))).await;
-    read_all(&e, "completed_then_idle").await;
-    tokio::time::sleep(millis(300)).await;
-    let rows = wait_rows(&e, 1).await;
-    assert!(rows[0]["error"].is_null(), "{}", rows[0]);
-    assert!(rows[0]["err_source"].is_null(), "{}", rows[0]);
-    assert!(
-        e.outcomes()
-            .iter()
-            .all(|(_, o)| matches!(o, Outcome::Success { .. })),
-        "{:?}",
-        e.outcomes()
-    );
-}
-
-#[tokio::test]
-async fn stream_request_error_records_its_code_without_account_penalty() {
-    let d = tempfile::tempdir().unwrap();
-    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
-    read_all(&e, "late_request_error").await;
-    let rows = wait_rows(&e, 1).await;
-    assert_eq!(rows[0]["error"], "context_length_exceeded", "{}", rows[0]);
-    assert_eq!(rows[0]["err_source"], "stream", "{}", rows[0]);
-    assert_eq!(rows[0]["cause"], "request", "{}", rows[0]);
-    assert_eq!(rows[0]["upstream_fault"], false, "{}", rows[0]);
-    no_account_penalty(&e);
-}
-
-#[tokio::test]
-async fn stream_rate_limit_without_quota_code_is_not_usage_limit() {
-    for (mode, code) in [
-        ("late_rate_limit", "rate_limit_exceeded"),
-        ("late_429_nocode", "rate_limit_exceeded"),
-        ("late_failed_rate_limit", "rate_limit_exceeded"),
-    ] {
-        let d = tempfile::tempdir().unwrap();
-        let e = env_usage(300, Some(usage_recorder(d.path()))).await;
-        read_all(&e, mode).await;
-        let rows = wait_rows(&e, 1).await;
-        assert_eq!(rows[0]["error"], code, "{mode}: {}", rows[0]);
+    for (i, (mode, wire_code, stored_code, cause)) in [
+        (
+            "lateover",
+            "server_is_overloaded",
+            "server_is_overloaded",
+            "stream",
+        ),
+        ("latelimit", "usage_limit_reached", "usage_limit", "quota"),
+        (
+            "late_request_error",
+            "context_length_exceeded",
+            "context_length_exceeded",
+            "request",
+        ),
+        (
+            "late_rate_limit",
+            "rate_limit_exceeded",
+            "rate_limit_exceeded",
+            "rate_limit",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let start = e.outcomes().len();
+        let text = sse_text(&e, mode).await;
+        assert!(
+            text.contains("delta") && text.contains(wire_code),
+            "{mode}: {text}"
+        );
         assert_eq!(
-            rows[0]["failure_class"], "rate_limit",
-            "{mode}: {}",
-            rows[0]
+            e.mock.hits.load(Ordering::SeqCst),
+            i + 1,
+            "no replay after output: {mode}"
         );
+        let rows = wait_rows(&e, i + 1).await;
+        let row = &rows[0];
+        assert_eq!(row["error"], stored_code, "{mode}: {row}");
+        assert_eq!(row["cause"], cause, "{mode}: {row}");
+        assert_eq!(row["err_source"], "stream");
+        let outcomes = e.outcomes();
+        let outcomes = &outcomes[start..];
         assert!(
-            e.outcomes().iter().all(|(_, o)| !matches!(
-                o,
-                Outcome::RateLimited {
-                    usage_limit: true,
-                    ..
-                }
-            )),
-            "{mode}: {:?}",
-            e.outcomes()
-        );
-        // The model is cooled (rate limit), not left untouched.
-        assert!(
-            e.outcomes().iter().any(|(_, o)| matches!(
-                o,
-                Outcome::RateLimited {
-                    usage_limit: false,
-                    ..
-                }
-            )),
-            "{mode}: {:?}",
-            e.outcomes()
+            match mode {
+                "lateover" => outcomes
+                    .iter()
+                    .any(|(a, o)| a == "a" && matches!(o, Outcome::Overloaded { .. })),
+                "latelimit" => outcomes.iter().any(|(a, o)| a == "a"
+                    && matches!(
+                        o,
+                        Outcome::RateLimited {
+                            usage_limit: true,
+                            ..
+                        }
+                    )),
+                "late_rate_limit" =>
+                    outcomes.iter().any(|(_, o)| matches!(
+                        o,
+                        Outcome::RateLimited {
+                            usage_limit: false,
+                            ..
+                        }
+                    )) && outcomes.iter().all(|(_, o)| !matches!(
+                        o,
+                        Outcome::RateLimited {
+                            usage_limit: true,
+                            ..
+                        }
+                    )),
+                _ =>
+                    !row["upstream_fault"].as_bool().unwrap()
+                        && outcomes.iter().all(|(_, o)| matches!(
+                            o,
+                            Outcome::Success { .. } | Outcome::ClientError { .. }
+                        )),
+            },
+            "{mode}: {outcomes:?}"
         );
     }
 }
@@ -954,39 +602,6 @@ async fn stream_read_error_is_network_not_truncated() {
     let rows = wait_rows(&e, 1).await;
     assert_eq!(rows[0]["error"], "stream_truncated", "{}", rows[0]);
     assert_eq!(rows[0]["err_source"], "stream", "{}", rows[0]);
-}
-
-/// Codex 0.166 `policy_capacity_unavailable` before any output is an overload: switch the
-/// account instead of failing the turn (SSE `response.failed` and a code-only WS frame).
-#[tokio::test]
-async fn policy_capacity_unavailable_before_output_switches() {
-    let e = env(300).await;
-    let t = sse_text(&e, "pre_policycap").await;
-    assert!(!t.contains("policy_capacity_unavailable"), "{t}");
-    assert!(
-        t.contains("r-b") && t.contains("response.completed") && !t.contains("r-a"),
-        "{t}"
-    );
-    assert!(e
-        .outcomes()
-        .iter()
-        .any(|(a, o)| a == "a" && matches!(o, Outcome::Overloaded { .. })));
-    let e = env(300).await;
-    let got = ws_frames(&e, "pre_policycap_ws").await;
-    assert!(
-        got.iter()
-            .all(|t| !t.contains("policy_capacity_unavailable")),
-        "{got:?}"
-    );
-    assert!(
-        got.iter()
-            .any(|t| t.contains("r-b") && t.contains("response.completed")),
-        "{got:?}"
-    );
-    assert!(e
-        .outcomes()
-        .iter()
-        .any(|(a, o)| a == "a" && matches!(o, Outcome::Overloaded { .. })));
 }
 
 /// HTTP 429 `turn_rate_limit_exceeded`: a model-level rate limit that honours Retry-After, not
@@ -1104,12 +719,29 @@ async fn sse_observation_on_client_disconnect() {
         .await
         .unwrap();
     assert!(response.chunk().await.unwrap().is_some());
+    tokio::time::sleep(Duration::from_millis(200)).await;
     drop(response);
     let rows = tokio::time::timeout(Duration::from_secs(5), wait_rows(&e, 1))
         .await
         .expect("row written after disconnect");
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0]["error"], "client_closed", "{rows:?}");
+    let detail: serde_json::Value = detail_of(&e, rows[0]["request_id"].as_str().unwrap(), true)
+        .await
+        .json()
+        .await
+        .unwrap();
+    let message = detail["message"].as_str().unwrap();
+    let silent: f64 = message
+        .split("upstream silent for ")
+        .nth(1)
+        .unwrap()
+        .split('s')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!((0.1..5.0).contains(&silent), "{detail}");
     let (s, o) = obs_of(&e, rows[0]["request_id"].as_str().unwrap()).await;
     assert_eq!(s, 200, "{o}");
     assert!(o["up_terminal_ms"].is_null(), "{o}");
