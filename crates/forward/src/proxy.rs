@@ -2,7 +2,7 @@
 pub(crate) use crate::attempt::{
     others_usable, overload_outcome, send, send_tracked, Outbound, WS_HOLD_MAX,
 };
-pub(crate) use crate::classify::{event_kind, overload_code, quota_event, EventKind};
+pub(crate) use crate::classify::{overload_code, quota_event, EventKind};
 pub(crate) use crate::http::exchange::send_streaming;
 pub(crate) use crate::http::pump::{
     shutdown_failed_event, stream_back, stream_image_body, SHUTDOWN_RETRY_AFTER_SECS,

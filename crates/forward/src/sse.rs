@@ -1,151 +1,251 @@
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use std::borrow::Cow;
 
-/// Forwards an SSE body in whole events, so an upstream encrypted-content rejection that
-/// arrives after output can be replaced by a `response.failed` carrying the clear message
-/// (`encrypted::failed_event`) before any of its bytes leave. Everything else is forwarded
-/// unchanged; only the incomplete tail of the current event is held (Codex cannot use it
-/// before it completes anyway). An event larger than `BOOTSTRAP_MAX` is flushed as is.
-/// Non-SSE bodies pass straight through.
+/// Complete events and fragments of events that exceeded the observation limit.
+#[derive(Debug)]
+pub(crate) enum Frame {
+    Event(Bytes),
+    Oversize(Bytes),
+}
+
+/// One incremental delimiter scanner shared by the streaming and borrowed-buffer views.
+struct Scanner {
+    line_len: u8,
+    cr: bool,
+    bare_cr: bool,
+}
+
+impl Scanner {
+    fn new(bare_cr: bool) -> Self {
+        Self {
+            line_len: u8::from(!bare_cr),
+            cr: false,
+            bare_cr,
+        }
+    }
+
+    fn scan(&mut self, bytes: &[u8]) -> Option<usize> {
+        for (i, &byte) in bytes.iter().enumerate() {
+            if self.bare_cr && byte == b'\n' && self.cr {
+                self.cr = false;
+                continue;
+            }
+            let newline = byte == b'\n' || (self.bare_cr && byte == b'\r');
+            let empty = self.line_len == 0 || (!self.bare_cr && self.line_len == 1 && self.cr);
+            self.cr = byte == b'\r';
+            if newline {
+                self.line_len = 0;
+                if empty {
+                    // The LF view retains the old two-line separator grouping.
+                    self.line_len = u8::from(!self.bare_cr);
+                    return Some(i + 1);
+                }
+            } else {
+                self.line_len = self.line_len.saturating_add(1).min(2);
+            }
+        }
+        None
+    }
+}
+
+pub(crate) struct Framer {
+    tail: BytesMut,
+    scanner: Scanner,
+    limit: usize,
+    oversized: bool,
+}
+
+impl Framer {
+    pub(crate) fn new(limit: usize) -> Self {
+        Self {
+            tail: BytesMut::new(),
+            scanner: Scanner::new(false),
+            limit,
+            oversized: false,
+        }
+    }
+
+    pub(crate) fn image_errors(limit: usize) -> Self {
+        Self {
+            scanner: Scanner::new(true),
+            ..Self::new(limit)
+        }
+    }
+
+    /// Complete events contained in one chunk borrow its allocation. Only fragmented
+    /// events need an append; oversized events stay unclassifiable until their delimiter.
+    pub(crate) fn push(&mut self, mut chunk: Bytes) -> impl Iterator<Item = Frame> + '_ {
+        std::iter::from_fn(move || {
+            while !chunk.is_empty() {
+                let take = if self.oversized {
+                    chunk.len()
+                } else {
+                    chunk
+                        .len()
+                        .min(self.limit.saturating_sub(self.tail.len()).saturating_add(1))
+                };
+                let boundary = self.scanner.scan(&chunk[..take]);
+                let part = chunk.split_to(boundary.unwrap_or(take));
+                let oversized =
+                    self.oversized || self.tail.len().saturating_add(part.len()) > self.limit;
+                if boundary.is_some() || oversized {
+                    let bytes = if self.tail.is_empty() {
+                        part
+                    } else {
+                        self.tail.extend_from_slice(&part);
+                        self.tail.split().freeze()
+                    };
+                    self.oversized = oversized && boundary.is_none();
+                    return Some(if oversized {
+                        Frame::Oversize(bytes)
+                    } else {
+                        Frame::Event(bytes)
+                    });
+                }
+                self.tail.extend_from_slice(&part);
+            }
+            None
+        })
+    }
+
+    pub(crate) fn finish(&mut self) -> Option<Bytes> {
+        let tail = (!self.tail.is_empty()).then(|| self.tail.split().freeze());
+        self.scanner = Scanner::new(self.scanner.bare_cr);
+        self.oversized = false;
+        tail
+    }
+
+    /// Borrow complete events from an existing prelude/observation buffer without copying.
+    fn events_after(buf: &[u8], from: usize, search_from: usize) -> impl Iterator<Item = &[u8]> {
+        let mut scanner = Scanner::new(false);
+        let mut pos = from;
+        // At most three preceding bytes recover a partial LF/CRLF separator.
+        let mut search = search_from.max(from).saturating_sub(3).max(from);
+        std::iter::from_fn(move || {
+            let end = search + scanner.scan(&buf[search..])?;
+            let event = &buf[pos..end];
+            pos = end;
+            search = end;
+            Some(event)
+        })
+    }
+}
+
+/// Forward complete SSE events, replacing only encrypted-content rejections.
 pub(crate) struct Aligner {
-    sse: bool,
-    tail: Vec<u8>,
+    framer: Option<Framer>,
 }
 
 impl Aligner {
     pub(crate) fn new(sse: bool) -> Self {
         Self {
-            sse,
-            tail: Vec::new(),
+            framer: sse.then(|| Framer::new(BOOTSTRAP_MAX)),
         }
     }
 
-    /// Bytes ready to send after `chunk` (possibly empty).
-    pub(crate) fn push(&mut self, chunk: &[u8]) -> Bytes {
-        if !self.sse {
-            return Bytes::copy_from_slice(chunk);
+    pub(crate) fn push(&mut self, chunk: Bytes) -> Bytes {
+        let Some(framer) = self.framer.as_mut() else {
+            return chunk;
+        };
+        let original = framer.tail.is_empty().then(|| chunk.clone());
+        let mut parts = Vec::new();
+        let mut ready = 0;
+        let mut rewritten = false;
+        for frame in framer.push(chunk) {
+            let bytes = match frame {
+                Frame::Event(event) => {
+                    let replacement = rewrite_rejection(&event);
+                    rewritten |= replacement.is_some();
+                    replacement.unwrap_or(event)
+                }
+                Frame::Oversize(bytes) => bytes,
+            };
+            ready += bytes.len();
+            parts.push(bytes);
         }
-        self.tail.extend_from_slice(chunk);
-        match last_boundary(&self.tail) {
-            Some(end) => {
-                let rest = self.tail.split_off(end);
-                let ready = std::mem::replace(&mut self.tail, rest);
-                rewrite_rejections(ready)
+        if !rewritten {
+            if let Some(original) = original {
+                return original.slice(..ready);
             }
-            None if self.tail.len() > BOOTSTRAP_MAX => Bytes::from(std::mem::take(&mut self.tail)),
-            None => Bytes::new(),
         }
+        if parts.len() == 1 {
+            return parts.pop().unwrap_or_default();
+        }
+        let mut out = BytesMut::with_capacity(ready);
+        for part in parts {
+            out.extend_from_slice(&part);
+        }
+        out.freeze()
     }
 
-    /// Whatever is still held (an unterminated last event), at end of stream.
     pub(crate) fn finish(&mut self) -> Option<Bytes> {
-        (!self.tail.is_empty()).then(|| rewrite_rejections(std::mem::take(&mut self.tail)))
+        let tail = self.framer.as_mut()?.finish()?;
+        Some(rewrite_rejection(&tail).unwrap_or(tail))
     }
 }
 
-/// End (exclusive, separator included) of the last complete SSE event in `b`.
-fn last_boundary(b: &[u8]) -> Option<usize> {
-    let mut i = b.len();
-    while i >= 2 {
-        if b[i - 1] == b'\n' {
-            if b[i - 2] == b'\n' {
-                return Some(i);
-            }
-            if i >= 3 && b[i - 2] == b'\r' && b[i - 3] == b'\n' {
-                return Some(i);
-            }
-        }
-        i -= 1;
+fn rewrite_rejection(event: &[u8]) -> Option<Bytes> {
+    let data = data(event)?;
+    if !crate::encrypted::maybe_rejection(&data) {
+        return None;
     }
-    None
-}
-
-/// Replace encrypted-content rejection events in complete SSE bytes (cheap byte check first).
-fn rewrite_rejections(ready: Vec<u8>) -> Bytes {
-    let maybe = memfind(&ready, crate::encrypted::CODE.as_bytes())
-        || memfind(&ready, b"ncrypted content")
-        || memfind(&ready, b"thinking_signature_invalid");
-    if !maybe {
-        return Bytes::from(ready);
+    // Output may quote an error message; only error envelopes are candidates.
+    let ty = crate::usage::event_type(&data);
+    if !matches!(ty.as_deref(), None | Some("" | "error" | "response.failed")) {
+        return None;
     }
-    let mut out = Vec::with_capacity(ready.len());
-    let mut pos = 0;
-    while pos < ready.len() {
-        let (end, sep) = find_sep(&ready[pos..]).unwrap_or((ready.len() - pos, 0));
-        let ev = &ready[pos..pos + end];
-        let hit = crate::encrypted::sse_data(ev).and_then(|d| {
-            crate::encrypted::rejection_text_json(&d)
-                .and_then(|_| serde_json::from_str::<serde_json::Value>(&d).ok())
-        });
-        match hit {
-            Some(v) => out.extend_from_slice(&crate::encrypted::failed_event(Some(&v))),
-            None => out.extend_from_slice(&ready[pos..pos + end + sep]),
-        }
-        pos += end + sep;
-    }
-    Bytes::from(out)
+    let v = serde_json::from_str::<serde_json::Value>(&data).ok()?;
+    crate::encrypted::rejection(&v)?;
+    Some(crate::encrypted::failed_event(Some(&v)))
 }
 
 /// Max bytes held while waiting for the first meaningful SSE event.
 pub(crate) const BOOTSTRAP_MAX: usize = 1 << 20;
 
-/// Split complete SSE events off the front of `buf`; yields each event's joined `data:`.
 pub(crate) fn sse_events(buf: &[u8], from: usize) -> (Vec<Cow<'_, str>>, usize) {
     sse_events_after(buf, from, from)
 }
 
-/// `from` is the unconsumed event's start; `search_from` skips its previously searched
-/// prefix. They differ only for an unfinished event carried across chunks.
 pub(crate) fn sse_events_after(
     buf: &[u8],
     from: usize,
     search_from: usize,
 ) -> (Vec<Cow<'_, str>>, usize) {
-    let mut out = Vec::new();
-    let mut pos = from;
-    let mut search = search_from.max(from);
-    loop {
-        let rest = &buf[search..];
-        let Some((end, sep)) = find_sep(rest) else {
-            break;
-        };
-        let end = search + end;
-        // The usual single data line borrows the existing event buffer. Multi-line SSE
-        // needs joining, but verifying the type never builds a second large JSON Value.
-        out.push(match String::from_utf8_lossy(&buf[pos..end]) {
-            Cow::Borrowed(ev) => sse_data(ev),
-            Cow::Owned(ev) => Cow::Owned(sse_data(&ev).into_owned()),
-        });
-        pos = end + sep;
-        search = pos;
-    }
-    (out, pos)
+    let mut used = from;
+    let events = Framer::events_after(buf, from, search_from)
+        .map(|event| {
+            used += event.len();
+            match String::from_utf8_lossy(event) {
+                Cow::Borrowed(event) => data_text(event).unwrap_or_default(),
+                Cow::Owned(event) => Cow::Owned(data_text(&event).unwrap_or_default().into_owned()),
+            }
+        })
+        .collect();
+    (events, used)
 }
 
-fn sse_data(ev: &str) -> Cow<'_, str> {
-    let mut lines = ev
-        .lines()
-        .filter_map(|l| l.strip_prefix("data:"))
-        .map(|d| d.strip_prefix(' ').unwrap_or(d));
-    let first = lines.next().unwrap_or("");
+pub(crate) fn data(event: &[u8]) -> Option<Cow<'_, str>> {
+    data_text(std::str::from_utf8(event).ok()?)
+}
+
+fn data_text(event: &str) -> Option<Cow<'_, str>> {
+    let mut lines = event
+        .split(['\r', '\n'])
+        .filter_map(|line| {
+            line.strip_prefix("data:")
+                .or_else(|| (line == "data").then_some(""))
+        })
+        .map(|data| data.strip_prefix(' ').unwrap_or(data));
+    let first = lines.next()?;
     let Some(second) = lines.next() else {
-        return Cow::Borrowed(first);
+        return Some(Cow::Borrowed(first));
     };
-    let mut text = first.to_string();
+    let mut text = first.to_owned();
     for line in std::iter::once(second).chain(lines) {
         text.push('\n');
         text.push_str(line);
     }
-    Cow::Owned(text)
-}
-
-fn find_sep(b: &[u8]) -> Option<(usize, usize)> {
-    let a = b.windows(2).position(|w| w == b"\n\n").map(|i| (i, 2));
-    let c = b.windows(4).position(|w| w == b"\r\n\r\n").map(|i| (i, 4));
-    match (a, c) {
-        (Some(x), Some(y)) => Some(if x.0 <= y.0 { x } else { y }),
-        (x, y) => x.or(y),
-    }
+    Some(Cow::Owned(text))
 }
 
 pub(crate) fn memfind(hay: &[u8], needle: &[u8]) -> bool {
@@ -155,6 +255,99 @@ pub(crate) fn memfind(hay: &[u8], needle: &[u8]) -> bool {
 #[cfg(test)]
 mod quota_tests {
     use super::*;
+
+    #[test]
+    fn framer_events_are_independent_of_chunk_splits() {
+        let events = [
+            ": comment\r\nevent: message\r\ndata: {\"type\":\"response.output_text.delta\",\r\ndata: \"delta\":\"你好\"}\r\n\r\n",
+            "data: {\"type\":\"response.done\"}\n\n",
+            "data: [DONE]\n\n",
+        ];
+        let wire = events.concat() + "data: unfinished";
+        let bytes = Bytes::from(wire);
+        let check = |cuts: &[usize]| {
+            let mut framer = Framer::new(usize::MAX);
+            let mut actual = Vec::new();
+            let mut pending = Vec::new();
+            let mut observed = Vec::new();
+            let mut start = 0;
+            for end in cuts.iter().copied().chain(std::iter::once(bytes.len())) {
+                for frame in framer.push(bytes.slice(start..end)) {
+                    match frame {
+                        Frame::Event(event) => actual.push(event),
+                        Frame::Oversize(_) => panic!("unbounded framer"),
+                    }
+                }
+                let search_from = pending.len().saturating_sub(3);
+                pending.extend_from_slice(&bytes[start..end]);
+                let (data, used) = sse_events_after(&pending, 0, search_from);
+                observed.extend(data.into_iter().map(Cow::into_owned));
+                pending.drain(..used);
+                start = end;
+            }
+            assert_eq!(
+                observed,
+                events
+                    .iter()
+                    .map(|event| data(event.as_bytes()).unwrap().into_owned())
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(pending, b"data: unfinished");
+            assert_eq!(
+                actual.iter().map(|event| &event[..]).collect::<Vec<_>>(),
+                events
+                    .iter()
+                    .map(|event| event.as_bytes())
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(framer.finish().as_deref(), Some(&b"data: unfinished"[..]));
+        };
+        // Exhaust all one/two-cut partitions, including cuts inside UTF-8 and CRLF.
+        for first in 0..=bytes.len() {
+            for second in first..=bytes.len() {
+                check(&[first, second]);
+            }
+        }
+        // Also generate arbitrary partitions with many independently placed boundaries.
+        for seed in 1..=256u64 {
+            let mut state = seed;
+            let cuts: Vec<_> = (0..bytes.len())
+                .filter(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    state % 3 == 0
+                })
+                .collect();
+            check(&cuts);
+        }
+    }
+
+    #[test]
+    fn oversized_fragments_forward_exact_bytes_and_resume_only_at_delimiter() {
+        let wire =
+            Bytes::from_static(b"data: 12345678901234567890\r\nevent: error\r\n\r\ndata: ok\n\n");
+        for split in 0..=wire.len() {
+            let mut framer = Framer::new(16);
+            let mut forwarded = Vec::new();
+            let mut events = Vec::new();
+            for chunk in [wire.slice(..split), wire.slice(split..)] {
+                for frame in framer.push(chunk) {
+                    match frame {
+                        Frame::Event(event) => {
+                            forwarded.extend_from_slice(&event);
+                            events.push(event);
+                        }
+                        Frame::Oversize(bytes) => forwarded.extend_from_slice(&bytes),
+                    }
+                }
+                assert!(framer.tail.len() <= 16);
+            }
+            assert_eq!(forwarded, wire);
+            assert_eq!(events, [Bytes::from_static(b"data: ok\n\n")]);
+            assert!(framer.finish().is_none());
+        }
+    }
 
     #[test]
     fn sse_types_survive_fragmented_crlf_and_multiline_data() {
@@ -192,10 +385,12 @@ mod quota_tests {
         );
         let head = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"invalid_encrypted_content\"}\r\n\r\n";
         let all = format!("{head}{ev}");
-        for cut in [1, head.len() - 1, head.len() + 5, all.len() - 1] {
+        for cut in 0..=all.len() {
             let mut a = Aligner::new(true);
-            let mut out = a.push(&all.as_bytes()[..cut]).to_vec();
-            out.extend_from_slice(&a.push(&all.as_bytes()[cut..]));
+            let mut out = a
+                .push(Bytes::copy_from_slice(&all.as_bytes()[..cut]))
+                .to_vec();
+            out.extend_from_slice(&a.push(Bytes::copy_from_slice(&all.as_bytes()[cut..])));
             if let Some(r) = a.finish() {
                 out.extend_from_slice(&r);
             }
@@ -212,11 +407,14 @@ mod quota_tests {
         }
         // Partial events are held; whole ones flow unchanged; non-SSE is untouched.
         let mut a = Aligner::new(true);
-        assert!(a.push(b"data: {\"a\":1}").is_empty());
-        assert_eq!(&a.push(b"\n\ndata: x")[..], b"data: {\"a\":1}\n\n");
+        assert!(a.push(Bytes::from_static(b"data: {\"a\":1}")).is_empty());
+        assert_eq!(
+            &a.push(Bytes::from_static(b"\n\ndata: x"))[..],
+            b"data: {\"a\":1}\n\n"
+        );
         assert_eq!(&a.finish().unwrap()[..], b"data: x");
         let mut a = Aligner::new(false);
-        assert_eq!(&a.push(b"partial")[..], b"partial");
+        assert_eq!(&a.push(Bytes::from_static(b"partial"))[..], b"partial");
         assert!(a.finish().is_none());
     }
 }

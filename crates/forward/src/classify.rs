@@ -5,7 +5,69 @@ use ciallopa_routing::{
     is_usage_limit, parse_quota, parse_quota_event_headers, retry_after_for_429,
 };
 use http::HeaderMap;
+use std::borrow::Cow;
 use std::time::{Duration, SystemTime};
+
+#[derive(Debug, PartialEq)]
+pub(crate) enum Class {
+    Preamble,
+    RateLimits(Option<ciallopa_core::QuotaSnapshot>),
+    Created,
+    Output,
+    SoftError,
+    Terminal(Terminal),
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) enum Terminal {
+    Completed,
+    Incomplete,
+    Failed,
+    Error,
+    Quota(Outcome),
+    Overloaded(String),
+    Encrypted(String),
+}
+
+pub(crate) struct Classified<'a> {
+    pub(crate) ty: Option<Cow<'a, str>>,
+    pub(crate) class: Class,
+    value: Option<serde_json::Value>,
+}
+
+impl Classified<'_> {
+    pub(crate) fn ws_view(mut self, text: &str) -> Self {
+        // Preserve the legacy WS view of unrelated frames. This adjusts protocol
+        // semantics after classification; it never selects the JSON-tree parsing path.
+        if !text.contains("response.")
+            && !text.contains("codex.rate_limits")
+            && !text.contains("\"error\"")
+        {
+            self.class = Class::Output;
+        }
+        if self.class == Class::Terminal(Terminal::Error)
+            && !self.value.as_ref().is_some_and(error_frame_ends_turn)
+        {
+            self.class = Class::SoftError;
+        }
+        self
+    }
+
+    pub(crate) fn ends_ws_turn(&self) -> bool {
+        // Standalone overload types (including service_unavailable_error) do not end a WS turn.
+        matches!(self.class, Class::Terminal(_))
+            && matches!(
+                self.ty.as_deref(),
+                Some(
+                    "response.completed"
+                        | "response.done"
+                        | "response.incomplete"
+                        | "response.failed"
+                        | "error"
+                )
+            )
+    }
+}
 
 /// What a Responses stream event means for bootstrap / failover.
 #[derive(Debug, PartialEq)]
@@ -23,6 +85,18 @@ pub(crate) enum EventKind {
     Encrypted(String),
     /// Anything else: real output (or a non-quota terminal event).
     Content,
+}
+
+impl From<Class> for EventKind {
+    fn from(class: Class) -> Self {
+        match class {
+            Class::Preamble | Class::RateLimits(_) | Class::Created => Self::Preamble,
+            Class::Terminal(Terminal::Quota(o)) => Self::Quota(o),
+            Class::Terminal(Terminal::Overloaded(code)) => Self::Overloaded(code),
+            Class::Terminal(Terminal::Encrypted(message)) => Self::Encrypted(message),
+            Class::Output | Class::SoftError | Class::Terminal(_) => Self::Content,
+        }
+    }
 }
 
 /// Quota-type error codes that justify switching accounts.
@@ -158,59 +232,122 @@ pub(crate) fn event_kind(text: &str) -> EventKind {
 
 pub(crate) fn event_kind_observed(
     text: &str,
-    progress: Option<&mut crate::usage::StreamObservation>,
+    progress: Option<&mut StreamObservation>,
 ) -> EventKind {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
-        return EventKind::Content;
-    };
-    let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
-    if let Some(progress) = progress.filter(|_| v.get("type").and_then(|t| t.as_str()).is_some()) {
+    let classified = classify(None, text);
+    if let (Some(progress), Some(ty)) = (progress, classified.ty.as_deref()) {
         progress.event(ty);
     }
-    // `response.queued` / `response.metadata` / `keepalive` are chatgpt Codex bookkeeping
-    // before any model output (moderation info, queue status, heartbeats). Treating them as
-    // Content would commit the attempt and block pre-output overload switch / encrypted 400
-    // (sub2api #8139). Exact names only; unknown types stay Content.
-    if matches!(
+    classified.class.into()
+}
+
+fn needs_value(ty: &str) -> bool {
+    matches!(
         ty,
-        "response.created"
-            | "response.in_progress"
-            | "response.queued"
-            | "response.metadata"
+        "" | "error"
+            | "response.failed"
+            | "response.output_item.added"
+            | "response.content_part.added"
+            | "response.reasoning_summary_part.added"
             | "codex.rate_limits"
-            | "keepalive"
-            | ""
-    ) {
-        return EventKind::Preamble;
+    ) || OVERLOAD_CODES.contains(&ty)
+}
+
+fn simple_class(ty: &str) -> Class {
+    match ty {
+        "response.created" => Class::Created,
+        "response.in_progress" | "response.queued" | "response.metadata" | "keepalive" => {
+            Class::Preamble
+        }
+        "response.completed" | "response.done" => Class::Terminal(Terminal::Completed),
+        "response.incomplete" => Class::Terminal(Terminal::Incomplete),
+        _ if ty.starts_with("codex.") || ty.starts_with("responsesapi.") => Class::Preamble,
+        _ => Class::Output,
     }
-    if empty_announcement(ty, &v) {
-        return EventKind::Preamble;
+}
+
+/// Reuses a known envelope type; ordinary deltas only deserialize the borrowed envelope.
+/// The pre-check selects structured events, rather than matching every `response.*` frame.
+pub(crate) fn classify<'a>(ty: Option<&'a str>, text: &'a str) -> Classified<'a> {
+    let structured = ty.map(needs_value).unwrap_or_else(|| {
+        [
+            "\"error\"",
+            "response.failed",
+            "response.output_item.added",
+            "response.content_part.added",
+            "response.reasoning_summary_part.added",
+            "codex.rate_limits",
+        ]
+        .iter()
+        .chain(OVERLOAD_CODES.iter())
+        .any(|needle| text.contains(needle))
+    });
+    if !structured {
+        let ty = ty
+            .map(Cow::Borrowed)
+            .or_else(|| crate::usage::event_type(text));
+        if let Some(ty) = ty.filter(|ty| !needs_value(ty)) {
+            return Classified {
+                class: simple_class(&ty),
+                ty: Some(ty),
+                value: None,
+            };
+        }
     }
-    if let Some(m) = crate::encrypted::rejection(&v) {
-        return EventKind::Encrypted(m);
-    }
-    let (quota, code) = quota_event(&v);
-    if !quota {
-        return match overload_code(&v) {
-            Some(c) => EventKind::Overloaded(c),
-            // Transport metadata (`codex.response.metadata`, `responsesapi.websocket_timing`).
-            None if ty.starts_with("codex.") || ty.starts_with("responsesapi.") => {
-                EventKind::Preamble
-            }
-            None => EventKind::Content,
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
+        return Classified {
+            ty: None,
+            class: Class::Output,
+            value: None,
         };
+    };
+    let ty = v.get("type").and_then(|t| t.as_str());
+    let class = classify_value(ty.unwrap_or(""), text, &v);
+    Classified {
+        ty: ty.map(|ty| Cow::Owned(ty.to_owned())),
+        class,
+        value: Some(v),
     }
-    let quota_h =
-        ciallopa_routing::parse_quota_event_headers(text.as_bytes()).and_then(|h| parse_quota(&h));
-    EventKind::Quota(Outcome::RateLimited {
-        retry_after: ciallopa_routing::parse_codex_retry_after(
-            429,
-            text.as_bytes(),
-            SystemTime::now(),
-        ),
-        usage_limit: code || is_usage_limit(text.as_bytes()),
-        quota: quota_h,
-    })
+}
+
+fn classify_value(ty: &str, text: &str, v: &serde_json::Value) -> Class {
+    match ty {
+        "" => return Class::Preamble,
+        "codex.rate_limits" => {
+            return Class::RateLimits(
+                parse_quota_event_headers(text.as_bytes()).and_then(|h| parse_quota(&h)),
+            );
+        }
+        _ if !needs_value(ty) => return simple_class(ty),
+        _ => {}
+    }
+    if empty_announcement(ty, v) {
+        return Class::Preamble;
+    }
+    if let Some(message) = crate::encrypted::rejection(v) {
+        return Class::Terminal(Terminal::Encrypted(message));
+    }
+    let (quota, code) = quota_event(v);
+    if quota {
+        let quota = parse_quota_event_headers(text.as_bytes()).and_then(|h| parse_quota(&h));
+        return Class::Terminal(Terminal::Quota(Outcome::RateLimited {
+            retry_after: ciallopa_routing::parse_codex_retry_after(
+                429,
+                text.as_bytes(),
+                SystemTime::now(),
+            ),
+            usage_limit: code || is_usage_limit(text.as_bytes()),
+            quota,
+        }));
+    }
+    if let Some(code) = overload_code(v) {
+        return Class::Terminal(Terminal::Overloaded(code));
+    }
+    match ty {
+        "error" => Class::Terminal(Terminal::Error),
+        "response.failed" => Class::Terminal(Terminal::Failed),
+        _ => simple_class(ty),
+    }
 }
 
 /// An item or part announced before it carries anything: a `message` with no content, a
@@ -378,43 +515,23 @@ pub(crate) fn is_model_unsupported(body: &[u8]) -> bool {
     })
 }
 
-/// Inspect an upstream text frame: (kind, request finished, quota snapshot outcome).
-#[cfg(test)]
-fn classify(text: &str) -> (proxy::EventKind, bool, Option<Outcome>) {
-    classify_observed(text, &mut StreamObservation::new())
-}
-
+/// Compatibility view for the existing WS session driver.
 pub(crate) fn classify_observed(
     text: &str,
     progress: &mut StreamObservation,
 ) -> (proxy::EventKind, bool, Option<Outcome>) {
-    let looks = text.contains("\"error\"")
-        || text.contains("response.")
-        || text.contains("codex.rate_limits");
-    if !looks {
-        if let Some(ty) = crate::usage::event_type(text) {
-            progress.event(&ty);
-        }
-        return (proxy::EventKind::Content, false, None);
-    }
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
-        return (proxy::EventKind::Content, false, None);
-    };
-    let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
-    if v.get("type").and_then(|t| t.as_str()).is_some() {
+    let classified = classify(None, text).ws_view(text);
+    if let Some(ty) = classified.ty.as_deref() {
         progress.event(ty);
     }
-    let kind = proxy::event_kind(text);
-    let done = match ty {
-        "response.completed" | "response.failed" | "response.incomplete" | "response.done" => true,
-        "error" => error_frame_ends_turn(&v, &kind),
-        _ => false,
+    let done = classified.ends_ws_turn();
+    let snapshot = match &classified.class {
+        Class::RateLimits(Some(quota)) => Some(Outcome::Success {
+            quota: Some(quota.clone()),
+        }),
+        _ => None,
     };
-    let snapshot = (ty == "codex.rate_limits")
-        .then(|| parse_quota_event_headers(text.as_bytes()).and_then(|h| parse_quota(&h)))
-        .flatten()
-        .map(|q| Outcome::Success { quota: Some(q) });
-    (kind, done, snapshot)
+    (classified.class.into(), done, snapshot)
 }
 
 /// Whether Codex ends the turn on this `error` frame (codex-api
@@ -422,10 +539,7 @@ pub(crate) fn classify_observed(
 /// `status_code`, or a code it maps itself. Frames the proxy classifies (quota, overload,
 /// encrypted-content rejection) also end it, as before. Anything else Codex ignores and
 /// keeps reading, so the proxy forwards it and the turn goes on.
-fn error_frame_ends_turn(v: &serde_json::Value, kind: &proxy::EventKind) -> bool {
-    if !matches!(kind, proxy::EventKind::Content | proxy::EventKind::Preamble) {
-        return true;
-    }
+fn error_frame_ends_turn(v: &serde_json::Value) -> bool {
     let status = ["status", "status_code"]
         .iter()
         .find_map(|k| v.get(*k).and_then(|s| s.as_u64()));
@@ -516,96 +630,251 @@ mod quota_tests {
     }
 
     #[test]
-    fn quota_only_from_structured_fields() {
-        let q = |t: &str| matches!(event_kind(t), EventKind::Quota(_));
-        assert!(!q(
-            r#"{"type":"response.failed","response":{"error":{"code":"server_error"},"instructions":"usage_limit_reached"}}"#
-        ));
-        assert!(!q(
-            r#"{"type":"error","status":500,"error":{"message":"see usage_limit_reached docs"}}"#
-        ));
-        assert!(q(
-            r#"{"type":"response.failed","response":{"error":{"code":"usage_limit_reached"}}}"#
-        ));
-        assert!(q(
-            r#"{"type":"error","error":{"type":"insufficient_quota"}}"#
-        ));
-        assert!(q(
-            r#"{"type":"error","status":429,"error":{"message":"x"}}"#
-        ));
-        assert!(!q(
-            r#"{"type":"response.output_text.delta","delta":"usage_limit_reached"}"#
-        ));
-    }
-
-    #[test]
-    fn failed_rate_limit_is_a_model_rate_limit() {
-        // Codex retries `response.failed` `rate_limit_exceeded` (temporary limit); the router
-        // must hear it as a rate limit (model cooldown), never as a usage limit.
-        let ev = r#"{"type":"response.failed","response":{"error":{"code":"rate_limit_exceeded","message":"Rate limit reached for gpt-5.1 on tokens per min (TPM). Please try again in 11.054s."}}}"#;
-        assert!(matches!(
-            event_kind(ev),
-            EventKind::Quota(Outcome::RateLimited {
-                usage_limit: false,
-                ..
-            })
-        ));
-        let v: serde_json::Value = serde_json::from_str(ev).unwrap();
-        assert_eq!(quota_event(&v), (true, false));
-        assert_eq!(errors::event_code(&v), "rate_limit_exceeded");
-        // Same code on an `error` frame without a status.
-        let ev =
-            r#"{"type":"error","error":{"type":"rate_limit_error","code":"rate_limit_exceeded"}}"#;
-        assert!(matches!(
-            event_kind(ev),
-            EventKind::Quota(Outcome::RateLimited {
-                usage_limit: false,
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn turn_rate_limit_is_a_model_rate_limit() {
-        // "Codex is at capacity" per-turn limit: a temporary rate limit (model cooldown and
-        // switch before output), never a usage limit, and never mistaken for an overload by
-        // its message.
-        for ev in [
-            r#"{"type":"response.failed","response":{"error":{"code":"turn_rate_limit_exceeded","message":"Codex is at capacity, please try again later"}}}"#,
-            r#"{"type":"error","error":{"type":"rate_limit_error","code":"turn_rate_limit_exceeded","message":"Codex is at capacity, please try again later"}}"#,
+    fn frame_classification_table() {
+        use Class::{Created, Output, Preamble};
+        let failed = || Class::Terminal(Terminal::Failed);
+        let error = || Class::Terminal(Terminal::Error);
+        let quota = |usage_limit| {
+            Class::Terminal(Terminal::Quota(Outcome::RateLimited {
+                retry_after: None,
+                usage_limit,
+                quota: None,
+            }))
+        };
+        let overloaded = |code: &str| Class::Terminal(Terminal::Overloaded(code.to_owned()));
+        let encrypted = Class::Terminal(Terminal::Encrypted("The encrypted content for item rs_1 could not be verified. Reason: Encrypted content could not be decrypted or parsed.".to_owned()));
+        for (text, expected) in [
+            (
+                r#"{"type":"response.failed","response":{"error":{"code":"server_error"},"instructions":"usage_limit_reached"}}"#,
+                failed(),
+            ),
+            (
+                r#"{"type":"error","status":500,"error":{"message":"see usage_limit_reached docs"}}"#,
+                error(),
+            ),
+            (
+                r#"{"type":"response.failed","response":{"error":{"code":"usage_limit_reached"}}}"#,
+                quota(true),
+            ),
+            (
+                r#"{"type":"error","error":{"type":"insufficient_quota"}}"#,
+                quota(true),
+            ),
+            (
+                r#"{"type":"error","status":429,"error":{"message":"x"}}"#,
+                quota(false),
+            ),
+            (
+                r#"{"type":"response.output_text.delta","delta":"usage_limit_reached"}"#,
+                Output,
+            ),
+            (
+                r#"{"type":"response.failed","response":{"error":{"code":"rate_limit_exceeded","message":"Rate limit reached for gpt-5.1 on tokens per min (TPM). Please try again in 11.054s."}}}"#,
+                quota(false),
+            ),
+            (
+                r#"{"type":"error","error":{"type":"rate_limit_error","code":"rate_limit_exceeded"}}"#,
+                quota(false),
+            ),
+            (
+                r#"{"type":"response.failed","response":{"error":{"code":"turn_rate_limit_exceeded","message":"Codex is at capacity, please try again later"}}}"#,
+                quota(false),
+            ),
+            (
+                r#"{"type":"error","error":{"type":"rate_limit_error","code":"turn_rate_limit_exceeded","message":"Codex is at capacity, please try again later"}}"#,
+                quota(false),
+            ),
+            (
+                r#"{"type":"response.failed","response":{"error":{"code":"policy_capacity_unavailable","message":"x"}}}"#,
+                overloaded("policy_capacity_unavailable"),
+            ),
+            (
+                r#"{"type":"error","error":{"code":"policy_capacity_unavailable"}}"#,
+                overloaded("policy_capacity_unavailable"),
+            ),
+            (
+                r#"{"type":"service_unavailable_error","code":"server_is_overloaded","message":"x"}"#,
+                overloaded("server_is_overloaded"),
+            ),
+            (
+                r#"{"type":"error","error":{"code":"slow_down"}}"#,
+                overloaded("slow_down"),
+            ),
+            (
+                r#"{"type":"response.failed","response":{"error":{"code":"server_is_overloaded"}}}"#,
+                overloaded("server_is_overloaded"),
+            ),
+            (
+                r#"{"type":"error","error":{"message":"Selected model is at capacity."}}"#,
+                overloaded("server_is_overloaded"),
+            ),
+            (
+                r#"{"type":"error","error":{"type":"service_unavailable_error"}}"#,
+                overloaded("service_unavailable_error"),
+            ),
+            (
+                r#"{"type":"response.output_text.delta","delta":"server is overloaded"}"#,
+                Output,
+            ),
+            (
+                r#"{"type":"error","error":{"code":"context_length_exceeded","message":"overloaded"}}"#,
+                error(),
+            ),
+            (
+                r#"{"type":"error","status":429,"error":{"type":"usage_limit_reached","message":"overloaded"}}"#,
+                quota(true),
+            ),
+            (
+                r#"{"type":"error","error":{"message":"The encrypted content for item rs_1 could not be verified. Reason: Encrypted content could not be decrypted or parsed.","type":"invalid_request_error","param":"input","code":"invalid_encrypted_content"}}"#,
+                encrypted,
+            ),
+            (
+                r#"{"type":"response.metadata","response_id":"r1","metadata":{"openai_chatgpt_moderation_metadata":{"prompt":{}}}}"#,
+                Preamble,
+            ),
+            (
+                r#"{"type":"response.queued","response":{"id":"r1","status":"queued"}}"#,
+                Preamble,
+            ),
+            (r#"{"type":"keepalive"}"#, Preamble),
+            (
+                r#"{"type":"response.output_text.delta","delta":"hi"}"#,
+                Output,
+            ),
+            (r#"{"type":"unknown_event","x":1}"#, Output),
+            (
+                r#"{"type":"response.output_item.added","item":{"type":"message","role":"assistant","content":[]}}"#,
+                Preamble,
+            ),
+            (
+                r#"{"type":"response.output_item.added","item":{"type":"reasoning","summary":[],"encrypted_content":null}}"#,
+                Preamble,
+            ),
+            (
+                r#"{"type":"response.content_part.added","part":{"type":"output_text","annotations":[],"text":""}}"#,
+                Preamble,
+            ),
+            (
+                r#"{"type":"response.reasoning_summary_part.added","part":{"type":"summary_text","text":""}}"#,
+                Preamble,
+            ),
+            (
+                r#"{"type":"response.output_item.added","item":{"type":"function_call","name":"shell","arguments":""}}"#,
+                Preamble,
+            ),
+            (
+                r#"{"type":"response.output_item.added","item":{"type":"custom_tool_call","name":"apply_patch","input":""}}"#,
+                Preamble,
+            ),
+            (
+                r#"{"type":"response.output_item.added","item":{"type":"function_call","name":"shell","arguments":"{}"}}"#,
+                Output,
+            ),
+            (
+                r#"{"type":"response.output_item.added","item":{"type":"message","content":[{"type":"output_text","text":"hi"}]}}"#,
+                Output,
+            ),
+            (
+                r#"{"type":"response.output_item.added","item":{"type":"reasoning","summary":[],"encrypted_content":"gAAA"}}"#,
+                Output,
+            ),
+            (
+                r#"{"type":"response.content_part.added","part":{"type":"output_text","text":"hi"}}"#,
+                Output,
+            ),
+            (
+                r#"{"type":"response.output_item.added","item":{"type":"web_search_call"}}"#,
+                Output,
+            ),
+            (r#"{"type":"response.created"}"#, Created),
+            (r#"{"type":"response.in_progress"}"#, Preamble),
+            (r#"{"type":"codex.response.metadata"}"#, Preamble),
+            (r#"{"type":"responsesapi.websocket_timing"}"#, Preamble),
+            (r#"{"type":"codex.rate_limits"}"#, Class::RateLimits(None)),
+            (
+                r#"{"type":"response.completed"}"#,
+                Class::Terminal(Terminal::Completed),
+            ),
+            (
+                r#"{"type":"response.done"}"#,
+                Class::Terminal(Terminal::Completed),
+            ),
+            (
+                r#"{"type":"response.incomplete"}"#,
+                Class::Terminal(Terminal::Incomplete),
+            ),
+            (r#"{}"#, Preamble),
+            (r#"{"type":null}"#, Preamble),
+            (r#"{"type":""}"#, Preamble),
+            ("invalid JSON", Output),
+            (
+                r#"{"type":"response.output_text.delta","delta":"hi"} trailing"#,
+                Output,
+            ),
+            (
+                r#"{"type":"response.\u0066ailed","response":{"error":{"code":"insufficient_quota"}}}"#,
+                quota(true),
+            ),
         ] {
-            assert!(
-                matches!(
-                    event_kind(ev),
-                    EventKind::Quota(Outcome::RateLimited {
-                        usage_limit: false,
-                        ..
-                    })
-                ),
-                "{ev}"
-            );
-            let v: serde_json::Value = serde_json::from_str(ev).unwrap();
-            assert_eq!(quota_event(&v), (true, false), "{ev}");
+            let classified = super::classify(None, text);
+            assert_eq!(classified.class, expected, "{text}");
+            // A previously read envelope must produce the same classification.
+            let ty = crate::usage::event_type(text);
+            if let Some(ty) = ty.as_deref() {
+                assert_eq!(super::classify(Some(ty), text).class, expected, "{text}");
+            }
+            if let Class::Terminal(Terminal::Quota(Outcome::RateLimited { usage_limit, .. })) =
+                &expected
+            {
+                let value = serde_json::from_str(text).unwrap();
+                assert_eq!(quota_event(&value), (true, *usage_limit), "{text}");
+                if let Some(code) = value
+                    .pointer("/response/error/code")
+                    .and_then(serde_json::Value::as_str)
+                {
+                    if code == "rate_limit_exceeded" {
+                        assert_eq!(errors::event_code(&value), code);
+                    }
+                }
+            }
+            assert_eq!(event_kind(text), EventKind::from(expected), "{text}");
         }
-        let body = br#"{"error":{"type":"rate_limit_error","code":"turn_rate_limit_exceeded","message":"Codex is at capacity, please try again later"}}"#;
-        assert_eq!(overload_body(429, body), None);
     }
 
     #[test]
-    fn policy_capacity_unavailable_is_an_overload() {
-        for ev in [
-            r#"{"type":"response.failed","response":{"error":{"code":"policy_capacity_unavailable","message":"x"}}}"#,
-            r#"{"type":"error","error":{"code":"policy_capacity_unavailable"}}"#,
+    fn overload_http_bodies_and_retry_marker() {
+        for (status, body, expected) in [
+            (
+                400,
+                r#"{"error":{"message":"Our servers are currently overloaded."}}"#,
+                Some("server_is_overloaded"),
+            ),
+            (
+                503,
+                r#"{"error":{"type":"server_error","code":"server_is_overloaded"}}"#,
+                Some("server_is_overloaded"),
+            ),
+            (
+                503,
+                r#"{"error":{"code":"policy_capacity_unavailable"}}"#,
+                Some("policy_capacity_unavailable"),
+            ),
+            (
+                429,
+                r#"{"error":{"type":"rate_limit_error","code":"turn_rate_limit_exceeded","message":"Codex is at capacity, please try again later"}}"#,
+                None,
+            ),
+            (503, "busy", None),
+            (401, r#"{"error":{"message":"overloaded"}}"#, None),
         ] {
-            assert!(
-                matches!(event_kind(ev), EventKind::Overloaded(ref c) if c == "policy_capacity_unavailable"),
-                "{ev}"
-            );
+            assert_eq!(overload_body(status, body.as_bytes()).as_deref(), expected);
         }
-        assert_eq!(
-            overload_body(503, br#"{"error":{"code":"policy_capacity_unavailable"}}"#).as_deref(),
-            Some("policy_capacity_unavailable")
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-retry-metadata",
+            HeaderValue::from_static("NO_MORE_RETRY"),
         );
+        assert!(no_more_retry(&headers));
     }
 
     #[test]
@@ -659,131 +928,16 @@ mod quota_tests {
             );
         }
     }
-
-    #[test]
-    fn overload_detection() {
-        let k = |t: &str| event_kind(t);
-        let ov = |t: &str| matches!(k(t), EventKind::Overloaded(_));
-        assert!(ov(
-            r#"{"type":"service_unavailable_error","code":"server_is_overloaded","message":"x"}"#
-        ));
-        assert!(ov(r#"{"type":"error","error":{"code":"slow_down"}}"#));
-        assert!(ov(
-            r#"{"type":"response.failed","response":{"error":{"code":"server_is_overloaded"}}}"#
-        ));
-        assert!(ov(
-            r#"{"type":"error","error":{"message":"Selected model is at capacity."}}"#
-        ));
-        assert!(ov(
-            r#"{"type":"error","error":{"type":"service_unavailable_error"}}"#
-        ));
-        // Never from output text, and an explicit other code wins over the message.
-        assert!(!ov(
-            r#"{"type":"response.output_text.delta","delta":"server is overloaded"}"#
-        ));
-        assert!(!ov(
-            r#"{"type":"error","error":{"code":"context_length_exceeded","message":"overloaded"}}"#
-        ));
-        assert!(matches!(
-            k(
-                r#"{"type":"error","status":429,"error":{"type":"usage_limit_reached","message":"overloaded"}}"#
-            ),
-            EventKind::Quota(_)
-        ));
-        assert_eq!(
-            overload_body(
-                400,
-                br#"{"error":{"message":"Our servers are currently overloaded."}}"#
-            )
-            .as_deref(),
-            Some("server_is_overloaded")
-        );
-        assert_eq!(
-            overload_body(
-                503,
-                br#"{"error":{"type":"server_error","code":"server_is_overloaded"}}"#
-            )
-            .as_deref(),
-            Some("server_is_overloaded")
-        );
-        assert_eq!(overload_body(503, b"busy"), None);
-        assert_eq!(
-            overload_body(401, br#"{"error":{"message":"overloaded"}}"#),
-            None
-        );
-        let mut h = HeaderMap::new();
-        h.insert(
-            "x-retry-metadata",
-            HeaderValue::from_static("NO_MORE_RETRY"),
-        );
-        assert!(no_more_retry(&h));
-    }
-
-    #[test]
-    fn encrypted_rejection_kind() {
-        let ev = r#"{"type":"error","error":{"message":"The encrypted content for item rs_1 could not be verified. Reason: Encrypted content could not be decrypted or parsed.","type":"invalid_request_error","param":"input","code":"invalid_encrypted_content"}}"#;
-        assert!(
-            matches!(event_kind(ev), EventKind::Encrypted(m) if m.contains("decrypted or parsed"))
-        );
-        // Not an overload / quota / content event.
-        let v: serde_json::Value = serde_json::from_str(ev).unwrap();
-        assert!(overload_code(&v).is_none() && !quota_event(&v).0);
-    }
-
-    #[test]
-    fn bookkeeping_events_are_preamble() {
-        let p = |t: &str| matches!(event_kind(t), EventKind::Preamble);
-        assert!(p(
-            r#"{"type":"response.metadata","response_id":"r1","metadata":{"openai_chatgpt_moderation_metadata":{"prompt":{}}}}"#
-        ));
-        assert!(p(
-            r#"{"type":"response.queued","response":{"id":"r1","status":"queued"}}"#
-        ));
-        assert!(p(r#"{"type":"keepalive"}"#));
-        // Real content / unknown events stay Content.
-        assert!(!p(r#"{"type":"response.output_text.delta","delta":"hi"}"#));
-        assert!(!p(r#"{"type":"unknown_event","x":1}"#));
-        // Empty item / part announcements hold; anything with content commits.
-        assert!(p(
-            r#"{"type":"response.output_item.added","item":{"type":"message","role":"assistant","content":[]}}"#
-        ));
-        assert!(p(
-            r#"{"type":"response.output_item.added","item":{"type":"reasoning","summary":[],"encrypted_content":null}}"#
-        ));
-        assert!(p(
-            r#"{"type":"response.content_part.added","part":{"type":"output_text","annotations":[],"text":""}}"#
-        ));
-        assert!(p(
-            r#"{"type":"response.reasoning_summary_part.added","part":{"type":"summary_text","text":""}}"#
-        ));
-        assert!(p(
-            r#"{"type":"response.output_item.added","item":{"type":"function_call","name":"shell","arguments":""}}"#
-        ));
-        assert!(p(
-            r#"{"type":"response.output_item.added","item":{"type":"custom_tool_call","name":"apply_patch","input":""}}"#
-        ));
-        assert!(!p(
-            r#"{"type":"response.output_item.added","item":{"type":"function_call","name":"shell","arguments":"{}"}}"#
-        ));
-        assert!(!p(
-            r#"{"type":"response.output_item.added","item":{"type":"message","content":[{"type":"output_text","text":"hi"}]}}"#
-        ));
-        assert!(!p(
-            r#"{"type":"response.output_item.added","item":{"type":"reasoning","summary":[],"encrypted_content":"gAAA"}}"#
-        ));
-        assert!(!p(
-            r#"{"type":"response.content_part.added","part":{"type":"output_text","text":"hi"}}"#
-        ));
-        assert!(!p(
-            r#"{"type":"response.output_item.added","item":{"type":"web_search_call"}}"#
-        ));
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ws::frames::replayable;
+
+    fn classify(text: &str) -> (EventKind, bool, Option<Outcome>) {
+        classify_observed(text, &mut StreamObservation::new())
+    }
 
     #[test]
     fn classifies() {
@@ -825,6 +979,62 @@ mod tests {
     /// Codex (`map_wrapped_websocket_error_event`) ends a turn on an `error` frame only for
     /// a non-2xx `status`, or the codes it maps itself; any other error frame is ignored and
     /// it keeps reading. The proxy must not settle the turn on such a frame.
+    #[test]
+    fn ws_bookkeeping_and_standalone_overload_keep_their_existing_view() {
+        for (text, expected, done) in [
+            (r#"{"type":"keepalive"}"#, EventKind::Content, false),
+            (r#"{"type":"codex.metadata"}"#, EventKind::Content, false),
+            (
+                r#"{"type":"responsesapi.websocket_timing"}"#,
+                EventKind::Content,
+                false,
+            ),
+            (
+                r#"{"type":"codex.response.metadata"}"#,
+                EventKind::Preamble,
+                false,
+            ),
+            (
+                r#"{"type":"response.metadata"}"#,
+                EventKind::Preamble,
+                false,
+            ),
+            (
+                r#"{"type":"codex.rate_limits"}"#,
+                EventKind::Preamble,
+                false,
+            ),
+            (r#"{}"#, EventKind::Content, false),
+            (
+                r#"{"type":"slow_down","message":"busy"}"#,
+                EventKind::Content,
+                false,
+            ),
+            (
+                r#"{"type":"service_unavailable_error","code":"server_is_overloaded"}"#,
+                EventKind::Content,
+                false,
+            ),
+            (
+                r#"{"type":"service_unavailable_error","error":{"code":"server_is_overloaded"}}"#,
+                EventKind::Overloaded("server_is_overloaded".into()),
+                false,
+            ),
+            (
+                r#"{"type":"error","error":{"code":"server_is_overloaded"}}"#,
+                EventKind::Overloaded("server_is_overloaded".into()),
+                true,
+            ),
+        ] {
+            let (kind, finished, _) = classify(text);
+            assert_eq!(kind, expected, "{text}");
+            assert_eq!(finished, done, "{text}");
+        }
+        let soft = super::classify(None, r#"{"type":"error","error":{"code":"notice"}}"#)
+            .ws_view(r#"{"type":"error","error":{"code":"notice"}}"#);
+        assert_eq!(soft.class, Class::SoftError);
+    }
+
     #[test]
     fn error_frame_ends_turn_like_codex() {
         let done = |t: &str| classify(t).1;

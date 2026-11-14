@@ -271,7 +271,7 @@ pub(crate) fn stream_body(
                 observation_limited = true;
                 progress.limit_reached();
             }
-            let out = align.push(&prefix);
+            let out = align.push(prefix);
             if !out.is_empty() && tx.send(Ok(out)).await.is_err() {
                 if let Some(t) = trk.as_mut() {
                     t.client_gone();
@@ -473,7 +473,7 @@ pub(crate) fn stream_body(
                     if chunk.is_empty() {
                         continue;
                     }
-                    let out = align.push(&chunk);
+                    let out = align.push(chunk);
                     if out.is_empty() {
                         continue;
                     }

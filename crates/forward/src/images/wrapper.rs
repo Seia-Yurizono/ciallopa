@@ -534,22 +534,24 @@ fn sse_events(
 ) -> impl futures::Stream<Item = Result<Value, ImageReadError>> + Send {
     let up = resp.bytes_stream();
     futures::stream::unfold(
-        (Box::pin(up), Vec::<u8>::new(), false),
-        move |(mut up, mut buf, done)| async move {
-            if done {
-                return None;
-            }
+        (
+            Box::pin(up),
+            crate::sse::Framer::new(usize::MAX),
+            std::collections::VecDeque::<Bytes>::new(),
+            false,
+        ),
+        move |(mut up, mut framer, mut events, mut done)| async move {
             loop {
-                if let Some(pos) = buf.iter().position(|b| *b == b'\n') {
-                    let line: Vec<u8> = buf.drain(..=pos).collect();
-                    let line = String::from_utf8_lossy(&line);
-                    let line = line.trim();
-                    if let Some(d) = line.strip_prefix("data:") {
-                        if let Ok(v) = serde_json::from_str::<Value>(d.trim()) {
-                            return Some((Ok(v), (up, buf, false)));
-                        }
+                while let Some(event) = events.pop_front() {
+                    let text = String::from_utf8_lossy(&event);
+                    if let Some(value) = crate::encrypted::sse_data(text.as_bytes())
+                        .and_then(|data| serde_json::from_str(&data).ok())
+                    {
+                        return Some((Ok(value), (up, framer, events, done)));
                     }
-                    continue;
+                }
+                if done {
+                    return None;
                 }
                 match tokio::time::timeout(idle, up.next()).await {
                     Err(_) => {
@@ -559,10 +561,16 @@ fn sse_events(
                                 source: errors::SRC_NETWORK,
                                 message: "stream idle timeout".into(),
                             }),
-                            (up, buf, true),
+                            (up, framer, events, true),
                         ))
                     }
-                    Ok(None) => return None,
+                    Ok(None) => {
+                        done = true;
+                        // The previous line parser accepted a newline-terminated data line at EOF.
+                        if let Some(tail) = framer.finish().filter(|tail| tail.ends_with(b"\n")) {
+                            events.push_back(tail);
+                        }
+                    }
                     Ok(Some(Err(e))) => {
                         return Some((
                             Err(ImageReadError {
@@ -570,10 +578,17 @@ fn sse_events(
                                 source: errors::SRC_NETWORK,
                                 message: e.to_string(),
                             }),
-                            (up, buf, true),
+                            (up, framer, events, true),
                         ))
                     }
-                    Ok(Some(Ok(c))) => buf.extend_from_slice(&c),
+                    Ok(Some(Ok(chunk))) => {
+                        for frame in framer.push(chunk) {
+                            let crate::sse::Frame::Event(event) = frame else {
+                                continue;
+                            };
+                            events.push_back(event);
+                        }
+                    }
                 }
             }
         },
@@ -583,6 +598,40 @@ fn sse_events(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn sse_events_join_data_across_chunks_and_keep_newline_terminated_eof() {
+        let wire = Bytes::from_static(
+            concat!(
+                ": comment\r\ndata: {\"type\":\"response.output_text.delta\",\r\n",
+                "data: \"delta\":\"hi\"}\r\n\r\n",
+                "data: [DONE]\n\n",
+                "data: {\"type\":\"response.completed\"}\n"
+            )
+            .as_bytes(),
+        );
+        for split in 0..=wire.len() {
+            let chunks = [wire.slice(..split), wire.slice(split..)];
+            let body = reqwest::Body::wrap_stream(futures::stream::iter(
+                chunks.map(Ok::<_, std::io::Error>),
+            ));
+            let response = reqwest::Response::from(http::Response::new(body));
+            let events: Vec<_> = sse_events(response, std::time::Duration::from_secs(1))
+                .collect()
+                .await;
+            let events: Vec<_> = events
+                .into_iter()
+                .map(|event| event.map_err(|e| e.message).unwrap())
+                .collect();
+            assert_eq!(
+                events,
+                [
+                    json!({"type":"response.output_text.delta", "delta":"hi"}),
+                    json!({"type":"response.completed"})
+                ]
+            );
+        }
+    }
 
     #[test]
     fn image_results_keep_completion_precedence_and_index_order() {

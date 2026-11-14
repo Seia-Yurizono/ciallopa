@@ -355,7 +355,8 @@ impl Tracker {
     }
 
     /// One complete upstream event / text frame of type `ty` (any type, also after terminal).
-    pub(crate) fn obs_event(&mut self, ty: &str) {
+    /// Returns the event's timestamp so callers stamp TTFT with the same instant.
+    pub(crate) fn obs_event(&mut self, ty: &str) -> u32 {
         let now = self.obs_now();
         let o = &mut self.obs;
         o.up_events = Some(o.up_events.unwrap_or(0).saturating_add(1));
@@ -370,6 +371,7 @@ impl Tracker {
         if is_terminal_type(ty) {
             o.up_terminal_ms.get_or_insert(now);
         }
+        now
     }
 
     /// Upstream payload bytes of the final attempt.
@@ -789,15 +791,13 @@ impl Tracker {
     /// Observe one complete SSE data payload. The forwarding observer owns its bounded
     /// event buffer; only created / terminal events need a full JSON value here.
     pub(crate) fn sse_event(&mut self, text: &str, ty: Option<&str>) {
-        if let Some(ty) = ty {
-            self.obs_event(ty);
-        }
+        let Some(ty) = ty else { return };
+        let now = self.obs_event(ty);
         if self.outcome != Outcome::Open {
             return;
         }
-        let Some(ty) = ty else { return };
         if is_output_type(ty) {
-            self.ttft();
+            self.rec.ttft_ms.get_or_insert(now);
         }
         if is_terminal_type(ty) {
             if let Ok(v) = serde_json::from_str(text) {
