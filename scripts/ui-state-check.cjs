@@ -1,17 +1,8 @@
 // Dependency-free scheduling regression checks against the actual embedded UI functions.
 // Run from any directory: node /path/to/ciallopa/scripts/ui-state-check.cjs
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const vm = require('node:vm');
-const html = fs.readFileSync(path.join(__dirname, '../crates/server/src/ui.html'), 'utf8');
-const section = (start, end) => {
-  const a = html.indexOf(start);
-  assert.notEqual(a, -1, `UI source anchor missing: ${start}`);
-  const b = html.indexOf(end, a + start.length);
-  assert.notEqual(b, -1, `UI source end anchor missing after ${start}: ${end}`);
-  return html.slice(a, b);
-};
+const {readPage, loadPage, vm, createContext, Node, interactionDom: pageDom} = require('./lib/page.cjs');
+const {html, section} = loadPage('ui');
 const deferred = () => {
   let resolve;
   const promise = new Promise(done => { resolve = done; });
@@ -25,7 +16,7 @@ const node = id => {
 const quota = deferred();
 let auth = 'synthetic-key';
 const staleError = Object.assign(new Error('old-summary-failure'), {status: 503, body: {error: {message: 'old-summary-failure'}}});
-const context = vm.createContext({
+const context = createContext({
   $: node, key: () => auth, clear: n => {n.textContent = '';},
   h: (_tag, _attrs, text) => ({textContent: text}), document: {createTextNode: text => ({textContent: text})},
   inView: () => false, toast: text => context.toasts.push(text), toasts: [],
@@ -34,7 +25,7 @@ const context = vm.createContext({
   recState: {rows: []}, recordWindow: null, scopeWindow: {fixed: true}, showScope() {}, rollWindow() {}, PAGE: 50, hms: () => 'now', Date, Promise,
   query: 'A', staleError, rendered: [],
 });
-vm.runInContext(section('function fail(e)', 'async function busy(') + '\n' + section('const loadSeq={},loading={};', 'function emptyRow(') + '\n' + section('let allPending=0;', 'function stopAuto('), context);
+vm.runInContext(section('ui-fail-1') + '\n' + section('ui-loadSeq-2') + '\n' + section('ui-allPending-3'), context);
 vm.runInContext('async function loadSummary(){return currentLoad("ss",()=>query,()=>query==="A"?Promise.reject(staleError):Promise.resolve(query),data=>rendered.push(data))}', context);
 // Query contracts and cursor behavior, using the actual query/load functions.
 async function queryAndPaging() {
@@ -50,7 +41,7 @@ async function queryAndPaging() {
   const calls = [];
   let reply = async () => ({records: [{request_id: '0000000000000003'}], total: 3, next_before_id: '0000000000000003'});
   let rolls = 0;
-  const c = vm.createContext({
+  const c = createContext({
     $: input, key: () => 'demo', URLSearchParams, Map, Date, Math, Number, Promise,
     document: {querySelector: () => ({offsetHeight: 49}), querySelectorAll: () => [{offsetHeight: 49}]}, getComputedStyle: () => ({top: '48px', position: 'sticky'}),
     scopeWindow: {from: 9000000, to: 95400000, fixed: false}, recordWindow: null,
@@ -64,16 +55,16 @@ async function queryAndPaging() {
     rollWindow() {rolls++; c.scopeWindow = {...c.scopeWindow, from: c.scopeWindow.from + 1000, to: c.scopeWindow.to + 1000};},
   });
   vm.runInContext([
-    section('function scopeFilters()', 'function scopeLabel('),
-    section('const loadSeq={},loading={};', 'function emptyRow('),
-    section('const PAGE=50;', '$("rmore").addEventListener'),
-    section('function summaryQuery()', 'async function loadSummary('),
-    section('function trendQuery()', 'function renderRuntime('),
-    section('function trendPoints(', 'function selectBucket('),
-    section('function summaryCurrent()', 'function statLink('),
-    section('function drillOutcome(', '// ---- summary\n'),
-    section('function selectBucket(', 'function renderTrend('),
-    section('let allPending=0;', 'function stopAuto('),
+    section('ui-scopeFilters-4'),
+    section('ui-loadSeq-2'),
+    section('ui-PAGE-5'),
+    section('ui-summaryQuery-6'),
+    section('ui-trendQuery-7'),
+    section('ui-trendPoints-8'),
+    section('ui-summaryCurrent-9'),
+    section('ui-drillOutcome-10'),
+    section('ui-selectBucket-11'),
+    section('ui-allPending-3'),
   ].join('\n'), c);
   // The same absolute scope is used by summary, chart and records. A grain never changes it.
   await vm.runInContext('loadRecords(false)', c);
@@ -208,7 +199,7 @@ async function queryAndPaging() {
   };
   c.clear = element => {element.children = [];};
   c.exact = c.fmtUsd = c.fmtMs = String;
-  vm.runInContext(section('function costText(', '\n'), c);
+  vm.runInContext(section('ui-costText-12'), c);
   c.RECORDER = null;
   c.REFS = null;c.SUM_PREV = null;c.OCC = null;
   c.activeRecord = null;
@@ -220,8 +211,8 @@ async function queryAndPaging() {
   outcome.tagName = 'SELECT';
   outcome.options = [...html.match(/<select id="foutcome"[^>]*>(.*?)<\/select>/s)[1].matchAll(/<option value="([^"]*)"[^>]*>([^<]*)/g)].map(match => ({value: match[1], textContent: match[2]}));
   Object.defineProperty(outcome, 'selectedIndex', {get() {return this.options.findIndex(o => o.value === this.value);}});
-  vm.runInContext(section('const SF=', '$("fclear").addEventListener'), c);
-  vm.runInContext(section('function pct(', 'function drillOutcome('), c);
+  vm.runInContext(section('ui-SF-13'), c);
+  vm.runInContext(section('ui-pct-14'), c);
   c.SUM = {from_ms: c.scopeWindow.from, to_ms: c.scopeWindow.to, total: {count: 7, prewarm_count: 1, failures: 1, cancelled: 1, incomplete: 1, usage_samples: 1}};
   c.scopeWindow.fixed = true;
   reply = async () => ({records: [{request_id: '0000000000000007'}], total: 7, next_before_id: '0000000000000007'});
@@ -367,14 +358,14 @@ async function scopeSuggestions() {
   const h = (tag, a, ...kids) => {const e = el(tag, typeof a === 'string' ? {class: a} : a || {}); for (const k of kids.flat()) if (k != null) e.children.push(k); return e;};
   let fetches = 0, picked = 0;
   const now = 1_000_000_000;
-  const c = vm.createContext({$, h, document, clear: e => {e.children = [];}, exact: String, ago: () => '刚刚', setTimeout: fn => fn(),
+  const c = createContext({$, h, document, clear: e => {e.children = [];}, exact: String, ago: () => '刚刚', setTimeout: fn => fn(),
     Date: {now: () => now}, Promise, Array,
     changeScope() {picked++;},
     usageGet: async url => {fetches++; assert.equal(url, '/usage/v1/scope-values'); return {
       model: [{value: 'gpt-6.1', count: 90, last_ms: now - 1}, {value: 'gpt-6.1-sol', count: 12, last_ms: now - 2}, {value: 'o9-mini', count: 3, last_ms: now - 3}],
       key: [{value: 'laptop', count: 5, last_ms: now}, {value: 'unused', count: 0, last_ms: null, configured: true}],
       instance: [{value: 'box-a', count: 0, last_ms: null, configured: true}]};}});
-  vm.runInContext(section('// ---- Scope suggestions:', 'let MEM=null;'), c);
+  vm.runInContext(section('ui-section-15'), c);
   const model = $('fmodel'), list = $('lfmodel');
   const tick = () => new Promise(setImmediate);
   document.activeElement = model; model.fire('focus'); await tick();
@@ -420,7 +411,7 @@ async function scopeSuggestions() {
   // Run the production candidate matcher and submitted-filter serializer together.
   // Keep these cases paired with usage_api::scope_contains_is_literal_and_shared_by_all_consumers.
   c.scopeWindow = {from: 1, to: 2}; c.URLSearchParams = URLSearchParams;
-  vm.runInContext(section('function scopeFilters()', 'function scopeLabel('), c);
+  vm.runInContext(section('ui-scopeFilters-4'), c);
   vm.runInContext(html.match(/^function qs\(o\).*$/m)[0], c);
   const labels = ['gpt-5.6-terra', 'gpt-5.6-terra-plus', 'gpt-5.6-sol', 'ÜBER-İ-ΟΣ-Σ',
     String.raw`literal%_\path`, 'literalXXYpath', 'Straße-é', 'café'];
@@ -451,7 +442,7 @@ async function scopeSuggestions() {
       'scope input explains the actual query semantics');
   }
   // Logout clears the cache, so a different key never sees the old values.
-  assert.ok(section('onLogout=()=>{stopAuto', '};').includes('SV=null;svAt=0'));
+  assert.ok(section('ui-section-16').includes('SV=null;svAt=0'));
 }
 const watchdog = setTimeout(() => {
   console.error('FAIL: UI scheduling checks did not settle within 5 seconds');
@@ -460,14 +451,14 @@ const watchdog = setTimeout(() => {
 
 async function sharedAuthResponses() {
   let auth = 'old-key', answer = deferred();
-  const c = vm.createContext({
+  const c = createContext({
     key: () => auth, KS: 'key', NOADMIN: false, authEpoch: 0,
     fetch: () => answer.promise, clearTimeout,
     sessionStorage: {removeItem() {auth = '';}},
     showApp() {c.logouts++;}, logouts: 0,
     adminMsg: () => 'admin required',
   });
-  vm.runInContext(section('async function req(', 'async function get('), c);
+  vm.runInContext(section('ui-req-17'), c);
   const response = status => ({status, ok: false, json: async () => ({error: {type: 'admin_required'}})});
   for (const status of [401, 403]) {
     auth = 'old-key';
@@ -512,13 +503,13 @@ async function sharedAuthResponses() {
 async function accessGateResponses() {
   let auth = 'key-1', reply;
   const inits = [];
-  const c = vm.createContext({
+  const c = createContext({
     key: () => auth, KS: 'key', NOADMIN: false, authEpoch: 0,
     fetch: async (_path, init) => {inits.push(init); return reply();}, clearTimeout,
     sessionStorage: {removeItem() {auth = '';}},
     showApp() {c.logouts++;}, logouts: 0, adminMsg: () => null,
   });
-  vm.runInContext(section('async function req(', 'async function get('), c);
+  vm.runInContext(section('ui-req-17'), c);
   const headers = map => ({get: n => map[n.toLowerCase()] ?? null, keys: () => Object.keys(map)[Symbol.iterator]()});
   const expired = 'Cloudflare Access 登录已过期，请刷新页面重新登录';
   for (const r of [
@@ -551,16 +542,16 @@ async function overviewSnapshots() {
     return controls.get(id);
   };
   let reply = async () => ({accounts: [{id: 'alice', account: 'alice'}], version: 'v1'});
-  const c = vm.createContext({
+  const c = createContext({
     $: control, key: () => auth, Q: null, RC: null, AC: null, NOADMIN: false,
     usageGet: path => reply(path), renderQuota() {},
     stopAuto() {}, renderKpis() {}, renderRuntime() {}, renderMem() {}, renderRecords() {}, clear() {},
     why: e => e.message, fmtTime: value => 't' + value,
     Date: class extends Date {static now() {return now;}},
   });
-  vm.runInContext(section('const loadSeq={},loading={};', 'function emptyRow(') + '\n' +
-    section('async function loadQuota()', 'function summaryQuery()') + '\n' +
-    section('onLogout=()=>{stopAuto()', 'for(const id of ["auto","mauto"])'), c);
+  vm.runInContext(section('ui-loadSeq-2') + '\n' +
+    section('ui-loadQuota-18') + '\n' +
+    section('ui-section-19'), c);
   const load = () => vm.runInContext('loadQuota()', c), note = () => vm.runInContext('POOL_NOTE', c);
   await load();
   assert.equal(c.Q.version, 'v1');
@@ -618,19 +609,25 @@ async function egressResponses() {
     return controls.get(id);
   };
   let auth = 'old-admin', handler = async () => ({egress: {direct: true}});
-  const c = vm.createContext({
+  const c = createContext({
     $: control, key: () => auth, NOADMIN: false, authEpoch: 0, onLogout() {}, closeAllModals() {},
     get: path => handler(path),
   });
-  vm.runInContext(section('function showApp(', 'function login(') + '\n' +
-    section('// ---- shell: account count', '// Accounts / settings need an admin key.'), c);
+  vm.runInContext(section('ui-showApp-20') + '\n' +
+    section('ui-section-21'), c);
   const load = () => vm.runInContext('egressTag()', c);
+  const runtimeCalls = [];
+  handler = async url => {runtimeCalls.push(url);return {egress: {direct: false, proxy: 'http://masked'}, runtime: {inflight: 2}, proxy_errors_1h: 7};};
+  const snap = await load();
+  assert.deepEqual(runtimeCalls, ['/admin/v1/runtime']);
+  assert.equal(control('egress').textContent, '出口代理 · 7 错误');
+  assert.equal(snap.runtime.inflight, 2);
   const direct = {egress: {direct: true}};
   const proxy = {egress: {direct: false, proxy: 'http://synthetic-proxy:8080'}};
   for (const sameIdentity of [false, true]) {
     const first = deferred();
     auth = 'old-admin';
-    handler = path => path === '/admin/v1/config' ? first.promise : Promise.resolve({total: 0});
+    handler = path => path === '/admin/v1/runtime' ? first.promise : Promise.resolve({total: 0});
     const old = load();
     if (!sameIdentity) auth = 'new-admin';
     handler = async () => direct;
@@ -670,7 +667,7 @@ async function currentReadsProtectAuthorization() {
       return controls.get(id);
     };
     const response = (body, code = 200) => ({ok: code < 400, status: code, json: async () => body});
-    const c = vm.createContext({
+    const c = createContext({
       $: control, key: () => auth, authEpoch: 0, KS: 'key', NOADMIN: false,
       Q: null, RC: null, AC: null, renderQuota() {}, renderRuntime() {},
       why: e => e.message, fmtTime: String, adminMsg: () => 'admin required',
@@ -681,10 +678,10 @@ async function currentReadsProtectAuthorization() {
         ? first.promise : response({accounts: [], version: 'current'}),
     });
     vm.runInContext([
-      section('async function req(', 'async function get('),
-      section('async function usageGet(', 'const narrow='),
-      section('const loadSeq={},loading={};', 'function emptyRow('),
-      section('async function loadQuota()', 'function summaryQuery()'),
+      section('ui-req-17'),
+      section('ui-usageGet-22'),
+      section('ui-loadSeq-2'),
+      section('ui-loadQuota-18'),
     ].join('\n'), c);
     const old = vm.runInContext('loadQuota()', c);
     await vm.runInContext('loadQuota()', c);
@@ -700,9 +697,9 @@ async function currentReadsProtectAuthorization() {
 }
 
 function bucketSamplesAndUnknownOutcomes() {
-  const c = vm.createContext({Map, Math});
-  vm.runInContext(section('function trendPoints(', 'function selectBucket(') + '\n' +
-    section('function requestOutcome(', 'function streamRecord('), c);
+  const c = createContext({Map, Math});
+  vm.runInContext(section('ui-trendPoints-8') + '\n' +
+    section('ui-requestOutcome-23'), c);
   c.summary = {from_ms: 0, to_ms: 5 * 3600000 - 1, buckets: [
     {start_ms: 3600000, count: 1, prewarm_count: 0, usage_samples: 0, input_tokens: 0, output_tokens: 0},
     {start_ms: 7200000, count: 1, prewarm_count: 0, usage_samples: 1, input_tokens: 0, output_tokens: 0},
@@ -727,8 +724,8 @@ function bucketSamplesAndUnknownOutcomes() {
     h: (tag, attrs, ...kids) => ({tag, attrs, kids}),
     p2: String, fmtN: String, fmtTime: String, exact: String, fmtUsd: String, pwText: () => '含预热', // these buckets were fetched with 「含预热」 on
   });
-  vm.runInContext(section('function costText(', '\n'), c);
-  vm.runInContext(section('function renderTrend()', 'let lastNarrow='), c);
+  vm.runInContext(section('ui-costText-12'), c);
+  vm.runInContext(section('ui-renderTrend-24'), c);
   vm.runInContext('renderTrend()', c);
   const labels = control('svg').children.filter(e => e.attrs?.role === 'button').map(e => e.attrs['aria-label']);
   assert.match(labels[0], /Token 0 ·/);
@@ -763,8 +760,8 @@ function bucketSamplesAndUnknownOutcomes() {
 // Status chips: 2xx success green, 429 amber, other 4xx error, 5xx red; cancelled, unknown and
 // prewarm rows stay neutral. Every coloured chip pair meets WCAG AA (4.5:1) in both themes.
 function statusChipColours() {
-  const c = vm.createContext({});
-  vm.runInContext(section('function requestOutcome(', 'function streamRecord('), c);
+  const c = createContext({});
+  vm.runInContext(section('ui-requestOutcome-23'), c);
   const kind = (outcome, status) => (c.o = outcome, c.s = status, vm.runInContext('(statusKind(o,s)||[null])[0]', c));
   assert.equal(kind('completed', 200), 's2');
   assert.equal(kind('incomplete', 200), 's2');
@@ -782,10 +779,10 @@ function statusChipColours() {
     return 0.2126 * r + 0.7152 * g + 0.0722 * b;
   };
   const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
-  const light = vars(section(':root{color-scheme:light;', '}')), dark = vars(section(':root[data-theme=dark]{color-scheme:dark;', '}'));
-  Object.assign(light, vars(section(':root{--st5:', '}')));
-  Object.assign(dark, vars(section(':root[data-theme=dark]{--st5:', '}')));
-  assert.equal(section('@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--st5:', '}'), '@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--st5:' + section(':root[data-theme=dark]{--st5:', '}').slice(':root[data-theme=dark]{--st5:'.length), 'dark --st5 tokens agree');
+  const light = vars(section('ui-section-25')), dark = vars(section('ui-section-26'));
+  Object.assign(light, vars(section('ui-section-27')));
+  Object.assign(dark, vars(section('ui-section-28')));
+  assert.equal(section('ui-section-29'), '@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--st5:' + section('ui-section-28').slice(':root[data-theme=dark]{--st5:'.length), 'dark --st5 tokens agree');
   for (const [theme, v] of [['light', light], ['dark', dark]])
     for (const [fg, bg] of [['ok', 'ok-bg'], ['cool', 'cool-bg'], ['err', 'err-bg'], ['st5', 'st5-bg'], ['fg-2', 'off-bg']])
       assert.ok(ratio(v[fg], v[bg]) >= 4.5, `${theme} ${fg} on ${bg}: ${ratio(v[fg], v[bg]).toFixed(2)}`);
@@ -797,19 +794,19 @@ function failureClassesAndTrend() {
   const vars = block => Object.fromEntries([...block.matchAll(/--([\w-]+):#([0-9a-f]{6}|[0-9a-f]{3})\b/g)].map(m => [m[1], '#' + (m[2].length === 3 ? [...m[2]].map(x => x + x).join('') : m[2])]));
   const lum = hex => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255).map(x => x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4).reduce((a, x, i) => a + x * [0.2126, 0.7152, 0.0722][i], 0);
   const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
-  const light = vars(section(':root{--fc-quota:', '}')), dark = vars(section(':root[data-theme=dark]{--fc-quota:', '}'));
-  assert.equal(section('@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--fc-quota:', '}').split('{--fc-quota:')[1], section(':root[data-theme=dark]{--fc-quota:', '}').split('{--fc-quota:')[1], 'dark class tokens agree');
-  const surf = {light: vars(section(':root{color-scheme:light;', '}')).surface, dark: vars(section(':root[data-theme=dark]{color-scheme:dark;', '}')).surface};
+  const light = vars(section('ui-section-30')), dark = vars(section('ui-section-31'));
+  assert.equal(section('ui-section-32').split('{--fc-quota:')[1], section('ui-section-31').split('{--fc-quota:')[1], 'dark class tokens agree');
+  const surf = {light: vars(section('ui-section-25')).surface, dark: vars(section('ui-section-26')).surface};
   const classes = ['quota', 'rate_limit', 'request', 'upstream', 'network', 'stream', 'local', 'other'];
   for (const [theme, v] of [['light', light], ['dark', dark]]) {
     assert.equal(new Set(classes.map(k => v['fc-' + k])).size, 8, `${theme} class colours are distinct`);
     for (const k of classes) assert.ok(ratio(v['fc-' + k], surf[theme]) >= 3, `${theme} ${k}: ${ratio(v['fc-' + k], surf[theme]).toFixed(2)}`);
   }
   // Labels: the same eight everywhere; first_quota_reset is just 额度用尽.
-  const c = vm.createContext({PROXY_ERR: {}});
-  vm.runInContext(section('const ERR_LBL=', '\n'), c);
+  const c = createContext({PROXY_ERR: {}});
+  vm.runInContext(section('ui-ERR_LBL-33'), c);
   for (const code of ['usage_limit', 'usage_limit_reached', 'all_quota_exhausted', 'first_quota_reset']) assert.equal(vm.runInContext(`ERR_LBL.${code}`, c), '额度用尽');
-  vm.runInContext(section('const FCLS=', '\n'), c);
+  vm.runInContext(section('ui-FCLS-34'), c);
   assert.deepEqual(vm.runInContext('FCLS.map(x=>x.join(":")).join(",")', c), 'quota:额度用尽,rate_limit:限流,request:请求内容,upstream:上游错误,network:网络,stream:流中断,local:本地,other:其他');
   for (const [v, l] of [['quota', '额度用尽'], ['rate_limit', '限流'], ['request', '请求内容'], ['upstream', '上游错误'], ['network', '网络'], ['stream', '流中断'], ['local', '本地'], ['other', '其他']])
     assert.match(html, new RegExp(`<option value="${v}">${l}</option>`), `失败原因 filter offers ${l}`);
@@ -817,9 +814,9 @@ function failureClassesAndTrend() {
   // Choosing a 失败原因 switches 结果 to 失败; clearing it leaves 结果 alone; another 结果 clears it.
   {
     const els = {}, el = id => els[id] || (els[id] = {value: '', ev: {}, addEventListener(t, f) {this.ev[t] = f;}});
-    const k = vm.createContext({$: el, changes: 0});
+    const k = createContext({$: el, changes: 0});
     k.changeRecords = () => {k.changes++;};
-    vm.runInContext(section('$("fclass").addEventListener("change"', '\n') + '\n' + section('$("foutcome").addEventListener("change"', '\n'), k);
+    vm.runInContext(section('ui-section-35') + '\n' + section('ui-section-36'), k);
     for (const start of ['', 'business', 'completed', 'cancelled']) {
       el('foutcome').value = start;el('fclass').value = 'quota';el('fclass').ev.change();
       assert.equal(el('foutcome').value, 'failed', `class from ${start || 'all'} selects 失败`);
@@ -830,18 +827,18 @@ function failureClassesAndTrend() {
     assert.equal(el('fclass').value, '', 'a non-failed 结果 clears the class');
   }
   // 错误码 rows show the Chinese label; the raw code stays in the hover title.
-  vm.runInContext('SRC={upstream:["上游"]};tierName=v=>v;' + section('function groupName(', '\n'), c);
+  vm.runInContext('SRC={upstream:["上游"]};tierName=v=>v;' + section('ui-groupName-37'), c);
   assert.equal(vm.runInContext('groupName("error","first_quota_reset")', c), 'first_quota_reset（额度用尽）', 'group rows name the English code first');
   assert.equal(vm.runInContext('groupName("error","weird_code")', c), 'weird_code');
   assert.match(html, /title:g==="error"&&v\?v:shown/);
   // 占用与拒绝: limit lines carry their series colour; no 右轴 text in the legend.
   assert.match(html, /class:"ln lim "\+k/);
-  assert.doesNotMatch(section('else if(cap)lg.append(', '\n'), /右轴/);
+  assert.doesNotMatch(section('ui-section-38'), /右轴/);
   // Latency axis ticks land on round values.
-  vm.runInContext(section('function niceMs(', '\n'), c);
+  vm.runInContext(section('ui-niceMs-39'), c);
   assert.equal(vm.runInContext('niceMs(3300)', c), 4000);
   assert.equal(vm.runInContext('niceMs(700)', c), 1000);
-  vm.runInContext(section('function niceMax(', '\n'), c);
+  vm.runInContext(section('ui-niceMax-40'), c);
   for (const [v, top] of [[0, 4], [5, 8], [9, 12], [92, 100], [130, 200], [1300, 2000]])
     assert.equal(vm.runInContext(`niceMax(${v})`, c), top, `count axis top for ${v}`);
   assert.equal(vm.runInContext('niceMs(9000)', c), 10000);
@@ -853,12 +850,12 @@ async function observationErrorDetails() {
     if (!controls.has(id)) controls.set(id, {textContent: '', setAttribute() {}, classList: {toggle() {}, add() {}, contains: () => false}});
     return controls.get(id);
   };
-  const c = vm.createContext({
+  const c = createContext({
     $: control, key: () => 'demo', clear() {}, field() {}, threadField() {}, detailStats() {}, renderDetailNav() {}, saveF() {},
     tierName: () => '', normTier: () => '', fmtTime: String,
     lookupSeq: 0, detailSeq: 0, activeRecord: null, authEpoch: 0, hideDetailRetry() {},
   });
-  vm.runInContext(section('const PROB=', 'function fval(') + section('const SRC=', 'function recRow(') + '\n' + section('async function openDetail(', 'async function lookupRecord('), c);
+  vm.runInContext(section('ui-PROB-41') + section('ui-SRC-42') + '\n' + section('ui-openDetail-43'), c);
   for (const [status, source, outcome] of [[200, 'local', 'unknown'], [400, 'upstream', 'failed'], [500, 'local', 'failed']]) {
     c.record = {request_id: '0000000000000001', status, err_source: source, error: 'observation_incomplete'};
     await vm.runInContext('openDetail(record)', c);
@@ -874,43 +871,7 @@ async function observationErrorDetails() {
   assert.equal(control('dmsg').textContent, '网络 · timeout_connect（连接上游超时）', 'detail: English code first, Chinese label after');
 }
 
-// Only the DOM operations used by the chip and inspector flows; no browser/layout claims.
-function interactionDom() {
-  const controls = new Map(), handlers = {};
-  const document = {activeElement: null, contains: () => true,
-    addEventListener(type, fn) {(handlers[type] ||= []).push(fn);}};
-  const element = (tag = 'div', attrs = {}, ...children) => {
-    const classes = new Set((attrs.class || '').split(' '));
-    const e = {tagName: tag.toUpperCase(), value: '', checked: false, children, dataset: {}, events: {}, textContent: '',
-      classList: {contains: n => classes.has(n), add: n => classes.add(n), remove: n => classes.delete(n),
-        toggle(n, on) {if (on) classes.add(n); else classes.delete(n);if (n === 'hide' && on && e.children.includes(document.activeElement)) document.activeElement = null;}},
-      setAttribute(n, v) {attrs[n] = String(v); if (n === 'data-clear-filter') this.dataset.clearFilter = v;},
-      getAttribute: n => attrs[n], addEventListener(type, fn) {this.events[type] = fn;},
-      appendChild(child) {this.children.push(child);}, append(...items) {this.children.push(...items);},
-      querySelectorAll() {return this.children.filter(child => child.tagName === 'BUTTON');},
-      focus() {document.activeElement = this;},
-      get selectedIndex() {return this.options?.findIndex(o => o.value === this.value);},
-    };
-    let disabled = false;
-    Object.defineProperty(e, 'disabled', {get: () => disabled, set(on) {disabled = on;if (on && document.activeElement === e) document.activeElement = null;}});
-    for (const [n, v] of Object.entries(attrs)) e.setAttribute(n, v);
-    return e;
-  };
-  document.documentElement = element('html');
-  const control = id => {
-    if (!controls.has(id)) {
-      const select = html.match(new RegExp('<select id="' + id + '"[^>]*>(.*?)</select>', 's'));
-      const e = element(select ? 'select' : 'div');
-      if (select) e.options = [...select[1].matchAll(/<option value="([^"]*)"[^>]*>([^<]*)/g)].map(m => ({value: m[1], textContent: m[2]}));
-      if (id === 'ferr' || id === 'fretry') e.type = 'checkbox';
-      controls.set(id, e);
-    }
-    return controls.get(id);
-  };
-  return {$: control, document, clear: e => {e.children = [];e.textContent = '';},
-    h: (tag, attrs, ...children) => element(tag, typeof attrs === 'string' ? {class: attrs} : attrs || {}, ...children),
-    keydown(key, modifiers = {}) {const event = {key, ...modifiers, preventDefault() {this.defaultPrevented = true;}};for (const fn of handlers.keydown || []) fn(event);return event;}};
-}
+const interactionDom = () => pageDom(html);
 
 async function threadFilter() {
   const FULL = '019a2b3c-4d5e-7f60-8a71-0000aaaa2222';
@@ -924,17 +885,17 @@ async function threadFilter() {
     for (const [id, value] of Object.entries({facct: 'alice', fkey: 'laptop'})) input(id).value = value;
     const calls = [];
     let reply = async () => ({records: [], total: 0, next_before_id: null});
-    const c = vm.createContext({
+    const c = createContext({
       $: input, key: () => 'demo', URLSearchParams, Promise,
       scopeWindow: {from: 9000000, to: 95400000, fixed: false}, recordWindow: null, recState: {rows: [], cursor: null, total: 0},
       usageGet: async url => {calls.push(new URL(url, 'http://local')); return reply(url);},
       renderRecords() {}, renderRefusals() {}, renderProblems() {}, loadCounts() {}, saved: 0, saveF() {c.saved++;}, fail(error) {throw error;},
     });
     vm.runInContext([
-      section('function scopeFilters()', 'function scopeLabel('),
-      section('const loadSeq={},loading={};', 'function emptyRow('),
-      section('const PAGE=50;', '$("rmore").addEventListener'),
-      section('function countFilters()', 'async function loadCounts('),
+      section('ui-scopeFilters-4'),
+      section('ui-loadSeq-2'),
+      section('ui-PAGE-5'),
+      section('ui-countFilters-44'),
     ].join('\n'), c);
     input('fthread').value = '  ' + FULL + ' ';
     input('fproblem').value = 'error';
@@ -978,7 +939,7 @@ async function threadFilter() {
   // Chip, URL and 只看这个会话.
   {
     const dom = interactionDom(), control = dom.$, loads = [];
-    const c = vm.createContext({...dom, URLSearchParams, clearTimeout, kt: 0,
+    const c = createContext({...dom, URLSearchParams, clearTimeout, kt: 0,
       scopeWindow: {from: 1000, to: 9000, fixed: false}, recordWindow: {from: 2000, to: 3000}, activeRecord: null,
       location: {pathname: '/ui', search: ''}, history: {replaceState(_state, _title, url) {c.location.search = new URL(url, 'http://local').search;}},
       localStorage: {setItem() {}, getItem() {return null;}}, fmtTime: String, renderKpis() {}, renderTrend() {}, showScope() {}, rollWindow() {},
@@ -987,12 +948,12 @@ async function threadFilter() {
       withPrewarm: () => false, hms: () => 'now', Date,
     });
     vm.runInContext([
-      section('function scopeFilters()', 'async function usageGet('),
-      section('function recordFilters()', 'async function loadRecords('),
-      section('function changeScope()', '$("range").addEventListener'),
-      section('function clearRecordFilters()', 'function revealRecords('),
-      section('function shortId(', 'function detailStats('),
-      section('const SF=', 'loadF();showExtra('),
+      section('ui-scopeFilters-45'),
+      section('ui-recordFilters-46'),
+      section('ui-changeScope-47'),
+      section('ui-clearRecordFilters-48'),
+      section('ui-shortId-49'),
+      section('ui-SF-50'),
     ].join('\n'), c);
     for (const [id, v] of Object.entries({range: '24h', group: 'account', tmode: 'auto', tmetric: 'requests'})) control(id).value = v;
     control('fthread').value = FULL;
@@ -1034,13 +995,13 @@ async function threadFilter() {
   }
   // Markup: the paste box sits with the other request filters and is hidden with them in 本地拒绝.
   assert.match(html, /<input id="fthread" type="text" placeholder="会话 ID（回车）"/);
-  assert.match(section('function showRefusedMode()', '\n'), /"fthread"/);
-  assert.match(section('function threadField(', 'function viewThread('), /id:"dthread"/);
+  assert.match(section('ui-showRefusedMode-51'), /"fthread"/);
+  assert.match(section('ui-threadField-52'), /id:"dthread"/);
 }
 
 async function filterChipScopeAndFocus() {
   const dom = interactionDom(), control = dom.$, calls = [], replaced = [];
-  const c = vm.createContext({...dom, URLSearchParams, clearTimeout, kt: 123,
+  const c = createContext({...dom, URLSearchParams, clearTimeout, kt: 123,
     scopeWindow: {from: 1000, to: 9000, fixed: true}, recordWindow: {from: 2000, to: 3000}, activeRecord: '0000000000000001',
     location: {pathname: '/ui', search: ''}, history: {replaceState(_state, _title, url) {replaced.push(url);c.location.search = new URL(url, 'http://local').search;}},
     localStorage: {setItem() {}, getItem() {return null;}}, fmtTime: String, renderKpis() {}, renderTrend() {},
@@ -1049,10 +1010,10 @@ async function filterChipScopeAndFocus() {
     syncMini() {}, MINI: {},
   });
   vm.runInContext([
-    section('function scopeFilters()', 'async function usageGet('),
-    section('function recordFilters()', 'async function loadRecords('),
-    section('function changeScope()', '$("range").addEventListener'),
-    section('const SF=', 'loadF();showExtra('),
+    section('ui-scopeFilters-45'),
+    section('ui-recordFilters-46'),
+    section('ui-changeScope-47'),
+    section('ui-SF-50'),
   ].join('\n'), c);
   for (const [id, v] of Object.entries({range: '24h', group: 'account', tmode: 'auto', tmetric: 'requests', facct: '', fmodel: '<model>', fkey: 'laptop', finstance: 'home', foutcome: 'failed', fsrc: 'network', ftier: 'dg', fcode: 'timeout'})) control(id).value = v;
   control('ferr').checked = control('fretry').checked = true;
@@ -1103,16 +1064,16 @@ async function inspectorRetryAndNavigation() {
   let auth = 'demo', reply = async () => response({error: {message: 'temporary'}}, 503);
   const response = (body, status = 200) => ({status, ok: status < 400, json: async () => body});
   const records = [1, 2].map(n => ({request_id: String(n).padStart(16, '0'), status: 500, has_detail: true}));
-  const c = vm.createContext({...dom, AbortController, setTimeout, clearTimeout, authEpoch: 0, NOADMIN: false, KS: 'key',
+  const c = createContext({...dom, AbortController, setTimeout, clearTimeout, authEpoch: 0, NOADMIN: false, KS: 'key',
     key: () => auth, sessionStorage: {removeItem() {auth = '';}}, showApp() {c.authEpoch++;vm.runInContext('closeAllModals()', c);},
     fetch: path => {calls.push(path);return reply(path);}, adminMsg: () => 'admin required', why: e => e.message,
     fmtTime: String, fmtMs: String, fmtN: String, fmtUsd: String, tierName: () => '', normTier: () => '',
     activeRecord: null, recState: {rows: records}, saveF() {}, records,
   });
   vm.runInContext([
-    section('async function req(', 'async function get('), section('async function usageGet(', 'const narrow='),
-    section('const MODALS=[];', '// ---- inline click-again:'), section('const PROB=', 'function fval('), section('const SRC=', 'function recRow('),
-    section('let dtext=', '// ---- loading'),
+    section('ui-req-17'), section('ui-usageGet-22'),
+    section('ui-MODALS-53'), section('ui-PROB-41'), section('ui-SRC-42'),
+    section('ui-dtext-54'),
   ].join('\n'), c);
   vm.runInContext('recState.rows=records', c);
   control('dp').classList.add('hide');control('dretry').classList.add('hide');
@@ -1208,7 +1169,7 @@ function recordRenderingAndInspectorFocus() {
   };
   control('rec').tBodies = [tb];
   const modal = control('dp');
-  const c = vm.createContext({
+  const c = createContext({
     $: control, recRow: row, clear: node => {for(const child of [...node.children])child.remove();},
     keepScroll: (_id, fn) => fn(), steady: (_boxes, fn) => fn(),
     emptyRow(body) {const empty=row({request_id:'empty'});empty.empty=true;body.appendChild(empty);}, anyF: () => false, renderDetailNav() {}, exact: String, pwText: () => '不含预热', PAGE: 50,
@@ -1217,7 +1178,7 @@ function recordRenderingAndInspectorFocus() {
     document: {contains: node => tb.contains(node) || [...controls.values()].includes(node), documentElement: control('html')},
     recState: {rows: [{request_id: '0000000000000001'}, {request_id: '0000000000000002'}], total: 2},
   });
-  vm.runInContext(section('const MODALS=[];', 'document.addEventListener("keydown"') + '\n' + section('const recordRows=new Map();', 'const PAGE=50;'), c);
+  vm.runInContext(section('ui-MODALS-55') + '\n' + section('ui-recordRows-56'), c);
   vm.runInContext('renderRecords()', c);
   const initial = [...tb.children];
   c.recState.rows = c.recState.rows.map(record => ({...record}));
@@ -1278,7 +1239,7 @@ function recordRenderingAndInspectorFocus() {
 
   Object.assign(c,{stopAuto(){},closePop(){},loadSeq:{},resetQuotaReads(){},renderKpis(){},renderRuntime(){},renderMem(){}});
   control('svg').children=[];control('sum').tBodies=[{children:[]}];control('quota').tBodies=[{children:[]}];
-  vm.runInContext(section('onLogout=()=>{stopAuto()', 'for(const id of ["auto","mauto"])')+'\nonLogout()',c);
+  vm.runInContext(section('ui-section-19')+'\nonLogout()',c);
   assert.equal(vm.runInContext('recordRows.size',c),0,'logout releases cached records and row nodes');
   assert.equal(tb.children.length,1);assert.equal(tb.children[0].empty,true);
 }
@@ -1288,8 +1249,8 @@ function costDisplay() {
   // Runs the production fmtUsd / exactUsd / costText / costCell from ui.html (not a copy):
   // costs show the plain priced amount, no ≥ and no 未定价 chip; nothing priced stays 未定价
   // (unknown is never shown as $0.00); a missing value stays –.
-  const c = vm.createContext({h: (_t, a, ...k) => ({attrs: a || {}, text: k.join('')})});
-  vm.runInContext([section('function fmtUsd(', '\n'), section('function exactUsd(', '\n'), section('function costText(', '\n'), section('function costCell(', '\n')].join('\n'), c);
+  const c = createContext({h: (_t, a, ...k) => ({attrs: a || {}, text: k.join('')})});
+  vm.runInContext([section('ui-fmtUsd-57'), section('ui-exactUsd-58'), section('ui-costText-12'), section('ui-costCell-59')].join('\n'), c);
   const run = expr => vm.runInContext(expr, c);
   assert.equal(run('costText(8.7,31)'), '$8.70');
   assert.equal(run('costText(8.7,0)'), '$8.70');
@@ -1301,7 +1262,7 @@ function costDisplay() {
   assert.equal(run('costCell(null,0)').text, '–');
   assert.equal(run('costCell(0.25,0)').text, '0.25');
   // Both production call sites (KPI and trend tooltip) go through costText.
-  assert.match(section('const cost=t&&t.cost_usd', '\n'), /costV=!t\?"–":costText\(cost,u\)/);
+  assert.match(section('ui-cost-60'), /costV=!t\?"–":costText\(cost,u\)/);
   assert.match(html, /估算费用 "\+costText\(p\.cost,p\.unknown\)/);
   assert.doesNotMatch(html, /条未定价 ›|部分未定价|"≥"|不低于此值/);
   assert.doesNotMatch(html, /\uFFFD/);
@@ -1315,13 +1276,13 @@ function autoRefreshInterval() {
     return els.get(id);
   };
   const intervals = [];
-  const c = vm.createContext({
+  const c = createContext({
     $: el, Number, String, document: {hidden: false}, MODALS: [], loadAll() {}, timer: null,
     localStorage: {getItem: k => store.has(k) ? store.get(k) : null, setItem: (k, v) => store.set(k, String(v))},
     setInterval: (fn, ms) => {intervals.push(ms); return intervals.length;}, clearInterval() {},
   });
-  vm.runInContext('var timer=null;' + section('function stopAuto(', 'onLogout=()=>{stopAuto()') + '\n' +
-    section('// Auto-refresh interval', '\nshowAutoSecs();') + '\nshowAutoSecs();', c);
+  vm.runInContext('var timer=null;' + section('ui-stopAuto-61') + '\n' +
+    section('ui-section-62') + '\nshowAutoSecs();', c);
   assert.equal(el('ivl').value, '15', 'default interval is 15 s');
   store.set('ciallopa_auto_secs', '7');
   assert.equal(vm.runInContext('autoSecs()', c), 15, 'an unknown stored value falls back to 15 s');
@@ -1345,12 +1306,12 @@ function autoRefreshInterval() {
 function cloudflareEgressBanner() {
   const el = {textContent: '', hidden: null, title: '', classList: {toggle(_c, on) {el.hidden = on;}},
     appendChild(x) {el.textContent += x.textContent;}, removeAttribute(a) {if (a === 'title') el.title = '';}};
-  const c = vm.createContext({
+  const c = createContext({
     $: () => el, clear: n => {n.textContent = '';}, h: (_t, _a, text) => ({textContent: text}),
     document: {createTextNode: text => ({textContent: text})}, fmtTime: () => '10-24 12:00:00', ago: () => '刚刚',
     exact: n => String(n), Q: null,
   });
-  vm.runInContext(section('// Cloudflare challenge / block page', 'function renderQuota(){'), c);
+  vm.runInContext(section('ui-section-63'), c);
   c.renderEgressBlock();
   assert.equal(el.hidden, true, 'no snapshot: banner hidden');
   c.Q = {egress_block: {code: 'cf_blocked', cf_code: 1010, upstream_status: 403, cf_ray: 'ray-1', account: 'a', first_at_ms: 1, last_at_ms: 2, count: 3, active: true}};
@@ -1379,14 +1340,14 @@ async function memoryPanel() {
   };
   const text = n => typeof n === 'string' ? n : (n.text || '') + (n.kids || []).map(text).join('');
   let reply = null, calls = 0;
-  const c = vm.createContext({
+  const c = createContext({
     $: el, key: () => 'k', NOADMIN: false, exact: n => String(n), hms: () => '12:00:00', Math, Number,
     clear: n => {n.children = [];},
     h: (tag, attrs, ...kids) => ({tag, cls: typeof attrs === 'string' ? attrs : attrs && attrs.class, title: attrs && attrs.title, kids: kids.filter(k => k !== null && k !== undefined)}),
     sv: (tag, attrs) => ({tag, attrs, kids: [], appendChild(x) {this.kids.push(x);}}),
     get: async p => {calls++; assert.equal(p, '/admin/v1/memory'); if (reply instanceof Error) throw reply; return reply;},
   });
-  vm.runInContext(section('let MEM=null;', 'let allPending=0;'), c);
+  vm.runInContext(section('ui-MEM-64'), c);
   const MiB = 1 << 20;
   const s = (t, rss, alloc) => ({at_ms: t, rss_bytes: rss, allocated_bytes: alloc, resident_bytes: alloc && alloc * 2, buffered_body_bytes: 0, ws_connections: 0, ws_bytes: 0});
   reply = {now: {...s(600000, 150 * MiB, 40 * MiB), buffered_body_bytes: 220 * MiB, ws_connections: 24, ws_bytes: 3 * MiB},
@@ -1429,7 +1390,7 @@ async function problemChipsAndNextSteps() {
     causes: {error: {quota: 2, rate_limit: 1, request: 0, upstream: 1, network: 1, gateway: 1, stream: 0}, upstream: {unrescued: 2, rescued: 3},
       unfinished: {client_closed: 1, reconnect: 0, truncated: 1, content_filter: 0, unconfirmed: 1}, refused: {inflight: 2, ws: 0, body: 0, ws_msg: 0}}};
   const changes = [];
-  const c = vm.createContext({...dom, URLSearchParams, Date, Promise, ACCTS: [{id: 'alice'}, {id: 'bob'}], SV: {model: [{value: 'gpt-5'}], key: [{value: 'laptop'}]},
+  const c = createContext({...dom, URLSearchParams, Date, Promise, ACCTS: [{id: 'alice'}, {id: 'bob'}], SV: {model: [{value: 'gpt-5'}], key: [{value: 'laptop'}]},
     usageGet: async url => {gets.push(url); return counts;}, changeRecords() {changes.push(vm.runInContext('qs(recordFilters())', c));},
     scopeFilters: () => ({from: 1, to: 2, account: control('facct').value}), withPrewarm: () => false, exact: String, fmtTime: String, hms: () => '12:00:00', isoLocal: String,
     fmtMs: String, fmtN: String, exactUsd: String, modelCell: () => dom.h('span', {}), effortCell: () => dom.h('span', {}), getSelection: () => ({toString: () => ''}),
@@ -1442,12 +1403,12 @@ async function problemChipsAndNextSteps() {
   dom.document.querySelectorAll = () => [];
   c.document = dom.document;
   vm.runInContext([
-    section('const PROB=', 'function fval('),
-    section('// ---- Problem chips above the request list.', '// ---- URL keeps'),
-    section('function refusedMode()', 'function scopedOut('),
-    section('function recordFilters()', 'async function loadRecords('),
-    section('function qs(o)', '$("rmore").addEventListener'),
-    section('const SRC=', 'const recordRows='),
+    section('ui-PROB-41'),
+    section('ui-section-65'),
+    section('ui-refusedMode-66'),
+    section('ui-recordFilters-46'),
+    section('ui-qs-67'),
+    section('ui-SRC-68'),
   ].join('\n'), c);
   const flat = n => n === null || n === undefined || n === false ? '' : typeof n !== 'object' ? String(n) : Array.isArray(n) ? n.map(flat).join('') : (n.children || []).map(flat).join('');
   // Counts use the list filters without problem/cause; 本地拒绝 never reaches the records counts API as an outcome.
@@ -1569,9 +1530,9 @@ function poolWindows() {
     e.appendChild = k => e.kids.push(k);
     return e;
   };
-  const c = vm.createContext({h: el, Date});
-  vm.runInContext([section('function wlab(', 'function whead('), section('function rem(w)', 'function mergeAccts('),
-    section('function poolSeg(', 'function renderPool(')].join('\n'), c);
+  const c = createContext({h: el, Date});
+  vm.runInContext([section('ui-wlab-69'), section('ui-rem-70'),
+    section('ui-poolSeg-71')].join('\n'), c);
   const win = (pct, m) => ({used_pct: pct, resets_at: null, window_minutes: m});
   const accts = [
     {id: 'plus', q: {primary: win(60, 300), secondary: win(20, 10080)}},
@@ -1593,7 +1554,7 @@ function poolWindows() {
 // Button / affordance rules (shared block + overview): text actions are bordered, borderless only for
 // icon-only buttons and the row disclosure, toggles show their state, touch targets reach 44 px.
 function affordanceRules() {
-  const settings = fs.readFileSync(path.join(__dirname, '../crates/server/src/settings.html'), 'utf8');
+  const settings = readPage('settings');
   for (const [name, src] of [['ui', html], ['settings', settings]]) {
     assert.match(src, /button\.ghost\{color:var\(--fg-2\)\}/, `${name}: ghost keeps the border`);
     assert.doesNotMatch(src, /button\.ghost\{border-color:transparent/, `${name}: no borderless text buttons`);
@@ -1612,6 +1573,8 @@ function affordanceRules() {
 }
 
 (async () => {
+  countdownChecks();
+  await observationChecks();
   affordanceRules();
   poolWindows();
   // A rejects while current; loadAll cannot present it until the slow quota job settles.
@@ -1695,3 +1658,88 @@ function affordanceRules() {
   costDisplay();
   console.log('PASS: cost display, status chip colours/contrast, auto-refresh interval, Cloudflare egress banner, query/auth races, Cloudflare Access expiry, shared scope and buckets, ID paging, history/drill-down, usage samples and unknown outcomes, overview snapshots, egress identity/order/logout, scoped filter chips/URL/focus, inspector retry/expiry/stale authorization/keyboard, keyed record updates and inspector focus, memory panel, scope suggestions, Token cache rate, failure classes/upstream rate/deltas/失败原因 filter, problem chips/causes/hint/next steps/conclusion, 会话 filter/fragment/chip/URL');
 })().catch(error => {console.error(error); process.exitCode = 1;}).finally(() => clearTimeout(watchdog));
+
+async function observationChecks() {
+const box=new Node('div');
+const ctx={streamRecord:r=>r.transport==='sse'||r.transport==='ws',usageGet:null,fmtN:n=>String(n),$:id=>box,clear:e=>{e.kids=[]},h:(t,a,...k)=>{const e=new Node(t);if(typeof a==='string')e.attrs.class=a;else if(a)Object.assign(e.attrs,a);e.append(...k.map(x=>typeof x==='number'?String(x):x));return e}};
+createContext(ctx);vm.runInContext(section('ui-OMK-83')+'\n'+section('ui-fmtMs-84'),ctx);
+const all=e=>[e,...e.kids.filter(k=>k instanceof Node).flatMap(all)];
+// SSE backpressure: axis must reach 15.3 s (last yield), not the 9 s duration.
+ctx.obsTimeline({up_first_text_ms:1100,up_terminal_ms:8900,up_last_event_ms:8900,sse_first_queue_ms:1100,sse_last_queue_ms:8900,sse_first_yield_ms:1100,sse_last_yield_ms:15300,sse_queue_blocked_us:6200000,sse_queue_blocked_max_us:1800000,up_first_reasoning_ms:null,up_first_tool_ms:null,ws_deflate_down:null,ws_deflate_up:null,down_incomplete:false},{duration_ms:9000,transport:"sse"});
+let t=box.text;assert(t.includes('15.3 s'),t);assert(t.includes('6.20 s'),t);assert(!t.includes('压缩协商'));
+const dn=all(box).find(e=>e.attrs.class==='os dn');assert.equal(dn.style.left,'7.19%');assert.equal(dn.style.width,'max(2px,92.81%)');
+const dur=all(box).find(e=>e.attrs.class==='odur');assert.equal(dur.style.left,'58.82%');
+const chart=all(box).find(e=>e.attrs.role==='img');assert(chart.attrs['aria-label'].includes('推理 无'),chart.attrs['aria-label']);
+// WS: null deflate is 未知, unrecognized is 无法识别, ext text stays text.
+ctx.obsTimeline({up_first_text_ms:650,up_terminal_ms:2880,ws_first_send_ms:650,ws_last_send_ms:2885,ws_sink_blocked_us:0,ws_deflate_down:null,ws_deflate_up:false,ws_ext_up:"unrecognized"},{duration_ms:2900,transport:"ws"});
+t=box.text;assert(t.includes('客户端 未知'),t);assert(t.includes('上游 无法识别'),t);assert(t.includes('0 ms'),t);
+ctx.obsTimeline({up_first_text_ms:5,ws_first_send_ms:5,ws_last_send_ms:6,ws_deflate_down:true,ws_ext_down:'<img onerror=x>',ws_deflate_up:false},{duration_ms:10,transport:"ws"});
+assert(box.text.includes('客户端 已协商 · 上游 未协商'),box.text);
+// Old row without first text: legend shows – not 0.
+ctx.obsTimeline({up_first_reasoning_ms:1300,up_first_tool_ms:4800,up_terminal_ms:6000},{duration_ms:6100,transport:"sse"});
+assert(box.text.includes('文本 –'),box.text);
+
+// Blocked time: measured 0 stays "0 ms"; null / undefined / junk strings are "–" (never 0), and injected text is not echoed.
+for(const [v,want] of [[0,'0 ms'],[null,'–'],[undefined,'–'],['<b>x</b>','–'],[-5,'–'],[2500,'3 ms']])assert.equal(ctx.blkText(v),want,String(v));
+ctx.obsTimeline({up_first_text_ms:5,ws_first_send_ms:5,ws_last_send_ms:6,ws_sink_blocked_us:0,ws_sink_blocked_max_us:0},{duration_ms:10,transport:"ws"});
+assert(box.text.includes('下游阻塞累计 0 ms'),box.text);assert(box.text.includes('仅累计，无时段'),box.text);
+ctx.obsTimeline({up_first_text_ms:5,ws_first_send_ms:5,ws_last_send_ms:6},{duration_ms:10,transport:"ws"});
+assert(box.text.includes('下游阻塞累计 –'),box.text);assert(box.text.includes('未测'),box.text);assert(!box.text.includes('0 ms · 最长'));
+// Chart text equivalent includes the blocked total, not only a title.
+assert(all(box).find(e=>e.attrs.role==='img').attrs['aria-label'].includes('下游阻塞累计 –'));
+// Only reasoning (no text, no tool, no terminal); axis covers every milestone (>= max), compact legend names both SSE meanings.
+ctx.obsTimeline({up_first_reasoning_ms:20000,sse_first_queue_ms:1,sse_last_queue_ms:2,sse_first_yield_ms:1,sse_last_yield_ms:3},{duration_ms:500,transport:"sse"});
+assert(box.text.includes('20.0 s'),box.text);assert(box.text.includes('文本 –')&&box.text.includes('工具 –')&&box.text.includes('结束 –'),box.text);
+assert(box.text.includes('SSE 入队')&&box.text.includes('SSE 交给 HTTP 层'),box.text);
+const mk=all(box).find(e=>e.attrs.class==='om r');assert.equal(mk.style.left,'100.00%');
+// Legacy row without observation: a short hint, no empty track pretending to be 0.
+box.kids=[];ctx.usageGet=async()=>{const e=new Error('404');e.status=404;throw e};
+  await ctx.loadObservation({request_id:'0000000000000001',transport:'sse',duration_ms:5},()=>true);
+  assert(box.text.includes('无观测数据'),box.text);assert(!all(box).some(e=>e.attrs.class==='otrack'));
+  // Non-stream rows show nothing.
+  box.kids=[];await ctx.loadObservation({request_id:'0000000000000002',transport:'http'},()=>true);assert.equal(box.text,'');
+  // Exact values sit behind a native <details>/<summary> (Tab/Enter/Space work without script).
+  ctx.usageGet=async()=>({up_first_text_ms:1,up_terminal_ms:2,response_id:'<img src=x onerror=1>'});box.kids=[];
+  await ctx.loadObservation({request_id:'0000000000000003',transport:'sse',duration_ms:3},()=>true);
+  const det=all(box).find(e=>e.tag==='details');assert(det&&det.kids[0].tag==='summary'&&!det.attrs.open);
+  assert(box.text.includes('<img src=x onerror=1>'),'injected id rendered as text');
+  // Markup: metadata collapsed after the observation block, scale label in the list header, reduced motion.
+  const iObs=html.indexOf('id="dotl"'),iMeta=html.indexOf('id="dmetad"');assert(iObs>0&&iMeta>iObs);
+  assert(/<details class="dmetad" id="dmetad"><summary>/.test(html));assert(html.includes('id="hdurs"')&&html.includes('首输出</span></th>'));
+  assert(html.includes('@media (prefers-reduced-motion:reduce){.otl'));
+  console.log('timeline tests ok');
+
+// Modal focus trap (shared block in all three pages): visible <summary> must be in the Tab order;
+// content of a closed <details>, hidden and disabled controls must not be.
+{
+  const pages=['ui','accounts','settings'].map(readPage);
+  for(const p of pages){
+    const m=p.match(/function tabbables\(m\)\{[^\n]*\}/);assert(m,'tabbables() missing from the modal focus trap');
+    const c={};createContext(c);vm.runInContext(m[0],c);
+    const el=(tag,o={})=>({tag,disabled:false,offsetParent:{},inClosed:false,...o,closest(sel){return sel.startsWith('details:not([open])')&&this.inClosed?{}:null}});
+    const prev=el('button'),sum=el('summary'),meta=el('summary'),inner=el('button',{inClosed:true}),hid=el('button',{offsetParent:null}),dis=el('button',{disabled:true});
+    const modal={querySelectorAll(sel){assert(/(^|,)summary(,|$)/.test(sel),'selector lacks summary: '+sel);return [prev,sum,meta,inner,hid,dis]}};
+    {const got=c.tabbables(modal),want=[prev,sum,meta];assert(got.length===3&&got.every((x,i)=>x===want[i]),"tabbables wrong")}
+    assert(/f=tabbables\(m\)/.test(p),'Tab handler does not use tabbables()');
+  }
+}
+console.log('focus trap tests ok');
+
+}
+
+function countdownChecks() {
+  let mutations, tick, queries = 0;
+  const document = {hidden: false, body: {}, querySelectorAll() {queries++;return [];}};
+  const c = createContext({document, MutationObserver: class {constructor(fn) {mutations = fn;} observe() {}},
+    setInterval(fn, ms) {assert.equal(ms, 1000);tick = fn;}, dur: n => n + ' seconds', Date: {now: () => 1000}});
+  vm.runInContext(section('countdowns'), c);
+  tick(); assert.equal(queries, 1, 'no countdowns: no per-tick DOM query');
+  const node = new Node();node.nodeType = 1;node.setAttribute('data-until', '4000');node.dataset.pre = '还剩 ';
+  mutations([{type: 'childList', addedNodes: [node]}]);
+  tick();assert.equal(node.textContent, '还剩 3 seconds');
+  document.hidden = true;node.textContent = 'paused';tick();assert.equal(node.textContent, 'paused');
+  document.hidden = false;node.setAttribute('data-until', '6000');mutations([{type: 'attributes', target: node}]);tick();assert.equal(node.textContent, '还剩 5 seconds');
+  node.removeAttribute('data-until');mutations([{type: 'attributes', target: node}]);node.textContent = 'unchanged';tick();assert.equal(node.textContent, 'unchanged');
+  node.setAttribute('data-until', '6000');mutations([{type: 'attributes', target: node}]);node.isConnected = false;tick();assert.equal(node.textContent, 'unchanged');
+  assert.equal(queries, 1, 'only the initial scan queries the document');
+}

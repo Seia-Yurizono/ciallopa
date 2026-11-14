@@ -13,10 +13,21 @@ use base64::Engine;
 use sha2::{Digest, Sha256};
 use std::sync::LazyLock;
 
-pub const PAGE: &str = include_str!("ui.html");
-pub const SETTINGS_PAGE: &str = include_str!("settings.html");
-pub const ACCOUNTS_PAGE: &str = include_str!("accounts.html");
-pub const PAGES: [&str; 3] = [PAGE, SETTINGS_PAGE, ACCOUNTS_PAGE];
+#[path = "runtime_api.rs"]
+mod runtime_api;
+pub use runtime_api::routes as runtime_routes;
+
+static PAGES: LazyLock<[String; 3]> = LazyLock::new(|| {
+    [
+        include_str!("ui.html"),
+        include_str!("settings.html"),
+        include_str!("accounts.html"),
+    ]
+    .map(|page| {
+        page.replace("/*@shared.css*/", include_str!("shared.css"))
+            .replace("/*@shared.js*/", include_str!("shared.js"))
+    })
+});
 
 fn inline_blocks<'a>(html: &'a str, tag: &str) -> Vec<&'a str> {
     let (open, close) = (format!("<{tag}>"), format!("</{tag}>"));
@@ -52,15 +63,14 @@ pub fn csp_for(page: &str) -> String {
     )
 }
 
-pub static CSP: LazyLock<String> = LazyLock::new(|| csp_for(PAGE));
-static CSPS: LazyLock<[String; 3]> = LazyLock::new(|| PAGES.map(csp_for));
+static CSPS: LazyLock<[String; 3]> = LazyLock::new(|| std::array::from_fn(|i| csp_for(&PAGES[i])));
 
 async fn page() -> Response {
     serve(0)
 }
 
 fn serve(i: usize) -> Response {
-    let mut r = PAGES[i].into_response();
+    let mut r = PAGES[i].as_str().into_response();
     let h = r.headers_mut();
     let hv = |s: &str| HeaderValue::from_str(s).unwrap_or(HeaderValue::from_static(""));
     h.insert(
@@ -103,6 +113,7 @@ async fn favicon() -> Response {
 }
 
 pub fn routes() -> Router {
+    LazyLock::force(&CSPS);
     Router::new()
         .route("/ui", get(page))
         .route("/favicon.ico", get(favicon))
@@ -118,15 +129,17 @@ mod tests {
     /// Page text is served verbatim: no U+FFFD left by a bad edit.
     #[test]
     fn pages_have_no_replacement_char() {
-        for page in PAGES {
+        for page in PAGES.iter() {
             assert!(!page.contains('\u{FFFD}'));
         }
     }
 
     #[test]
     fn self_contained_and_hashed() {
-        for page in PAGES {
+        for (i, page) in PAGES.iter().enumerate() {
             // static table markup stays well-formed (every <thead> is closed)
+            assert!(!page.contains("/*@shared."));
+            assert_eq!(CSPS[i], csp_for(page));
             assert_eq!(
                 page.matches("<thead>").count(),
                 page.matches("</thead>").count()
@@ -164,28 +177,29 @@ mod tests {
             }
         }
         // write controls only exist behind the server-side switch; secrets never rendered
-        assert!(SETTINGS_PAGE.contains("If-Match") && ACCOUNTS_PAGE.contains("confirm:a.id"));
-        assert!(CSP.contains("script-src 'sha256-"));
-        assert!(CSP.contains("default-src 'none'"));
-        assert!(!CSP.contains("unsafe"));
+        let [page, settings, accounts] = &*PAGES;
+        assert!(settings.contains("If-Match") && accounts.contains("confirm:a.id"));
+        assert!(CSPS[0].contains("script-src 'sha256-"));
+        assert!(CSPS[0].contains("default-src 'none'"));
+        assert!(!CSPS[0].contains("unsafe"));
         // window cards are labeled only by window length (no 主/次 prefix)
         assert!(
-            PAGE.contains("\"5 小时窗口\"")
-                && PAGE.contains("\"周窗口\"")
-                && PAGE.contains("\" 天窗口\"")
+            page.contains("\"5 小时窗口\"")
+                && page.contains("\"周窗口\"")
+                && page.contains("\" 天窗口\"")
         );
-        assert!(!PAGE.contains("\"主\"") && !PAGE.contains("\"次\""));
+        assert!(!page.contains("\"主\"") && !page.contains("\"次\""));
         // error detail panel: fetched by id, rendered via textContent only, copy button
-        assert!(PAGE.contains("/usage/v1/records/\"+r.request_id+\"/detail"));
-        assert!(PAGE.contains("$(\"dbody\").textContent="));
-        assert!(PAGE.contains("navigator.clipboard.writeText"));
+        assert!(page.contains("/usage/v1/records/\"+r.request_id+\"/detail"));
+        assert!(page.contains("$(\"dbody\").textContent="));
+        assert!(page.contains("navigator.clipboard.writeText"));
     }
 
     /// A second `function x(` in the same page script silently replaces the first (sloppy
     /// hoisting), as happened when the problem chips reused the reset-card chip's name.
     #[test]
     fn no_duplicate_function_names() {
-        for page in PAGES {
+        for page in PAGES.iter() {
             let script = inline_blocks(page, "script")[0];
             let mut seen = std::collections::HashSet::new();
             for part in script.split("function ").skip(1) {
@@ -197,33 +211,6 @@ mod tests {
                     assert!(seen.insert(name.clone()), "function {name} declared twice");
                 }
             }
-        }
-    }
-
-    /// The shell (tokens, header, login, toasts, dialogs, click-again) is copied into each
-    /// page between shared markers; the copies must not drift apart.
-    #[test]
-    fn shared_blocks_identical() {
-        fn shared<'a>(page: &'a str, tag: &str) -> &'a str {
-            let block = inline_blocks(page, tag)[0];
-            let (a, b) = (
-                block.find("/* ==== shared:begin").expect("shared:begin"),
-                block
-                    .find("/* ==== shared:end ==== */")
-                    .expect("shared:end"),
-            );
-            &block[a..b]
-        }
-        for tag in ["style", "script"] {
-            let first = shared(PAGES[0], tag);
-            assert!(first.len() > 1000);
-            for page in &PAGES[1..] {
-                assert_eq!(shared(page, tag), first, "shared {tag} block differs");
-            }
-        }
-        // the login key is shared by all pages of the tab
-        for page in PAGES {
-            assert!(page.contains("KS=\"ciallopa_key\"") && page.contains("sessionStorage"));
         }
     }
 }

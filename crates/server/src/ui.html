@@ -7,246 +7,7 @@
 <meta name="color-scheme" content="light dark">
 <title>ciallopa 概览</title>
 <style>
-/* ==== shared:begin (identical in ui.html, accounts.html, settings.html) ==== */
-/* spacing: 4px base, only --s1..--s6. Colour is used only for state. */
-:root{color-scheme:light;
---s1:4px;--s2:8px;--s3:12px;--s4:16px;--s5:24px;--s6:32px;--r1:6px;--r2:10px;
---bg:#f6f7f9;--surface:#fff;--surface-2:#f7f8fa;--line:#e6e8ec;--line-2:#d3d7dd;
---fg:#16181d;--fg-2:#3d424b;--mut:#5f6673;--faint:#6b7280;--bar:#e6e8eb;--ctl:#878d96;--scrim:rgba(10,12,16,.45);
---ok:#15803d;--ok-bg:#e9f6ee;--cool:#4b5563;--cool-bg:#eef0f3;--err:#b91c1c;--err-bg:#fdecec;
---proxy:#6d28d9;--proxy-bg:#f1ebfd;--off:#5f6673;--off-bg:#eef0f2;--focus:#2563eb;--danger:#c42b1c;
---font:system-ui,-apple-system,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
---mono:ui-monospace,"SF Mono",Menlo,Consolas,"Noto Sans Mono CJK SC",monospace;
---fs-xs:11px;--fs-s:12px;--fs-m:13px;--fs-l:15px;--hdr:48px;--tabbar:0px;--side:0px;--shadow:0 8px 24px rgba(0,0,0,.14);--card:0 1px 2px rgba(16,24,40,.04)}
-@media (prefers-color-scheme:dark){:root:not([data-theme=light]){color-scheme:dark;
---bg:#0e1013;--surface:#16191e;--surface-2:#1b1f25;--line:#272b33;--line-2:#363b45;
---fg:#e7e9ec;--fg-2:#c3c8cf;--mut:#a1a8b3;--faint:#858c97;--bar:#272c34;--ctl:#6a717c;--scrim:rgba(0,0,0,.6);
---ok:#4ade80;--ok-bg:#12261a;--cool:#fbbf24;--cool-bg:#2a210c;--err:#fb7a55;--err-bg:#2c1712;
---proxy:#b79cff;--proxy-bg:#221a38;--off:#a1a8b3;--off-bg:#20242a;--focus:#7aa2ff;--danger:#b4321f;--shadow:0 8px 28px rgba(0,0,0,.55)}}
-:root[data-theme=dark]{color-scheme:dark;
---bg:#0e1013;--surface:#16191e;--surface-2:#1b1f25;--line:#272b33;--line-2:#363b45;
---fg:#e7e9ec;--fg-2:#c3c8cf;--mut:#a1a8b3;--faint:#858c97;--bar:#272c34;--ctl:#6a717c;--scrim:rgba(0,0,0,.6);
---ok:#4ade80;--ok-bg:#12261a;--cool:#fbbf24;--cool-bg:#2a210c;--err:#fb7a55;--err-bg:#2c1712;
---proxy:#b79cff;--proxy-bg:#221a38;--off:#a1a8b3;--off-bg:#20242a;--focus:#7aa2ff;--danger:#b4321f;--shadow:0 8px 28px rgba(0,0,0,.55)}
-*{box-sizing:border-box}
-html{-webkit-text-size-adjust:100%}
-@media (min-width:761px) and (min-height:501px),(min-width:761px) and (pointer:fine){html{scrollbar-gutter:stable}}
-html.modal-open{overflow:hidden}
-body{margin:0;background:var(--bg);color:var(--fg);font:var(--fs-m)/1.45 var(--font);-webkit-font-smoothing:antialiased}
-a{color:var(--fg)}
-a.tag{text-decoration:none}
-.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
-code,.mono{font-family:var(--mono);font-size:var(--fs-s)}
-.num{font-variant-numeric:tabular-nums;white-space:nowrap}
-.mut{color:var(--mut)}.faint{color:var(--faint)}
-.sm{font-size:var(--fs-s)}.xs{font-size:var(--fs-xs)}
-.trunc{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
-.hide{display:none!important}
-.sp{flex:1}
-:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
-.skip{position:absolute;left:var(--s2);top:-48px;z-index:50;background:var(--fg);color:var(--surface);padding:var(--s1) var(--s3);border-radius:var(--r1)}
-.skip:focus{top:var(--s2)}
-.c-ok{color:var(--ok)}.c-cool{color:var(--cool)}.c-err{color:var(--err)}.c-proxy{color:var(--proxy)}.c-off{color:var(--off)}
-/* shell */
-header{position:sticky;top:0;z-index:30;height:var(--hdr);display:flex;align-items:center;gap:var(--s4);padding:0 var(--s5);background:var(--surface);border-bottom:1px solid var(--line)}
-.brand{font-weight:600;font-size:var(--fs-l);letter-spacing:.2px;white-space:nowrap}
-nav.tabs{display:flex;gap:var(--s1);height:100%}
-nav.tabs a{display:flex;align-items:center;padding:0 var(--s3);color:var(--mut);text-decoration:none;font-weight:500;border-bottom:2px solid transparent;margin-bottom:-1px;white-space:nowrap}
-nav.tabs a:hover{color:var(--fg)}
-nav.tabs a[aria-current]{color:var(--fg);border-bottom-color:var(--fg)}
-nav.tabs a:before{content:"";width:16px;height:16px;flex:none;background:currentColor;opacity:.7;-webkit-mask:var(--ic) center/16px no-repeat;mask:var(--ic) center/16px no-repeat}
-nav.tabs a{gap:6px}
-nav.tabs a[aria-current]:before,nav.tabs a:hover:before{opacity:1}
-nav.tabs a .cnt{margin-left:var(--s1);font-size:var(--fs-xs);color:var(--faint);font-variant-numeric:tabular-nums}
-.hstat{display:flex;align-items:center;gap:var(--s3);font-size:var(--fs-s);color:var(--mut);white-space:nowrap;margin-left:auto}
-main{max-width:1440px;margin:0 auto;padding:var(--s5)}
-section{margin-bottom:var(--s6)}
-section:last-child{margin-bottom:0}
-.sh{display:flex;align-items:baseline;gap:var(--s2);margin-bottom:var(--s2);min-height:28px;flex-wrap:wrap}
-.sh h2{margin:0;font-size:var(--fs-l);font-weight:600}
-.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--r2);box-shadow:var(--card)}
-.tw{overflow-x:auto}
-.row{display:flex;align-items:center;gap:var(--s2);flex-wrap:wrap}
-.nw{flex-wrap:nowrap}
-/* controls */
-button,select,input,textarea{font:inherit;color:inherit}
-button,.btn{display:inline-flex;align-items:center;justify-content:center;gap:var(--s1);height:28px;padding:0 var(--s3);border:1px solid var(--line-2);border-radius:var(--r1);background:var(--surface);font-size:var(--fs-s);font-weight:500;cursor:pointer;white-space:nowrap;touch-action:manipulation;text-decoration:none;color:var(--fg)}
-button:hover,.btn:hover{background:var(--surface-2)}
-button:disabled{opacity:.45;cursor:not-allowed}
-button.xs,.btn.xs{height:24px;padding:0 var(--s2)}
-button.pri{background:var(--fg);border-color:var(--fg);color:var(--surface)}
-button.pri:hover{background:var(--fg-2)}
-/* every text action has a border; .ghost is now just the quieter text colour. Borderless only for icon-only
-   buttons (.icon, #theme) and a table row's 详情 disclosure (.det) */
-button.ghost{color:var(--fg-2)}
-button.ghost:hover{background:var(--surface-2);color:var(--fg)}
-button.icon,button#theme,button.det{border-color:transparent;background:transparent}
-button.icon:hover,button#theme:hover,button.det:hover{background:var(--surface-2)}
-/* toggles show their state: pressed / expanded */
-button.ghost[aria-pressed=true],button.ghost[aria-expanded=true]:not(.det){background:var(--surface-2);border-color:var(--ctl);color:var(--fg)}
-button.danger{color:var(--err);border-color:color-mix(in srgb,var(--err) 45%,transparent);background:transparent}
-button.danger:hover{background:var(--err-bg)}
-button.danger.solid{background:var(--danger);border-color:var(--danger);color:#fff}
-button.danger.solid:hover{background:color-mix(in srgb,var(--danger) 85%,#000)}
-button.armed{background:var(--cool-bg);border-color:var(--cool);color:var(--cool)}
-button.busy{opacity:.75;cursor:progress}
-button.busy:before{content:"";flex:none;width:10px;height:10px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:spin .7s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
-select,input:not([type=checkbox]),textarea{height:28px;padding:0 var(--s2);border:1px solid var(--ctl);border-radius:var(--r1);background:var(--surface);font-size:var(--fs-s);max-width:100%;min-width:0}
-textarea{height:auto;padding:var(--s2);font-family:var(--mono);width:100%;resize:vertical}
-select{appearance:none;-webkit-appearance:none;padding-right:22px;background:var(--surface) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23878d96' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4.5 6.5 3.5 3.5 3.5-3.5'/%3E%3C/svg%3E") right 4px center/14px no-repeat;cursor:pointer}
-select:hover{background-color:var(--surface-2)}
-input[type=number]{width:64px;text-align:right;font-variant-numeric:tabular-nums}
-input[type=checkbox]{width:14px;height:14px;margin:0;accent-color:var(--fg)}
-label.chk{display:inline-flex;align-items:center;gap:var(--s1);font-size:var(--fs-s);color:var(--fg-2);white-space:nowrap;cursor:pointer}
-.sw{appearance:none;-webkit-appearance:none;width:28px!important;height:16px!important;border-radius:8px;background:var(--ctl);position:relative;margin:0;cursor:pointer;flex:none}
-.sw:after{content:"";position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:#fff;transition:transform .15s}
-.sw:checked{background:var(--ok)}.sw:checked:after{transform:translateX(12px)}
-.sw:disabled{opacity:.5}
-/* state tags */
-.tag{display:inline-flex;align-items:center;gap:var(--s1);height:20px;padding:0 var(--s2);border-radius:var(--r1);font-size:var(--fs-xs);font-weight:600;white-space:nowrap;background:var(--off-bg);color:var(--fg-2)}
-.tag.dot:before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
-.tag.ok{background:var(--ok-bg);color:var(--ok)}.tag.cool{background:var(--cool-bg);color:var(--cool)}.tag.err{background:var(--err-bg);color:var(--err)}
-.tag.proxy{background:var(--proxy-bg);color:var(--proxy)}.tag.off{background:var(--off-bg);color:var(--off)}
-.tag.line{background:transparent;box-shadow:inset 0 0 0 1px var(--line-2);color:var(--mut)}
-.sdot{display:inline-block;width:8px;height:8px;border-radius:50%;flex:none;background:var(--off)}
-.sdot.ok{background:var(--ok)}.sdot.cool{background:var(--cool)}.sdot.err{background:var(--err)}.sdot.off{background:transparent;box-shadow:inset 0 0 0 2px var(--off)}
-/* quota bar: shows REMAINING */
-.q{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:var(--s2);min-width:0}
-.q .lb{font-size:var(--fs-xs);color:var(--mut);min-width:2em}
-.q .pc{font-size:var(--fs-s);font-weight:600;font-variant-numeric:tabular-nums;text-align:right;min-width:3.2em}
-.bar{height:6px;background:var(--bar);border-radius:3px;overflow:hidden;min-width:48px}
-.bar>i{display:block;height:100%;background:var(--ok);border-radius:3px}
-.bar>i.w{background:var(--cool)}.bar>i.b{background:var(--err)}
-.pc.w{color:var(--cool)}.pc.b{color:var(--err)}
-.q.stale .bar>i{opacity:.4}.q.stale .pc{color:var(--mut)}
-/* tables */
-table{border-collapse:collapse;width:100%;font-size:var(--fs-m)}
-th,td{padding:var(--s2) var(--s3);text-align:left;vertical-align:middle;border-bottom:1px solid var(--line)}
-thead th{font-size:var(--fs-xs);font-weight:600;color:var(--mut);background:var(--surface-2);white-space:nowrap}
-th[title]{text-decoration:underline dotted var(--line-2);text-underline-offset:3px;cursor:help}
-tbody tr:last-child>td{border-bottom:0}
-tbody tr:hover>td{background:var(--surface-2)}
-th.n,td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
-tr.hl>td{background:color-mix(in srgb,var(--focus) 9%,var(--surface))!important}
-tr.hl>td:first-child{box-shadow:inset 2px 0 0 var(--focus)}
-.who{display:flex;flex-direction:column;min-width:0;max-width:240px}
-.who b{font-weight:600}
-.empty{padding:var(--s6) var(--s4);text-align:center;color:var(--mut)}
-.empty b{display:block;color:var(--fg-2);font-size:var(--fs-m);margin-bottom:var(--s1)}
-.skel{display:block;height:12px;margin:var(--s2) 0;border-radius:var(--r1);background:var(--bar);animation:sk 1.2s ease-in-out infinite alternate}
-@keyframes sk{from{opacity:.5}to{opacity:1}}
-[aria-busy=true] tbody{opacity:.6;transition:opacity .2s}
-/* banners, toasts */
-.banner{display:flex;gap:var(--s2);align-items:baseline;flex-wrap:wrap;padding:var(--s2) var(--s3);border-radius:var(--r2);margin-bottom:var(--s4);font-size:var(--fs-s);border:1px solid color-mix(in srgb,var(--cool) 30%,transparent);background:var(--cool-bg)}
-.banner b{white-space:nowrap}
-.banner.err{background:var(--err-bg);border-color:color-mix(in srgb,var(--err) 30%,transparent)}
-.banner.err b{color:var(--err)}.banner.cool b{color:var(--cool)}
-.banner:empty{display:none}
-#toasts{position:fixed;right:var(--s5);bottom:var(--s5);z-index:60;display:flex;flex-direction:column;gap:var(--s2);align-items:flex-end;pointer-events:none;max-width:calc(100vw - 2 * var(--s5))}
-.toast{pointer-events:auto;display:flex;gap:var(--s3);align-items:center;max-width:440px;min-height:36px;padding:var(--s2) var(--s3);border-radius:var(--r2);background:var(--fg);color:var(--surface);box-shadow:var(--shadow);font-size:var(--fs-m);white-space:pre-line;overflow-wrap:anywhere}
-.toast.err{background:var(--danger);color:#fff}
-.toast span{flex:1}
-.toast button{height:28px;border-color:color-mix(in srgb,var(--surface) 40%,transparent);background:transparent;color:inherit;font-weight:600}
-.toast.out{opacity:0;transition:opacity .25s}
-.toast button.x{width:28px;padding:0;border-color:transparent}
-/* dialogs (bottom sheet on phone) */
-.modal{position:fixed;inset:0;z-index:40;display:flex;align-items:flex-start;justify-content:center;padding:10vh var(--s4) var(--s4);background:var(--scrim)}
-.mbox{width:min(480px,100%);max-height:84vh;overflow:auto;overscroll-behavior:contain;background:var(--surface);border-radius:var(--r2);border:1px solid var(--line);padding:var(--s4);display:flex;flex-direction:column;gap:var(--s3)}
-.mbox.dz{border-top:3px solid var(--err)}
-.mbox.wide{width:min(880px,100%)}
-.mbox h3{margin:0;font-size:var(--fs-l);font-weight:600;overflow-wrap:anywhere}
-.mbox p{margin:0}
-.warnp{padding:var(--s2) var(--s3);border-radius:var(--r1);background:var(--err-bg)}
-.hintp{padding:var(--s2) var(--s3);border-radius:var(--r1);background:var(--cool-bg);color:var(--fg)}
-.hintp b{color:var(--cool)}
-.kv{display:grid;grid-template-columns:auto minmax(0,1fr);gap:var(--s1) var(--s3);font-size:var(--fs-s);margin:0}
-.kv dt{color:var(--mut)}.kv dd{margin:0;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
-.mact{display:flex;gap:var(--s2);justify-content:flex-end;flex-wrap:wrap}
-.mact .alt{margin-right:auto}
-.res{font-size:var(--fs-s);white-space:pre-wrap;overflow-wrap:anywhere}
-.res:not(:empty){padding:var(--s2) var(--s3);border-radius:var(--r1);background:var(--surface-2);border:1px solid var(--line)}
-/* login */
-#login{max-width:400px;margin:14vh auto 0;padding:var(--s5);background:var(--surface);border:1px solid var(--line);border-radius:var(--r2)}
-#login h1{font-size:var(--fs-l);margin:0 0 var(--s2)}
-#login form{display:flex;gap:var(--s2);margin-top:var(--s4)}
-#login input{flex:1;height:40px}
-#login button{height:40px}
-#lerr{margin-top:var(--s2);color:var(--err)}
-.m-only{display:none}
-@media (prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
-@media (max-width:760px),(max-height:500px) and (pointer:coarse){
-:root{--hdr:44px;--tabbar:52px}
-/* landscape phones keep this layout; content clears the notch / Dynamic Island side (needs viewport-fit=cover) */
-header{padding:0 max(var(--s3),env(safe-area-inset-right)) 0 max(var(--s3),env(safe-area-inset-left));gap:var(--s2)}
-nav.tabs{position:fixed;left:0;right:0;bottom:0;height:calc(var(--tabbar) + env(safe-area-inset-bottom));z-index:30;background:var(--surface);border-top:1px solid var(--line);gap:0;padding:0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
-nav.tabs a{flex:1;flex-direction:column;justify-content:center;gap:2px;border-bottom:0;border-top:2px solid transparent;margin:0;font-size:var(--fs-xs)}
-nav.tabs a:before{width:20px;height:20px;-webkit-mask-size:20px;mask-size:20px}
-nav.tabs a .cnt{display:none}
-nav.tabs a[aria-current]{border-top-color:var(--fg)}
-.hstat{gap:var(--s2)}
-main{padding:var(--s3) max(var(--s3),env(safe-area-inset-right)) calc(var(--tabbar) + env(safe-area-inset-bottom) + var(--s5)) max(var(--s3),env(safe-area-inset-left))}
-section{margin-bottom:var(--s5)}
-.d-only{display:none!important}.m-only{display:revert}
-#toasts{left:max(var(--s3),env(safe-area-inset-left));right:max(var(--s3),env(safe-area-inset-right));bottom:calc(var(--tabbar) + env(safe-area-inset-bottom) + var(--s2));align-items:stretch;max-width:none}.toast{max-width:none}
-.modal{align-items:flex-end;padding:var(--s3) var(--s3) calc(var(--s3) + env(safe-area-inset-bottom))}
-select,input:not([type=checkbox]),textarea{font-size:16px}select,input:not([type=checkbox]){height:44px}
-.toast button{height:44px}.toast button.x{width:44px}
-#rmore,#devbtn,#imf button,#kf button,#pcheck{height:44px}
-.mbox{max-height:88vh}
-.mact button{flex:1;height:44px;font-size:var(--fs-m)}
-.mact .alt{margin-right:0;flex-basis:100%}
-/* stacked lists: table rows become 2-3 line items */
-table.stk,table.stk tbody{display:block}
-table.stk thead{display:none}
-table.stk tr{display:grid;gap:var(--s1) var(--s2);padding:var(--s2) var(--s3);border-bottom:1px solid var(--line)}
-table.stk tbody tr:last-child{border-bottom:0}
-table.stk td{display:block;padding:0;border:0;min-width:0}
-table.stk tbody tr:hover>td{background:none}
-table.stk tr.hl{background:color-mix(in srgb,var(--focus) 9%,var(--surface));box-shadow:inset 2px 0 0 var(--focus)}
-table.stk tr.hl>td{background:none!important;box-shadow:none!important}
-}
-@media (pointer:coarse){
-header button,header a.tag,.cchip,label.chk,.toc a,.pop .pf a,.pop button,#acc .stack button,#acc .meta-c button,.sh button,.ptest button,#reload,.qmod,#mstrip button,.banner a{position:relative}
-header button:after,header a.tag:after,.cchip:after,label.chk:after,.toc a:after,.pop .pf a:after,.pop button:after,#acc .stack button:after,#acc .meta-c button:after,.sh button:after,.ptest button:after,#reload:after,.qmod:after,#mstrip button:after,.banner a:after{content:"";position:absolute;left:50%;top:50%;width:max(calc(100% + 4px),44px);height:max(100%,44px);transform:translate(-50%,-50%)}
-}
-/* desktop shell: brand + page links in a left sidebar, page title and global actions in the top bar */
-.ptl{display:none;margin:0;font-size:17px;font-weight:600;letter-spacing:-.1px;white-space:nowrap}
-@media (min-width:1024px){
-:root{--side:208px}
-#app{padding-left:var(--side)}
-#app:before{content:"";position:fixed;left:0;top:0;bottom:0;width:var(--side);background:var(--surface);border-right:1px solid var(--line);z-index:29}
-header{background:color-mix(in srgb,var(--bg) 92%,transparent);border-bottom-color:transparent;padding:0 var(--s5)}
-.brand{position:fixed;left:0;top:0;width:var(--side);height:56px;display:flex;align-items:center;gap:var(--s2);padding:0 var(--s4) 0 20px}
-.brand:before{content:"";width:20px;height:20px;border-radius:6px;background:var(--fg);flex:none;box-shadow:inset 0 0 0 5px var(--fg),inset 0 0 0 20px var(--surface)}
-nav.tabs{position:fixed;left:0;top:56px;width:var(--side);height:auto;flex-direction:column;gap:2px;padding:var(--s2) var(--s3)}
-nav.tabs a{height:32px;gap:10px;padding:0 10px;border:0;margin:0;border-radius:var(--r1);color:var(--fg-2);font-weight:500}
-nav.tabs a:hover{background:var(--surface-2);color:var(--fg)}
-nav.tabs a[aria-current]{background:color-mix(in srgb,var(--fg) 6%,var(--surface));color:var(--fg);font-weight:600}
-nav.tabs a .cnt{margin-left:auto;min-width:20px;padding:0 6px;border-radius:9px;line-height:18px;text-align:center;background:var(--surface-2);box-shadow:inset 0 0 0 1px var(--line)}
-nav.tabs a .cnt:empty{display:none}
-.ptl{display:block}
-}
-/* 1024-1359: the sidebar collapses to an icon rail so wide tables keep their room */
-@media (min-width:1024px) and (max-width:1359px){
-:root{--side:60px}
-.brand{justify-content:center;padding:0;gap:0;font-size:0}
-nav.tabs{padding:var(--s2)}
-nav.tabs a{position:relative;justify-content:center;height:40px;padding:0;gap:0;font-size:0}
-nav.tabs a:before{width:18px;height:18px;-webkit-mask-size:18px;mask-size:18px}
-nav.tabs a .cnt{position:absolute;top:2px;right:2px;margin:0;min-width:16px;padding:0 4px;line-height:14px;font-size:10px}
-}
-nav.tabs a[data-p=overview]{--ic:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='3' width='7' height='9' rx='1.5'/%3E%3Crect x='14' y='3' width='7' height='5' rx='1.5'/%3E%3Crect x='14' y='12' width='7' height='9' rx='1.5'/%3E%3Crect x='3' y='16' width='7' height='5' rx='1.5'/%3E%3C/svg%3E")}
-nav.tabs a[data-p=accounts]{--ic:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='9' cy='8' r='4'/%3E%3Cpath d='M2 21v-1a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1'/%3E%3Cpath d='M16 4a4 4 0 0 1 0 8M22 21v-1a6 6 0 0 0-4-5.6'/%3E%3C/svg%3E")}
-nav.tabs a[data-p=settings]{--ic:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1'/%3E%3Ccircle cx='15' cy='6' r='2'/%3E%3Ccircle cx='9' cy='12' r='2'/%3E%3Ccircle cx='17' cy='18' r='2'/%3E%3C/svg%3E")}
-main.noadm>:not(#noadm){display:none!important}
-#noadm{display:flex;flex-direction:column;gap:var(--s2);align-items:center;margin-top:var(--s6)}
-/* segmented control: a short set of exclusive choices */
-.seg{display:inline-flex;align-items:center;gap:2px;padding:2px;border-radius:var(--r1);background:color-mix(in srgb,var(--fg) 4%,var(--surface));box-shadow:inset 0 0 0 1px var(--line)}
-.seg button{height:24px;padding:0 10px;border:0;border-radius:4px;background:transparent;color:var(--mut);font-size:var(--fs-s);font-weight:500}
-.seg button:hover{background:transparent;color:var(--fg)}
-.seg button[aria-pressed=true],.seg button[aria-current]{background:var(--surface);color:var(--fg);font-weight:600;box-shadow:0 1px 2px rgba(16,24,40,.08),0 0 0 1px var(--line)}
-/* ==== shared:end ==== */
+/*@shared.css*/
 select.ivl{height:24px;padding:0 20px 0 var(--s2);font-size:var(--fs-xs);background-position:right 3px center}
 /* Touch: 44px hit area, same 24px look (transparent top/bottom border, outline drawn inside) */
 @media (pointer:coarse){header select.ivl{height:44px;margin:-10px 0;border-width:10px 0;border-color:transparent;border-radius:var(--r1)/calc(var(--r1) + 10px);background-clip:padding-box;box-shadow:inset 0 0 0 1px var(--ctl)}}
@@ -447,9 +208,9 @@ button.pc.sm{height:24px;padding:0 8px;font-size:var(--fs-xs)}
 #rec tr.dt:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
 .st{display:inline-block;min-width:32px;text-align:center;font-size:var(--fs-xs);font-weight:600;font-variant-numeric:tabular-nums;border-radius:var(--r1);line-height:20px;background:var(--off-bg);color:var(--fg-2)}
 .st.s2{background:var(--ok-bg);color:var(--ok)}.st.s4{background:var(--err-bg);color:var(--err)}.st.s429{background:var(--cool-bg);color:var(--cool)}.st.s5{background:var(--st5-bg);color:var(--st5);box-shadow:inset 0 0 0 1px currentColor}
-:root{--st5:#b91c1c;--st5-bg:#fdecec}@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--st5:#fca5a5;--st5-bg:#2c1414}}:root[data-theme=dark]{--st5:#fca5a5;--st5-bg:#2c1414}
+/*@unit ui-section-27*/:root{--st5:#b91c1c;--st5-bg:#fdecec/*@end ui-section-27*/}/*@unit ui-section-29*/@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--st5:#fca5a5;--st5-bg:#2c1414/*@end ui-section-29*/}}/*@unit ui-section-28*/:root[data-theme=dark]{--st5:#fca5a5;--st5-bg:#2c1414/*@end ui-section-28*/}
 /* Failure classes: one colour per class, used by the 失败率 bar, the 失败原因 trend and 分布. */
-:root{--fc-quota:#78716c;--fc-rate_limit:#0e7490;--fc-request:#4d7c0f;--fc-upstream:#be123c;--fc-network:#6d28d9;--fc-stream:#1d4ed8;--fc-local:#4b5563;--fc-other:#8b8f96}@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--fc-quota:#f59e0b;--fc-rate_limit:#22d3ee;--fc-request:#a3e635;--fc-upstream:#fb7185;--fc-network:#a78bfa;--fc-stream:#60a5fa;--fc-local:#9ca3af;--fc-other:#6b7280}}:root[data-theme=dark]{--fc-quota:#f59e0b;--fc-rate_limit:#22d3ee;--fc-request:#a3e635;--fc-upstream:#fb7185;--fc-network:#a78bfa;--fc-stream:#60a5fa;--fc-local:#9ca3af;--fc-other:#6b7280}
+/*@unit ui-section-30*/:root{--fc-quota:#78716c;--fc-rate_limit:#0e7490;--fc-request:#4d7c0f;--fc-upstream:#be123c;--fc-network:#6d28d9;--fc-stream:#1d4ed8;--fc-local:#4b5563;--fc-other:#8b8f96/*@end ui-section-30*/}/*@unit ui-section-32*/@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--fc-quota:#f59e0b;--fc-rate_limit:#22d3ee;--fc-request:#a3e635;--fc-upstream:#fb7185;--fc-network:#a78bfa;--fc-stream:#60a5fa;--fc-local:#9ca3af;--fc-other:#6b7280/*@end ui-section-32*/}}/*@unit ui-section-31*/:root[data-theme=dark]{--fc-quota:#f59e0b;--fc-rate_limit:#22d3ee;--fc-request:#a3e635;--fc-upstream:#fb7185;--fc-network:#a78bfa;--fc-stream:#60a5fa;--fc-local:#9ca3af;--fc-other:#6b7280/*@end ui-section-31*/}
 .fc.quota{background:var(--fc-quota);fill:var(--fc-quota)}.fc.rate_limit{background:var(--fc-rate_limit);fill:var(--fc-rate_limit)}.fc.request{background:var(--fc-request);fill:var(--fc-request)}.fc.upstream{background:var(--fc-upstream);fill:var(--fc-upstream)}.fc.network{background:var(--fc-network);fill:var(--fc-network)}.fc.stream{background:var(--fc-stream);fill:var(--fc-stream)}.fc.local{background:var(--fc-local);fill:var(--fc-local)}.fc.other{background:var(--fc-other);fill:var(--fc-other)}
 .fcbar{display:flex;gap:1px;height:5px;border-radius:3px;overflow:hidden;margin:1px 0 4px;background:var(--bar)}
 .fcbar i{display:block;min-width:3px;flex-basis:0}
@@ -703,161 +464,7 @@ main select,main .nx,main .pc,main button.xs,main button.p,#rmore,main summary,m
 <script>
 "use strict";
 (function(){
-/* ==== shared:begin (identical in ui.html, accounts.html, settings.html) ==== */
-const $=id=>document.getElementById(id);
-const KS="ciallopa_key",TH="ciallopa_theme";
-// All dynamic text goes through textContent / createTextNode: never parsed as HTML.
-function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined&&text!==null)e.textContent=String(text);return e}
-function h(tag,a,...kids){const e=document.createElement(tag);
-  if(typeof a==="string")e.className=a;
-  else if(a)for(const k in a){const v=a[k];if(v===null||v===undefined||v===false)continue;
-    if(k==="class")e.className=v;else if(k==="text")e.textContent=String(v);else if(k.startsWith("on"))e.addEventListener(k.slice(2),v);else e.setAttribute(k,v===true?"":String(v))}
-  add(e,kids);return e}
-function add(e,kids){for(const k of kids){if(k===null||k===undefined||k===false)continue;if(Array.isArray(k))add(e,k);else e.appendChild(typeof k==="object"?k:document.createTextNode(String(k)))}return e}
-function clear(e){while(e.firstChild)e.removeChild(e.firstChild)}
-// ---- formats
-const NF=new Intl.NumberFormat("zh-CN");
-const p2=x=>String(x).padStart(2,"0");
-function exact(n){return n===null||n===undefined?"":NF.format(n)}
-function fmtN(n){if(n===null||n===undefined)return"–";n=Number(n);const a=Math.abs(n);if(a>=1e9)return(n/1e9).toFixed(2)+"B";if(a>=1e6)return(n/1e6).toFixed(2)+"M";if(a>=1e3)return(n/1e3).toFixed(1)+"k";return String(Math.round(n))}
-function fmtMs(n){return n===null||n===undefined?"–":(n>=1000?(n/1e3).toFixed(n>=1e4?1:2)+" s":Math.round(n)+" ms")}
-function fmtUsd(c){if(c===null||c===undefined)return"–";if(c===0)return"$0.00";if(c<0.01)return"<$0.01";return"$"+c.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})}
-function exactUsd(c){return c===null||c===undefined?"":"$"+c.toFixed(6)}
-function tzOff(d){const o=-d.getTimezoneOffset(),a=Math.abs(o);return"UTC"+(o>=0?"+":"-")+p2(Math.floor(a/60))+":"+p2(a%60)}
-function isoLocal(ms){const d=new Date(ms);return d.getFullYear()+"-"+p2(d.getMonth()+1)+"-"+p2(d.getDate())+"T"+p2(d.getHours())+":"+p2(d.getMinutes())+":"+p2(d.getSeconds())+tzOff(d).slice(3)}
-function fmtTime(ms,noSec){const d=new Date(ms);return(d.getFullYear()!==new Date().getFullYear()?d.getFullYear()+"-":"")+p2(d.getMonth()+1)+"-"+p2(d.getDate())+" "+p2(d.getHours())+":"+p2(d.getMinutes())+(noSec?"":":"+p2(d.getSeconds()))}
-function hms(d){return p2(d.getHours())+":"+p2(d.getMinutes())+":"+p2(d.getSeconds())}
-// Compact countdown: 3天9时 / 1时06分 / 4分12秒.
-function dur(s){if(s<=0)return"已到期";const d=Math.floor(s/86400),hh=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return d?d+"天"+hh+"时":hh?hh+"时"+p2(m)+"分":m+"分"+p2(Math.floor(s%60))+"秒"}
-function ago(ms){const s=Math.max(0,(Date.now()-ms)/1000);if(s<60)return"刚刚";if(s<3600)return Math.floor(s/60)+" 分钟前";if(s<86400)return Math.floor(s/3600)+" 小时前";return Math.floor(s/86400)+" 天前"}
-// Elements carrying data-until (unix ms) show a live countdown.
-setInterval(()=>{for(const e of document.querySelectorAll("[data-until]"))e.textContent=(e.dataset.pre||"")+dur((Number(e.dataset.until)-Date.now())/1000)},1000);
-// ---- access key (sessionStorage of this tab, shared by all three pages) and API calls
-function key(){return sessionStorage.getItem(KS)||""}
-function adminMsg(j){return j&&j.error&&j.error.type==="admin_required"?"当前密钥没有管理权限。请使用 admin = true 的密钥登录，或在配置文件的 [[api_keys]] 中为该密钥设置 admin = true。":null}
-// o.timeout (ms): abort a request that gets no answer (the error then has kind "timeout").
-async function req(method,path,body,extra,o){
-  const auth=key(),epoch=authEpoch,current=()=>key()===auth&&epoch===authEpoch&&(!o||!o.current||o.current()),hd={"Authorization":"Bearer "+auth};if(body!==undefined)hd["Content-Type"]="application/json";Object.assign(hd,extra||{});
-  const ac=o&&o.timeout?new AbortController():null,tm=ac?setTimeout(()=>ac.abort(),o.timeout):null;let r;
-  try{r=await fetch(path,{method,headers:hd,body:body===undefined?undefined:JSON.stringify(body),cache:"no-store",credentials:"same-origin",redirect:"manual",referrerPolicy:"no-referrer",signal:ac?ac.signal:undefined})}
-  catch(e){const x=new Error(ac&&ac.signal.aborted?"请求超时（"+Math.round(o.timeout/1000)+" 秒内没有响应）":"网络错误，无法连接 ciallopa（"+e.message+"）");x.kind=ac&&ac.signal.aborted?"timeout":"network";throw x}
-  finally{clearTimeout(tm)}
-  gate(r);
-  if(r.status===401){if(current()){sessionStorage.removeItem(KS);showApp(false,"密钥无效或已过期")}throw new Error("401")}
-  let j=null;try{j=await r.json()}catch(_){}
-  if(current()&&r.status===403&&j&&j.error&&j.error.type==="admin_required")NOADMIN=true;
-  if(!r.ok){const e=new Error(adminMsg(j)||(j&&j.error&&j.error.message)||(path.split("?")[0]+" → HTTP "+r.status));e.status=r.status;e.body=j;throw e}
-  return {j,r}}
-// Behind Cloudflare Access an expired or missing login answers an API call with a redirect to the
-// sign-in page (an opaque redirect under redirect:"manual") or an HTML page instead of JSON. That is
-// not a network error and not a bad key: keep the key and ask for a page reload.
-function gate(r){const hd=n=>r.headers&&r.headers.get?(r.headers.get(n)||"").toLowerCase():"",ks=r.headers&&r.headers.keys?[...r.headers.keys()]:[];
-  if(r.type==="opaqueredirect"||r.status===0||r.redirected||hd("content-type").includes("text/html")||(r.status===401||r.status===403)&&ks.some(k=>k.toLowerCase().startsWith("cf-access"))){const x=new Error("Cloudflare Access 登录已过期，请刷新页面重新登录");x.kind="access";throw x}}
-async function get(p,o){return (await req("GET",p,undefined,undefined,o)).j}
-async function post(p,b){return (await req("POST",p,b||{})).j}
-// Reason of a failed call for a toast: timeout / network as such, HTTP errors with their status.
-function why(e){if(!e)return"未知错误";if(e.kind||!e.status)return e.message||String(e);return"HTTP "+e.status+" · "+e.message}
-// A button action: busy state (spinner, optional label) while it runs; a failure becomes an error
-// toast "<name>失败：<reason>". Returns false on failure. Calls pass `T` for a 45 s timeout.
-const T={timeout:45000};
-// Per-account result of an active quota query (刷新额度) → short reason.
-// Quota windows by length: up to a day → short column (5 小时), longer → long column (周, or the
-// free plan's single 30 天 window). Without window_minutes the slot decides (primary short).
-function wlab(m,d){if(!m)return d;if(m===300)return"5h";if(m===10080)return"周";if(m>=1440)return Math.round(m/1440)+" 天";if(m>=60)return Math.round(m/60)+"h";return m+" 分"}
-function wslots(q){const o={s:null,l:null};if(!q)return o;
-  for(const [w,d,k] of [[q.primary,"5h","s"],[q.secondary,"周","l"]]){if(!w||w.used_pct===null||w.used_pct===undefined)continue;
-    let s=w.window_minutes?(w.window_minutes>1440?"l":"s"):k;if(o[s])s=s==="s"?"l":"s";if(!o[s])o[s]=[wlab(w.window_minutes,d),w,s]}return o}
-function whead(labels,def){const L=[...new Set(labels.map(x=>x==="5h"?"5 小时":x))];return(L.length?L.join(" / "):def)+"剩余"}
-// 刷新额度 answered "asked moments ago": neutral, not a failure.
-const qskip=r=>!r.ok&&r.error&&r.error.kind==="rate_limited";
-function qsummary(j){const sk=j.skipped!==undefined?j.skipped:j.results.filter(qskip).length,cleared=(j.results||[]).filter(r=>r.cooldown_cleared).length,p=[];if(j.ok)p.push("已刷新 "+j.ok+" 个账号的额度");if(cleared)p.push(cleared+" 个已解除额度冷却");if(sk)p.push(sk+" 个 30 秒内刚查询过，已跳过");return p.join("，")||"没有可刷新的账号"}
-function qerr(e){e=e||{};const m=e.message||"";return{rate_limited:"刚查询过，"+(e.retry_after_s||30)+" 秒后重试",http:"上游 HTTP "+e.status+(m?" · "+m:""),network:"无法连接上游（"+m.replace(/^send: /,"")+"）",timeout:"上游 5 秒内没有响应",credentials:"获取令牌失败（"+m.replace(/^credentials: /,"")+"）",token_invalid:"令牌失效，需要重新登录",decode:"上游响应中没有额度数据"}[e.kind]||m||"未知错误"}
-// The button stays focusable while busy (aria-disabled), so keyboard focus is not dropped.
-async function busyRun(b,name,f,label){if(b.disabled||b._busy)return false;const t=b.textContent;b._busy=true;b.classList.add("busy");b.setAttribute("aria-disabled","true");b.setAttribute("aria-busy","true");if(label)b.textContent=label;
-  try{await f();return true}catch(e){if(e&&e.message!=="401")toast(name+(/[\w)]$/.test(name)?" ":"")+"失败："+why(e),{kind:"err"});return false}
-  finally{b._busy=false;b.classList.remove("busy");b.removeAttribute("aria-disabled");b.removeAttribute("aria-busy");if(label&&b.isConnected)b.textContent=t}}
-// set once the server says this key is not an admin: the overview then skips admin-only calls
-let onLogout=()=>{},NOADMIN=false,authEpoch=0;
-function showApp(on,err){$("app").classList.toggle("hide",!on);if(on){$("main").classList.remove("noadm");const n=$("noadm");if(n)n.remove()}else NOADMIN=false;$("login").classList.toggle("hide",on);$("lerr").textContent=err||"";if(!on){authEpoch++;clearEgress();closeAllModals();onLogout()}}
-function login(verify,enter){
-  $("lf").addEventListener("submit",async e=>{e.preventDefault();sessionStorage.setItem(KS,$("key").value);$("key").value="";
-    try{await verify();showApp(true);enter()}catch(err){if(err.message!=="401")$("lerr").textContent=err.message}});
-  $("logout").addEventListener("click",()=>{sessionStorage.removeItem(KS);showApp(false)});
-  if(key()){showApp(true);enter()}else showApp(false)}
-// ---- theme (跟随系统 / 浅色 / 深色), remembered in this browser only
-function applyTheme(t){const r=document.documentElement;if(t==="light"||t==="dark")r.dataset.theme=t;else delete r.dataset.theme;
-  const n={light:"浅色",dark:"深色"}[t]||"跟随系统",b=$("theme");b.textContent={light:"☀",dark:"☾"}[t]||"◐";b.title="主题："+n+"（点击切换）";b.setAttribute("aria-label","切换主题，当前："+n)}
-applyTheme(localStorage.getItem(TH));
-$("theme").addEventListener("click",()=>{const c=localStorage.getItem(TH),n=c==="light"?"dark":c==="dark"?"":"light";if(n)localStorage.setItem(TH,n);else localStorage.removeItem(TH);applyTheme(n);toast("主题："+({light:"浅色",dark:"深色"}[n]||"跟随系统"))});
-// ---- toasts; o.undo adds 撤销 (10 s). Errors are alerts with a close button (10 s). The timer
-// pauses while the toast is hovered, touched or holds keyboard focus, and while the tab is hidden.
-function toast(t,o){o=o||{};const err=o.kind==="err",d=h("div",{class:"toast"+(o.kind?" "+o.kind:""),role:err?"alert":null},h("span",null,t));let tm=null,ptr=false,foc=false;
-  const bye=()=>{clearTimeout(tm);d.classList.add("out");setTimeout(()=>d.remove(),300)};
-  const arm=()=>{clearTimeout(tm);if(ptr||foc)return;tm=setTimeout(()=>{if(document.hidden)arm();else bye()},o.undo||err?10000:4000)};
-  if(o.undo){const b=h("button",{type:"button"},"撤销");b.addEventListener("click",async()=>{b.disabled=true;bye();try{await o.undo()}catch(e){toast("撤销失败："+e.message,{kind:"err"})}});d.appendChild(b)}
-  if(err){const x=h("button",{type:"button",class:"x","aria-label":"关闭"},"✕");x.addEventListener("click",bye);d.appendChild(x)}
-  for(const [ev,v] of [["pointerenter",true],["pointerdown",true],["pointerleave",false],["pointerup",false]])d.addEventListener(ev,()=>{ptr=v;arm()});
-  d.addEventListener("focusin",()=>{foc=true;arm()});d.addEventListener("focusout",e=>{if(!d.contains(e.relatedTarget)){foc=false;arm()}});
-  $("toasts").appendChild(d);arm();return d}
-// An error shown in a page banner that is scrolled out of view is repeated as an error toast.
-function inView(e){const r=e.getBoundingClientRect();return r.height>0&&r.bottom>0&&r.top<innerHeight}
-// ---- re-rendered lists: the last focused control carrying data-fk gets focus back after a render
-// that replaced it (row actions, settings fields). A pointer press elsewhere forgets it.
-let FK=null;
-document.addEventListener("focusin",e=>{const t=e.target.closest&&e.target.closest("[data-fk]");if(t)FK=t.dataset.fk;else if(!e.target.closest||!e.target.closest("#toasts"))FK=null});
-document.addEventListener("pointerdown",e=>{if(!e.target.closest||!e.target.closest("[data-fk],#toasts"))FK=null},true);
-function refocus(){if(!FK)return;const a=document.activeElement;if(a&&a!==document.body&&a.isConnected)return;
-  const t=document.querySelector('[data-fk="'+CSS.escape(FK)+'"]');if(t&&t.offsetParent!==null)t.focus({preventScroll:true})}
-// ---- steady re-render: f() replaces the children of `boxes`. Focus inside them is released
-// first (removing a focused node makes the browser lay out the half-empty page and commit a
-// clamped scroll), and the focused control, or else the row nearest the top of the view, keeps
-// its viewport position. Anchors carry data-fk, data-ak or data-acc, stable across renders.
-const ANK=["data-fk","data-ak","data-acc"],ANS=ANK.map(a=>"["+a+"]").join(",");
-function ankSel(e){for(const a of ANK)if(e.hasAttribute(a))return"["+a+'="'+CSS.escape(e.getAttribute(a))+'"]';return null}
-function ankPick(){const a=document.activeElement,hb=document.querySelector("header").getBoundingClientRect().bottom,vis=e=>{const r=e.getBoundingClientRect();return r.height>0&&r.bottom>hb&&r.top<innerHeight};
-  if(a&&a!==document.body&&a.closest){const e=a.closest(ANS);if(e&&vis(e))return e}
-  for(const f of [.5,.25,.75])for(let y=hb+8;y<innerHeight;y+=48){const e=document.elementFromPoint(innerWidth*f,y),t=e&&e.closest&&e.closest(ANS);if(t&&vis(t))return t}
-  return null}
-function steady(boxes,f){const a=document.activeElement;if(a&&a!==document.body&&boxes.some(b=>b&&b.contains(a)))a.blur();
-  const e=ankPick(),sel=e&&ankSel(e),top=e?e.getBoundingClientRect().top:0;f();
-  const n=sel&&document.querySelector(sel);if(n&&n.getBoundingClientRect().height>0){const d=n.getBoundingClientRect().top-top;if(Math.abs(d)>=1)scrollBy(0,d)}}
-// ---- dialogs: focus goes to 取消, Esc / backdrop close, Tab trapped, focus returns to the opener.
-// A [data-arm] button ignores clicks for its first 400 ms (no double tap through the opener).
-const MODALS=[];
-function openModal(m,focus,opener){if(!m.classList.contains("hide"))return;m.classList.remove("hide");m._opener=opener||document.activeElement;m._at=Date.now();MODALS.push(m);document.documentElement.classList.add("modal-open");(focus||m.querySelector("button")).focus()}
-function closeModal(m){if(m.classList.contains("hide"))return;m.classList.add("hide");const i=MODALS.indexOf(m);if(i>=0)MODALS.splice(i,1);const o=m._opener;m._opener=null;if(m._onclose)m._onclose();document.documentElement.classList.toggle("modal-open",MODALS.length>0);if(o&&document.contains(o))o.focus({preventScroll:true})}
-function closeAllModals(){for(const m of MODALS.slice().reverse())closeModal(m)}
-// Tab order inside a modal: visible, enabled controls, including <summary> toggles; nothing inside a closed <details>.
-function tabbables(m){return Array.from(m.querySelectorAll("button,a[href],input,select,textarea,summary,[tabindex]:not([tabindex='-1'])")).filter(x=>!x.disabled&&x.offsetParent!==null&&!x.closest("details:not([open]) > :not(summary)"))}
-document.addEventListener("keydown",e=>{const m=MODALS[MODALS.length-1];if(!m)return;
-  if(e.key==="Escape"){e.preventDefault();closeModal(m);return}
-  if(e.key!=="Tab")return;const f=tabbables(m);if(!f.length)return;
-  const i=f.indexOf(document.activeElement);e.preventDefault();f[i<0?(e.shiftKey?f.length-1:0):(i+(e.shiftKey?f.length-1:1))%f.length].focus()});
-document.addEventListener("click",e=>{const b=e.target.closest&&e.target.closest("[data-arm]");if(!b)return;const m=b.closest(".modal");if(m&&Date.now()-m._at<400){e.preventDefault();e.stopImmediatePropagation()}},true);
-document.addEventListener("click",e=>{const m=MODALS[MODALS.length-1];if(m&&e.target===m)closeModal(m)});
-// ---- inline click-again: the first click turns the button into `label` for 3 s (armed after
-// 300 ms); a second click runs `act`; timeout, blur or Esc reverts.
-function disarm(b){if(!b._armed)return;clearTimeout(b._t);b._armed=0;b.textContent=b._orig;b.classList.remove("armed")}
-function clickAgain(b,label,act){if(b._armed){if(Date.now()-b._armed<300)return;disarm(b);return act()}
-  b._orig=b.textContent;b._armed=Date.now();b.textContent=label;b.classList.add("armed");b._t=setTimeout(()=>disarm(b),3000);
-  b.addEventListener("blur",()=>disarm(b),{once:true})}
-document.addEventListener("keydown",e=>{if(e.key==="Escape"&&document.activeElement&&document.activeElement._armed)disarm(document.activeElement)});
-// ---- shell: account count on the 账号 tab, egress tag in the header (admin keys only)
-function setTabCount(n){const c=document.querySelector("nav.tabs a[data-p=accounts] .cnt");if(c)c.textContent=n===null||n===undefined?"":String(n)}
-let egressSeq=0;
-function clearEgress(){egressSeq++;const t=$("egress");t.className="hide";t.textContent="";t.title=""}
-async function egressTag(cfg){const seq=++egressSeq,auth=key(),current=()=>seq===egressSeq&&auth===key(),read=p=>get(p,{timeout:30000,current}),t=$("egress");
-  try{if(!cfg&&NOADMIN)throw new Error("admin");const c=cfg||await read("/admin/v1/config");if(!current())return;const eg=Object.assign({},c.egress||{},{runtime:c.runtime});
-    if(eg.direct){t.className="tag line";t.textContent="直连";t.title="出口：直连（未使用出口代理）· 点击查看出口设置";return eg}
-    let n=0;try{const since=Date.now()-36e5;for(const code of ["proxy_connect","proxy_timeout"]){n+=(await read("/usage/v1/records?limit=1&from="+since+"&error="+code)).total||0;if(!current())return}}catch(_){}
-    if(!current())return;t.className="tag proxy dot";t.textContent=n?"出口代理 · "+n+" 错误":"出口代理";t.title="出口："+eg.proxy+(n?"；近 1 小时 "+n+" 次出口代理错误":"；近 1 小时没有出口代理错误")+" · 点击查看出口设置";return eg}
-  catch(_){if(!current())return;clearEgress();return null}}
-// Accounts / settings need an admin key. A usage-only key (e.g. carried over from the overview in
-// this tab) gets a plain explanation instead of a half-loaded page.
-function needAdmin(e){if(!e||!e.body||!e.body.error||e.body.error.type!=="admin_required")return false;const m=$("main");
-  if(!$("noadm"))m.appendChild(h("div",{class:"empty panel",id:"noadm"},h("b",null,"此页面需要管理密钥"),adminMsg(e.body),h("div",null,h("button",{type:"button",class:"pri",onclick:()=>{sessionStorage.removeItem(KS);showApp(false)}},"使用其他密钥登录"))));
-  m.classList.add("noadm");$("msg").textContent="";return true}
-/* ==== shared:end ==== */
+/*@shared.js*/
 // ---- overview
 const AS="ciallopa_auto",RANGE_MS={"1h":36e5,"24h":864e5,"7d":7*864e5,"30d":30*864e5},RANGE_N={"1h":"1 小时","24h":"24 小时","7d":"7 天","30d":"30 天"};
 const CR={usage_limit:"额度用尽",rate_limited:"上游限流",auth:"认证失败",transient:"上游连续 5xx",overloaded:"上游过载（overloaded）",challenge:"Cloudflare 拦截",model_unsupported:"模型不可用",not_found:"上游 404",payment_required:"上游 402 付费问题",workspace_deactivated:"工作区已停用（402）"};
@@ -865,50 +472,50 @@ const ST={normal:["正常","ok"],cooling:["冷却中","cool"],disabled:["已停�
 let timer=null,Q=null,RC=null,AC=null,EG=null,SUM=null,TREND=null,ACCTS=[],RECORDER=null,SUM_SCOPE="",REFS=null,SUM_PREV=null,PREV_CACHE=null,OCC=null;
 let scopeWindow={from:0,to:0,fixed:false},recordWindow=null,activeRecord=null;
 function rollWindow(){const to=Date.now();scopeWindow={from:to-RANGE_MS[$("range").value],to,fixed:false}}
-function scopeFilters(){return {from:scopeWindow.from,to:scopeWindow.to,account:$("facct").value,model:$("fmodel").value.trim(),key:$("fkey").value.trim(),instance:$("finstance").value.trim(),exclude_prewarm:withPrewarm()?"":1}}
+/*@unit ui-scopeFilters-45*//*@unit ui-scopeFilters-4*/function scopeFilters(){return {from:scopeWindow.from,to:scopeWindow.to,account:$("facct").value,model:$("fmodel").value.trim(),key:$("fkey").value.trim(),instance:$("finstance").value.trim(),exclude_prewarm:withPrewarm()?"":1}}
 // Prewarm is left out of every figure and the request list unless 「含预热」 is ticked (a browser preference).
 const PW="ciallopa_prewarm";function withPrewarm(){return $("fprewarm").checked}
 function pwText(){return withPrewarm()?"含预热":"不含预热"}
-function scopeLabel(){return fmtTime(scopeWindow.from,true)+" – "+fmtTime(scopeWindow.to,true)}
+/*@end ui-scopeFilters-4*/function scopeLabel(){return fmtTime(scopeWindow.from,true)+" – "+fmtTime(scopeWindow.to,true)}
 function showScope(){const count=SF.filter(id=>fval(id).trim()).length;for(const b of $("rangeseg").children||[])b.setAttribute("aria-pressed",String(b.dataset.v===$("range").value));$("rprewarm").checked=withPrewarm();syncMini();
   $("scopesummary").textContent=(count?" · "+count+" 项条件":" · 所有模型与账号")+(withPrewarm()?" · 含预热":"");$("scopeclear").classList.toggle("hide",!count);renderFilterChips($("scopechips"),SF,"范围",$("scopetoggle"));
   $("scopewhen").textContent=scopeWindow.fixed?scopeLabel():"截至 "+hms(new Date(scopeWindow.to));$("scopewhen").dataset.fixed=String(scopeWindow.fixed);$("scopewhen").title=scopeLabel();
   $("scopefreeze").textContent=scopeWindow.fixed?"返回最近":"固定时间";$("scopefreeze").title=scopeWindow.fixed?"恢复随刷新滚动的时间范围":scopeLabel();
   $("rwindow").classList.toggle("hide",!recordWindow);$("rwindowtext").textContent=recordWindow?"选中时段 · "+fmtTime(recordWindow.from,true)+" – "+fmtTime(recordWindow.to,true):""}
-async function usageGet(path,current){return (await req("GET",path,undefined,undefined,{timeout:30000,current})).j}
-const narrow=()=>matchMedia("(max-width:760px),(max-height:500px) and (pointer:coarse)").matches;
+/*@end ui-scopeFilters-45*//*@unit ui-usageGet-22*/async function usageGet(path,current){return (await req("GET",path,undefined,undefined,{timeout:30000,current})).j}
+/*@end ui-usageGet-22*/const narrow=()=>matchMedia("(max-width:760px),(max-height:500px) and (pointer:coarse)").matches;
 function winName(m){if(!m)return"窗口";if(m===300)return"5 小时窗口";if(m===10080)return"周窗口";if(m>=1440)return Math.round(m/1440)+" 天窗口";return Math.round(m/60)+" 小时窗口"}
-function fail(e){if(!e||e.message==="401"||(e.isCurrent&&!e.isCurrent()))return;const m=$("msg"),t=e.message||String(e);clear(m);m.appendChild(h("b",null,"更新失败"));m.appendChild(document.createTextNode(t+" · 保留最近一次结果"));if(!inView(m))toast("更新失败："+t,{kind:"err"})}
-async function busy(id,f){$(id).setAttribute("aria-busy","true");try{return await f()}finally{$(id).setAttribute("aria-busy","false")}}
+/*@unit ui-fail-1*/function fail(e){if(!e||e.message==="401"||(e.isCurrent&&!e.isCurrent()))return;const m=$("msg"),t=e.message||String(e);clear(m);m.appendChild(h("b",null,"更新失败"));m.appendChild(document.createTextNode(t+" · 保留最近一次结果"));if(!inView(m))toast("更新失败："+t,{kind:"err"})}
+/*@end ui-fail-1*/async function busy(id,f){$(id).setAttribute("aria-busy","true");try{return await f()}finally{$(id).setAttribute("aria-busy","false")}}
 // A slow response must not overwrite a newer query, even during the input debounce.
 // Keep the last rendered snapshot until the current query succeeds; old failures are stale too.
 // Recheck failures when presented: loadAll can defer them behind slower jobs in allSettled.
-const loadSeq={},loading={};
+/*@unit ui-loadSeq-2*/const loadSeq={},loading={};
 async function currentLoad(id,signature,fetcher,apply){const seq=loadSeq[id]=(loadSeq[id]||0)+1,q=signature(),auth=key();
   const current=()=>loadSeq[id]===seq&&key()===auth&&signature()===q;
   loading[id]=true;$(id).setAttribute("aria-busy","true");
   try{const data=await fetcher(q,current);if(current())apply(data,q)}catch(e){if(current()){e.isCurrent=current;throw e}}
   finally{if(loadSeq[id]===seq){loading[id]=false;$(id).setAttribute("aria-busy","false")}}}
-function emptyRow(tb,n,text,sub){const c=h("td",{colspan:n},h("div","empty",h("b",null,text),sub||""));tb.appendChild(h("tr",null,c))}
+/*@end ui-loadSeq-2*/function emptyRow(tb,n,text,sub){const c=h("td",{colspan:n},h("div","empty",h("b",null,text),sub||""));tb.appendChild(h("tr",null,c))}
 function keepScroll(id,f){const w=$(id),x=w.scrollLeft;f();w.scrollLeft=x}
 
 // ---- accounts: quota observations (+ status from the admin list, + reset cards)
 // A window whose reset time has passed is full again, even if the last snapshot said otherwise.
-function rem(w){return w&&w.used_pct!==null&&w.used_pct!==undefined?(w.resets_at&&w.resets_at*1000<=Date.now()?100:Math.max(0,100-w.used_pct)):null}
+/*@unit ui-rem-70*/function rem(w){return w&&w.used_pct!==null&&w.used_pct!==undefined?(w.resets_at&&w.resets_at*1000<=Date.now()?100:Math.max(0,100-w.used_pct)):null}
 function wins(a){const o=wslots(a.q);return [o.s,o.l].filter(x=>x&&rem(x[1])!==null)}
-function mergeAccts(){const acm={},rcm={};if(AC)for(const a of AC.accounts)acm[a.id]=a;if(RC)for(const x of RC.accounts||[])rcm[x.account]=x.reset_credits;
+/*@end ui-rem-70*/function mergeAccts(){const acm={},rcm={};if(AC)for(const a of AC.accounts)acm[a.id]=a;if(RC)for(const x of RC.accounts||[])rcm[x.account]=x.reset_credits;
   const src=Q?Q.accounts:AC?AC.accounts.map(a=>({account:a.id,email:a.email,disabled:a.disabled})):[];
   return src.map(x=>{const a=acm[x.account];const st=x.configured===false?"unconfigured":a?a.status:x.needs_relogin?"token_invalid":x.disabled?"disabled":"normal";
     return {id:x.account,email:x.email||(a&&a.email)||null,plan:(x.quota&&x.quota.plan)||(a&&a.plan)||null,status:st,cooling_reason:a?a.cooling_reason:null,cooling_until_ms:a?a.cooling_until_ms:null,q:x.quota||null,rc:rcm[x.account],configured:x.configured!==false}})}
 function acctById(id){return ACCTS.find(a=>a.id===id)}
-// Cloudflare challenge / block page instead of the upstream: the host's egress, not an account.
+/*@unit ui-section-63*/// Cloudflare challenge / block page instead of the upstream: the host's egress, not an account.
 function renderEgressBlock(){const b=Q&&Q.egress_block,e=$("egressblk"),on=!!(b&&b.active);clear(e);e.classList.toggle("hide",!on);if(!on){e.removeAttribute("title");return}
   e.appendChild(h("b",null,b.code==="challenge"?"上游 Cloudflare 质询本机出口":"上游 Cloudflare 拦截本机出口"));
   e.appendChild(document.createTextNode((b.cf_code?"错误 "+b.cf_code+" · ":"")+"最近 "+fmtTime(b.last_at_ms)+"（"+ago(b.last_at_ms)+"）· 共 "+exact(b.count)+" 次 · 请求直接失败，不换账号、不冷却账号；检查出口 IP、出口代理或客户端指纹"));
   e.title="首次 "+fmtTime(b.first_at_ms)+" · 账号 "+b.account+" · 上游 HTTP "+b.upstream_status+(b.cf_ray?" · cf-ray "+b.cf_ray:"")+"\n下一次正常的上游响应后提示消失"}
 // The overview keeps only the pooled 5h / 周 bars (one segment per enabled account); the per-account
 // quota, history, cards and actions live on the accounts page.
-function renderQuota(){ACCTS=mergeAccts();syncMini();
+/*@end ui-section-63*/function renderQuota(){ACCTS=mergeAccts();syncMini();
   const conf=ACCTS.filter(a=>a.configured);setTabCount(conf.length);
   const usable=conf.filter(a=>a.status==="normal"||a.status==="cooling").length,nb=$("noacc");clear(nb);
   if(!usable&&(Q||AC)){nb.appendChild(h("b",null,"没有可用账号"));nb.appendChild(document.createTextNode(conf.length?"所有账号都已停用或需要重新登录，请求无法转发。":"请求无法转发。在「账号」页或使用 ciallopa login 添加账号。"))}
@@ -917,7 +524,7 @@ function renderQuota(){ACCTS=mergeAccts();syncMini();
   const sel=$("facct"),cur=sel.value;while(sel.options.length>1)sel.remove(1);for(const a of ACCTS)sel.appendChild(h("option",{value:a.id},a.id));
   if(Array.from(sel.options).some(o=>o.value===cur))sel.value=cur;else if(cur){sel.appendChild(h("option",{value:cur},cur));sel.value=cur}
   renderKpis()}
-function poolSeg(a,slot){const x=wslots(a.q)[slot],r=x?rem(x[1]):null,s=h("span","bar"+(r===null?" unk":""));
+/*@unit ui-poolSeg-71*/function poolSeg(a,slot){const x=wslots(a.q)[slot],r=x?rem(x[1]):null,s=h("span","bar"+(r===null?" unk":""));
   if(r!==null){const i=h("i",r<20?"b":r<50?"w":"");i.style.width=Math.min(100,r)+"%";s.appendChild(i)}
   s.title=(a.email||a.id)+"："+(r===null?(a.status==="token_invalid"?"需要重新登录":"额度未知"):"剩余 "+r.toFixed(0)+"%");return s}
 // A bar covers the accounts that have that window (by window_minutes; pro has no 5h) plus those with no
@@ -925,7 +532,7 @@ function poolSeg(a,slot){const x=wslots(a.q)[slot],r=x?rem(x[1]):null,s=h("span"
 function poolBar(all,slot,label){const list=all.filter(a=>!a.q||wslots(a.q)[slot]);if(!list.length)return null;const known=list.map(a=>{const x=wslots(a.q)[slot];return x?rem(x[1]):null}).filter(r=>r!==null);
   const avg=known.length?known.reduce((p,r)=>p+r,0)/known.length:null,pb=h("span","pb");for(const a of list)pb.appendChild(poolSeg(a,slot));
   return h("span",{class:"pl",role:"img","aria-label":label+" 剩余（"+list.length+" 个账号）："+list.map(a=>poolSeg(a,slot).title).join("，")},h("span","mut",label+" · "+list.length+" 个"),pb,h("b","num",avg===null?"–":avg.toFixed(0)+"%"))}
-function renderPool(row){let p=$("pool");if(p)p.remove();
+/*@end ui-poolSeg-71*/function renderPool(row){let p=$("pool");if(p)p.remove();
   const list=ACCTS.filter(a=>a.configured&&a.status!=="disabled");if(!list.length&&!POOL_NOTE)return;
   p=h("span",{class:"pool",id:"pool",title:"每段一个有该窗口的启用账号，填充 = 剩余额度（上游当前快照，不受时间范围影响）；百分比为已知账号的平均剩余"});
   if(list.length)p.append(...[poolBar(list,"s","5h"),poolBar(list,"l","周")].filter(Boolean));
@@ -933,12 +540,12 @@ function renderPool(row){let p=$("pool");if(p)p.remove();
   p.appendChild(h("a",{class:"acclink",href:"/ui/accounts"},"账号 ›"));row.appendChild(p)}
 
 // ---- A small overview; every number has a population, and unknown is not zero.
-function pct(n){return n===null||n===undefined?"–":(n*100).toFixed(1)+"%"}
-function summaryCurrent(){return SUM_SCOPE===qs(scopeFilters())}
+/*@unit ui-pct-14*/function pct(n){return n===null||n===undefined?"–":(n*100).toFixed(1)+"%"}
+/*@unit ui-summaryCurrent-9*/function summaryCurrent(){return SUM_SCOPE===qs(scopeFilters())}
 function tokenValue(t){return t&&(t.usage_samples||!(t.count+t.prewarm_count))?fmtN((t.input_tokens||0)+(t.output_tokens||0)):"–"}
 function cacheRate(t){return t&&t.cache_ratio!==null&&t.cache_ratio!==undefined&&t.cache_samples?pct(t.cache_ratio):"–"}
 function cacheTip(t){return "缓存率 = 缓存命中的输入 Token / 输入 Token；只算上游报告了缓存字段的请求（"+exact(t&&t.cache_samples||0)+" 条），"+pwText()+"，随筛选范围变化"}
-function statLink(text,outcome){const b=h("button",{class:"statlink",type:"button",title:"在下方查看这些请求",disabled:SUM_SCOPE!==qs(scopeFilters())},text);b.addEventListener("click",()=>drillOutcome(outcome));return b}
+/*@end ui-summaryCurrent-9*/function statLink(text,outcome){const b=h("button",{class:"statlink",type:"button",title:"在下方查看这些请求",disabled:SUM_SCOPE!==qs(scopeFilters())},text);b.addEventListener("click",()=>drillOutcome(outcome));return b}
 function sep(){return h("span","sep","·")}
 function joinSep(xs){const o=[];xs.filter(Boolean).forEach((x,i)=>{if(i)o.push(sep());o.push(typeof x==="string"?h("span",null,x):x)});return o}
 function outcomeLinks(t){return [
@@ -946,7 +553,7 @@ function outcomeLinks(t){return [
   t.incomplete?statLink(exact(t.incomplete)+" 上游截断","incomplete"):null,
   t.unknown?h("span","w",statLink(exact(t.unknown)+" 未确认结束","unknown")):null].filter(Boolean)}
 // Failure classes, in display order; the same labels and colours everywhere. first_quota_reset is quota.
-const FCLS=[["quota","额度用尽"],["rate_limit","限流"],["request","请求内容"],["upstream","上游错误"],["network","网络"],["stream","流中断"],["local","本地"],["other","其他"]];
+/*@unit ui-FCLS-34*/const FCLS=[["quota","额度用尽"],["rate_limit","限流"],["request","请求内容"],["upstream","上游错误"],["network","网络"],["stream","流中断"],["local","本地"],["other","其他"]];/*@end ui-FCLS-34*/
 const FCN=Object.fromEntries(FCLS);
 function compareOn(){return !!$("fcompare").checked}
 // Change against the previous period. better: "up" / "down" colours the direction, null stays neutral.
@@ -962,7 +569,7 @@ function upTip(){return "上游失败率 = 上游返回的失败 / 业务请求�
 function rpm(n){return (n>=1?n.toFixed(1):n.toFixed(2))+" RPM"}
 function renderKpis(){const t=SUM&&SUM.total,span=SUM?Math.max(1,SUM.to_ms-SUM.from_ms):0,P=t&&SUM_PREV&&compareOn()?SUM_PREV.total:null;
   const dl=(k,kind,better,fmt)=>P&&P.count?delta(t[k],P[k],kind,better,fmt):null,ms=n=>fmtMs(n);
-  const cost=t&&t.cost_usd,u=t&&t.unknown_price,costV=!t?"–":costText(cost,u);
+  /*@unit ui-cost-60*/const cost=t&&t.cost_usd,u=t&&t.unknown_price,costV=!t?"–":costText(cost,u);/*@end ui-cost-60*/
   const bad=!!t&&t.failure_rate>=0.05,nu=t&&t.no_usage||0,reported=t&&(t.usage_samples||!(t.count+t.prewarm_count));
   const cells=[
     [["请求",P?dl("count","rel",null,exact):null],t?statLink(fmtN(t.count),"business"):"–",t?[joinSep([rpm(t.count*60000/span),refChip()]),h("div","fcls oc",outcomeLinks(t))]:"","已结束的业务请求，不含预热；RPM 为窗口平均，不是实时入口速率"],
@@ -1014,29 +621,29 @@ function renderRefusals(){const tb=$("refrec").tBodies[0];clear(tb);
   if(!refState.rows.length)emptyRow(tb,7,scopedOut()?"按账号或模型筛选时不显示拒绝记录":"没有被拒绝的请求",scopedOut()?"拒绝发生在选择账号之前，清除账号和模型筛选后查看":"尝试其他时间范围");
   $("rcount").textContent=scopedOut()?"":"共 "+exact(refState.total)+" 次 · "+exact(refState.rows.length)+" 组";
   $("rmore").classList.toggle("hide",!refState.more);$("rpage").textContent=""}
-function drillOutcome(outcome,cls){if(!summaryCurrent())return;recordWindow=null;clearRecordFilters();const p=DRILL[outcome];
+/*@end ui-pct-14*//*@unit ui-drillOutcome-10*/function drillOutcome(outcome,cls){if(!summaryCurrent())return;recordWindow=null;clearRecordFilters();const p=DRILL[outcome];
   if(p){$("fproblem").value=p;$("fcause").value=outcome==="failed"?errorCause(cls):DRILL_CAUSE[outcome]||""}else $("foutcome").value=outcome;
   saveF();showScope();renderTrend();loadRecords(false).catch(fail);revealRecords()}
 // KPI and class links land on the problem chips: 失败 → 报错 + 原因, 取消/未知 → 未完成 + 子原因; 截断 (truncated and content_filter) → the incomplete outcome.
 const DRILL={failed:"error",cancelled:"unfinished",unknown:"unfinished",refused:"refused"},DRILL_CAUSE={cancelled:"client_closed",unknown:"unconfirmed"};
 function errorCause(c){return c?({quota:"quota",rate_limit:"rate_limit",request:"request",upstream:"upstream",network:"network",stream:"stream"}[c]||"gateway"):""}
-function clearRecordFilters(){for(const k of RF){const e=$(k);if(e.type==="checkbox")e.checked=false;else e.value=""}}
+/*@unit ui-clearRecordFilters-48*/function clearRecordFilters(){for(const k of RF){const e=$(k);if(e.type==="checkbox")e.checked=false;else e.value=""}}
 // Sticky chrome above a section: header + the view tabs (phone) or the range bar (desktop).
 function stickyTop(){let y=document.querySelector("header").offsetHeight;for(const e of document.querySelectorAll(".otabs,.fbar"))if(getComputedStyle(e).position==="sticky")y=Math.max(y,parseFloat(getComputedStyle(e).top)+e.offsetHeight);return y}
-function revealRecords(){const section=$("sr");
+/*@end ui-clearRecordFilters-48*/function revealRecords(){const section=$("sr");
   section.style.scrollMarginTop=(stickyTop()+12)+"px";
   section.scrollIntoView({block:"start"});const chipOn=document.querySelector('#pbtns .pc[aria-pressed="true"]');(chipOn&&chipOn.focus?chipOn:$("rextra")).focus({preventScroll:true})}
 
-// ---- summary
+/*@end ui-drillOutcome-10*/// ---- summary
 const GN={account:"账号",key:"密钥",instance:"实例",model:"模型",response_model:"实际模型",endpoint:"接口",reasoning_effort:"推理",transport:"传输",service_tier:"档位",error:"错误码",err_source:"错误来源"};
 // Scope groups filter the whole page; error, source and tier groups open the matching failed requests.
 const GSCOPE={account:"facct",model:"fmodel",key:"fkey",instance:"finstance"},GDRILL={error:"fcode",err_source:"fsrc",service_tier:"ftier"};
-function groupName(g,v){return g==="error"?(ERR_LBL[v]?v+"（"+ERR_LBL[v]+"）":v):g==="err_source"?(SRC[v]?SRC[v][0]:v):g==="service_tier"?tierName(v):v}
+/*@unit ui-groupName-37*/function groupName(g,v){return g==="error"?(ERR_LBL[v]?v+"（"+ERR_LBL[v]+"）":v):g==="err_source"?(SRC[v]?SRC[v][0]:v):g==="service_tier"?tierName(v):v}/*@end ui-groupName-37*/
 function drillGroup(id,v){if(!summaryCurrent())return;recordWindow=null;clearRecordFilters();
   $("fproblem").value=id==="ftier"?"":"error";$(id).value=v;saveF();showScope();renderTrend();loadRecords(false).catch(fail);revealRecords()}
 // Estimated cost: the priced amount only; nothing priced at all stays 未定价 (never $0.00).
-function costText(c,unk){return unk&&!c?"未定价":fmtUsd(c)}
-function costCell(c,unk){if(unk&&c)return h("td",{class:"n",title:exactUsd(c)+"；"+unk+" 条请求缺少价格，未计入"},c.toFixed(2));if(unk)return h("td",{class:"n",title:unk+" 条请求缺少价格"},"未定价");return h("td",{class:"n",title:exactUsd(c)},c===null||c===undefined?"–":c.toFixed(2))}
+/*@unit ui-costText-12*/function costText(c,unk){return unk&&!c?"未定价":fmtUsd(c)}/*@end ui-costText-12*/
+/*@unit ui-costCell-59*/function costCell(c,unk){if(unk&&c)return h("td",{class:"n",title:exactUsd(c)+"；"+unk+" 条请求缺少价格，未计入"},c.toFixed(2));if(unk)return h("td",{class:"n",title:unk+" 条请求缺少价格"},"未定价");return h("td",{class:"n",title:exactUsd(c)},c===null||c===undefined?"–":c.toFixed(2))}/*@end ui-costCell-59*/
 function renderSummary(){const s=SUM;if(!s)return;ttHide();const g=$("group").value;$("gh").textContent=GN[g];
   const tb=$("sum").tBodies[0];
   keepScroll("sw",()=>steady([tb],()=>{clear(tb);
@@ -1063,7 +670,7 @@ const SVGNS="http://www.w3.org/2000/svg";
 function sv(tag,attrs,text){const e=document.createElementNS(SVGNS,tag);for(const k in attrs)e.setAttribute(k,String(attrs[k]));if(text!==undefined)e.textContent=String(text);return e}
 function tipAt(ev,text){const t=$("ctip"),box=$("chart").getBoundingClientRect();t.textContent=text;t.classList.remove("hide");
   const x=Math.max(4,Math.min(ev.clientX-box.left+12,box.width-t.offsetWidth-4)),y=Math.max(4,ev.clientY-box.top-t.offsetHeight-8);t.style.left=x+"px";t.style.top=y+"px"}
-function trendPoints(summary,hourly,tz){const step=hourly?36e5:864e5,off=tz*60000,first=Math.floor((summary.from_ms+off)/step)*step-off;
+/*@unit ui-trendPoints-8*/function trendPoints(summary,hourly,tz){const step=hourly?36e5:864e5,off=tz*60000,first=Math.floor((summary.from_ms+off)/step)*step-off;
   const by=new Map((summary.buckets||[]).map(b=>[b.start_ms,b])),pts=[];
   for(let start=first;start<=summary.to_ms;start+=step){const end=start+step,b=by.get(start),from=Math.max(start,summary.from_ms),to=Math.min(end-1,summary.to_ms);
     pts.push({start,end,from,to,partial:from!==start||to!==end-1,n:b?b.count:0,f:b?b.failures:0,cancel:b?b.cancelled:0,inc:b?b.incomplete:0,unobserved:b?b.unknown||0:0,
@@ -1072,14 +679,14 @@ function trendPoints(summary,hourly,tz){const step=hourly?36e5:864e5,off=tz*6000
       t50:b?b.stream_ttft_p50_ms:null,t90:b?b.stream_ttft_p90_ms:null,t99:b?b.stream_ttft_p99_ms:null,d50:b?b.duration_p50_ms:null,d90:b?b.duration_p90_ms:null,d99:b?b.duration_p99_ms:null})}
   return pts}
 // Axis top for counts: four equal integer steps of 1, 2, 2.5 (from 10 up), 3 or 5 × 10^k.
-function niceMax(v){const raw=Math.max(1,v/4),p=10**Math.floor(Math.log10(raw)),m=raw/p,st=(m<=1?1:m<=2?2:m<=2.5&&p>=10?2.5:m<=3?3:m<=5?5:10)*p;return st*4}
-function selectBucket(p){if(!summaryCurrent())return;recordWindow={from:p.from,to:p.to};scopeWindow.fixed=true;saveF();showScope();renderTrend();loadRecords(false).catch(fail);revealRecords()}
+/*@unit ui-niceMax-40*/function niceMax(v){const raw=Math.max(1,v/4),p=10**Math.floor(Math.log10(raw)),m=raw/p,st=(m<=1?1:m<=2?2:m<=2.5&&p>=10?2.5:m<=3?3:m<=5?5:10)*p;return st*4}/*@end ui-niceMax-40*/
+/*@unit ui-selectBucket-11*//*@end ui-trendPoints-8*/function selectBucket(p){if(!summaryCurrent())return;recordWindow={from:p.from,to:p.to};scopeWindow.fixed=true;saveF();showScope();renderTrend();loadRecords(false).catch(fail);revealRecords()}
 // Occupancy rows (one per bucket and instance) folded to one value per bucket start.
 function occBy(occ){const m=new Map();for(const r of occ&&occ.rows||[]){const o=m.get(r.minute_ms)||{inf:0,ws:0,li:0,lw:0,full:0,ia:0,wa:0};o.ia+=r.inflight_avg||0;o.wa+=r.ws_avg||0;
   o.inf=Math.max(o.inf,r.inflight_peak);o.ws=Math.max(o.ws,r.ws_peak);o.li=Math.max(o.li,r.max_inflight_requests);o.lw=Math.max(o.lw,r.ws_max_connections);o.full+=r.full_minutes||0;m.set(r.minute_ms,o)}return m}
-function niceMs(v){const st=[100,200,250,500,1e3,2e3,2500,5e3,1e4,2e4,25e3,5e4,1e5,2e5,5e5];const s=st.find(x=>x*4>=v)||Math.ceil(v/4e5)*1e5;return Math.max(1000,s*4)}
+/*@unit ui-niceMs-39*/function niceMs(v){const st=[100,200,250,500,1e3,2e3,2500,5e3,1e4,2e4,25e3,5e4,1e5,2e5,5e5];const s=st.find(x=>x*4>=v)||Math.ceil(v/4e5)*1e5;return Math.max(1000,s*4)}/*@end ui-niceMs-39*/
 function msAxis(n){return n>=1000?(n/1e3).toFixed(n>=1e4?0:1)+"s":Math.round(n)+"ms"}
-function renderTrend(){if(!TREND)return;const {summary,hourly,tz}=TREND,pts=trendPoints(summary,hourly,tz),metric=$("tmetric").value,svg=$("svg");clear(svg);$("ctip").classList.add("hide");
+/*@unit ui-renderTrend-24*//*@end ui-selectBucket-11*/function renderTrend(){if(!TREND)return;const {summary,hourly,tz}=TREND,pts=trendPoints(summary,hourly,tz),metric=$("tmetric").value,svg=$("svg");clear(svg);$("ctip").classList.add("hide");
   const cap=metric==="cap",nar=narrow(),W=nar?360:1200,H=nar?140:200,L=nar?36:48,R=cap?(nar?28:40):12,T=12,B=24,iw=W-L-R,ih=H-T-B;
   // Previous period, aligned bucket by bucket from the end (both windows have the same length).
   const pv=TREND.prev&&TREND.prev.buckets?trendPoints({from_ms:TREND.prev.from,to_ms:TREND.prev.to,buckets:TREND.prev.buckets},hourly,tz):null,pp=i=>pv?pv[i-(pts.length-pv.length)]||null:null;
@@ -1153,11 +760,11 @@ function renderTrend(){if(!TREND)return;const {summary,hourly,tz}=TREND,pts=tren
   if(metric==="requests")lg.append(sw("req","请求"),sw("err","失败"),sw("cancel","取消"));
   else if(fail){const seen=FCLS.filter(([c])=>pts.some(p=>p.cls[c]));if(seen.length)for(const [c,l] of seen)lg.append(sw("fc "+c,l));else lg.append(h("span",null,"无失败"))}
   else if(lat)lg.append(sw("l-p50","首输出 p50"),sw("l-p90","p90"),sw("l-p99","p99"));
-  else if(cap)lg.append(sw("l-inf","并发峰值"),sw("l-ws","WS 峰值"),sw("l-lim-inf","并发上限"),sw("l-lim-ws","WS 上限"),sw("l-ref","已拒绝"));
+  /*@unit ui-section-38*/else if(cap)lg.append(sw("l-inf","并发峰值"),sw("l-ws","WS 峰值"),sw("l-lim-inf","并发上限"),sw("l-lim-ws","WS 上限"),sw("l-ref","已拒绝"));/*@end ui-section-38*/
   else lg.append(sw("req",metric==="tokens"?"Token":"估算 $"),h("span",null,metric==="tokens"?"– 未报告":"– 未定价"));
   if(prevOn)lg.append(sw("l-prev",lat?"上一周期 p90":"上一周期"));
   if(!lat&&!cap&&!fail)lg.append(sw("now","部分时段"))}
-let lastNarrow=narrow();addEventListener("resize",()=>{if(narrow()!==lastNarrow){lastNarrow=narrow();renderTrend()}});
+/*@end ui-renderTrend-24*/let lastNarrow=narrow();addEventListener("resize",()=>{if(narrow()!==lastNarrow){lastNarrow=narrow();renderTrend()}});
 
 // ---- custom tooltips for [data-tt]
 let ttFor=null;
@@ -1186,9 +793,9 @@ function effortCell(r){const box=h("span"),q=r.reasoning_effort,a=r.response_eff
   if(q){box.appendChild(h("span","ef",q));if(a&&a!==q){box.appendChild(h("span","ef fw","↳ "+a));tip="推理强度：请求 "+q+" · 实际 "+a}else tip="推理强度：请求 "+q+(a?" · 实际 "+a:"")}
   else if(a){box.appendChild(h("span","ef fb",a,h("small",null,"响应")));tip="推理强度：请求未指定 · 实际 "+a}else{box.appendChild(h("span","ef","–"));tip="推理强度：–"}
   box.dataset.tip=tip;return box}
-const SRC={client:["客户端","off","客户端断开或请求本身的问题"],local:["ciallopa","off","ciallopa 本地产生（没有可用账号、全部冷却等）"],network:["网络","err","无法连接上游、超时或流空闲超时"],proxy:["出口代理","proxy","无法连接出口代理、隧道被拒绝或超时（不计入账号冷却）"],upstream:["上游","err","上游 HTTP 返回的错误，原样转给客户端"],stream:["流内","err","上游流内的错误事件或流被截断"]};
+/*@unit ui-SRC-68*//*@unit ui-SRC-42*/const SRC={client:["客户端","off","客户端断开或请求本身的问题"],local:["ciallopa","off","ciallopa 本地产生（没有可用账号、全部冷却等）"],network:["网络","err","无法连接上游、超时或流空闲超时"],proxy:["出口代理","proxy","无法连接出口代理、隧道被拒绝或超时（不计入账号冷却）"],upstream:["上游","err","上游 HTTP 返回的错误，原样转给客户端"],stream:["流内","err","上游流内的错误事件或流被截断"]};
 const PROXY_ERR={proxy_connect:"出口代理连接失败",proxy_timeout:"经出口代理连接超时"};
-const ERR_LBL=Object.assign({client_closed:"客户端断开",shutdown:"网关关闭",no_account:"没有账号",no_usable_account:"没有可用账号",all_cooling:"全部账号冷却中",all_quota_exhausted:"额度用尽",first_quota_reset:"额度用尽",model_cooldown:"模型冷却，交客户端重放",usage_limit:"额度用尽",rate_limit_exceeded:"限流",connect:"无法连接上游",dns:"上游 DNS 解析失败",tls:"上游 TLS 握手失败",timeout:"上游超时",timeout_connect:"连接上游超时",transport:"上游传输错误",header_timeout:"等待响应头超时",preparation_timeout:"准备等待超时",idle_timeout:"上游流空闲超时",error_body_timeout:"读取错误响应超时",error_body_too_large:"错误响应过大",error_body_read:"错误响应中断",cf_blocked:"Cloudflare 拦截出口",challenge:"Cloudflare 质询",stream_read_error:"流读取中断",response_decode_error:"上游压缩响应损坏",unsupported_response_encoding:"上游响应编码不受支持",stream_truncated:"流被截断",upstream_error_event:"上游错误事件",response_failed:"上游 response.failed",image_output_missing:"未返回图片",upstream_ws_close:"上游关闭 WS",upstream_ws_eof:"上游 WS 断开",upstream_ws_read_error:"上游 WS 读取中断",upstream_ws_send_error:"发往上游失败",observation_incomplete:"观测不完整",internal:"网关内部错误",usage_limit_reached:"额度用尽",invalid_encrypted_content:"加密推理被拒",context_length_exceeded:"上下文过长",invalid_request_error:"请求无效",websocket_connection_limit_reached:"WS 连接到期",previous_response_not_found:"上一轮响应失效",server_is_overloaded:"上游过载",policy_capacity_unavailable:"上游容量不足",turn_rate_limit_exceeded:"容量不足",inference_hook_denied:"inference hook 被拒",content_policy_violation:"内容策略拒绝",invalid_access_program:"access program 无效",unsupported_access_program:"access program 不受支持",access_program_not_enabled:"access program 未启用",invalid_workspace_selected:"workspace 选择无效",codex_workspace_access_denied:"workspace 无权限",budget_reached:"会话预算用尽",upstream_closed:"上游断开（旧记录）"},PROXY_ERR);
+/*@unit ui-ERR_LBL-33*/const ERR_LBL=Object.assign({client_closed:"客户端断开",shutdown:"网关关闭",no_account:"没有账号",no_usable_account:"没有可用账号",all_cooling:"全部账号冷却中",all_quota_exhausted:"额度用尽",first_quota_reset:"额度用尽",model_cooldown:"模型冷却，交客户端重放",usage_limit:"额度用尽",rate_limit_exceeded:"限流",connect:"无法连接上游",dns:"上游 DNS 解析失败",tls:"上游 TLS 握手失败",timeout:"上游超时",timeout_connect:"连接上游超时",transport:"上游传输错误",header_timeout:"等待响应头超时",preparation_timeout:"准备等待超时",idle_timeout:"上游流空闲超时",error_body_timeout:"读取错误响应超时",error_body_too_large:"错误响应过大",error_body_read:"错误响应中断",cf_blocked:"Cloudflare 拦截出口",challenge:"Cloudflare 质询",stream_read_error:"流读取中断",response_decode_error:"上游压缩响应损坏",unsupported_response_encoding:"上游响应编码不受支持",stream_truncated:"流被截断",upstream_error_event:"上游错误事件",response_failed:"上游 response.failed",image_output_missing:"未返回图片",upstream_ws_close:"上游关闭 WS",upstream_ws_eof:"上游 WS 断开",upstream_ws_read_error:"上游 WS 读取中断",upstream_ws_send_error:"发往上游失败",observation_incomplete:"观测不完整",internal:"网关内部错误",usage_limit_reached:"额度用尽",invalid_encrypted_content:"加密推理被拒",context_length_exceeded:"上下文过长",invalid_request_error:"请求无效",websocket_connection_limit_reached:"WS 连接到期",previous_response_not_found:"上一轮响应失效",server_is_overloaded:"上游过载",policy_capacity_unavailable:"上游容量不足",turn_rate_limit_exceeded:"容量不足",inference_hook_denied:"inference hook 被拒",content_policy_violation:"内容策略拒绝",invalid_access_program:"access program 无效",unsupported_access_program:"access program 不受支持",access_program_not_enabled:"access program 未启用",invalid_workspace_selected:"workspace 选择无效",codex_workspace_access_denied:"workspace 无权限",budget_reached:"会话预算用尽",upstream_closed:"上游断开（旧记录）"},PROXY_ERR);/*@end ui-ERR_LBL-33*/
 const ERR_TIP={upstream_closed:"旧版本记录的上游断开，现已细分为 upstream_ws_close（上游发了关闭帧）、upstream_ws_eof（无关闭帧直接断开）、upstream_ws_read_error（读取出错）、upstream_ws_send_error（转发客户端帧失败）",model_cooldown:"该账号对此模型冷却中，网关关闭本轮 WS 让 Codex 重放到其他账号",idle_timeout:"上游流在空闲超时内没有任何数据；超过 Codex 客户端 300s 空闲超时时会先被记为 client_closed",cf_blocked:"上游前置的 Cloudflare 返回拦截页（如 1010 浏览器签名被封禁），拦截的是本机出口（IP、TLS 或 HTTP 指纹），不是账号：不换账号、不冷却账号，客户端收到中性的 502",challenge:"上游前置的 Cloudflare 返回质询页，拦截的是本机出口，不是账号：不换账号、不冷却账号，客户端收到中性的 502",invalid_encrypted_content:"上游拒绝了对话历史里的加密推理内容（通常是在其他账号或组织下生成，原因见详情）。属于请求内容问题：不换账号、不冷却、不重试；客户端收到明确提示，需新开会话",observation_incomplete:"响应已透传，但事件超过网关的有界观测范围，无法确认最终业务结果。未报告的用量不是零，未知结果不计为失败或客户端取消。"};
 function errorInfo(r){const known=r.error!=="observation_incomplete"||requestOutcome(r)==="unknown";return {label:known?ERR_LBL[r.error]:"",tip:known?ERR_TIP[r.error]:""}}
 function srcOf(r){return r.err_source==="network"&&PROXY_ERR[r.error]?"proxy":r.err_source}
@@ -1198,14 +805,14 @@ const OUTCOME={completed:"完成",failed:"失败",cancelled:"客户端断开",in
 const INC_TIP={interrupted:"上游以 interrupted 结束，Codex 视为正常结束：计为完成，Token 已计入",content_filter:"上游因内容过滤提前结束响应：Token 已计入，不算失败"};
 function incompleteCode(r){const x=r.incomplete;return !x?"":x==="interrupted"||x==="content_filter"?x:"incomplete_"+x}
 function incompleteTip(r){return INC_TIP[r.incomplete]||"上游提前结束响应（"+r.incomplete+"）：Token 已计入，不算失败"}
-function requestOutcome(r){if(r.outcome)return r.outcome;return r.endpoint==="prewarm"?"prewarm":r.error==="client_closed"||r.err_source==="client"?"cancelled":r.error==="observation_incomplete"&&r.err_source==="local"&&!(r.status>=400)?"unknown":r.error||r.status>=400?"failed":r.incomplete&&r.incomplete!=="interrupted"?"incomplete":"completed"}
+/*@unit ui-requestOutcome-23*/function requestOutcome(r){if(r.outcome)return r.outcome;return r.endpoint==="prewarm"?"prewarm":r.error==="client_closed"||r.err_source==="client"?"cancelled":r.error==="observation_incomplete"&&r.err_source==="local"&&!(r.status>=400)?"unknown":r.error||r.status>=400?"failed":r.incomplete&&r.incomplete!=="interrupted"?"incomplete":"completed"}
 // Status chip colour by outcome; the code itself and the title carry the meaning, colour only
 // reinforces it. Cancelled, unknown and prewarm rows stay neutral.
 function statusKind(outcome,s){if(!s)return null;
   if(outcome==="completed"||outcome==="incomplete")return s>=200&&s<300?["s2","成功"]:null;
   if(outcome!=="failed")return null;
   return s===429?["s429","限流"]:s>=500?["s5","服务端错误"]:s>=400?["s4","请求或账号错误"]:null}
-function streamRecord(r){return r.transport==="sse"||r.transport==="ws"}
+/*@end ui-requestOutcome-23*/function streamRecord(r){return r.transport==="sse"||r.transport==="ws"}
 // ---- request problems. Buckets, causes and next steps come from the backend (usage::problem); the UI only names them.
 // Next steps only open existing pages or panels; 刷新额度 points at the normal button and never refreshes or redeems by itself.
 const NEXT={refresh_quota:["刷新额度","到额度面板手动刷新"],account:["查看账号","打开账号页"],cooldown:["查看冷却","在账号页看冷却"],attempts:["尝试过程","查看每次尝试"],
@@ -1232,7 +839,7 @@ function conclusion(r){const p=r.problem,c=r.cause,n=causeName(p,c);
 function renderConclusion(r){const box=$("dconcl"),c=conclusion(r);clear(box);box.classList.toggle("hide",!c);if(!c)return;
   box.append(h("div","t",c[0]),h("div","sm",c[1]));const acts=(r.next||[]).filter(k=>NEXT[k]&&k!=="detail"&&k!=="new_session");
   if(acts.length){const row=h("div","acts");acts.forEach((k,i)=>{const b=h("button",{type:"button",class:i?"":"p","data-next":k,title:NEXT[k][1]},NEXT[k][0]+" ›");b.addEventListener("click",()=>nextAct(r,k,b).catch(fail));row.appendChild(b)});box.appendChild(row)}}
-function recRow(r){const outcome=requestOutcome(r),isErr=outcome==="failed",es=srcOf(r),s=r.status,pw=outcome==="prewarm",error=errorInfo(r);
+/*@end ui-SRC-42*/function recRow(r){const outcome=requestOutcome(r),isErr=outcome==="failed",es=srcOf(r),s=r.status,pw=outcome==="prewarm",error=errorInfo(r);
   const tr=h("tr",{class:(isErr?"e":"")+(es==="proxy"?" px":"")+(s===429?" rl":"")+(pw?" dim":"")+" dt","data-ak":r.request_id?"rec|"+r.request_id:null});
   const hint="\n点击或按 Enter 查看详情";
   if(r.request_id)tr.addEventListener("click",e=>{if(e.target.closest("button")||!getSelection().toString())openDetail(r,tr.querySelector("button"))});
@@ -1267,7 +874,7 @@ function recRow(r){const outcome=requestOutcome(r),isErr=outcome==="failed",es=s
   tr.appendChild(h("td",{class:"n x",title:exact(r.output_tokens)},fmtN(r.output_tokens)));
   tr.appendChild(r.price_status==="unknown_price"?h("td",{class:"n x",title:"模型/档位不在价格表中"},"未定价"):r.price_status==="ignored"?h("td",{class:"n x mut",title:"该模型已在价格设置里忽略，费用按 0 计"},"忽略"):h("td",{class:"n x",title:exactUsd(r.cost_usd)},r.cost_usd===null||r.cost_usd===undefined?"–":r.cost_usd<0.01&&r.cost_usd>0?"<0.01":r.cost_usd.toFixed(2)));
   return tr}
-const recordRows=new Map();let recordDay="";
+/*@end ui-SRC-68*//*@unit ui-recordRows-56*/const recordRows=new Map();let recordDay="";
 // RecordRow is a flat API snapshot. Preserve identical rows even when JSON supplies new objects.
 function sameRecord(a,b){const keys=Object.keys(a);return keys.length===Object.keys(b).length&&keys.every(k=>a[k]===b[k])}
 function renderRecords(){const dmx=Math.max(1,...recState.rows.map(x=>x.duration_ms||0));{const rt=$("rec");if(rt.style&&rt.style.setProperty)rt.style.setProperty("--dmax",dmx)}$("hdur").title="条长 = 耗时 / 本页最长耗时 "+(dmx/1000).toFixed(1)+" s（线性）；深色段 = 首输出";$("hdurs").textContent="本页 0–"+(dmx<1000?Math.round(dmx)+" ms":(dmx/1000).toFixed(dmx<1e4?1:0)+" s");const tb=$("rec").tBodies[0],dp=$("dp"),opener=!dp.classList.contains("hide")&&dp._opener&&tb.contains(dp._opener)?dp._opener.closest("tr[data-ak]"):null,anchor=opener&&opener.dataset.ak;
@@ -1288,22 +895,22 @@ function renderRecords(){const dmx=Math.max(1,...recState.rows.map(x=>x.duration
   const wide=!!$("fthread").value.trim()&&!recordWindow;$("rcount").textContent="共 "+exact(recState.total)+" 条"+(wide?" · 不限时间":"");$("rcount").title=wide?"按会话筛选时查整个保留期":"";
   $("rmore").classList.toggle("hide",!recState.cursor);
   $("rpage").textContent=(recState.cursor?"已显示 "+exact(recState.rows.length)+" 条":"")+(recState.rows.length>PAGE?" · 已暂停滚动更新；刷新查看最新":"");renderDetailNav()}
-const PAGE=50;
-function refusedMode(){return $("foutcome").value==="refused"||$("fproblem").value==="refused"}
+/*@end ui-recordRows-56*//*@unit ui-PAGE-5*/const PAGE=50;
+/*@unit ui-refusedMode-66*/function refusedMode(){return $("foutcome").value==="refused"||$("fproblem").value==="refused"}
 let refState={rows:[],offset:0,more:false,total:0,signature:""};
 function refFilters(){const f=scopeFilters();return Object.assign({from:f.from,to:f.to,key:f.key,instance:f.instance,reason:$("fproblem").value==="refused"?$("fcause").value:""},recordWindow||{})}
-function scopedOut(){const f=scopeFilters();return !!(f.account||f.model)}
+/*@end ui-refusedMode-66*/function scopedOut(){const f=scopeFilters();return !!(f.account||f.model)}
 async function loadRefusals(append){const f=refFilters(),signature=qs(f);
   const base=append&&refState.signature===signature?refState:{rows:[],offset:0,more:false,total:0,signature};
   if(scopedOut()){refState=Object.assign(base,{rows:[],more:false,total:0});renderRefusals();return}
   const q=qs(Object.assign({},f,{limit:PAGE,offset:base.offset}));
   await currentLoad("sr",()=>"refused|"+qs(refFilters()),(_q,current)=>usageGet("/usage/v1/refusals?"+q,current),d=>{
     const rows=base.rows.concat(d.rows);refState={rows,offset:base.offset+d.rows.length,more:d.rows.length===PAGE,total:d.totals.count,signature};renderRefusals()})}
-function showRefusedMode(){const on=refusedMode();$("rw").classList.toggle("hide",on);$("refw").classList.toggle("hide",!on);$("fclass").classList.toggle("hide",on);for(const id of ["fsrc","ftier","fcode","fthread"])$(id).classList.toggle("hide",on)}
-function recordFilters(){const t=$("ftier").value,o=$("foutcome").value,th=$("fthread").value.trim();return Object.assign({},scopeFilters(),threadAll()?{from:"",to:""}:{},recordWindow||{},{thread:th,problem:$("fproblem").value,cause:$("fproblem").value?$("fcause").value:"",outcome:o==="business"?"":o,exclude_prewarm:o==="business"||(o!=="prewarm"&&!withPrewarm())?1:"",errors:$("ferr").checked?1:"",source:$("fsrc").value,error:$("fcode").value.trim(),failure_class:$("fclass").value,retried:$("fretry").checked?1:"",tier:t==="dg"?"":t,downgraded:t==="dg"?1:""})}
+/*@unit ui-showRefusedMode-51*/function showRefusedMode(){const on=refusedMode();$("rw").classList.toggle("hide",on);$("refw").classList.toggle("hide",!on);$("fclass").classList.toggle("hide",on);for(const id of ["fsrc","ftier","fcode","fthread"])$(id).classList.toggle("hide",on)}/*@end ui-showRefusedMode-51*/
+/*@unit ui-recordFilters-46*/function recordFilters(){const t=$("ftier").value,o=$("foutcome").value,th=$("fthread").value.trim();return Object.assign({},scopeFilters(),threadAll()?{from:"",to:""}:{},recordWindow||{},{thread:th,problem:$("fproblem").value,cause:$("fproblem").value?$("fcause").value:"",outcome:o==="business"?"":o,exclude_prewarm:o==="business"||(o!=="prewarm"&&!withPrewarm())?1:"",errors:$("ferr").checked?1:"",source:$("fsrc").value,error:$("fcode").value.trim(),failure_class:$("fclass").value,retried:$("fretry").checked?1:"",tier:t==="dg"?"":t,downgraded:t==="dg"?1:""})}
 // A session spans whatever time it spans: with 会话 set the list ignores the range (a chart-picked window still applies).
 function threadAll(){return !!$("fthread").value.trim()&&!recordWindow}
-async function loadRecords(append){showRefusedMode();if(!append){renderProblems();loadCounts()}if(refusedMode())return loadRefusals(append);const filters=recordFilters(),signature=qs(filters);
+/*@end ui-recordFilters-46*/async function loadRecords(append){showRefusedMode();if(!append){renderProblems();loadCounts()}if(refusedMode())return loadRefusals(append);const filters=recordFilters(),signature=qs(filters);
   const base=append&&recState.signature===signature?recState:{cursor:null,total:0,rows:[]};
   if(append&&base.rows.length&&!base.cursor)return;
   const q=qs(Object.assign({},filters,{limit:PAGE,before_id:base.cursor}));
@@ -1313,29 +920,29 @@ async function loadRecords(append){showRefusedMode();if(!append){renderProblems(
     // The API resolves a fragment to the full id; keep the full id so the URL and chip stay exact.
     if(d.thread&&filters.thread&&d.thread!==filters.thread&&$("fthread").value.trim()===filters.thread){$("fthread").value=d.thread;recState.signature=qs(recordFilters());saveF()}
     renderRecords()})}
-function qs(o){const u=new URLSearchParams();for(const k in o)if(o[k]!==""&&o[k]!==null&&o[k]!==undefined)u.set(k,o[k]);return u.toString()}
-$("rmore").addEventListener("click",async()=>{$("rmore").disabled=true;try{await loadRecords(true)}catch(e){fail(e)}finally{$("rmore").disabled=false}});
+/*@unit ui-qs-67*/function qs(o){const u=new URLSearchParams();for(const k in o)if(o[k]!==""&&o[k]!==null&&o[k]!==undefined)u.set(k,o[k]);return u.toString()}
+/*@end ui-qs-67*//*@end ui-PAGE-5*/$("rmore").addEventListener("click",async()=>{$("rmore").disabled=true;try{await loadRecords(true)}catch(e){fail(e)}finally{$("rmore").disabled=false}});
 
 // ---- Request inspector. A late detail can never fill a different request's dialog.
-let dtext="",detailSeq=0,lookupSeq=0,detailRecord=null;
+/*@unit ui-dtext-54*/let dtext="",detailSeq=0,lookupSeq=0,detailRecord=null;
 function pretty(s){if(s===null||s===undefined)return"";try{return JSON.stringify(JSON.parse(s),null,2)}catch(_){return String(s)}}
 function field(name,value){if(value!==null&&value!==undefined&&value!=="")$("dfields").append(h("dt",null,name),h("dd",null,String(value)))}
 // Codex thread ids are UUIDv7: the head is a timestamp shared by nearby sessions, so the short form is the tail.
-function shortId(s){s=String(s||"");return s.length>12?"…"+s.slice(-8):s}
-function threadField(r){const id=r.thread_id;if(!id)return;const copy=h("button",{class:"ghost xs",type:"button",id:"dthreadcopy",title:"复制完整会话 ID"},"复制"),box=h("span","tid",h("code",{title:id},shortId(id)),copy);
+/*@unit ui-shortId-49*/function shortId(s){s=String(s||"");return s.length>12?"…"+s.slice(-8):s}
+/*@unit ui-threadField-52*/function threadField(r){const id=r.thread_id;if(!id)return;const copy=h("button",{class:"ghost xs",type:"button",id:"dthreadcopy",title:"复制完整会话 ID"},"复制"),box=h("span","tid",h("code",{title:id},shortId(id)),copy);
   copy.addEventListener("click",async()=>{try{await navigator.clipboard.writeText(id);toast("已复制会话 ID")}catch(_){toast("复制失败，请检查浏览器剪贴板权限",{kind:"err"})}});
   if($("fthread").value.trim()!==id){const only=h("button",{class:"ghost xs",type:"button",id:"dthread",title:"清除筛选和范围，列出该会话的全部请求"},"只看该会话");only.addEventListener("click",()=>viewThread(id));box.appendChild(only)}
   $("dfields").append(h("dt",null,"会话"),h("dd",null,box))}
 // 只看该会话 clears the request filters, a chart-picked window and the shared account / model / key / instance
 // scope too: a session that switched accounts shows every request. A pasted id keeps the scope.
-function viewThread(id){recordWindow=null;clearRecordFilters();for(const k of SF)$(k).value="";$("fthread").value=id;if(!$("dp").classList.contains("hide"))closeModal($("dp"));changeScope();revealRecords()}
-function detailStats(r){clear($("dstats"));const cells=[["首输出",fmtMs(streamRecord(r)?r.ttft_ms:null)],["总耗时",fmtMs(r.duration_ms)],["输入 / 输出",fmtN(r.input_tokens)+" / "+fmtN(r.output_tokens)],
+/*@end ui-threadField-52*/function viewThread(id){recordWindow=null;clearRecordFilters();for(const k of SF)$(k).value="";$("fthread").value=id;if(!$("dp").classList.contains("hide"))closeModal($("dp"));changeScope();revealRecords()}
+/*@end ui-shortId-49*/function detailStats(r){clear($("dstats"));const cells=[["首输出",fmtMs(streamRecord(r)?r.ttft_ms:null)],["总耗时",fmtMs(r.duration_ms)],["输入 / 输出",fmtN(r.input_tokens)+" / "+fmtN(r.output_tokens)],
   ["缓存输入",fmtN(r.cached_tokens)],["估算费用",r.price_status==="unknown_price"?"未定价":r.price_status==="ignored"?"0（已忽略）":fmtUsd(r.cost_usd)],["重试 / 换账号",(r.retries||0)+" / "+(r.switches||0)]];
   for(const [name,value] of cells)$("dstats").appendChild(h("div",null,h("div","mut xs",name),h("div","v",value)))}
 function renderDetailNav(){const index=recState.rows.findIndex(x=>x.request_id===activeRecord),prev=$("dprev"),next=$("dnext"),focused=document.activeElement;prev.disabled=index<=0;next.disabled=index<0||index>=recState.rows.length-1;$("dposition").textContent=index<0?"通过记录 ID 定位":(index+1)+" / "+recState.rows.length+" · 当前列表";
   if((focused===prev||focused===next)&&focused.disabled)(!prev.disabled?prev:!next.disabled?next:$("dclose")).focus({preventScroll:true})}
 function hideDetailRetry(){if(document.activeElement===$("dretry"))$("dclose").focus({preventScroll:true});$("dretry").classList.add("hide")}
-async function openDetail(r,from,retry=false){if(!/^[0-9a-f]{16}$/.test(r.request_id||""))return;
+/*@unit ui-openDetail-43*/async function openDetail(r,from,retry=false){if(!/^[0-9a-f]{16}$/.test(r.request_id||""))return;
   lookupSeq++;const seq=++detailSeq,auth=key(),epoch=authEpoch,current=()=>detailSeq===seq&&key()===auth&&epoch===authEpoch&&activeRecord===r.request_id;activeRecord=r.request_id;detailRecord=r;
   const outcome=requestOutcome(r),es=srcOf(r),error=errorInfo(r);$("dtitle").textContent=OUTCOME[outcome]+" · "+(r.model||"请求");
   $("dmeta").textContent=fmtTime(r.ts_ms,true)+" · "+(r.status?"HTTP "+r.status:"未记录 HTTP 状态")+" · "+(r.transport||"–").toUpperCase();renderConclusion(r);detailStats(r);clear($("dfields"));
@@ -1363,7 +970,7 @@ async function openDetail(r,from,retry=false){if(!/^[0-9a-f]{16}$/.test(r.reques
   finally{if(current()){$("dcopy").disabled=false;$("dbody").setAttribute("aria-busy","false");$("dretry").setAttribute("aria-disabled","false");$("dretry").textContent="重试详情"}}}
 // Two parallel tracks on one axis (upstream receive, downstream hand-off). They overlap in time and are
 // never added up. Blocked time is only a cumulative number: there are no intervals to place on the axis.
-const OMK=[["up_first_reasoning_ms","推理","r"],["up_first_text_ms","文本","t"],["up_first_tool_ms","工具","f"],["up_terminal_ms","结束","e"]];
+/*@unit ui-OMK-83*/const OMK=[["up_first_reasoning_ms","推理","r"],["up_first_text_ms","文本","t"],["up_first_tool_ms","工具","f"],["up_terminal_ms","结束","e"]];
 function obsDeflate(on,ext){if(on==null)return"未知";if(ext==="unrecognized")return"无法识别";return on?"已协商":"未协商"}
 function obsTimeline(o,r){const sse=o.sse_first_yield_ms!=null||o.sse_first_queue_ms!=null,ws=o.ws_first_send_ms!=null,
     vals=[r.duration_ms,o.up_last_event_ms,o.up_terminal_ms,o.up_first_text_ms,o.up_first_reasoning_ms,o.up_first_tool_ms,o.sse_last_queue_ms,o.sse_last_yield_ms,o.ws_last_send_ms].filter(v=>v!=null),
@@ -1410,7 +1017,7 @@ async function loadObservation(r,current){for(const id of ["dolab","donote","dob
   const extra=h("dl","kv");for(const [name,value] of more)if(value!=null&&value!=="")extra.append(h("dt",null,name),h("dd",null,String(value)));
   if(extra.childElementCount)$("dobs").append(h("dt",null,""),h("dd",null,h("details",null,h("summary",null,"精确值"),extra)));
   for(const id of ["dolab","donote","dobs"])$(id).classList.remove("hide")}
-async function lookupRecord(id,from){id=id.trim().toLowerCase();if(!/^[0-9a-f]{16}$/.test(id)){toast("记录 ID 是 16 位十六进制字符",{kind:"err"});return}
+/*@end ui-OMK-83*//*@end ui-openDetail-43*/async function lookupRecord(id,from){id=id.trim().toLowerCase();if(!/^[0-9a-f]{16}$/.test(id)){toast("记录 ID 是 16 位十六进制字符",{kind:"err"});return}
   $("lookupresult").textContent="正在查找 "+id+"…";const seq=++lookupSeq,auth=key(),epoch=authEpoch,current=()=>seq===lookupSeq&&auth===key()&&epoch===authEpoch;try{const d=await usageGet("/usage/v1/records/"+id,current);if(current()){$("lookupresult").textContent="";openDetail(d.record,from)}}
   catch(e){if(!current()||e.message==="401")return;$("lookupresult").textContent=e.status===404?"没有找到记录 "+id+"，可能已过保留期":"查找失败："+e.message;$("lookup").classList.remove("hide");$("lookupshow").setAttribute("aria-expanded","true");$("recordid").value=id}}
 $("lookupshow").addEventListener("click",()=>{const open=$("lookup").classList.toggle("hide")===false;$("lookupshow").setAttribute("aria-expanded",String(open));if(open)$("recordid").focus()});
@@ -1431,8 +1038,8 @@ $("dclose").addEventListener("click",()=>closeModal($("dp")));
 $("dcopy").addEventListener("click",async()=>{if(!dtext)return;try{await navigator.clipboard.writeText(dtext);toast("已复制请求 JSON")}catch(_){toast("复制失败，请检查浏览器剪贴板权限",{kind:"err"})}});
 $("dlink").addEventListener("click",async()=>{try{const u=new URL(location.href);u.searchParams.set("record",activeRecord);u.searchParams.set("from",scopeWindow.from);u.searchParams.set("to",scopeWindow.to);await navigator.clipboard.writeText(u.href);toast("已复制固定时间范围的请求链接")}catch(_){toast("复制链接失败",{kind:"err"})}});
 
-// ---- loading
-async function loadQuota(){await currentLoad("strip",key,(_q,current)=>Promise.allSettled([usageGet("/usage/v1/quota",current),NOADMIN?Promise.resolve(null):usageGet("/admin/v1/accounts",current)]),results=>{
+/*@end ui-dtext-54*/// ---- loading
+/*@unit ui-loadQuota-18*/async function loadQuota(){await currentLoad("strip",key,(_q,current)=>Promise.allSettled([usageGet("/usage/v1/quota",current),NOADMIN?Promise.resolve(null):usageGet("/admin/v1/accounts",current)]),results=>{
   const [q,a]=results;Q=quotaPart(q,Q,QUOTA_READ.quota,"额度");AC=quotaPart(a,AC,QUOTA_READ.accounts,"账号状态");
   POOL_NOTE=Object.values(QUOTA_READ).map(x=>x.note).filter(Boolean).join("；");renderQuota();renderRuntime()})}
 const QUOTA_READ={quota:{at:0,note:""},accounts:{at:0,note:""}};let POOL_NOTE="";
@@ -1440,26 +1047,26 @@ function quotaPart(result,previous,state,label){if(result.status==="fulfilled"){
   const e=result.reason;if(e.status===403||e.status===404){state.at=0;state.note=label+(e.status===403?"无读取权限（HTTP 403）":"接口不可用（HTTP 404）");return null}
   state.note=label+"读取失败："+why(e)+(state.at?" · 保留已有数据（上次读取 "+fmtTime(state.at)+"）":" · 暂无成功数据");return previous}
 function resetQuotaReads(){for(const state of Object.values(QUOTA_READ)){state.at=0;state.note=""}POOL_NOTE=""}
-function summaryQuery(){const q=new URLSearchParams(trendQuery());q.set("group",$("group").value);return q.toString()}
+/*@end ui-loadQuota-18*//*@unit ui-summaryQuery-6*/function summaryQuery(){const q=new URLSearchParams(trendQuery());q.set("group",$("group").value);return q.toString()}
 // The API returns both grouped metrics and buckets. One scan serves the whole overview.
 // The previous period only changes with the scope and the window length, so a rolling window
 // reuses it for 60 s instead of doubling every auto-refresh scan.
 function prevSig(q){const p=new URLSearchParams(q);p.delete("group");const span=Number(p.get("to"))-Number(p.get("from"));if(!scopeWindow.fixed){p.delete("from");p.delete("to")}p.set("span",span);return p.toString()}
 function prevFresh(q){return !!PREV_CACHE&&PREV_CACHE.sig===prevSig(q)&&Date.now()-PREV_CACHE.at<60e3}
 function occQuery(q){const p=new URLSearchParams(q);return qs({from:p.get("from"),to:p.get("to"),instance:p.get("instance")||"",tz:p.get("tz"),step:p.get("bucket")==="hour"?"1h":"1d"})}
-async function loadSummary(){try{await currentLoad("ss",summaryQuery,(q,current)=>{$("st").setAttribute("aria-busy","true");const want=compareOn()&&!prevFresh(q);
+/*@end ui-summaryQuery-6*/async function loadSummary(){try{await currentLoad("ss",summaryQuery,(q,current)=>{$("st").setAttribute("aria-busy","true");const want=compareOn()&&!prevFresh(q);
     return Promise.all([usageGet("/usage/v1/summary?"+q+(want?"&compare=1":""),current),usageGet("/usage/v1/occupancy?"+occQuery(q),current).catch(()=>null)])},([s,o],q)=>{
   const p=new URLSearchParams(q),hourly=p.get("bucket")==="hour";SUM=s.summary;SUM_SCOPE=qs(scopeFilters());RECORDER=s.recorder;REFS=s.refusals||null;OCC=o;
   if(s.previous)PREV_CACHE={sig:prevSig(q),at:Date.now(),data:s.previous};SUM_PREV=compareOn()&&PREV_CACHE&&PREV_CACHE.sig===prevSig(q)?PREV_CACHE.data:null;
   TREND={summary:s.summary,hourly,tz:Number(p.get("tz")),prev:SUM_PREV};$("trange").textContent=hourly?"每小时":"每天";renderSummary();renderKpis();renderTrend()})}
   finally{if(!loading.ss)$("st").setAttribute("aria-busy","false")}}
-function trendQuery(){const mode=$("tmode").value,hourly=mode==="hour"||(mode==="auto"&&scopeWindow.to-scopeWindow.from<=2*864e5),tz=-new Date(scopeWindow.to).getTimezoneOffset();
+/*@unit ui-trendQuery-7*/function trendQuery(){const mode=$("tmode").value,hourly=mode==="hour"||(mode==="auto"&&scopeWindow.to-scopeWindow.from<=2*864e5),tz=-new Date(scopeWindow.to).getTimezoneOffset();
   return qs(Object.assign({},scopeFilters(),{bucket:hourly?"hour":"day",tz}))}
 // Peak occupancy over the selected range (all instances in scope), from /usage/v1/occupancy.
 function occPeak(){const rows=OCC&&OCC.rows||[];if(!rows.length)return null;const o={inf:0,ws:0,li:0,lw:0,full:0};
   for(const r of rows){o.inf=Math.max(o.inf,r.inflight_peak);o.ws=Math.max(o.ws,r.ws_peak);o.li=Math.max(o.li,r.max_inflight_requests);o.lw=Math.max(o.lw,r.ws_max_connections);o.full+=r.full_minutes||0}return o}
 // Live process state, not range-scoped: a full-width row at the end of the KPI strip.
-function renderRuntime(){const st=$("strip"),r=EG&&EG.runtime;let row=$("liverow");
+/*@end ui-trendQuery-7*/function renderRuntime(){const st=$("strip"),r=EG&&EG.runtime;let row=$("liverow");
   if(!r&&!ACCTS.length&&!POOL_NOTE){if(row)row.remove();return}
   if(!row){row=h("div",{class:"kpi live",id:"liverow"},h("span","k","实时"),h("span",{id:"live"}))}
   st.appendChild(row);renderPool(row);const e=$("live");clear(e);
@@ -1473,7 +1080,7 @@ function renderRuntime(){const st=$("strip"),r=EG&&EG.runtime;let row=$("liverow
     b.addEventListener("click",()=>{$("tmetric").value="cap";saveF();renderTrend();$("st").scrollIntoView({block:"start",behavior:"smooth"})});pk.append(b)}
   row.title="进程状态，读取于 "+hms(new Date())+"，不受时间范围影响。上限 "+(r.limit?exact(r.limit):"不限")+"；HTTP 占用到响应结束，WS 只在 turn 进行中占用，空闲连接不占用；达到上限立即返回 503，不排队"}
 // ---- memory panel (admin keys only): /admin/v1/memory is an in-memory 10 s sampler, no disk
-// ---- Scope suggestions: model / key / instance comboboxes. Values come from recent usage rows
+/*@unit ui-section-15*/// ---- Scope suggestions: model / key / instance comboboxes. Values come from recent usage rows
 // plus configured keys and this instance (cached 60 s on the server and here); free text stays allowed.
 let SV=null,svAt=0,svLoad=null;
 const CBX={fmodel:"model",fkey:"key",finstance:"instance"};
@@ -1498,7 +1105,7 @@ for(const id in CBX){const inp=$(id);
     if(e.key==="ArrowDown"||e.key==="ArrowUp"){e.preventDefault();if(!open)cbxRender(id);cbxMove(id,e.key==="ArrowDown"?1:-1)}
     else if(e.key==="Enter"&&open&&inp._cbi>=0){e.preventDefault();cbxPick(id,$("l"+id).children[inp._cbi].dataset.value)}
     else if(e.key==="Escape"&&open){e.preventDefault();e.stopPropagation();cbxClose(id)}})}
-let MEM=null;
+/*@unit ui-MEM-64*//*@end ui-section-15*/let MEM=null;
 function fmtB(n){if(n===null||n===undefined)return"–";const u=["B","KiB","MiB","GiB"];let i=0;n=Number(n);while(n>=1024&&i<u.length-1){n/=1024;i++}return(i&&n<100?n.toFixed(1):Math.round(n))+" "+u[i]}
 function spark(hist,key,key2){const W=300,H=44,pts=hist.filter(s=>s[key]!==null&&s[key]!==undefined),svg=sv("svg",{viewBox:"0 0 "+W+" "+H,preserveAspectRatio:"none","aria-hidden":"true"});
   if(pts.length<2)return svg;const max=Math.max(1,...pts.map(s=>Math.max(s[key],key2&&s[key2]!=null?s[key2]:0))),t0=pts[0].at_ms,span=Math.max(1,pts[pts.length-1].at_ms-t0);
@@ -1526,7 +1133,7 @@ function renderMem(){const sec=$("mem"),m=MEM;sec.classList.toggle("hide",!m);co
   $("memwhen").textContent="读取于 "+hms(new Date(n.at_ms));if(typeof renderSys==="function")renderSys()}
 async function loadMem(){if(NOADMIN){MEM=null;renderMem();return}const auth=key();
   try{const m=await get("/admin/v1/memory",{timeout:15000});if(key()===auth){MEM=m;renderMem()}}catch(_){if(key()===auth){MEM=null;renderMem()}}}
-let allPending=0;
+/*@end ui-MEM-64*//*@unit ui-allPending-3*/let allPending=0;
 async function loadAll(automatic=false){if(automatic&&allPending)return;allPending++;
   try{$("msg").textContent="";const auth=key();
   // Preserve the whole query context while reading history, not just the list's scroll position.
@@ -1536,15 +1143,15 @@ async function loadAll(automatic=false){if(automatic&&allPending)return;allPendi
   if(!hold)jobs.push(loadSummary(),loadRecords(false));loadScopeValues().then(syncMini);
   let ok=true;for(const r of await Promise.allSettled(jobs))if(r.status==="rejected"){ok=false;fail(r.reason)}
   if(ok&&key()===auth)$("upd").textContent="更新于 "+hms(new Date())}finally{allPending--}}
-function stopAuto(){if(timer){clearInterval(timer);timer=null}}
+/*@unit ui-stopAuto-61*//*@end ui-allPending-3*/function stopAuto(){if(timer){clearInterval(timer);timer=null}}
 function startAuto(){stopAuto();timer=setInterval(()=>{if(!document.hidden&&!MODALS.length)loadAll(true)},autoSecs()*1000)}
-onLogout=()=>{stopAuto();for(const id of Object.keys(loadSeq))loadSeq[id]++;resetQuotaReads();Q=RC=AC=EG=SUM=TREND=RECORDER=MEM=SV=null;svAt=0;ACCTS=[];recState={cursor:null,total:0,rows:[]};renderKpis();renderRuntime();renderMem();renderRecords();clear($("svg"));clear($("sum").tBodies[0])};
-for(const id of ["auto","mauto"])$(id).addEventListener("change",e=>{const on=e.target.checked;$("auto").checked=$("mauto").checked=on;localStorage.setItem(AS,on?"1":"0");if(on)startAuto();else stopAuto()});
-// Auto-refresh interval (5/15/30/60 s, default 15), kept per browser; a change restarts a running timer.
+/*@end ui-stopAuto-61*//*@unit ui-section-19*//*@unit ui-section-16*/onLogout=()=>{stopAuto();for(const id of Object.keys(loadSeq))loadSeq[id]++;resetQuotaReads();Q=RC=AC=EG=SUM=TREND=RECORDER=MEM=SV=null;svAt=0;ACCTS=[];recState={cursor:null,total:0,rows:[]/*@end ui-section-16*/};renderKpis();renderRuntime();renderMem();renderRecords();clear($("svg"));clear($("sum").tBodies[0])};
+/*@end ui-section-19*/for(const id of ["auto","mauto"])$(id).addEventListener("change",e=>{const on=e.target.checked;$("auto").checked=$("mauto").checked=on;localStorage.setItem(AS,on?"1":"0");if(on)startAuto();else stopAuto()});
+/*@unit ui-section-62*/// Auto-refresh interval (5/15/30/60 s, default 15), kept per browser; a change restarts a running timer.
 const AIV="ciallopa_auto_secs",AUTO_SECS=[5,15,30,60];
 function autoSecs(){const n=Number(localStorage.getItem(AIV));return AUTO_SECS.includes(n)?n:15}
 function showAutoSecs(){const n=autoSecs(),t="每 "+n+" 秒自动刷新";$("ivl").value=$("mivl").value=String(n);$("autol").title=t+"（标签页不可见或有对话框打开时暂停）";$("mautol").title=t;$("mauto").setAttribute("aria-label",t)}
-for(const id of ["ivl","mivl"])$(id).addEventListener("change",e=>{const n=Number(e.target.value);if(!AUTO_SECS.includes(n))return;localStorage.setItem(AIV,String(n));showAutoSecs();if(timer)startAuto()});
+for(const id of ["ivl","mivl"])$(id).addEventListener("change",e=>{const n=Number(e.target.value);if(!AUTO_SECS.includes(n))return;localStorage.setItem(AIV,String(n));showAutoSecs();if(timer)startAuto()});/*@end ui-section-62*/
 showAutoSecs();
 $("refresh").addEventListener("click",()=>loadAll());
 // ---- view tabs: 用量 (range-scoped) | 系统情况 (live process state). #system keeps the tab on reload.
@@ -1564,9 +1171,9 @@ $("tabuse").parentElement.addEventListener("keydown",e=>{const k=e.key;if(k!=="A
   const sys=$("main").dataset.tab==="sys";setTab(k==="Home"?"use":k==="End"?"sys":sys?"use":"sys",true)});
 addEventListener("hashchange",()=>setTab(location.hash==="#system"?"sys":"use"));
 setTab(location.hash==="#system"?"sys":"use");
-function changeScope(){clearTimeout(kt);saveF();showScope();renderKpis();renderTrend();loadSummary().catch(fail);loadRecords(false).catch(fail)}
+/*@unit ui-changeScope-47*/function changeScope(){clearTimeout(kt);saveF();showScope();renderKpis();renderTrend();loadSummary().catch(fail);loadRecords(false).catch(fail)}
 function changeRecords(){saveF();loadRecords(false).catch(fail)}
-$("range").addEventListener("change",()=>{recordWindow=null;rollWindow();changeScope()});
+/*@end ui-changeScope-47*/$("range").addEventListener("change",()=>{recordWindow=null;rollWindow();changeScope()});
 // Desktop segmented control mirrors the select, which stays the single source of truth.
 for(const b of $("rangeseg").children)b.addEventListener("click",()=>{if($("range").value===b.dataset.v)return;$("range").value=b.dataset.v;$("range").dispatchEvent(new Event("change"))});
 $("group").addEventListener("change",()=>{saveF();loadSummary().catch(fail)});
@@ -1580,18 +1187,18 @@ $("fthread").addEventListener("change",()=>{const e=$("fthread");e.value=e.value
 // A failure class only matches failed requests: picking one moves the outcome to 失败, other outcomes clear it.
 // A failure class implies 结果 = 失败; clearing the class leaves 结果 as it is, another 结果 clears the class.
 // The old 结果 / 失败原因 selects (under 「更多」) and the problem chips are alternatives: setting one clears the other.
-$("fclass").addEventListener("change",()=>{if($("fclass").value){$("foutcome").value="failed";$("fproblem").value=$("fcause").value=""}changeRecords()});
-$("foutcome").addEventListener("change",()=>{if($("foutcome").value!=="failed")$("fclass").value="";if($("foutcome").value)$("fproblem").value=$("fcause").value="";changeRecords()});
+/*@unit ui-section-35*/$("fclass").addEventListener("change",()=>{if($("fclass").value){$("foutcome").value="failed";$("fproblem").value=$("fcause").value=""}changeRecords()});/*@end ui-section-35*/
+/*@unit ui-section-36*/$("foutcome").addEventListener("change",()=>{if($("foutcome").value!=="failed")$("fclass").value="";if($("foutcome").value)$("fproblem").value=$("fcause").value="";changeRecords()});/*@end ui-section-36*/
 const CMP="ciallopa_compare";$("fcompare").checked=localStorage.getItem(CMP)!=="0";
 $("fcompare").addEventListener("change",()=>{localStorage.setItem(CMP,compareOn()?"1":"0");if(compareOn())loadSummary().catch(fail);else{SUM_PREV=null;if(TREND)TREND.prev=null;renderKpis();renderTrend()}});
 let kt;for(const id of ["fmodel","fkey","finstance"])$(id).addEventListener("input",()=>{saveF();showScope();clearTimeout(kt);kt=setTimeout(changeScope,400)});
 $("scopefreeze").addEventListener("click",()=>{if(scopeWindow.fixed){recordWindow=null;rollWindow();changeScope()}else{scopeWindow.fixed=true;saveF();showScope()}});
 $("rwindowclear").addEventListener("click",()=>{recordWindow=null;saveF();showScope();renderTrend();loadRecords(false).catch(fail)});
-// ---- Problem chips above the request list.
+/*@unit ui-section-65*/// ---- Problem chips above the request list.
 // Chip counts use the same filters minus problem/cause; 本地拒绝 is null when a request-only filter is set.
 let PC=null,pcSeq=0;
-function countFilters(){const f=recordFilters();f.problem=f.cause="";if(f.outcome==="refused")f.outcome="";return f}
-async function loadCounts(){const seq=++pcSeq,q=qs(countFilters());
+/*@unit ui-countFilters-44*/function countFilters(){const f=recordFilters();f.problem=f.cause="";if(f.outcome==="refused")f.outcome="";return f}
+/*@end ui-countFilters-44*/async function loadCounts(){const seq=++pcSeq,q=qs(countFilters());
   try{const d=await usageGet("/usage/v1/records/counts?"+q,()=>seq===pcSeq);if(seq!==pcSeq)return;PC=d}catch(e){if(seq!==pcSeq)return;PC=null}renderProblems()}
 function pickProblem(id){$("fproblem").value=id;$("fcause").value="";if(id){$("foutcome").value="";$("fclass").value=""}changeRecords()}
 function pickCause(id){$("fcause").value=id;changeRecords()}
@@ -1620,14 +1227,14 @@ const MINI={racct:"facct",rmodel:"fmodel",rkey:"fkey"};
 function syncMini(){for(const id in MINI){const sel=$(id),src=MINI[id],v=$(src).value.trim(),vals=id==="racct"?ACCTS.map(a=>a.id||a.name).filter(Boolean):(((typeof SV!=="undefined"&&SV)||{})[src.slice(1)]||[]).map(x=>x.value);
   const want=[...new Set([...vals,...(v?[v]:[])])],sig=want.join("\n");
   if(sel._sig!==sig){sel._sig=sig;while(sel.options.length>1)sel.remove(1);for(const x of want)sel.appendChild(h("option",{value:x},x))}sel.value=v}}
-// ---- URL keeps the query and inspector context; only display preferences use localStorage.
-const SF=["facct","fmodel","fkey","finstance"],RF=["fproblem","fcause","foutcome","fclass","ftier","fsrc","fcode","fthread","ferr","fretry"],FIDS=["range","group","tmode","tmetric",...SF,...RF],FDEF={range:"24h",group:"account",tmode:"auto",tmetric:"requests"},FL="ciallopa_f_";
+/*@end ui-section-65*/// ---- URL keeps the query and inspector context; only display preferences use localStorage.
+/*@unit ui-SF-50*//*@unit ui-SF-13*/const SF=["facct","fmodel","fkey","finstance"],RF=["fproblem","fcause","foutcome","fclass","ftier","fsrc","fcode","fthread","ferr","fretry"],FIDS=["range","group","tmode","tmetric",...SF,...RF],FDEF={range:"24h",group:"account",tmode:"auto",tmetric:"requests"},FL="ciallopa_f_";
 // Problem buckets and their causes, as the backend names them (usage::problem).
-const PROB=[["","全部"],["error","报错",1],["upstream","上游出错",1],["unfinished","未完成"],["refused","本地拒绝"]];
+/*@unit ui-PROB-41*/const PROB=[["","全部"],["error","报错",1],["upstream","上游出错",1],["unfinished","未完成"],["refused","本地拒绝"]];
 const CAUSES={error:[["quota","额度"],["rate_limit","限流"],["request","请求内容"],["upstream","上游"],["network","网络 / 出口代理"],["gateway","ciallopa"],["stream","流中断"]],
   upstream:[["unrescued","未恢复"],["rescued","已恢复"]],unfinished:[["client_closed","客户端断开"],["reconnect","需重连"],["truncated","上游截断"],["content_filter","内容过滤"],["unconfirmed","未确认结束"]],
   refused:[["inflight","并发上限"],["ws","WS 上限"],["body","请求体缓冲"],["ws_msg","WS 消息缓冲"]]};
-function fval(id){const e=$(id);return e.type==="checkbox"?(e.checked?"1":""):e.value}
+/*@end ui-PROB-41*/function fval(id){const e=$(id);return e.type==="checkbox"?(e.checked?"1":""):e.value}
 function anyF(){return RF.some(id=>fval(id))}
 const FILTER_NAMES={fproblem:"问题",fcause:"原因",facct:"账号",fmodel:"模型",fkey:"密钥",finstance:"实例",foutcome:"结果",fclass:"失败原因",ftier:"档位",fsrc:"来源",fcode:"错误码",fthread:"会话",ferr:"旧错误筛选（含取消）",fretry:"重试/换账号"};
 function renderFilterChips(box,ids,scope,fallback){const parts=ids.filter(id=>fval(id).trim()).map(id=>{const e=$(id),value=fval(id).trim(),text=e.type==="checkbox"?"":"："+(e.tagName==="SELECT"?e.options[e.selectedIndex].textContent:value);
@@ -1655,12 +1262,12 @@ function loadF(){const u=new URLSearchParams(location.search);
   const rid=u.get("record");if(/^[0-9a-f]{16}$/i.test(rid||""))activeRecord=rid.toLowerCase();
   if(!PROB.some(([id])=>id===$("fproblem").value))$("fproblem").value="";if(!(CAUSES[$("fproblem").value]||[]).some(([id])=>id===$("fcause").value))$("fcause").value="";
   $("fclear").classList.toggle("hide",!anyF());$("legacyerror").classList.toggle("hide",!$("ferr").checked);showRecordFilters();showScope()}
-$("fclear").addEventListener("click",()=>{clearRecordFilters();changeRecords();$("rextra").focus()});
+/*@end ui-SF-13*/$("fclear").addEventListener("click",()=>{clearRecordFilters();changeRecords();$("rextra").focus()});
 $("rextra").addEventListener("click",()=>showExtra($("recordextra").classList.contains("hide")));
 for(const id in MINI)$(id).addEventListener("change",()=>{$(MINI[id]).value=$(id).value;changeScope()});
 $("rprewarm").addEventListener("change",()=>{$("fprewarm").checked=$("rprewarm").checked;localStorage.setItem(PW,withPrewarm()?"1":"0");changeScope()});
 $("scopeclear").addEventListener("click",()=>{for(const id of SF)$(id).value="";changeScope();$("scopetoggle").focus({preventScroll:true})});
-$("fprewarm").checked=localStorage.getItem(PW)==="1";loadF();showExtra(MORE_F.some(id=>fval(id)));renderKpis();
+$("fprewarm").checked=localStorage.getItem(PW)==="1";/*@end ui-SF-50*/loadF();showExtra(MORE_F.some(id=>fval(id)));renderKpis();
 login(()=>usageGet("/usage/v1/summary?range=1m"),()=>{if(localStorage.getItem(AS)==="1"){$("auto").checked=$("mauto").checked=true;startAuto()}loadAll();if(activeRecord)lookupRecord(activeRecord,$("recordid"))});
 })();
 </script>

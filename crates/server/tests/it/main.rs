@@ -10,6 +10,7 @@ mod forward_policy;
 mod http;
 mod prices;
 mod reset_credits;
+mod runtime_api;
 mod settings;
 mod shutdown;
 mod support;

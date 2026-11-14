@@ -128,6 +128,7 @@ All routes sit behind the client-key middleware.
 | Route | |
 |---|---|
 | `GET /admin/v1/config` | `version` (also the `ETag`), `path`, `write_enabled`, `values` (file, masked), `running` (masked), `schema` (key, kind, `hot`/`restart`, `editable`, options, description), `pending_restart`, `last_reload`, `file_error`, `overrides`, `egress` (effective proxy, masked, and `direct`), `runtime` (current `inflight`, `limit`, process-lifetime capacity `rejected` and per-reason `rejected_by` (`inflight`, `ws`, `body`, `ws_msg`), `ws_connections`, `draining`). Runtime values are a response-time snapshot; the version is still the configuration write token. |
+| `GET /admin/v1/runtime` | Lightweight live `{egress, runtime, proxy_errors_1h}` snapshot for page headers. The first two fields match the config response; the count sums `proxy_connect` and `proxy_timeout` records from the last hour (0 when usage logging is disabled). Does not read or parse the config file. |
 | `POST /admin/v1/config/validate` | `{"changes": {"routing.strategy": "fill-first", …}}` → `{ok, errors, diff}`. Dry run; never writes. |
 | `PUT /admin/v1/config` | Same body plus `If-Match: "<version>"`. Missing → 428, stale → 412. Returns `applied`, `pending_restart`, new `version`. `null` removes the key (built-in default). |
 | `POST /admin/v1/config/reload` | Re-read the file and re-scan accounts. |
