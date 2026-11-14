@@ -1,5 +1,6 @@
 use super::*;
 
+/// RUSTSEC-2026-0459 / CVE-2026-119375: the bundled SQLite must be 3.54.0 or newer.
 #[test]
 fn bundled_sqlite_has_wal_page_size_fix() {
     let dir = tempfile::tempdir().unwrap();
@@ -74,7 +75,7 @@ fn read_snapshot_keeps_labels_and_rows_together_during_write() {
     let d = tempfile::tempdir().unwrap();
     let r = Recorder::open(&cfg(d.path())).unwrap();
     let reader = crate::schema::open_ro(r.path()).unwrap();
-    // Pin the same snapshot that label_map reads before fetching request rows.
+    // Pin the snapshot before the writer creates new dictionary ids and rows.
     let labels: i64 = reader
         .query_row("SELECT count(*) FROM labels", [], |row| row.get(0))
         .unwrap();
@@ -269,7 +270,11 @@ async fn thread_filter_resolves_fragments_counts_and_uses_index() {
     assert_eq!(r.recent_count(ok).await.unwrap(), 2);
     // The plan uses the partial index rather than scanning the id range.
     let c = crate::schema::open_ro(&d.path().join("u.db")).unwrap();
-    let tid = crate::filter::label_id(&c, a).unwrap().unwrap();
+    let tid = c
+        .query_row("SELECT id FROM threads WHERE name=?1", [a], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap();
     let plan: Vec<String> = c
         .prepare(
             "EXPLAIN QUERY PLAN SELECT id FROM requests \

@@ -39,8 +39,6 @@ fn retention_purge_runs_on_start() {
     }
     let r = Recorder::open(&c).unwrap();
     r.flush_blocking().unwrap();
-    // purge happens before the first batch; give the thread a moment
-    std::thread::sleep(std::time::Duration::from_millis(100));
     assert_eq!(r.stats().purged, 1);
     r.shutdown();
 }
@@ -65,12 +63,6 @@ fn shutdown_flushes_without_waiting_for_batch_deadline() {
         let stopped = finished
             .recv_timeout(std::time::Duration::from_secs(2))
             .is_ok();
-        if !stopped {
-            // Wake the old implementation so a failing regression does not leave a
-            // writer sleeping for a minute or holding its temporary database open.
-            let (wake, _) = sync_channel(1);
-            let _ = r.fast.send(Msg::Flush(wake));
-        }
         task.join().unwrap();
         assert!(
             stopped,
@@ -149,7 +141,6 @@ async fn error_detail_stored_redacted_and_purged() {
     })
     .unwrap();
     r.flush_blocking().unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(100));
     assert_eq!(r.stats().purged, 1);
     assert!(r.detail(old).await.unwrap().is_none());
     assert!(r.detail(bad).await.unwrap().is_some());
@@ -206,13 +197,11 @@ async fn observation_stored_nullable_and_purged() {
     })
     .unwrap();
     r.flush_blocking().unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(100));
     assert!(r.observation(old).await.unwrap().is_none());
     assert!(r.observation(with).await.unwrap().is_some());
     r.shutdown();
 }
 
-/// A v13 DB (no `request_obs`) upgrades in place; old rows read as "no observation".
 #[test]
 fn retention_zero_keeps_forever_and_default_is_90() {
     assert_eq!(UsageConfig::default().retention_days, 90);
@@ -230,12 +219,98 @@ fn retention_zero_keeps_forever_and_default_is_90() {
     r.shutdown();
     let r = Recorder::open(&c).unwrap();
     r.flush_blocking().unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(100));
     assert_eq!(r.stats().purged, 0);
     let conn = crate::schema::open_ro(&d.path().join("u.db")).unwrap();
     let n: i64 = conn
         .query_row("SELECT count(*) FROM requests", [], |x| x.get(0))
         .unwrap();
     assert_eq!(n, 1);
+    r.shutdown();
+}
+
+#[tokio::test]
+async fn purge_reclaims_threads_and_labels_then_writer_reloads_dictionary_ids() {
+    let d = tempfile::tempdir().unwrap();
+    let r = Recorder::open(&UsageConfig {
+        retention_days: 0,
+        ..cfg(d.path())
+    })
+    .unwrap();
+    let mut row = Record::new(r.ids.next_at(now_ms() - 1000), Transport::Sse, "responses");
+    row.status = 200;
+    row.account = Some("account".into());
+    row.model = Some("model".into());
+    row.thread_id = Some("session-expired".into());
+    assert!(r.record(row.clone()));
+    r.flush_blocking().unwrap();
+    purge_db(r.path(), now_ms(), 1).unwrap();
+    let c = crate::schema::open_read(r.path()).unwrap();
+    assert_eq!(
+        c.query_row("SELECT count(*) FROM threads", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        c.query_row("SELECT count(*) FROM labels", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    r.refuse(Refusal {
+        ts_ms: now_ms(),
+        reason: Some(RefusalReason::Inflight),
+        route: "responses".into(),
+        ua: Some("account".into()),
+        ..Default::default()
+    });
+    r.flush_blocking().unwrap();
+    let refusals = r
+        .refusal_rows(RefusalQuery {
+            to_ms: now_ms(),
+            limit: 10,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(refusals[0].route.as_deref(), Some("responses"));
+    assert_eq!(refusals[0].ua.as_deref(), Some("account"));
+    row.id = r.ids.next();
+    row.thread_id = Some("session-new".into());
+    assert!(r.record(row));
+    r.flush_blocking().unwrap();
+    let rows = r
+        .recent(RecentQuery {
+            limit: 10,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(rows[0].account.as_deref(), Some("account"));
+    assert_eq!(rows[0].model.as_deref(), Some("model"));
+    assert_eq!(rows[0].thread_id.as_deref(), Some("session-new"));
+    r.shutdown();
+}
+
+#[tokio::test]
+async fn failed_transaction_discards_rolled_back_dictionary_ids() {
+    let d = tempfile::tempdir().unwrap();
+    let r = Recorder::open(&cfg(d.path())).unwrap();
+    let c = crate::schema::open_write(r.path()).unwrap();
+    c.execute_batch("CREATE TRIGGER reject_request BEFORE INSERT ON requests BEGIN SELECT RAISE(ABORT,'injected'); END").unwrap();
+    rec(&r, now_ms(), "account", "model", 1, 2, 3);
+    r.flush_blocking().unwrap();
+    assert_eq!(r.stats().write_errors, 1);
+    c.execute_batch("DROP TRIGGER reject_request").unwrap();
+    rec(&r, now_ms(), "account", "model", 1, 2, 3);
+    r.flush_blocking().unwrap();
+    let rows = r
+        .recent(RecentQuery {
+            limit: 10,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].account.as_deref(), Some("account"));
+    assert_eq!(rows[0].model.as_deref(), Some("model"));
     r.shutdown();
 }

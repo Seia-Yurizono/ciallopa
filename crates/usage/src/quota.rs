@@ -1,8 +1,8 @@
-use crate::classify::RESET_TOLERANCE_S;
-use crate::filter::label_map;
+use crate::classify::WindowKind;
+use crate::filter::LabelNames;
 use crate::{UsageError, SEQ_BITS};
 use ciallopa_core::config::QuotaWeights;
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -87,7 +87,7 @@ pub(crate) fn quota(
     prices: &crate::prices::PriceTable,
     now_ms: i64,
 ) -> Result<Vec<AccountQuota>, UsageError> {
-    let names = label_map(c)?;
+    let mut names = LabelNames::new(c);
     let mut st = c.prepare(
         "SELECT q.id,q.account,q.instance,q.plan,q.p_pct,q.p_reset,q.p_win,q.s_pct,q.s_reset,q.s_win \
          FROM quota_obs q WHERE q.id = (SELECT max(id) FROM quota_obs WHERE account = q.account)",
@@ -116,12 +116,14 @@ pub(crate) fn quota(
         .collect::<rusqlite::Result<_>>()?;
     let mut out = vec![];
     for (id, account, inst, plan, pcts, resets, wins) in latest {
-        let win = |i: usize| -> Result<WindowQuota, UsageError> {
+        names.load([Some(account), inst, plan])?;
+        let win = |which: WindowKind| -> Result<WindowQuota, UsageError> {
+            let i = which.index();
             let (used, reset, minutes) = (pcts[i], resets[i], wins[i]);
             let estimate = match (used, reset) {
                 (None, _) => empty_estimate("no_window"),
                 (Some(_), Some(r)) if r * 1000 <= now_ms => empty_estimate("window_reset"),
-                (Some(_), r) => estimate(c, w, prices, account, i, r)?,
+                (Some(_), r) => estimate(c, w, prices, account, which, r)?,
             };
             Ok(WindowQuota {
                 used_pct: used,
@@ -135,8 +137,8 @@ pub(crate) fn quota(
             plan: plan.and_then(|p| names.get(&p).cloned()),
             observed_at_ms: id >> SEQ_BITS,
             observed_by: inst.and_then(|p| names.get(&p).cloned()),
-            primary: win(0)?,
-            secondary: win(1)?,
+            primary: win(WindowKind::Primary)?,
+            secondary: win(WindowKind::Secondary)?,
         });
     }
     out.sort_by(|a, b| a.account.cmp(&b.account));
@@ -149,73 +151,38 @@ fn estimate(
     w: &QuotaWeights,
     prices: &crate::prices::PriceTable,
     account: i64,
-    which: usize,
+    which: WindowKind,
     reset: Option<i64>,
 ) -> Result<Estimate, UsageError> {
-    let (pc, rc) = if which == 0 {
-        ("p_pct", "p_reset")
-    } else {
-        ("s_pct", "s_reset")
-    };
-    let (lo, hi) = match reset {
-        Some(r) => (r - RESET_TOLERANCE_S, r + RESET_TOLERANCE_S),
-        None => (i64::MIN, i64::MAX),
-    };
-    let sql = format!(
-        "SELECT min(id), max(id) FROM quota_obs WHERE account = ?1 AND {pc} IS NOT NULL \
-         AND ({rc} BETWEEN ?2 AND ?3 OR (?4 AND {rc} IS NULL))"
-    );
-    let (first, last): (Option<i64>, Option<i64>) =
-        c.query_row(&sql, params![account, lo, hi, reset.is_none()], |r| {
-            Ok((r.get(0)?, r.get(1)?))
-        })?;
-    let (Some(f), Some(l)) = (first, last) else {
+    let data = crate::history::load_cycle(c, prices, account, which, reset, None)?;
+    let (Some(&(first, first_pct)), Some(&(last, used))) = (data.obs.first(), data.obs.last())
+    else {
         return Ok(empty_estimate("insufficient_data"));
     };
-    let pct_at = |id: i64| -> rusqlite::Result<f64> {
-        c.query_row(
-            &format!("SELECT {pc} FROM quota_obs WHERE id = ?1"),
-            [id],
-            |r| r.get(0),
-        )
-    };
-    let delta = pct_at(l)? - pct_at(f)?;
+    let delta = used - first_pct;
     let mut e = empty_estimate("insufficient_data");
     e.delta_pct = Some(delta);
-    e.sample_from_ms = Some(f >> SEQ_BITS);
-    e.sample_to_ms = Some(l >> SEQ_BITS);
-    // Requests from the first snapshot (inclusive: its tokens were not in that snapshot yet)
-    // up to the last one (exclusive).
-    let (n, inp, cached, out): (i64, f64, f64, f64) = c.query_row(
-        "SELECT count(*), coalesce(sum(max(coalesce(in_tok,0) - coalesce(cached_tok,0), 0)),0), \
-         coalesce(sum(cached_tok),0), coalesce(sum(out_tok),0) \
-         FROM requests WHERE account = ?1 AND id >= ?2 AND id < ?3",
-        params![account, f, l],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-    )?;
+    e.sample_from_ms = Some(first >> SEQ_BITS);
+    e.sample_to_ms = Some(last >> SEQ_BITS);
+    let [inp, cached, out] = data.tokens;
     let weighted = w.input * inp + w.cached * cached + w.output * out;
-    e.requests = Some(n);
+    e.requests = Some(data.token_requests);
     e.weighted_tokens = Some(weighted);
-    if let Ok((cap, api_cost, _)) =
-        crate::history::live_capacity(c, prices, account, which, reset, l)
-    {
-        e.capacity_credits = cap.capacity;
-        e.credits_used = Some(cap.credits_used);
-        e.capacity_lo = cap.lo;
-        e.capacity_hi = cap.hi;
-        e.coverage_gap = cap.coverage_gap;
-        e.confidence = Some(cap.confidence.as_str());
-        e.api_cost_usd = api_cost;
-        if let Some(cap_c) = cap.capacity {
-            let used = pct_at(l)?;
-            e.remaining_credits = Some((100.0 - used).max(0.0) / 100.0 * cap_c);
-        }
+    let cap = data.capacity();
+    e.capacity_credits = cap.capacity;
+    e.credits_used = Some(cap.credits_used);
+    e.capacity_lo = cap.lo;
+    e.capacity_hi = cap.hi;
+    e.coverage_gap = cap.coverage_gap;
+    e.confidence = Some(cap.confidence.as_str());
+    e.api_cost_usd = data.api_cost();
+    if let Some(cap_c) = cap.capacity {
+        e.remaining_credits = Some((100.0 - used).max(0.0) / 100.0 * cap_c);
     }
     if delta < w.min_delta_pct || weighted <= 0.0 {
         return Ok(e);
     }
     let tpp = weighted / delta;
-    let used = pct_at(l)?;
     e.status = "ok";
     e.tokens_per_pct = Some(tpp);
     e.capacity_tokens = Some(tpp * 100.0);

@@ -114,7 +114,9 @@ async fn roundtrip_dedupe_summary_purge() {
     let mut c = crate::schema::open_rw(&d.path().join("u.db")).unwrap();
     let mut n = 0;
     loop {
-        let k = crate::write::purge_before(&mut c, now_ms(), 5).unwrap();
+        let k = crate::write::purge_step(&mut c, now_ms(), 5)
+            .unwrap()
+            .removed;
         n += k;
         if k < 5 {
             break;
@@ -249,377 +251,6 @@ async fn cost_tier_cache_write_unknown_and_grouping() {
 }
 
 #[tokio::test]
-async fn observed_metrics_separate_outcomes_and_missing_samples() {
-    let d = tempfile::tempdir().unwrap();
-    let r = Recorder::open_as(
-        &UsageConfig {
-            retention_days: 0,
-            ..cfg(d.path())
-        },
-        "h",
-    )
-    .unwrap();
-    let base = now_ms();
-    let mut rows = Vec::new();
-    let samples = [
-        (
-            Transport::Sse,
-            Some(100),
-            1100,
-            Some(100),
-            Some(20),
-            Some(50),
-        ),
-        (Transport::Sse, None, 1000, Some(200), Some(40), None),
-        (
-            Transport::Http,
-            Some(50),
-            1050,
-            Some(100),
-            Some(10),
-            Some(0),
-        ),
-        (Transport::Sse, Some(200), 400, None, None, None),
-        (Transport::Sse, Some(300), 500, None, None, None),
-        (Transport::Ws, Some(400), 1400, Some(10), Some(2), Some(0)),
-        (Transport::Ws, Some(10), 20, Some(1000), Some(0), Some(1000)),
-        (
-            Transport::Ws,
-            Some(200),
-            2200,
-            Some(300),
-            Some(60),
-            Some(150),
-        ),
-    ];
-    for (transport, ttft, dur, input, output, cached) in samples {
-        let mut x = Record::new(r.ids.next_at(base), transport, "responses");
-        x.status = 200;
-        x.ttft_ms = ttft;
-        x.duration_ms = dur;
-        x.input_tokens = input;
-        x.output_tokens = output;
-        x.cached_tokens = cached;
-        rows.push(x);
-    }
-    rows[3].error = Some("upstream_error_event".into());
-    rows[3].err_source = Some("stream");
-    rows[4].error = Some("client_closed".into());
-    rows[4].err_source = Some("client");
-    rows[5].incomplete = Some("max_output_tokens".into());
-    rows[6].endpoint = PREWARM_ENDPOINT;
-    for row in rows {
-        assert!(r.record(row));
-    }
-    r.flush_blocking().unwrap();
-    let summary = r
-        .summary(SummaryQuery {
-            from_ms: base,
-            to_ms: base,
-            bucket_day: Some(0),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-    let t = summary.total;
-    assert_eq!(
-        (
-            t.count,
-            t.failures,
-            t.cancelled,
-            t.incomplete,
-            t.prewarm_count
-        ),
-        (7, 1, 1, 1, 1)
-    );
-    assert_eq!(t.errors, 2, "legacy errors still include cancellation");
-    assert_eq!(t.failure_rate, Some(1.0 / 7.0));
-    assert_eq!(t.cancel_rate, Some(1.0 / 7.0));
-    assert_eq!(
-        (t.stream_ttft_samples, t.duration_samples, t.tps_samples),
-        (5, 7, 2)
-    );
-    assert_eq!(
-        (t.stream_ttft_p50_ms, t.stream_ttft_p90_ms),
-        (Some(200), Some(400))
-    );
-    assert!((t.generation_tps.unwrap() - 80.0 / 3.0).abs() < 1e-9);
-    assert_eq!(
-        (t.usage_samples, t.cache_samples, t.cache_input_tokens),
-        (6, 5, 1510)
-    );
-    assert!((t.cache_ratio.unwrap() - 1200.0 / 1510.0).abs() < 1e-9);
-    assert_eq!(t.input_tokens, 1710, "prewarm usage is included");
-    let b = &summary.buckets.unwrap()[0];
-    assert_eq!(
-        (
-            b.count,
-            b.failures,
-            b.cancelled,
-            b.incomplete,
-            b.prewarm_count
-        ),
-        (7, 1, 1, 1, 1)
-    );
-    assert_eq!(b.end_ms - b.start_ms, 86_400_000);
-    for (outcome, expected) in [
-        (Outcome::Completed, 4),
-        (Outcome::Failed, 1),
-        (Outcome::Cancelled, 1),
-        (Outcome::Incomplete, 1),
-        (Outcome::Prewarm, 1),
-    ] {
-        assert_eq!(
-            r.recent_count(RecentQuery {
-                outcome: Some(outcome),
-                ..Default::default()
-            })
-            .await
-            .unwrap(),
-            expected
-        );
-    }
-    let business = RecentQuery {
-        limit: 100,
-        exclude_prewarm: true,
-        ..Default::default()
-    };
-    assert_eq!(r.recent_count(business.clone()).await.unwrap(), t.count);
-    let business_rows = r.recent(business).await.unwrap();
-    assert_eq!(business_rows.len() as u64, t.count);
-    assert!(business_rows
-        .iter()
-        .all(|row| row.endpoint.as_deref() != Some(PREWARM_ENDPOINT)));
-    assert_eq!(
-        r.recent_count(RecentQuery::default()).await.unwrap(),
-        t.count + t.prewarm_count,
-        "default browsing includes prewarm"
-    );
-    assert_eq!(
-        r.recent_count(RecentQuery {
-            exclude_prewarm: true,
-            outcome: Some(Outcome::Prewarm),
-            ..Default::default()
-        })
-        .await
-        .unwrap(),
-        0,
-        "request filters compose as AND"
-    );
-    let empty = r
-        .summary(SummaryQuery {
-            filters: Filters {
-                model: Some("absent".into()),
-                ..Default::default()
-            },
-            bucket_day: Some(0),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        (
-            empty.total.failure_rate,
-            empty.total.cancel_rate,
-            empty.total.cache_ratio,
-            empty.total.generation_tps
-        ),
-        (None, None, None, None)
-    );
-    assert_eq!(empty.total.stream_ttft_samples, 0);
-    assert_eq!(empty.total.stream_ttft_p50_ms, None);
-    assert_eq!(empty.buckets, Some(vec![]));
-    r.shutdown();
-}
-
-#[tokio::test]
-async fn no_usage_counts_finished_business_rows_without_reported_usage() {
-    let d = tempfile::tempdir().unwrap();
-    let r = Recorder::open_as(&cfg(d.path()), "h").unwrap();
-    let base = now_ms();
-    // (endpoint, status, error, source, incomplete, input, output)
-    type Row<'a> = (
-        &'a str,
-        u16,
-        Option<&'a str>,
-        Option<&'static str>,
-        Option<&'a str>,
-        Option<i64>,
-        Option<i64>,
-    );
-    let rows: [Row; 9] = [
-        ("responses", 200, None, None, None, None, None), // counted
-        (
-            "responses",
-            200,
-            None,
-            None,
-            Some("max_output_tokens"),
-            None,
-            None,
-        ), // counted
-        ("responses", 200, None, None, None, Some(0), Some(0)), // explicit zero is reported
-        ("responses", 200, None, None, None, Some(5), None), // input alone is reported
-        ("responses", 500, None, Some("upstream"), None, None, None), // failure
-        (
-            "responses",
-            200,
-            Some("client_closed"),
-            Some("client"),
-            None,
-            None,
-            None,
-        ), // cancelled
-        (
-            "responses",
-            200,
-            Some("observation_incomplete"),
-            Some("local"),
-            None,
-            None,
-            None,
-        ), // unknown
-        (PREWARM_ENDPOINT, 200, None, None, None, None, None), // prewarm never counts
-        ("responses", 200, None, None, None, None, None), // counted
-    ];
-    for (endpoint, status, error, source, incomplete, input, output) in rows {
-        let mut row = Record::new(r.ids.next_at(base), Transport::Sse, endpoint);
-        row.status = status;
-        row.error = error.map(str::to_owned);
-        row.err_source = source;
-        row.incomplete = incomplete.map(str::to_owned);
-        row.input_tokens = input;
-        row.output_tokens = output;
-        assert!(r.record(row));
-    }
-    r.flush_blocking().unwrap();
-    for exclude_prewarm in [false, true] {
-        let s = r
-            .summary(SummaryQuery {
-                from_ms: base,
-                to_ms: base,
-                exclude_prewarm,
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        assert_eq!(s.total.no_usage, 3, "exclude_prewarm={exclude_prewarm}");
-        assert_eq!(s.groups.iter().map(|g| g.no_usage).sum::<u64>(), 3);
-    }
-    r.shutdown();
-}
-
-#[tokio::test]
-async fn unobserved_outcome_is_separate_in_queries_groups_and_buckets() {
-    let d = tempfile::tempdir().unwrap();
-    let r = Recorder::open_as(&cfg(d.path()), "h").unwrap();
-    let base = now_ms();
-    for (endpoint, error, source, incomplete) in [
-        ("responses", None, None, None),
-        (
-            "responses",
-            Some("upstream_error_event"),
-            Some("stream"),
-            None,
-        ),
-        ("responses", Some("client_closed"), Some("client"), None),
-        ("responses", None, None, Some("max_output_tokens")),
-        (
-            "responses",
-            Some("observation_incomplete"),
-            Some("local"),
-            None,
-        ),
-        (
-            PREWARM_ENDPOINT,
-            Some("observation_incomplete"),
-            Some("local"),
-            None,
-        ),
-    ] {
-        let mut row = Record::new(r.ids.next_at(base), Transport::Sse, endpoint);
-        row.status = 200;
-        row.error = error.map(str::to_owned);
-        row.err_source = source;
-        row.incomplete = incomplete.map(str::to_owned);
-        row.input_tokens = Some(10);
-        row.output_tokens = Some(100);
-        row.ttft_ms = Some(100);
-        row.duration_ms = 1100;
-        assert!(r.record(row));
-    }
-    // This diagnostic name is not reserved in an upstream's error vocabulary, and
-    // an observed failing HTTP status must remain a failure even for a local source.
-    for (source, status) in [("upstream", 400), ("upstream", 200), ("local", 500)] {
-        let mut row = Record::new(r.ids.next_at(base), Transport::Sse, "responses");
-        row.status = status;
-        row.error = Some("observation_incomplete".into());
-        row.err_source = Some(source);
-        row.input_tokens = Some(10);
-        row.output_tokens = Some(100);
-        row.ttft_ms = Some(100);
-        row.duration_ms = 1100;
-        assert!(r.record(row));
-    }
-    r.flush_blocking().unwrap();
-    let summary = r
-        .summary(SummaryQuery {
-            from_ms: base,
-            to_ms: base,
-            bucket_day: Some(0),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-    let json = serde_json::to_value(&summary).unwrap();
-    for stats in [&json["total"], &json["groups"][0], &json["buckets"][0]] {
-        assert_eq!(stats["count"], 8);
-        assert_eq!(stats["failures"], 4);
-        assert_eq!(stats["cancelled"], 1);
-        assert_eq!(stats["incomplete"], 1);
-        assert_eq!(stats["unknown"], 1);
-        assert_eq!(stats["prewarm_count"], 1);
-        assert_eq!(
-            stats["errors"], 6,
-            "legacy errors retain the observation diagnostic"
-        );
-    }
-    assert_eq!(summary.total.tps_samples, 1);
-    assert_eq!(summary.total.generation_tps, Some(100.0));
-    assert_eq!(
-        summary.total.usage_samples, 9,
-        "observed usage is still counted"
-    );
-    for value in [
-        "completed",
-        "failed",
-        "cancelled",
-        "incomplete",
-        "unknown",
-        "prewarm",
-    ] {
-        let query = RecentQuery {
-            outcome: Some(Outcome::parse(value).unwrap()),
-            limit: 20,
-            ..Default::default()
-        };
-        assert_eq!(
-            r.recent_count(query.clone()).await.unwrap(),
-            if value == "failed" { 4 } else { 1 },
-            "outcome={value}"
-        );
-        assert_eq!(
-            r.recent(query).await.unwrap().len(),
-            if value == "failed" { 4 } else { 1 },
-            "outcome={value} records"
-        );
-    }
-    r.shutdown();
-}
-
-/// Every recorded outcome combination: the SQL behind `problem`/`cause`, the chip counts
-/// and each row's classification agree with [`problem::classify`] / [`problem::matches`].
-#[tokio::test]
 async fn day_buckets_with_tz() {
     let d = tempfile::tempdir().unwrap();
     let r = Recorder::open_as(
@@ -674,88 +305,186 @@ async fn day_buckets_with_tz() {
     r.shutdown();
 }
 
-#[test]
-fn ops_figures_upstream_rate_bucket_latency_refusals_and_failure_class_filter() {
+#[tokio::test]
+async fn day_incomplete_excludes_failures_cancellations_unknown_and_interrupted() {
     let d = tempfile::tempdir().unwrap();
     let r = Recorder::open(&cfg(d.path())).unwrap();
-    let day = 1_700_006_400_000; // 2023-11-15 00:00 UTC
-    let mk =
-        |ms: i64, status: u16, error: Option<&str>, src: Option<&'static str>, up: Option<u16>| {
-            let mut x = Record::new(r.ids.next_at(ms), Transport::Sse, "responses");
-            x.account = Some("a".into());
-            x.model = Some("m".into());
-            x.status = status;
-            x.error = error.map(Into::into);
-            x.err_source = src;
-            x.upstream_status = up;
-            x.ttft_ms = Some(100);
-            x.duration_ms = 1000;
-            x
+    for (status, error, source, reason, endpoint) in [
+        (200, None, None, "max_output_tokens", "responses"),
+        (200, None, None, "interrupted", "responses"),
+        (
+            200,
+            Some("observation_incomplete"),
+            Some("local"),
+            "max_output_tokens",
+            "responses",
+        ),
+        (
+            200,
+            Some("client_closed"),
+            Some("client"),
+            "max_output_tokens",
+            "responses",
+        ),
+        (
+            500,
+            Some("upstream_5xx"),
+            Some("upstream"),
+            "max_output_tokens",
+            "responses",
+        ),
+        (200, None, None, "max_output_tokens", "prewarm"),
+    ] {
+        let mut row = Record::new(r.ids.next(), Transport::Sse, endpoint);
+        row.status = status;
+        row.error = error.map(str::to_string);
+        row.err_source = source;
+        row.incomplete = Some(reason.into());
+        assert!(r.record(row));
+    }
+    r.flush_blocking().unwrap();
+    let s = r
+        .summary(SummaryQuery {
+            from_ms: 0,
+            to_ms: now_ms(),
+            bucket_day: Some(0),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(s.total.unknown, 1);
+    assert_eq!(s.total.incomplete, 1);
+    assert_eq!(s.buckets.as_ref().unwrap()[0].incomplete, 1);
+    r.shutdown();
+}
+#[tokio::test]
+async fn outcome_matrix_agrees_across_records_filters_groups_and_buckets() {
+    let d = tempfile::tempdir().unwrap();
+    let r = Recorder::open_as(
+        &UsageConfig {
+            retention_days: 0,
+            ..cfg(d.path())
+        },
+        "h",
+    )
+    .unwrap();
+    let base = now_ms() - 7_200_000;
+    let mut cases = Vec::new();
+    let samples = [
+        (
+            Transport::Sse,
+            Some(100),
+            1100,
+            Some(100),
+            Some(20),
+            Some(50),
+        ),
+        (Transport::Sse, None, 1000, Some(200), Some(40), None),
+        (
+            Transport::Http,
+            Some(50),
+            1050,
+            Some(100),
+            Some(10),
+            Some(0),
+        ),
+        (Transport::Sse, Some(200), 400, None, None, None),
+        (Transport::Sse, Some(300), 500, None, None, None),
+        (Transport::Ws, Some(400), 1400, Some(10), Some(2), Some(0)),
+        (Transport::Ws, Some(10), 20, Some(1000), Some(0), Some(1000)),
+        (
+            Transport::Ws,
+            Some(200),
+            2200,
+            Some(300),
+            Some(60),
+            Some(150),
+        ),
+    ];
+    for (i, (transport, ttft, duration, input, output, cached)) in samples.into_iter().enumerate() {
+        let mut row = Record::new(r.ids.next_at(base), transport, "responses");
+        row.status = 200;
+        row.ttft_ms = ttft;
+        row.duration_ms = duration;
+        row.input_tokens = input;
+        row.output_tokens = output;
+        row.cached_tokens = cached;
+        let expected = match i {
+            3 => {
+                row.error = Some("upstream_error_event".into());
+                row.err_source = Some("stream");
+                (
+                    Outcome::Failed,
+                    Some("stream"),
+                    Some("error"),
+                    Some("stream"),
+                )
+            }
+            4 => {
+                row.error = Some("client_closed".into());
+                row.err_source = Some("client");
+                (
+                    Outcome::Cancelled,
+                    None,
+                    Some("unfinished"),
+                    Some("client_closed"),
+                )
+            }
+            5 => {
+                row.incomplete = Some("max_output_tokens".into());
+                (
+                    Outcome::Incomplete,
+                    None,
+                    Some("unfinished"),
+                    Some("truncated"),
+                )
+            }
+            6 => {
+                row.endpoint = PREWARM_ENDPOINT;
+                (Outcome::Prewarm, None, None, None)
+            }
+            _ => (Outcome::Completed, None, None, None),
         };
-    // Hour 0: 4 rows with durations 1000..4000, one upstream quota 429, one retried.
-    let mut a = mk(day + 1_000, 200, None, None, None);
-    a.retries = 1;
-    a.req_tier = Some("priority".into());
-    a.service_tier = Some("default".into());
-    r.record(a);
-    let mut b = mk(
-        day + 2_000,
-        429,
-        Some("usage_limit_reached"),
-        Some("upstream"),
-        Some(429),
-    );
-    b.duration_ms = 2000;
-    b.switches = 1;
-    r.record(b);
-    let mut c = mk(day + 3_000, 200, None, None, None);
-    c.duration_ms = 3000;
-    c.req_tier = Some("priority".into());
-    c.service_tier = Some("priority".into());
-    r.record(c);
-    let mut e = mk(
-        day + 4_000,
-        502,
-        Some("connect_failed"),
-        Some("network"),
-        None,
-    );
-    e.duration_ms = 4000;
-    e.ttft_ms = None;
-    r.record(e);
-    // Hour 1: local quota exhaustion (not upstream), a mid-stream drop and a cancel.
-    r.record(mk(
-        day + 3_600_000,
-        503,
-        Some("all_quota_exhausted"),
-        Some("local"),
-        None,
-    ));
-    r.record(mk(
-        day + 3_601_000,
-        200,
-        Some("stream_closed"),
-        Some("stream"),
-        None,
-    ));
-    r.record(mk(
-        day + 3_602_000,
-        499,
-        Some("client_closed"),
-        Some("client"),
-        None,
-    ));
-    r.record(mk(
-        day + 3_603_000,
-        500,
-        Some("server_error"),
-        Some("upstream"),
-        Some(500),
-    ));
+        cases.push((row, expected));
+    }
+    // A row for each additional outcome, missing/zero usage, source and tier boundary.
+    macro_rules! case {
+        ($outcome:ident,$class:expr,$problem:expr,$cause:expr; $($field:ident=$value:expr),* $(,)?) => {{
+            let mut row=Record::new(r.ids.next_at(base+3_600_000+cases.len() as i64),Transport::Sse,"responses");
+            row.status=200; row.ttft_ms=Some(100); row.duration_ms=1100; row.input_tokens=Some(10); row.output_tokens=Some(100);
+            $(row.$field=$value;)*
+            cases.push((row,(Outcome::$outcome,$class,$problem,$cause)));
+        }};
+    }
+    case!(Completed,None,None,None; input_tokens=None,output_tokens=None);
+    case!(Incomplete,None,Some("unfinished"),Some("truncated"); incomplete=Some("max_output_tokens".into()),input_tokens=None,output_tokens=None);
+    case!(Completed,None,None,None; input_tokens=Some(0),output_tokens=Some(0));
+    case!(Completed,None,None,None; input_tokens=Some(5),output_tokens=None);
+    case!(Unknown,None,Some("unfinished"),Some("unconfirmed"); error=Some("observation_incomplete".into()),err_source=Some("local"),input_tokens=None,output_tokens=None);
+    case!(Prewarm,None,None,None; endpoint=PREWARM_ENDPOINT,input_tokens=None,output_tokens=None);
+    case!(Prewarm,None,None,None; endpoint=PREWARM_ENDPOINT,error=Some("observation_incomplete".into()),err_source=Some("local"));
+    for status in [200, 400] {
+        case!(Failed,Some("upstream"),Some("error"),Some("upstream"); status=status,error=Some("observation_incomplete".into()),err_source=Some("upstream"));
+    }
+    case!(Failed,Some("local"),Some("error"),Some("gateway"); status=500,error=Some("observation_incomplete".into()),err_source=Some("local"));
+    case!(Completed,None,None,None; incomplete=Some("interrupted".into()));
+    case!(Incomplete,None,Some("unfinished"),Some("content_filter"); incomplete=Some("content_filter".into()));
+    case!(Failed,Some("quota"),Some("error"),Some("quota"); status=429,error=Some("usage_limit_reached".into()),err_source=Some("upstream"),upstream_status=Some(429),switches=1,duration_ms=2000);
+    case!(Failed,Some("quota"),Some("error"),Some("quota"); status=503,error=Some("all_quota_exhausted".into()),err_source=Some("local"));
+    case!(Failed,Some("network"),Some("error"),Some("network"); status=502,error=Some("connect_failed".into()),err_source=Some("network"),ttft_ms=None,duration_ms=4000);
+    case!(Failed,Some("stream"),Some("error"),Some("stream"); error=Some("stream_closed".into()),err_source=Some("stream"));
+    case!(Failed,Some("upstream"),Some("error"),Some("upstream"); status=500,error=Some("server_error".into()),err_source=Some("upstream"),upstream_status=Some(500));
+    case!(Completed,None,None,None; retries=1,req_tier=Some("priority".into()),service_tier=Some("default".into()));
+    case!(Completed,None,None,None; req_tier=Some("priority".into()),service_tier=Some("priority".into()),duration_ms=3000);
+    for (i, (row, _)) in cases.iter_mut().enumerate() {
+        row.account = Some("a".into());
+        row.key = Some(format!("case-{i}"));
+        assert!(r.record(row.clone()));
+    }
     for (ms, reason) in [
-        (day + 10_000, crate::refusals::Reason::Inflight),
-        (day + 20_000, crate::refusals::Reason::Inflight),
-        (day + 3_650_000, crate::refusals::Reason::Ws),
+        (base + 10_000, RefusalReason::Inflight),
+        (base + 20_000, RefusalReason::Inflight),
+        (base + 3_650_000, RefusalReason::Ws),
     ] {
         r.refuse(Refusal {
             ts_ms: ms,
@@ -766,173 +495,8 @@ fn ops_figures_upstream_rate_bucket_latency_refusals_and_failure_class_filter() 
         });
     }
     r.flush_blocking().unwrap();
-    let c = crate::schema::open_ro(r.path()).unwrap();
-    let prices = PriceTable::default();
-    let q = SummaryQuery {
-        from_ms: day,
-        to_ms: day + 7_200_000 - 1,
-        group_by: vec![Dim::Account],
-        bucket_day: Some(0),
-        bucket_hour: true,
-        bucket_refusals: true,
-        ..Default::default()
-    };
-    let s = crate::summary::summary(&c, &q, &prices).unwrap();
-    let t = &s.total;
-    assert_eq!((t.count, t.failures, t.cancelled), (8, 5, 1), "{t:?}");
-    assert_eq!(t.upstream_failures, 2, "upstream quota 429 + upstream 500");
-    assert_eq!(t.upstream_failure_rate, Some(0.25));
-    assert_eq!((t.retried, t.switched, t.downgraded), (2, 1, 1));
-    assert_eq!(s.groups[0].upstream_failures, 2);
-    let bs = s.buckets.as_ref().unwrap();
-    assert_eq!(bs.len(), 2, "{bs:?}");
-    let h0 = &bs[0];
-    assert_eq!((h0.count, h0.upstream_failures, h0.refused), (4, 1, 2));
-    assert_eq!(h0.refusals.get("inflight"), Some(&2));
-    assert_eq!(
-        (h0.duration_p50_ms, h0.duration_p90_ms, h0.duration_p99_ms),
-        (Some(2000), Some(4000), Some(4000))
-    );
-    assert_eq!(h0.stream_ttft_p50_ms, Some(100));
-    let h1 = &bs[1];
-    assert_eq!((h1.upstream_failures, h1.refused), (1, 1));
-    assert_eq!(h1.refusals.get("ws"), Some(&1));
-    // An account filter drops refusals (they precede account choice).
-    let scoped = SummaryQuery {
-        filters: Filters {
-            account: Some("a".into()),
-            ..Default::default()
-        },
-        ..q.clone()
-    };
-    let s2 = crate::summary::summary(&c, &scoped, &prices).unwrap();
-    assert!(s2.buckets.unwrap().iter().all(|b| b.refused == 0));
-    // total_only skips groups.
-    let s3 = crate::summary::summary(
-        &c,
-        &SummaryQuery {
-            total_only: true,
-            ..q.clone()
-        },
-        &prices,
-    )
-    .unwrap();
-    assert!(s3.groups.is_empty());
-    assert_eq!(s3.total.count, 8);
-
-    let rows = |class: &str, outcome: Option<Outcome>| {
-        crate::records::recent(
-            &c,
-            &RecentQuery {
-                limit: 50,
-                failure_class: Some(class.into()),
-                outcome,
-                ..Default::default()
-            },
-            &prices,
-        )
-        .unwrap()
-        .into_iter()
-        .map(|x| x.error.unwrap_or_default())
-        .collect::<Vec<_>>()
-    };
-    let mut quota = rows("quota", None);
-    quota.sort();
-    assert_eq!(quota, ["all_quota_exhausted", "usage_limit_reached"]);
-    assert_eq!(rows("network", None), ["connect_failed"]);
-    assert_eq!(rows("stream", None), ["stream_closed"]);
-    assert_eq!(rows("upstream", None), ["server_error"]);
-    assert!(
-        rows("local", None).is_empty(),
-        "local quota is classed as quota"
-    );
-    assert!(rows("rate_limit", None).is_empty());
-    assert_eq!(rows("network", Some(Outcome::Failed)), ["connect_failed"]);
-    assert!(rows("network", Some(Outcome::Completed)).is_empty());
-    assert!(rows("bogus", None).is_empty());
-    let all = crate::records::recent(
-        &c,
-        &RecentQuery {
-            limit: 50,
-            ..Default::default()
-        },
-        &prices,
-    )
-    .unwrap();
-    let cls = |e: &str| {
-        all.iter()
-            .find(|x| x.error.as_deref() == Some(e))
-            .and_then(|x| x.failure_class)
-    };
-    assert_eq!(cls("usage_limit_reached"), Some("quota"));
-    assert_eq!(cls("client_closed"), None, "cancels are not failures");
-    assert_eq!(cls("server_error"), Some("upstream"));
-}
-
-#[tokio::test]
-async fn incomplete_reasons_split_interrupted_content_filter_and_truncated() {
-    let d = tempfile::tempdir().unwrap();
-    let r = Recorder::open_as(&cfg(d.path()), "h").unwrap();
-    let base = now_ms();
-    for reason in ["interrupted", "content_filter", "max_output_tokens"] {
-        let mut row = Record::new(r.ids.next_at(base), Transport::Sse, "responses");
-        row.status = 200;
-        row.ttft_ms = Some(100);
-        row.duration_ms = 1100;
-        row.input_tokens = Some(10);
-        row.output_tokens = Some(100);
-        row.incomplete = Some(reason.into());
-        assert!(r.record(row));
-    }
-    r.flush_blocking().unwrap();
-    let rows = r
-        .recent(RecentQuery {
-            limit: 10,
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-    let by = |reason: &str| {
-        rows.iter()
-            .find(|x| x.incomplete.as_deref() == Some(reason))
-            .unwrap()
-    };
-    // Codex treats `interrupted` as a normal end: completed, not 没答完.
-    let x = by("interrupted");
-    assert_eq!(
-        (x.outcome, x.problem, x.cause),
-        (Outcome::Completed, None, None)
-    );
-    let x = by("content_filter");
-    assert_eq!(
-        (x.outcome, x.problem, x.cause),
-        (
-            Outcome::Incomplete,
-            Some("unfinished"),
-            Some("content_filter")
-        )
-    );
-    let x = by("max_output_tokens");
-    assert_eq!(
-        (x.outcome, x.problem, x.cause),
-        (Outcome::Incomplete, Some("unfinished"), Some("truncated"))
-    );
-    for (outcome, n) in [(Outcome::Completed, 1), (Outcome::Incomplete, 2)] {
-        let got = r
-            .recent(RecentQuery {
-                outcome: Some(outcome),
-                limit: 10,
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        assert_eq!(got.len(), n, "{outcome:?}");
-    }
-    let counts = r.problem_counts(RecentQuery::default()).await.unwrap();
-    assert_eq!(counts.unfinished, 2);
-    assert_eq!(counts.causes["unfinished"]["content_filter"], 1);
-    assert_eq!(counts.causes["unfinished"]["truncated"], 1);
-    let summary = r
+    // Preserve precise latency/cache/throughput arithmetic from the original eight samples.
+    let metrics = r
         .summary(SummaryQuery {
             from_ms: base,
             to_ms: base,
@@ -941,13 +505,296 @@ async fn incomplete_reasons_split_interrupted_content_filter_and_truncated() {
         })
         .await
         .unwrap();
+    let t = &metrics.total;
+    assert_eq!(
+        (
+            t.count,
+            t.failures,
+            t.cancelled,
+            t.incomplete,
+            t.prewarm_count,
+            t.errors
+        ),
+        (7, 1, 1, 1, 1, 2)
+    );
+    assert_eq!(
+        (t.failure_rate, t.cancel_rate),
+        (Some(1.0 / 7.0), Some(1.0 / 7.0))
+    );
+    assert_eq!(
+        (t.stream_ttft_samples, t.duration_samples, t.tps_samples),
+        (5, 7, 2)
+    );
+    assert_eq!(
+        (t.stream_ttft_p50_ms, t.stream_ttft_p90_ms),
+        (Some(200), Some(400))
+    );
+    assert!((t.generation_tps.unwrap() - 80.0 / 3.0).abs() < 1e-9);
+    assert_eq!(
+        (
+            t.usage_samples,
+            t.cache_samples,
+            t.cache_input_tokens,
+            t.input_tokens
+        ),
+        (6, 5, 1510, 1710)
+    );
+    assert!((t.cache_ratio.unwrap() - 1200.0 / 1510.0).abs() < 1e-9);
+
+    let query = SummaryQuery {
+        from_ms: base,
+        to_ms: now_ms(),
+        group_by: vec![Dim::Key],
+        bucket_day: Some(0),
+        bucket_hour: true,
+        bucket_refusals: true,
+        ..Default::default()
+    };
+    let summary = r.summary(query.clone()).await.unwrap();
+    let rows = r
+        .recent(RecentQuery {
+            limit: 100,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    for (row, (outcome, class, problem, cause)) in &cases {
+        let actual = rows
+            .iter()
+            .find(|x| x.request_id == format!("{:016x}", row.id))
+            .unwrap();
+        assert_eq!(
+            (
+                actual.outcome,
+                actual.failure_class,
+                actual.problem,
+                actual.cause
+            ),
+            (*outcome, *class, *problem, *cause),
+            "{row:?}"
+        );
+    }
+    for outcome in [
+        Outcome::Completed,
+        Outcome::Failed,
+        Outcome::Cancelled,
+        Outcome::Incomplete,
+        Outcome::Unknown,
+        Outcome::Prewarm,
+    ] {
+        let expected = cases.iter().filter(|(_, e)| e.0 == outcome).count() as u64;
+        let q = RecentQuery {
+            outcome: Some(outcome),
+            limit: 100,
+            ..Default::default()
+        };
+        assert_eq!(
+            r.recent_count(q.clone()).await.unwrap(),
+            expected,
+            "{outcome:?}"
+        );
+        assert_eq!(r.recent(q).await.unwrap().len() as u64, expected);
+    }
+    let business = cases
+        .iter()
+        .filter(|(_, e)| e.0 != Outcome::Prewarm)
+        .count() as u64;
+    assert_eq!(summary.total.count, business);
+    assert_eq!(
+        r.recent_count(RecentQuery {
+            exclude_prewarm: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap(),
+        business
+    );
+    assert_eq!(
+        r.recent_count(RecentQuery {
+            exclude_prewarm: true,
+            outcome: Some(Outcome::Prewarm),
+            ..Default::default()
+        })
+        .await
+        .unwrap(),
+        0
+    );
+    let no_usage = cases
+        .iter()
+        .filter(|(r, e)| {
+            matches!(e.0, Outcome::Completed | Outcome::Incomplete)
+                && r.input_tokens.is_none()
+                && r.output_tokens.is_none()
+        })
+        .count() as u64;
+    assert_eq!(summary.total.no_usage, no_usage);
     let json = serde_json::to_value(&summary).unwrap();
-    for stats in [&json["total"], &json["groups"][0], &json["buckets"][0]] {
-        assert_eq!(stats["incomplete"], 2, "{stats}");
-        assert_eq!(stats["failures"], 0, "{stats}");
+    for (field, outcome) in [
+        ("failures", Outcome::Failed),
+        ("cancelled", Outcome::Cancelled),
+        ("incomplete", Outcome::Incomplete),
+        ("unknown", Outcome::Unknown),
+        ("prewarm_count", Outcome::Prewarm),
+    ] {
+        let expected = cases.iter().filter(|(_, e)| e.0 == outcome).count() as u64;
+        assert_eq!(json["total"][field], expected, "{field}");
+    }
+
+    for field in [
+        "count",
+        "errors",
+        "failures",
+        "upstream_failures",
+        "cancelled",
+        "incomplete",
+        "unknown",
+        "prewarm_count",
+        "usage_samples",
+        "input_tokens",
+        "output_tokens",
+        "cached_tokens",
+        "reasoning_tokens",
+    ] {
+        let sum = |items: &serde_json::Value| {
+            items
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x[field].as_i64().unwrap())
+                .sum::<i64>()
+        };
+        assert_eq!(
+            sum(&json["groups"]),
+            json["total"][field].as_i64().unwrap(),
+            "group {field}"
+        );
+        assert_eq!(
+            sum(&json["buckets"]),
+            json["total"][field].as_i64().unwrap(),
+            "bucket {field}"
+        );
+    }
+    for field in [
+        "retried",
+        "switched",
+        "downgraded",
+        "no_usage",
+        "cache_samples",
+        "cache_input_tokens",
+        "tps_samples",
+    ] {
+        let sum: i64 = json["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x[field].as_i64().unwrap())
+            .sum();
+        assert_eq!(sum, json["total"][field].as_i64().unwrap(), "{field}");
     }
     assert_eq!(
-        summary.total.tps_samples, 1,
-        "only the interrupted row is a clean sample"
+        summary.total.upstream_failure_rate,
+        Some(summary.total.upstream_failures as f64 / business as f64)
     );
+    let buckets = summary.buckets.as_ref().unwrap();
+    assert_eq!(buckets.iter().map(|b| b.refused).sum::<u64>(), 3);
+    assert_eq!(
+        buckets
+            .iter()
+            .filter_map(|b| b.refusals.get("inflight"))
+            .sum::<u64>(),
+        2
+    );
+    assert_eq!(
+        buckets
+            .iter()
+            .filter_map(|b| b.refusals.get("ws"))
+            .sum::<u64>(),
+        1
+    );
+    for bucket in buckets {
+        let mut durations: Vec<_> = cases
+            .iter()
+            .filter(|(r, e)| {
+                e.0 != Outcome::Prewarm && r.ts_ms() >= bucket.start_ms && r.ts_ms() < bucket.end_ms
+            })
+            .map(|(r, _)| r.duration_ms)
+            .collect();
+        durations.sort_unstable();
+        for (pct, actual) in [
+            (0.5, bucket.duration_p50_ms),
+            (0.9, bucket.duration_p90_ms),
+            (0.99, bucket.duration_p99_ms),
+        ] {
+            let expected = (!durations.is_empty())
+                .then(|| durations[((durations.len() as f64 * pct).ceil() as usize) - 1]);
+            assert_eq!(actual, expected);
+        }
+    }
+    for class in FAILURE_CLASSES.iter().copied().chain(["bogus"]) {
+        let expected = cases.iter().filter(|(_, e)| e.1 == Some(class)).count() as u64;
+        assert_eq!(
+            r.recent_count(RecentQuery {
+                failure_class: Some(class.into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap(),
+            expected
+        );
+        assert_eq!(
+            r.recent_count(RecentQuery {
+                failure_class: Some(class.into()),
+                outcome: Some(Outcome::Completed),
+                ..Default::default()
+            })
+            .await
+            .unwrap(),
+            0
+        );
+    }
+    for exclude_prewarm in [false, true] {
+        let s = r
+            .summary(SummaryQuery {
+                exclude_prewarm,
+                total_only: true,
+                ..query.clone()
+            })
+            .await
+            .unwrap();
+        assert!(s.groups.is_empty());
+        assert_eq!(s.total.no_usage, no_usage);
+    }
+    let scoped = r
+        .summary(SummaryQuery {
+            filters: Filters {
+                account: Some("a".into()),
+                ..Default::default()
+            },
+            ..query.clone()
+        })
+        .await
+        .unwrap();
+    assert!(scoped.buckets.unwrap().iter().all(|b| b.refused == 0));
+    let empty = r
+        .summary(SummaryQuery {
+            filters: Filters {
+                model: Some("absent".into()),
+                ..Default::default()
+            },
+            ..query
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            empty.total.failure_rate,
+            empty.total.cancel_rate,
+            empty.total.cache_ratio,
+            empty.total.generation_tps
+        ),
+        (None, None, None, None)
+    );
+    assert_eq!(empty.total.stream_ttft_p50_ms, None);
+    assert_eq!(empty.buckets, Some(vec![]));
+    r.shutdown();
 }

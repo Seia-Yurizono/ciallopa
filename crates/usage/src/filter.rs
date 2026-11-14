@@ -4,17 +4,56 @@ use crate::{UsageError, SEQ_BITS};
 use rusqlite::{params_from_iter, types::Value, Connection, OptionalExtension};
 use std::collections::HashMap;
 
-pub(crate) fn label_map(c: &Connection) -> rusqlite::Result<HashMap<i64, String>> {
-    let mut st = c.prepare_cached("SELECT id, name FROM labels")?;
-    let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
-    rows.collect()
+/// A snapshot-local dictionary containing only ids encountered by the query.
+pub(crate) struct LabelNames<'a> {
+    conn: &'a Connection,
+    values: HashMap<i64, Option<String>>,
+}
+impl<'a> LabelNames<'a> {
+    pub fn new(conn: &'a Connection) -> Self {
+        Self {
+            conn,
+            values: HashMap::new(),
+        }
+    }
+    pub fn load(&mut self, ids: impl IntoIterator<Item = Option<i64>>) -> rusqlite::Result<()> {
+        for id in ids.into_iter().flatten() {
+            if let std::collections::hash_map::Entry::Vacant(entry) = self.values.entry(id) {
+                let name = self
+                    .conn
+                    .prepare_cached("SELECT name FROM labels WHERE id=?1")?
+                    .query_row([id], |r| r.get(0))
+                    .optional()?;
+                entry.insert(name);
+            }
+        }
+        Ok(())
+    }
+    pub fn get(&self, id: &i64) -> Option<&String> {
+        self.values.get(id).and_then(Option::as_ref)
+    }
 }
 
 pub(crate) fn label_id(c: &Connection, name: &str) -> rusqlite::Result<Option<i64>> {
-    c.query_row("SELECT id FROM labels WHERE name = ?1", [name], |r| {
-        r.get(0)
-    })
-    .optional()
+    c.prepare_cached("SELECT id FROM labels WHERE name = ?1")?
+        .query_row([name], |r| r.get(0))
+        .optional()
+}
+
+pub(crate) fn names_for(
+    c: &Connection,
+    table: &str,
+    ids: impl IntoIterator<Item = i64>,
+) -> rusqlite::Result<HashMap<i64, String>> {
+    debug_assert!(matches!(table, "labels" | "threads"));
+    let ids: std::collections::BTreeSet<_> = ids.into_iter().collect();
+    let mut st = c.prepare_cached(&format!(
+        "SELECT id,name FROM {table} WHERE id IN (SELECT value FROM json_each(?1))"
+    ))?;
+    let rows = st.query_map([serde_json::json!(ids).to_string()], |r| {
+        Ok((r.get(0)?, r.get(1)?))
+    })?;
+    rows.collect()
 }
 
 /// Resolve literal, Unicode-lowercased substrings against the label dictionary, not
@@ -140,6 +179,14 @@ pub(crate) fn recent_where(
     c: &Connection,
     q: &RecentQuery,
 ) -> rusqlite::Result<Option<(String, Vec<Value>)>> {
+    recent_where_with(c, q, &Preds::new(c)?)
+}
+
+fn recent_where_with(
+    c: &Connection,
+    q: &RecentQuery,
+    preds: &Preds,
+) -> rusqlite::Result<Option<(String, Vec<Value>)>> {
     let Some((fsql, fparams)) = q.filters.sql(c)? else {
         return Ok(None);
     };
@@ -150,7 +197,11 @@ pub(crate) fn recent_where(
     ps.extend(fparams);
     if let Some(t) = q.thread.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
         // Served by the partial `requests_thread` index.
-        match label_id(c, t)? {
+        match c
+            .prepare_cached("SELECT id FROM threads WHERE name=?1")?
+            .query_row([t], |r| r.get::<_, i64>(0))
+            .optional()?
+        {
             Some(id) => {
                 s.push_str(" AND thread = ?");
                 ps.push(id.into());
@@ -217,7 +268,6 @@ pub(crate) fn recent_where(
         (Some(_), None | Some(Outcome::Failed)) => Some(Outcome::Failed),
         (Some(_), Some(_)) => return Ok(None),
     };
-    let preds = Preds::new(c)?;
     if let Some(class) = q.failure_class.as_deref() {
         match preds.failure_class(class) {
             Some(p) => s.push_str(&format!(" AND {p}")),
@@ -273,7 +323,11 @@ pub(crate) fn resolve_thread(c: &Connection, input: &str) -> rusqlite::Result<Th
         .optional()
         .map(|x| x.unwrap_or(false))
     };
-    if let Some(id) = label_id(c, t)? {
+    if let Some(id) = c
+        .prepare_cached("SELECT id FROM threads WHERE name=?1")?
+        .query_row([t], |r| r.get::<_, i64>(0))
+        .optional()?
+    {
         if used(id)? {
             return Ok(ThreadMatch::Exact(t.to_string()));
         }
@@ -283,7 +337,7 @@ pub(crate) fn resolve_thread(c: &Connection, input: &str) -> rusqlite::Result<Th
     }
     // One scan of `labels` (one row per distinct name); the EXISTS probe uses the thread index.
     let mut st = c.prepare_cached(
-        "SELECT l.name FROM labels l WHERE l.name LIKE '%' || ?1 || '%' \
+        "SELECT l.name FROM threads l WHERE l.name LIKE '%' || ?1 || '%' \
          AND EXISTS(SELECT 1 FROM requests r WHERE r.thread = l.id) LIMIT 2",
     )?;
     let names: Vec<String> = st
@@ -322,10 +376,11 @@ pub(crate) fn problem_counts(
         cause: None,
         ..q.clone()
     };
-    let Some((w, ps)) = recent_where(c, &q)? else {
+    let preds = Preds::new(c)?;
+    let Some((w, ps)) = recent_where_with(c, &q, &preds)? else {
         return Ok(crate::problem::ProblemCounts::zero());
     };
-    let cols = crate::problem::count_columns(&Preds::new(c)?);
+    let cols = crate::problem::count_columns(&preds);
     Ok(c.query_row(
         &format!("SELECT {cols} FROM requests WHERE {w}"),
         params_from_iter(ps),

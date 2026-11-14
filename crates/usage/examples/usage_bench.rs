@@ -1,8 +1,8 @@
 //! Usage-log benchmarks with fake data.
 //!   writer   <rows> <batch...>        — writer throughput per batch size
 //!   enqueue  <rows> <queue> <batch>   — producer try_send latency + drops under overload
-//!   gen      <db> <rows> <days> <accounts> <models>  — bulk fake rows spread over <days>
-//!   query    <db>                     — summary/records latency for 24h/7d/30d
+//!   gen      <db> <rows> <days> <accounts> <models> [--threads N] [--quota-every K]
+//!   query    <db> [--account-index]   — summary/records/quota/history/session timings
 //!   purge    <db> <days_to_drop> <chunk> — purge oldest days (chunked)
 //!   crashw   <db>                     — write forever (for kill -9 tests)
 //!   check    <db>                     — integrity_check + count
@@ -76,6 +76,30 @@ fn fake(r: &Recorder, rng: &mut Rng, ms: i64, accounts: u64, models: u64) -> Rec
 fn pctl(v: &mut [u64], p: f64) -> u64 {
     v.sort_unstable();
     v[((v.len() as f64 * p).ceil() as usize).clamp(1, v.len()) - 1]
+}
+
+fn option(args: &[String], name: &str, default: u64) -> u64 {
+    args.windows(2)
+        .find(|a| a[0] == name)
+        .map(|a| a[1].parse().unwrap())
+        .unwrap_or(default)
+}
+
+fn prices() -> PriceTable {
+    let source: String = (0..500)
+        .map(|i| format!("[[model]]\nmodel = \"gpt-5.{i}\"\nin = 2.5\nout = 10\ncache = 0.25\n"))
+        .collect();
+    PriceTable::parse(&source).unwrap()
+}
+
+fn measure<T>(name: &str, mut query: impl FnMut() -> T) {
+    let mut times = Vec::new();
+    for _ in 0..5 {
+        let start = Instant::now();
+        std::hint::black_box(query());
+        times.push(start.elapsed().as_secs_f64() * 1000.0);
+    }
+    println!("{}", serde_json::json!({"bench": name, "ms_runs": times}));
 }
 
 fn main() {
@@ -153,17 +177,38 @@ fn main() {
             let days: i64 = a[4].parse().unwrap();
             let accounts: u64 = a[5].parse().unwrap();
             let models: u64 = a[6].parse().unwrap();
+            let threads = option(&a, "--threads", 0);
+            let quota_every = option(&a, "--quota-every", 0);
             let r = Recorder::open(&cfg(p, 65_536, 4096, 50)).unwrap();
+            r.set_prices(prices());
             let mut rng = Rng(99);
             let span = days * 86_400_000;
             let start = now_ms() - span;
             let t = Instant::now();
             for i in 0..rows {
                 let ms = start + (i as i128 * span as i128 / rows as i128) as i64;
-                r.record_blocking(fake(&r, &mut rng, ms, accounts, models));
+                let mut row = fake(&r, &mut rng, ms, accounts, models);
+                if threads > 0 {
+                    row.thread_id = Some(format!("session-{:016x}", i % threads));
+                }
+                if quota_every > 0 && i % quota_every == 0 {
+                    row.quota = Some(QuotaObs {
+                        plan: Some("plus".into()),
+                        p_pct: Some(i as f64 / rows as f64 * 90.0),
+                        s_pct: Some(i as f64 / rows as f64 * 90.0),
+                        p_reset: Some((start + span) / 1000 + 3600),
+                        s_reset: Some((start + span) / 1000 + 7 * 86400),
+                        p_window_min: Some(10080),
+                        s_window_min: Some(10080),
+                        ..Default::default()
+                    });
+                }
+                r.record_blocking(row);
             }
             r.flush_blocking().unwrap();
             r.shutdown();
+            assert_eq!(r.stats().written, rows);
+            assert_eq!(r.stats().write_errors, 0);
             let size = std::fs::metadata(p).unwrap().len();
             println!(
                 "{{\"bench\":\"gen\",\"rows\":{rows},\"days\":{days},\"secs\":{:.1},\"db_bytes\":{size},\"bytes_per_row\":{:.1}}}",
@@ -173,7 +218,20 @@ fn main() {
         }
         "query" => {
             let p = &a[2];
+            if a.iter().any(|a| a == "--account-index") {
+                rusqlite::Connection::open(p)
+                    .unwrap()
+                    .execute_batch(
+                        "CREATE INDEX IF NOT EXISTS requests_account ON requests(account,id)",
+                    )
+                    .unwrap();
+            }
+            println!(
+                "{}",
+                serde_json::json!({"db_bytes": std::fs::metadata(p).unwrap().len()})
+            );
             let r = Recorder::open(&cfg(p, 1024, 256, 50)).unwrap();
+            r.set_prices(prices());
             let now = now_ms();
             for (name, ms) in [
                 ("24h", 86_400_000i64),
@@ -225,7 +283,29 @@ fn main() {
                 rows.len(),
                 t.elapsed().as_secs_f64() * 1e3
             );
+            measure("quota", || rt.block_on(r.quota()).unwrap());
+            measure("quota_history", || {
+                rt.block_on(r.quota_history(None, now - 30 * 86_400_000, now))
+                    .unwrap()
+            });
+            measure("recent_thread", || {
+                rt.block_on(r.recent(RecentQuery {
+                    limit: 100,
+                    thread: Some("session-0000000000000001".into()),
+                    ..Default::default()
+                }))
+                .unwrap()
+            });
+            measure("resolve_thread", || {
+                rt.block_on(r.resolve_thread("0000000000000001".into()))
+                    .unwrap()
+            });
             r.shutdown();
+            drop(r);
+            println!(
+                "{}",
+                serde_json::json!({"db_bytes_after_close":std::fs::metadata(p).unwrap().len()})
+            );
         }
         "purge" => {
             let p = PathBuf::from(&a[2]);

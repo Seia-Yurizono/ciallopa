@@ -32,11 +32,30 @@ impl WindowKind {
             Self::Secondary => "secondary",
         }
     }
-    pub fn from_index(i: usize) -> Self {
-        if i == 0 {
-            Self::Primary
-        } else {
-            Self::Secondary
+    pub const ALL: [Self; 2] = [Self::Primary, Self::Secondary];
+    pub const fn cols(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Primary => ("p_pct", "p_reset"),
+            Self::Secondary => ("s_pct", "s_reset"),
+        }
+    }
+    pub fn side(self, q: Option<&crate::QuotaObs>) -> Side {
+        let Some(q) = q else { return Side::default() };
+        let (pct, reset, window_min) = match self {
+            Self::Primary => (q.p_pct, q.p_reset, q.p_window_min),
+            Self::Secondary => (q.s_pct, q.s_reset, q.s_window_min),
+        };
+        Side {
+            pct,
+            reset,
+            window_min,
+            cards: q.cards,
+        }
+    }
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Primary => 0,
+            Self::Secondary => 1,
         }
     }
 }
@@ -429,7 +448,7 @@ mod tests {
 
     #[test]
     fn each_window_independent() {
-        assert_eq!(WindowKind::from_index(0).as_str(), "primary");
-        assert_eq!(WindowKind::from_index(1).as_str(), "secondary");
+        assert_eq!(WindowKind::Primary.as_str(), "primary");
+        assert_eq!(WindowKind::Secondary.as_str(), "secondary");
     }
 }

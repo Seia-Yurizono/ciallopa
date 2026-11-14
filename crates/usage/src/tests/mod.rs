@@ -2,7 +2,6 @@
 use super::*;
 use crate::problem::{failure_class, LIFECYCLE_ERRORS};
 
-/// RUSTSEC-2026-0459 / CVE-2026-119375: the bundled SQLite must be 3.54.0 or newer.
 mod migrate;
 mod occupancy;
 mod quota;
@@ -11,7 +10,7 @@ mod refusals;
 mod retention;
 mod summary;
 
-fn cfg(dir: &Path) -> UsageConfig {
+pub(crate) fn cfg(dir: &Path) -> UsageConfig {
     UsageConfig {
         path: dir.join("u.db"),
         ..UsageConfig::default()

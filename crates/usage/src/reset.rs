@@ -55,6 +55,24 @@ impl rusqlite::ToSql for ConsumeStatus {
     }
 }
 
+/// A consume can select a particular card or let the upstream choose for the account.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CreditRef {
+    Account,
+    Card(String),
+}
+impl CreditRef {
+    pub fn from_id(id: Option<&str>) -> Self {
+        id.map_or(Self::Account, |id| Self::Card(id.to_string()))
+    }
+    pub fn as_id(&self) -> Option<&str> {
+        match self {
+            Self::Account => None,
+            Self::Card(id) => Some(id),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ConsumeAttempt {
     pub id: i64,

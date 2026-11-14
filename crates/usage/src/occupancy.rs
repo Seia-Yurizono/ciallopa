@@ -188,17 +188,16 @@ mod tests {
     }
 }
 
-use crate::filter::{contains_filters, label_map};
+use crate::filter::{contains_filters, LabelNames};
 use crate::write::WriterState;
-use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
+use rusqlite::{params, params_from_iter, Connection};
 
 /// Merge per-minute occupancy into its rows (one transaction).
 pub(crate) fn upsert_occupancy(
-    c: &mut Connection,
+    tx: &rusqlite::Transaction<'_>,
     ws: &mut WriterState,
     rows: &std::collections::BTreeMap<i64, crate::occupancy::Agg>,
 ) -> rusqlite::Result<()> {
-    let tx = c.transaction()?;
     {
         let mut st = tx.prepare_cached(
             "INSERT INTO occupancy(minute,instance,samples,inflight_sum,inflight_peak,ws_sum,ws_peak,\
@@ -212,7 +211,7 @@ pub(crate) fn upsert_occupancy(
              lim_ws = excluded.lim_ws, lim_buffered = excluded.lim_buffered",
         )?;
         let instance_name = ws.instance.clone();
-        let instance = ws.label(&tx, Some(&instance_name))?.unwrap_or(0);
+        let instance = ws.label(tx, Some(&instance_name))?.unwrap_or(0);
         let as_i = |v: u64| i64::try_from(v).unwrap_or(i64::MAX);
         for (minute, a) in rows {
             st.execute(params![
@@ -231,7 +230,7 @@ pub(crate) fn upsert_occupancy(
             ])?;
         }
     }
-    tx.commit()
+    Ok(())
 }
 
 /// Range and bucket for occupancy reads.
@@ -269,7 +268,7 @@ pub(crate) fn occupancy_rows(
     if !contains_filters(c, &mut w, &mut p, &[("instance", &q.instance)])? {
         return Ok(vec![]);
     }
-    let labels = label_map(c)?;
+    let mut labels = LabelNames::new(c);
     let mut st = c.prepare(&format!(
         "SELECT ((minute + {off}) / {step}) * {step} - {off} AS b, instance, sum(samples), sum(inflight_sum), max(inflight_peak), \
          sum(ws_sum), max(ws_peak), sum(buffered_sum), max(buffered_peak), max(lim_inflight), max(lim_ws), \
@@ -288,6 +287,7 @@ pub(crate) fn occupancy_rows(
     let mut out = vec![];
     for row in rows {
         let (b, inst, n) = row?;
+        labels.load([(inst != 0).then_some(inst)])?;
         let samples = u(n[0]);
         let avg = |sum: i64| {
             if samples == 0 {
@@ -313,23 +313,4 @@ pub(crate) fn occupancy_rows(
         });
     }
     Ok(out)
-}
-
-/// Delete occupancy minutes before `cutoff_ms`, at most a day per call. Returns true when
-/// more may remain.
-pub(crate) fn purge_occupancy_before(c: &Connection, cutoff_ms: i64) -> rusqlite::Result<bool> {
-    let oldest: Option<i64> = c
-        .query_row(
-            "SELECT min(minute) FROM occupancy WHERE minute < ?1",
-            [cutoff_ms],
-            |r| r.get(0),
-        )
-        .optional()?
-        .flatten();
-    let Some(oldest) = oldest else {
-        return Ok(false);
-    };
-    let until = cutoff_ms.min(oldest.saturating_add(86_400_000));
-    c.execute("DELETE FROM occupancy WHERE minute < ?1", [until])?;
-    Ok(until < cutoff_ms)
 }

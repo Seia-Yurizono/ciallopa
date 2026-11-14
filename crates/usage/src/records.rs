@@ -1,4 +1,4 @@
-use crate::filter::{label_map, recent_where, RecentQuery};
+use crate::filter::{names_for, recent_where, RecentQuery};
 use crate::problem::row_failure_class;
 use crate::{Transport, UsageError, SEQ_BITS};
 use rusqlite::{params_from_iter, types::Value, Connection};
@@ -104,7 +104,6 @@ pub(crate) fn scope_values(
     c: &Connection,
     max_rows: u32,
 ) -> Result<[Vec<ScopeValue>; 3], UsageError> {
-    let names = label_map(c)?;
     let mut st = c.prepare(
         "SELECT model,key,instance,count(*),max(id) FROM \
          (SELECT model,key,instance,id FROM requests ORDER BY id DESC LIMIT ?) \
@@ -123,6 +122,7 @@ pub(crate) fn scope_values(
             }
         }
     }
+    let names = names_for(c, "labels", acc.iter().flat_map(|a| a.keys().copied()))?;
     Ok(acc.map(|m| {
         let mut v: Vec<ScopeValue> = m
             .into_iter()
@@ -210,7 +210,6 @@ fn record_rows(
     offset: usize,
     prices: &crate::PriceTable,
 ) -> Result<Vec<RecordRow>, UsageError> {
-    let names = label_map(c)?;
     let sql = format!(
         "SELECT id,account,first_account,model,effort,transport,endpoint,status,error,retries,switches,\
          ttft_ms,duration_ms,in_tok,out_tok,cached_tok,reasoning_tok,key,instance,plan,p_pct,p_reset,s_pct,s_reset,\
@@ -222,102 +221,139 @@ fn record_rows(
     ps.push((limit.clamp(1, 1001) as i64).into());
     ps.push((offset.min(1_000_000) as i64).into());
     let mut st = c.prepare(&sql)?;
+    let mut cursor = st.query(params_from_iter(ps))?;
+    let mut page = Vec::new();
+    let mut ids = Vec::new();
+    let mut threads = Vec::new();
+    const LABEL_COLS: &[usize] = &[1, 2, 3, 4, 6, 8, 17, 18, 19, 24, 29, 30, 31, 32, 33];
+    while let Some(row) = cursor.next()? {
+        for &col in LABEL_COLS {
+            if let Some(id) = row.get::<_, Option<i64>>(col)? {
+                ids.push(id);
+            }
+        }
+        if let Some(id) = row.get::<_, Option<i64>>(26)? {
+            threads.push(id);
+        }
+        page.push(
+            (0..35)
+                .map(|col| row.get::<_, Value>(col))
+                .collect::<rusqlite::Result<Vec<_>>>()?,
+        );
+    }
+    let names = names_for(c, "labels", ids)?;
+    let threads = names_for(c, "threads", threads)?;
     let name = |id: Option<i64>| id.and_then(|i| names.get(&i).cloned());
-    let rows = st.query_map(params_from_iter(ps), |r| {
-        let id: i64 = r.get(0)?;
-        let ttft: Option<u32> = r.get(11)?;
-        let dur: u32 = r.get(12)?;
-        let out: Option<i64> = r.get(14)?;
-        let model = name(r.get(3)?);
-        let (inp, cached): (Option<i64>, Option<i64>) = (r.get(13)?, r.get(15)?);
-        let reasoning: Option<i64> = r.get(16)?;
-        let tier = name(r.get(24)?);
-        let cw: Option<i64> = r.get(25)?;
-        let (cost_usd, price_status) = row_cost(
-            prices,
-            model.as_deref(),
-            tier.as_deref(),
-            id,
-            [inp, out, cached, reasoning],
-            cw,
-        );
-        let resp_model = name(r.get(30)?);
-        let model_mismatch = crate::model_mismatch(model.as_deref(), resp_model.as_deref());
-        let (status, error, err_source, endpoint): (u16, _, _, _) = (
-            r.get(7)?,
-            name(r.get(8)?),
-            name(r.get(33)?),
-            name(r.get(6)?),
-        );
-        let upstream_status: Option<u16> = r.get(34)?;
-        let failure_class = row_failure_class(
-            status,
-            error.as_deref(),
-            err_source.as_deref(),
-            upstream_status,
-            endpoint.as_deref(),
-        );
-        let incomplete = name(r.get(32)?);
-        let (retries, switches): (u32, u32) = (r.get(9)?, r.get(10)?);
-        let class = crate::problem::classify(&crate::problem::Facts {
-            status,
-            error: error.as_deref(),
-            source: err_source.as_deref(),
-            upstream_status,
-            endpoint: endpoint.as_deref(),
-            incomplete: incomplete.as_deref(),
-            retries,
-            switches,
-        });
-        Ok(RecordRow {
-            failure_class,
-            outcome: class.outcome,
-            problem: class.problem,
-            cause: class.cause,
-            upstream_fault: class.upstream_fault,
-            rescued: class.rescued,
-            next: class.next,
-            requested_service_tier: name(r.get(29)?),
-            response_model: resp_model,
-            response_effort: name(r.get(31)?),
-            incomplete,
-            model_mismatch,
-            request_id: format!("{id:016x}"),
-            ts_ms: id >> SEQ_BITS,
-            account: name(r.get(1)?),
-            first_account: name(r.get(2)?),
-            cost_usd,
-            price_status,
-            cache_write_tokens: cw,
-            service_tier: tier,
-            thread_id: name(r.get(26)?),
-            turn_id: r.get(27)?,
-            has_detail: r.get(28)?,
-            model,
-            reasoning_effort: name(r.get(4)?),
-            transport: Transport::from_i64(r.get(5)?),
-            endpoint,
-            status,
-            error,
-            err_source,
-            upstream_status,
-            retries,
-            switches,
-            ttft_ms: ttft,
-            duration_ms: dur,
-            input_tokens: inp,
-            output_tokens: out,
-            cached_tokens: cached,
-            reasoning_tokens: reasoning,
-            tps: tps(out, ttft, dur),
-            key: name(r.get(17)?),
-            instance: name(r.get(18)?),
-            plan: name(r.get(19)?),
-            primary_used_pct: r.get(20)?,
-            primary_reset_at: r.get(21)?,
-            secondary_used_pct: r.get(22)?,
-            secondary_reset_at: r.get(23)?,
-        })
-    })?;
+    let rows = page.into_iter().map(|row| {
+        let r = StoredRow(row);
+        (|| -> rusqlite::Result<RecordRow> {
+            let id: i64 = r.get(0)?;
+            let ttft: Option<u32> = r.get(11)?;
+            let dur: u32 = r.get(12)?;
+            let out: Option<i64> = r.get(14)?;
+            let model = name(r.get(3)?);
+            let (inp, cached): (Option<i64>, Option<i64>) = (r.get(13)?, r.get(15)?);
+            let reasoning: Option<i64> = r.get(16)?;
+            let tier = name(r.get(24)?);
+            let cw: Option<i64> = r.get(25)?;
+            let (cost_usd, price_status) = row_cost(
+                prices,
+                model.as_deref(),
+                tier.as_deref(),
+                id,
+                [inp, out, cached, reasoning],
+                cw,
+            );
+            let resp_model = name(r.get(30)?);
+            let model_mismatch = crate::model_mismatch(model.as_deref(), resp_model.as_deref());
+            let (status, error, err_source, endpoint): (u16, _, _, _) = (
+                r.get(7)?,
+                name(r.get(8)?),
+                name(r.get(33)?),
+                name(r.get(6)?),
+            );
+            let upstream_status: Option<u16> = r.get(34)?;
+            let failure_class = row_failure_class(
+                status,
+                error.as_deref(),
+                err_source.as_deref(),
+                upstream_status,
+                endpoint.as_deref(),
+            );
+            let incomplete = name(r.get(32)?);
+            let (retries, switches): (u32, u32) = (r.get(9)?, r.get(10)?);
+            let class = crate::problem::classify(&crate::problem::Facts {
+                status,
+                error: error.as_deref(),
+                source: err_source.as_deref(),
+                upstream_status,
+                endpoint: endpoint.as_deref(),
+                incomplete: incomplete.as_deref(),
+                retries,
+                switches,
+            });
+            Ok(RecordRow {
+                failure_class,
+                outcome: class.outcome,
+                problem: class.problem,
+                cause: class.cause,
+                upstream_fault: class.upstream_fault,
+                rescued: class.rescued,
+                next: class.next,
+                requested_service_tier: name(r.get(29)?),
+                response_model: resp_model,
+                response_effort: name(r.get(31)?),
+                incomplete,
+                model_mismatch,
+                request_id: format!("{id:016x}"),
+                ts_ms: id >> SEQ_BITS,
+                account: name(r.get(1)?),
+                first_account: name(r.get(2)?),
+                cost_usd,
+                price_status,
+                cache_write_tokens: cw,
+                service_tier: tier,
+                thread_id: r
+                    .get::<Option<i64>>(26)?
+                    .and_then(|id| threads.get(&id).cloned()),
+                turn_id: r.get(27)?,
+                has_detail: r.get(28)?,
+                model,
+                reasoning_effort: name(r.get(4)?),
+                transport: Transport::from_i64(r.get(5)?),
+                endpoint,
+                status,
+                error,
+                err_source,
+                upstream_status,
+                retries,
+                switches,
+                ttft_ms: ttft,
+                duration_ms: dur,
+                input_tokens: inp,
+                output_tokens: out,
+                cached_tokens: cached,
+                reasoning_tokens: reasoning,
+                tps: tps(out, ttft, dur),
+                key: name(r.get(17)?),
+                instance: name(r.get(18)?),
+                plan: name(r.get(19)?),
+                primary_used_pct: r.get(20)?,
+                primary_reset_at: r.get(21)?,
+                secondary_used_pct: r.get(22)?,
+                secondary_reset_at: r.get(23)?,
+            })
+        })()
+    });
     Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+struct StoredRow(Vec<Value>);
+impl StoredRow {
+    fn get<T: rusqlite::types::FromSql>(&self, index: usize) -> rusqlite::Result<T> {
+        let value = rusqlite::types::ValueRef::from(&self.0[index]);
+        T::column_result(value).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(index, value.data_type(), Box::new(e))
+        })
+    }
 }

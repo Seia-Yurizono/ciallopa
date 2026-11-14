@@ -346,18 +346,17 @@ mod tests {
     }
 }
 
-use crate::filter::{contains_filters, label_map};
+use crate::filter::{contains_filters, LabelNames};
 use crate::write::WriterState;
 use crate::Transport;
 use rusqlite::{params, params_from_iter, types::Value, Connection};
 
 /// Merge aggregated refusal groups into their per-minute rows (one transaction).
 pub(crate) fn upsert_refusals(
-    c: &mut Connection,
+    tx: &rusqlite::Transaction<'_>,
     ws: &mut WriterState,
     rows: &HashMap<crate::refusals::Group, crate::refusals::Agg>,
 ) -> rusqlite::Result<()> {
-    let tx = c.transaction()?;
     {
         let mut st = tx.prepare_cached(
             "INSERT INTO refusals(minute,reason,transport,key,route,ua,model,account,instance,lim,\
@@ -371,15 +370,15 @@ pub(crate) fn upsert_refusals(
              sum_bytes = CASE WHEN sum_bytes IS NULL AND excluded.sum_bytes IS NULL THEN NULL ELSE coalesce(sum_bytes,0) + coalesce(excluded.sum_bytes,0) END",
         )?;
         let instance_name = ws.instance.clone();
-        let instance = ws.label(&tx, Some(&instance_name))?.unwrap_or(0);
+        let instance = ws.label(tx, Some(&instance_name))?.unwrap_or(0);
         for (g, a) in rows {
-            let key = ws.label(&tx, g.key.as_deref())?.unwrap_or(0);
+            let key = ws.label(tx, g.key.as_deref())?.unwrap_or(0);
             let route = ws
-                .label(&tx, Some(g.route.as_str()).filter(|r| !r.is_empty()))?
+                .label(tx, Some(g.route.as_str()).filter(|r| !r.is_empty()))?
                 .unwrap_or(0);
-            let ua = ws.label(&tx, g.ua.as_deref())?.unwrap_or(0);
-            let model = ws.label(&tx, g.model.as_deref())?.unwrap_or(0);
-            let account = ws.label(&tx, g.account.as_deref())?.unwrap_or(0);
+            let ua = ws.label(tx, g.ua.as_deref())?.unwrap_or(0);
+            let model = ws.label(tx, g.model.as_deref())?.unwrap_or(0);
+            let account = ws.label(tx, g.account.as_deref())?.unwrap_or(0);
             let as_i = |v: u64| i64::try_from(v).unwrap_or(i64::MAX);
             st.execute(params![
                 g.minute,
@@ -407,7 +406,7 @@ pub(crate) fn upsert_refusals(
             ])?;
         }
     }
-    tx.commit()
+    Ok(())
 }
 
 /// Range and filters for refusal reads. Only key and instance apply (a refusal happens
@@ -504,8 +503,7 @@ pub(crate) fn refusal_rows(
     let Some((w, mut p)) = refusal_where(c, q)? else {
         return Ok(vec![]);
     };
-    let labels = label_map(c)?;
-    let name = |id: i64| (id != 0).then(|| labels.get(&id).cloned()).flatten();
+    let mut labels = LabelNames::new(c);
     p.push((q.limit.clamp(1, 500) as i64).into());
     p.push((q.offset as i64).into());
     let mut st = c.prepare(&format!(
@@ -545,6 +543,8 @@ pub(crate) fn refusal_rows(
         let Some(reason) = crate::refusals::Reason::from_code(reason) else {
             continue;
         };
+        labels.load(l.into_iter().filter(|id| *id != 0).map(Some))?;
+        let name = |id: i64| (id != 0).then(|| labels.get(&id).cloned()).flatten();
         out.push(crate::refusals::RefusalRow {
             minute_ms: minute,
             reason,

@@ -5,85 +5,12 @@
 use crate::classify::{self, CardSource, Class, Side, Transition, WindowKind};
 use crate::credits;
 use crate::estimate::{self, Capacity, Confidence};
-use crate::prices::{PriceTable, Tier, Usage};
+use crate::prices::{PriceTable, QueryPrices, Usage};
 use crate::{QuotaObs, UsageError, SEQ_BITS};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Serialize;
 
 const CARD_LOOKBACK_MS: i64 = 5 * 60_000;
-
-pub(crate) const CREATE_V15: &str = r#"
-CREATE TABLE IF NOT EXISTS quota_reset_events (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  account     INTEGER NOT NULL,
-  window      TEXT NOT NULL,
-  kind        TEXT NOT NULL,
-  at_ms       INTEGER NOT NULL,
-  obs_id      INTEGER NOT NULL,
-  prev_pct    REAL,
-  next_pct    REAL,
-  prev_reset  INTEGER,
-  next_reset  INTEGER,
-  prev_cards  INTEGER,
-  next_cards  INTEGER,
-  card_source TEXT,
-  cycle_id    INTEGER,
-  UNIQUE(account, window, obs_id)
-);
-CREATE INDEX IF NOT EXISTS quota_reset_events_acct ON quota_reset_events(account, at_ms);
-CREATE TABLE IF NOT EXISTS quota_cycle_estimates (
-  id                INTEGER PRIMARY KEY AUTOINCREMENT,
-  account           INTEGER NOT NULL,
-  window            TEXT NOT NULL,
-  started_ms        INTEGER NOT NULL,
-  ended_ms          INTEGER NOT NULL,
-  ended_obs_id      INTEGER NOT NULL,
-  cycle_reset_at    INTEGER,
-  close_kind        TEXT NOT NULL,
-  capacity_credits  REAL,
-  capacity_lo       REAL,
-  capacity_hi       REAL,
-  delta_pct         REAL,
-  credits_used      REAL,
-  api_cost_usd      REAL,
-  requests          INTEGER,
-  snapshots         INTEGER,
-  coverage_gap      INTEGER NOT NULL DEFAULT 0,
-  confidence        TEXT NOT NULL,
-  card_source       TEXT,
-  UNIQUE(account, window, ended_obs_id)
-);
-CREATE INDEX IF NOT EXISTS quota_cycle_estimates_acct ON quota_cycle_estimates(account, ended_ms);
-"#;
-
-pub(crate) fn migrate_v15(tx: &Transaction, from: i64) -> rusqlite::Result<()> {
-    if from >= 15 {
-        return Ok(());
-    }
-    let has_obs: bool = tx
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='quota_obs'",
-            [],
-            |_| Ok(true),
-        )
-        .optional()?
-        .unwrap_or(false);
-    if has_obs {
-        let has_cards: bool = tx
-            .query_row(
-                "SELECT 1 FROM pragma_table_info('quota_obs') WHERE name='cards'",
-                [],
-                |_| Ok(true),
-            )
-            .optional()?
-            .unwrap_or(false);
-        if !has_cards {
-            tx.execute_batch("ALTER TABLE quota_obs ADD COLUMN cards INTEGER;")?;
-        }
-    }
-    tx.execute_batch(CREATE_V15)?;
-    Ok(())
-}
 
 pub(crate) fn purge(c: &Connection, cutoff_ms: i64) -> rusqlite::Result<()> {
     c.execute(
@@ -97,35 +24,6 @@ pub(crate) fn purge(c: &Connection, cutoff_ms: i64) -> rusqlite::Result<()> {
     Ok(())
 }
 
-fn win_cols(which: usize) -> (&'static str, &'static str) {
-    if which == 0 {
-        ("p_pct", "p_reset")
-    } else {
-        ("s_pct", "s_reset")
-    }
-}
-
-fn side_of(q: Option<&QuotaObs>, which: usize) -> Side {
-    let Some(q) = q else {
-        return Side::default();
-    };
-    if which == 0 {
-        Side {
-            pct: q.p_pct,
-            reset: q.p_reset,
-            window_min: q.p_window_min,
-            cards: q.cards,
-        }
-    } else {
-        Side {
-            pct: q.s_pct,
-            reset: q.s_reset,
-            window_min: q.s_window_min,
-            cards: q.cards,
-        }
-    }
-}
-
 fn recent_card(
     tx: &Transaction,
     account: &str,
@@ -134,7 +32,7 @@ fn recent_card(
     let row: Option<Option<String>> = tx
         .query_row(
             "SELECT key FROM reset_consume WHERE account=?1 AND status='done' \
-             AND lower(coalesce(code,''))='reset' AND finished_ms IS NOT NULL \
+             AND code='reset' AND finished_ms IS NOT NULL \
              AND finished_ms>=?2 AND finished_ms<=?3 ORDER BY id DESC LIMIT 1",
             params![account, now_ms - CARD_LOOKBACK_MS, now_ms + 30_000],
             |r| r.get(0),
@@ -156,9 +54,9 @@ pub(crate) fn on_new_obs(
     let now_ms = obs_id >> SEQ_BITS;
     let now_s = now_ms.div_euclid(1000);
     let local = recent_card(tx, account_name, now_ms)?;
-    for which in 0..2 {
-        let prev = side_of(old, which);
-        let next = side_of(Some(new), which);
+    for which in WindowKind::ALL {
+        let prev = which.side(old);
+        let next = which.side(Some(new));
         let class = classify::classify(&Transition {
             prev,
             next,
@@ -181,12 +79,12 @@ fn close_one(
     account_id: i64,
     obs_id: i64,
     now_ms: i64,
-    which: usize,
+    which: WindowKind,
     prev: &Side,
     next: &Side,
     class: Class,
 ) -> rusqlite::Result<()> {
-    let window = WindowKind::from_index(which).as_str();
+    let window = which.as_str();
     let src = class.card_source().map(CardSource::as_str);
     let n = tx.execute(
         "INSERT OR IGNORE INTO quota_reset_events(\
@@ -212,7 +110,7 @@ fn close_one(
         return Ok(());
     }
     let event_id = tx.last_insert_rowid();
-    let data = load_cycle(tx, prices, account_id, which, prev.reset, obs_id)?;
+    let data = load_cycle(tx, prices, account_id, which, prev.reset, Some(obs_id))?;
     let cap = if data.obs.len() >= 2 {
         estimate::estimate(&estimate::points_from(&data.obs, &data.req_credits), 5.0)
     } else {
@@ -269,23 +167,25 @@ fn close_one(
     Ok(())
 }
 
-struct CycleData {
-    obs: Vec<(i64, f64)>,
+pub(crate) struct CycleData {
+    pub obs: Vec<(i64, f64)>,
     req_credits: Vec<(i64, f64)>,
     credits_used: f64,
     api_cost: Option<f64>,
-    requests: i64,
+    pub requests: i64,
+    pub token_requests: i64,
+    pub tokens: [f64; 3],
 }
 
-fn load_cycle(
+pub(crate) fn load_cycle(
     c: &Connection,
     prices: &PriceTable,
     account_id: i64,
-    which: usize,
+    which: WindowKind,
     reset: Option<i64>,
-    end_exclusive: i64,
+    end_exclusive: Option<i64>,
 ) -> rusqlite::Result<CycleData> {
-    let (pc, rc) = win_cols(which);
+    let (pc, rc) = which.cols();
     let (lo, hi) = match reset {
         Some(r) => (
             r - classify::RESET_TOLERANCE_S,
@@ -300,18 +200,25 @@ fn load_cycle(
     let mut st = c.prepare(&sql)?;
     let obs: Vec<(i64, f64)> = st
         .query_map(
-            params![account_id, end_exclusive, lo, hi, reset.is_none()],
+            params![
+                account_id,
+                end_exclusive.unwrap_or(i64::MAX),
+                lo,
+                hi,
+                reset.is_none()
+            ],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?
         .collect::<rusqlite::Result<_>>()?;
+    let last = obs.last().map(|(id, _)| *id).unwrap_or(0);
+    let end_exclusive = end_exclusive.unwrap_or_else(|| last.saturating_add(1));
     let first = obs.first().map(|(id, _)| *id).unwrap_or(end_exclusive);
+    let mut names = crate::filter::LabelNames::new(c);
+    let mut pricing = QueryPrices::new(prices);
     let mut rst = c.prepare(
         "SELECT r.id, coalesce(r.in_tok,0), coalesce(r.cached_tok,0), coalesce(r.cw_tok,0), \
-         coalesce(r.out_tok,0), t.name, coalesce(rm.name, m.name) \
+         coalesce(r.out_tok,0), r.tier, coalesce(r.resp_model, r.model) \
          FROM requests r \
-         LEFT JOIN labels t ON t.id = r.tier \
-         LEFT JOIN labels m ON m.id = r.model \
-         LEFT JOIN labels rm ON rm.id = r.resp_model \
          WHERE r.account=?1 AND r.id>=?2 AND r.id<?3 ORDER BY r.id",
     )?;
     let rows = rst.query_map(params![account_id, first, end_exclusive], |r| {
@@ -321,8 +228,8 @@ fn load_cycle(
             r.get::<_, i64>(2)?,
             r.get::<_, i64>(3)?,
             r.get::<_, i64>(4)?,
-            r.get::<_, Option<String>>(5)?,
-            r.get::<_, Option<String>>(6)?,
+            r.get::<_, Option<i64>>(5)?,
+            r.get::<_, Option<i64>>(6)?,
         ))
     })?;
     let mut req_credits = Vec::new();
@@ -330,22 +237,34 @@ fn load_cycle(
     let mut api_cost = 0.0;
     let mut any_cost = false;
     let mut requests = 0i64;
+    let mut token_requests = 0;
+    let mut tokens = [0.0; 3];
     for row in rows {
         let (id, inp, cached, cw, out, tier, model) = row?;
         requests += 1;
+        // Legacy weighted-token estimates exclude the request observing the last snapshot.
+        if id < last {
+            token_requests += 1;
+            tokens[0] += (inp - cached).max(0) as f64;
+            tokens[1] += cached as f64;
+            tokens[2] += out as f64;
+        }
         let u = Usage {
             input: inp,
             cached,
             cache_write: cw,
             output: out,
         };
-        let tier = Tier::from_service_tier(tier.as_deref());
-        let ts = id >> SEQ_BITS;
-        if let Some(c) = credits::credits(model.as_deref(), tier, u) {
+        names.load([model, tier])?;
+        let model_name = model.and_then(|id| names.get(&id)).map(String::as_str);
+        let tier_name = tier.and_then(|id| names.get(&id)).map(String::as_str);
+        let price = pricing.resolve((model, tier), id >> SEQ_BITS, model_name, tier_name);
+        let tier = pricing.tier(tier, tier_name);
+        if let Some(c) = credits::credits(model_name, tier, u) {
             req_credits.push((id, c));
             credits_used += c;
         }
-        if let Some(usd) = prices.cost(model.as_deref(), tier, ts, u) {
+        if let Some(usd) = price.cost(u) {
             api_cost += usd;
             any_cost = true;
         }
@@ -356,6 +275,8 @@ fn load_cycle(
         credits_used,
         api_cost: any_cost.then_some(api_cost),
         requests,
+        token_requests,
+        tokens,
     })
 }
 
@@ -364,7 +285,7 @@ pub(crate) fn live_capacity(
     c: &Connection,
     prices: &PriceTable,
     account_id: i64,
-    which: usize,
+    which: WindowKind,
     reset: Option<i64>,
     end_inclusive: i64,
 ) -> Result<(Capacity, Option<f64>, i64), UsageError> {
@@ -374,24 +295,32 @@ pub(crate) fn live_capacity(
         account_id,
         which,
         reset,
-        end_inclusive.saturating_add(1),
+        Some(end_inclusive.saturating_add(1)),
     )?;
-    let cap = if data.obs.len() >= 2 {
-        let mut cap = estimate::estimate(&estimate::points_from(&data.obs, &data.req_credits), 5.0);
-        cap.credits_used = data.credits_used;
+    Ok((data.capacity(), data.api_cost, data.requests))
+}
+
+impl CycleData {
+    pub fn capacity(&self) -> Capacity {
+        let mut cap = if self.obs.len() >= 2 {
+            estimate::estimate(&estimate::points_from(&self.obs, &self.req_credits), 5.0)
+        } else {
+            Capacity {
+                capacity: None,
+                lo: None,
+                hi: None,
+                delta_pct: None,
+                credits_used: 0.0,
+                coverage_gap: false,
+                confidence: Confidence::Insufficient,
+            }
+        };
+        cap.credits_used = self.credits_used;
         cap
-    } else {
-        Capacity {
-            capacity: None,
-            lo: None,
-            hi: None,
-            delta_pct: None,
-            credits_used: data.credits_used,
-            coverage_gap: false,
-            confidence: Confidence::Insufficient,
-        }
-    };
-    Ok((cap, data.api_cost, data.requests))
+    }
+    pub fn api_cost(&self) -> Option<f64> {
+        self.api_cost
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -448,9 +377,9 @@ pub(crate) fn history(
     from_ms: i64,
     to_ms: i64,
 ) -> Result<Vec<AccountHistory>, UsageError> {
-    let names = crate::filter::label_map(c)?;
+    let mut names = crate::filter::LabelNames::new(c);
     let acct_id = match account {
-        Some(n) => match names.iter().find(|(_, v)| v.as_str() == n).map(|(k, _)| *k) {
+        Some(n) => match crate::filter::label_id(c, n)? {
             Some(id) => Some(id),
             None => {
                 return Ok(vec![AccountHistory {
@@ -523,6 +452,19 @@ pub(crate) fn history(
         })?
         .collect::<rusqlite::Result<_>>()?;
 
+    names.load(
+        ev_rows
+            .iter()
+            .map(|(id, _)| Some(*id))
+            .chain(cy_rows.iter().map(|(id, _)| Some(*id))),
+    )?;
+    let mut accounts = c.prepare_cached(
+        "SELECT DISTINCT account FROM quota_obs WHERE (?1 IS NULL OR account=?1)",
+    )?;
+    let targets = accounts
+        .query_map([acct_id], |r| r.get::<_, i64>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    names.load(targets.iter().copied().map(Some))?;
     let mut by: std::collections::BTreeMap<i64, AccountHistory> = std::collections::BTreeMap::new();
     let blank = |id: i64| AccountHistory {
         account: names.get(&id).cloned().unwrap_or_default(),
@@ -538,18 +480,8 @@ pub(crate) fn history(
         by.entry(id).or_insert_with(|| blank(id)).cycles.push(e);
     }
     // In-progress cycle for each (requested) account that has a latest snapshot.
-    let targets: Vec<i64> = match acct_id {
-        Some(id) => vec![id],
-        None => {
-            let mut st = c.prepare("SELECT DISTINCT account FROM quota_obs")?;
-            let ids = st
-                .query_map([], |r| r.get(0))?
-                .collect::<rusqlite::Result<Vec<i64>>>()?;
-            ids
-        }
-    };
     for id in targets {
-        for which in 0..2 {
+        for which in WindowKind::ALL {
             if let Some(open) = open_cycle(c, prices, id, which)? {
                 if open.ended_ms >= from_ms && open.started_ms <= to_ms {
                     by.entry(id).or_insert_with(|| blank(id)).cycles.push(open);
@@ -567,9 +499,9 @@ fn open_cycle(
     c: &Connection,
     prices: &PriceTable,
     account_id: i64,
-    which: usize,
+    which: WindowKind,
 ) -> Result<Option<CycleRow>, UsageError> {
-    let (pc, rc) = win_cols(which);
+    let (pc, rc) = which.cols();
     let latest: Option<(i64, f64, Option<i64>)> = c
         .query_row(
             &format!(
@@ -584,7 +516,7 @@ fn open_cycle(
         return Ok(None);
     };
     // Already closed at this snapshot.
-    let window = WindowKind::from_index(which).as_str();
+    let window = which.as_str();
     let closed: bool = c
         .query_row(
             "SELECT 1 FROM quota_cycle_estimates WHERE account=?1 AND window=?2 AND ended_obs_id=?3",
@@ -674,16 +606,8 @@ fn apply_trend(cycles: &mut [CycleRow]) {
 mod tests {
     use super::*;
 
+    use crate::tests::cfg;
     use crate::{Record, Recorder, Transport};
-    use ciallopa_core::config::UsageConfig;
-
-    fn cfg(dir: &std::path::Path) -> UsageConfig {
-        UsageConfig {
-            path: dir.join("u.db"),
-            flush_ms: 10,
-            ..Default::default()
-        }
-    }
 
     fn snap(r: &Recorder, ms: i64, acct: &str, model: &str, out: i64, p: f64, reset: i64) {
         let mut x = Record::new(r.ids.next_at(ms), Transport::Sse, "responses");
@@ -701,52 +625,6 @@ mod tests {
             ..Default::default()
         });
         assert!(r.record(x));
-    }
-
-    #[test]
-    fn migrates_from_v14_and_adds_tables() {
-        let d = tempfile::tempdir().unwrap();
-        let p = d.path().join("u.db");
-        {
-            let c = rusqlite::Connection::open(&p).unwrap();
-            c.execute_batch(
-                "CREATE TABLE labels(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);
-                 CREATE TABLE quota_obs(id INTEGER PRIMARY KEY, account INTEGER NOT NULL, instance INTEGER,
-                   plan INTEGER, p_pct REAL, p_reset INTEGER, p_win INTEGER,
-                   s_pct REAL, s_reset INTEGER, s_win INTEGER);
-                 PRAGMA user_version=14;",
-            )
-            .unwrap();
-        }
-        let c = crate::schema::open_rw(&p).unwrap();
-        let v: i64 = c
-            .query_row("PRAGMA user_version", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(v, crate::schema::SCHEMA_VERSION);
-        let cards: i64 = c
-            .query_row(
-                "SELECT count(*) FROM pragma_table_info('quota_obs') WHERE name='cards'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(cards, 1);
-        let n: i64 = c
-            .query_row(
-                "SELECT count(*) FROM sqlite_master WHERE name='quota_reset_events'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(n, 1);
-        let n: i64 = c
-            .query_row(
-                "SELECT count(*) FROM sqlite_master WHERE name='quota_cycle_estimates'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(n, 1);
     }
 
     #[tokio::test]

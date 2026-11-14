@@ -268,7 +268,7 @@ pub fn outcome(f: &Facts) -> Outcome {
     }
 }
 
-/// 报错 cause from a [`crate::failure_class`]: `local` and `other` are the gateway.
+/// 报错 cause from a [`failure_class`]: `local` and `other` are the gateway.
 pub fn error_cause(failure_class: &str) -> &'static str {
     match failure_class {
         "quota" => "quota",
@@ -462,7 +462,7 @@ impl Preds {
             self.upstream, self.rate_limit
         )
     }
-    /// Failed rows of one [`crate::failure_class`]; mirrors that function.
+    /// Failed rows of one [`failure_class`]; mirrors that function.
     pub(crate) fn failure_class(&self, class: &str) -> Option<String> {
         let failed = self.outcome(Outcome::Failed);
         let (q, rl, rq) = (self.is_quota(), self.is_rate_limit(), self.is_request());

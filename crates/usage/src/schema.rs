@@ -1,10 +1,10 @@
 use crate::UsageError;
-use rusqlite::{Connection, OpenFlags, OptionalExtension};
+use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 
-pub(crate) const SCHEMA_VERSION: i64 = 15;
+pub(crate) const SCHEMA_VERSION: i64 = 16;
 
-const CREATE_V3: &str = r#"
+pub(crate) const LATEST: &str = r#"
 CREATE TABLE IF NOT EXISTS labels(
   id   INTEGER PRIMARY KEY,
   name TEXT NOT NULL UNIQUE
@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS requests(
   -- v3
   tier          INTEGER,               -- labels.id, service_tier
   cw_tok        INTEGER,               -- cache_write_tokens (part of in_tok)
-  thread        INTEGER,               -- labels.id, Codex thread id
+  thread        INTEGER,               -- threads.id, Codex thread id
   turn          TEXT,                  -- Codex turn id
   -- v5
   req_tier      INTEGER,               -- labels.id, requested service_tier
@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS requests(
 );
 -- v13: session view (`thread` filter); partial, so rows without a thread cost nothing.
 CREATE INDEX IF NOT EXISTS requests_thread ON requests(thread) WHERE thread IS NOT NULL;
+CREATE INDEX IF NOT EXISTS requests_account ON requests(account,id);
 -- Quota snapshots, one row only when an account's values change. id = observing request id.
 CREATE TABLE IF NOT EXISTS quota_obs(
   id       INTEGER PRIMARY KEY,
@@ -59,7 +60,7 @@ CREATE TABLE IF NOT EXISTS quota_obs(
   instance INTEGER,
   plan     INTEGER,
   p_pct    REAL, p_reset INTEGER, p_win INTEGER,
-  s_pct    REAL, s_reset INTEGER, s_win INTEGER
+  s_pct    REAL, s_reset INTEGER, s_win INTEGER, cards INTEGER
 );
 CREATE INDEX IF NOT EXISTS quota_obs_account ON quota_obs(account, id);
 -- v4: failed requests only (id = requests.id); body redacted + capped at 16 KiB.
@@ -137,6 +138,85 @@ CREATE TABLE IF NOT EXISTS occupancy(
   lim_buffered  INTEGER NOT NULL,
   PRIMARY KEY(minute, instance)
 ) WITHOUT ROWID;
+
+-- v14: gateway stream observation (SSE requests / WS turns only; id = requests.id).
+CREATE TABLE IF NOT EXISTS request_obs(
+  id                    INTEGER PRIMARY KEY,
+  up_first_text_ms      INTEGER,
+  up_first_reasoning_ms INTEGER,
+  up_first_tool_ms      INTEGER,
+  up_last_event_ms      INTEGER,
+  up_terminal_ms        INTEGER,
+  up_events             INTEGER,
+  up_bytes              INTEGER,
+  response_id           TEXT,
+  up_req_id             TEXT,
+  sse_first_queue_ms    INTEGER,
+  sse_last_queue_ms     INTEGER,
+  sse_queue_blocked_us  INTEGER,
+  sse_queue_blocked_max_us INTEGER,
+  sse_queue_chunks      INTEGER,
+  sse_queue_bytes       INTEGER,
+  sse_first_yield_ms    INTEGER,
+  sse_last_yield_ms     INTEGER,
+  sse_yield_chunks      INTEGER,
+  sse_yield_bytes       INTEGER,
+  ws_first_send_ms      INTEGER,
+  ws_last_send_ms       INTEGER,
+  ws_sink_blocked_us    INTEGER,
+  ws_sink_blocked_max_us INTEGER,
+  ws_send_msgs          INTEGER,
+  ws_send_bytes         INTEGER,
+  down_incomplete      INTEGER,
+  ws_deflate_down       INTEGER,
+  ws_ext_down           TEXT,
+  ws_deflate_up         INTEGER,
+  ws_ext_up             TEXT
+);
+
+CREATE TABLE IF NOT EXISTS quota_reset_events (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  account     INTEGER NOT NULL,
+  window      TEXT NOT NULL,
+  kind        TEXT NOT NULL,
+  at_ms       INTEGER NOT NULL,
+  obs_id      INTEGER NOT NULL,
+  prev_pct    REAL,
+  next_pct    REAL,
+  prev_reset  INTEGER,
+  next_reset  INTEGER,
+  prev_cards  INTEGER,
+  next_cards  INTEGER,
+  card_source TEXT,
+  cycle_id    INTEGER,
+  UNIQUE(account, window, obs_id)
+);
+CREATE INDEX IF NOT EXISTS quota_reset_events_acct ON quota_reset_events(account, at_ms);
+CREATE TABLE IF NOT EXISTS quota_cycle_estimates (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  account           INTEGER NOT NULL,
+  window            TEXT NOT NULL,
+  started_ms        INTEGER NOT NULL,
+  ended_ms          INTEGER NOT NULL,
+  ended_obs_id      INTEGER NOT NULL,
+  cycle_reset_at    INTEGER,
+  close_kind        TEXT NOT NULL,
+  capacity_credits  REAL,
+  capacity_lo       REAL,
+  capacity_hi       REAL,
+  delta_pct         REAL,
+  credits_used      REAL,
+  api_cost_usd      REAL,
+  requests          INTEGER,
+  snapshots         INTEGER,
+  coverage_gap      INTEGER NOT NULL DEFAULT 0,
+  confidence        TEXT NOT NULL,
+  card_source       TEXT,
+  UNIQUE(account, window, ended_obs_id)
+);
+CREATE INDEX IF NOT EXISTS quota_cycle_estimates_acct ON quota_cycle_estimates(account, ended_ms);
+
+CREATE TABLE IF NOT EXISTS threads(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);
 "#;
 
 const MIGRATE_1_TO_2: &str = r#"
@@ -178,61 +258,103 @@ fn pragmas(c: &Connection) -> rusqlite::Result<()> {
     c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA temp_store=MEMORY;")
 }
 
-/// Create or migrate the schema to `SCHEMA_VERSION` (one transaction).
+/// Every upgrade has one explicit destination; fresh databases run none of these steps.
+type Migration = fn(&rusqlite::Transaction<'_>) -> rusqlite::Result<()>;
+const STEPS: &[(i64, Migration)] = &[
+    (2, |tx| {
+        tx.execute_batch(MIGRATE_1_TO_2)?;
+        tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS quota_obs(id INTEGER PRIMARY KEY, account INTEGER NOT NULL, instance INTEGER, plan INTEGER, p_pct REAL, p_reset INTEGER, p_win INTEGER, s_pct REAL, s_reset INTEGER, s_win INTEGER);"
+    )
+    }),
+    (3, |tx| tx.execute_batch(MIGRATE_2_TO_3)),
+    (4, |tx| {
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS error_detail(id INTEGER PRIMARY KEY, message TEXT, body TEXT, body_len INTEGER NOT NULL, truncated INTEGER NOT NULL, headers TEXT NOT NULL);")
+    }),
+    (5, |tx| tx.execute_batch(MIGRATE_4_TO_5)),
+    (7, |tx| tx.execute_batch(MIGRATE_6_TO_7)),
+    (9, |tx| {
+        tx.execute_batch(MIGRATE_8_TO_9)?;
+        tx.execute_batch(MIGRATE_8_TO_9_DETAIL)
+    }),
+    (12, |tx| {
+        // Tables introduced without ALTERs are needed by the v12 privacy rewrite.
+        tx.execute_batch(LATEST)?;
+        tx.execute_batch("PRAGMA secure_delete=ON")?;
+        crate::migrate_v12::rewrite(tx)
+    }),
+    (13, |tx| {
+        tx.execute_batch("CREATE INDEX IF NOT EXISTS requests_thread ON requests(thread) WHERE thread IS NOT NULL")
+    }),
+    (14, |tx| tx.execute_batch(crate::observation::CREATE)),
+    (15, |tx| {
+        tx.execute_batch("ALTER TABLE quota_obs ADD COLUMN cards INTEGER")
+    }),
+    (16, migrate_v16),
+];
+
+// Excludes requests.thread, whose ids now belong to the independent threads dictionary.
+pub(crate) const LABEL_REFERENCES: &str = r#"SELECT account AS id FROM requests WHERE account IS NOT NULL
+UNION SELECT first_account AS id FROM requests WHERE first_account IS NOT NULL
+UNION SELECT model AS id FROM requests WHERE model IS NOT NULL
+UNION SELECT effort AS id FROM requests WHERE effort IS NOT NULL
+UNION SELECT endpoint AS id FROM requests WHERE endpoint IS NOT NULL
+UNION SELECT error AS id FROM requests WHERE error IS NOT NULL
+UNION SELECT key AS id FROM requests WHERE key IS NOT NULL
+UNION SELECT instance AS id FROM requests WHERE instance IS NOT NULL
+UNION SELECT plan AS id FROM requests WHERE plan IS NOT NULL
+UNION SELECT tier AS id FROM requests WHERE tier IS NOT NULL
+UNION SELECT req_tier AS id FROM requests WHERE req_tier IS NOT NULL
+UNION SELECT resp_model AS id FROM requests WHERE resp_model IS NOT NULL
+UNION SELECT resp_effort AS id FROM requests WHERE resp_effort IS NOT NULL
+UNION SELECT incomplete AS id FROM requests WHERE incomplete IS NOT NULL
+UNION SELECT err_source AS id FROM requests WHERE err_source IS NOT NULL
+UNION SELECT account AS id FROM quota_obs WHERE account IS NOT NULL
+UNION SELECT instance AS id FROM quota_obs WHERE instance IS NOT NULL
+UNION SELECT plan AS id FROM quota_obs WHERE plan IS NOT NULL
+UNION SELECT account AS id FROM quota_reset_events WHERE account IS NOT NULL
+UNION SELECT account AS id FROM quota_cycle_estimates WHERE account IS NOT NULL
+UNION SELECT key AS id FROM refusals WHERE key IS NOT NULL
+UNION SELECT route AS id FROM refusals WHERE route IS NOT NULL
+UNION SELECT ua AS id FROM refusals WHERE ua IS NOT NULL
+UNION SELECT model AS id FROM refusals WHERE model IS NOT NULL
+UNION SELECT account AS id FROM refusals WHERE account IS NOT NULL
+UNION SELECT instance AS id FROM refusals WHERE instance IS NOT NULL
+UNION SELECT instance AS id FROM occupancy WHERE instance IS NOT NULL"#;
+
+fn migrate_v16(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
+    tx.execute_batch(LATEST)?;
+    tx.execute_batch(
+        "INSERT INTO threads(id,name) SELECT DISTINCT l.id,l.name FROM labels l JOIN requests r ON r.thread=l.id;
+         UPDATE reset_consume SET code=lower(code);"
+    )?;
+    tx.execute_batch(&format!(
+        "DELETE FROM labels WHERE id NOT IN ({LABEL_REFERENCES})"
+    ))
+}
+
+/// Create or migrate the schema atomically, preserving existing ids and values.
 pub(crate) fn migrate(c: &mut Connection) -> rusqlite::Result<()> {
-    let v: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if v >= SCHEMA_VERSION {
+    let version: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= SCHEMA_VERSION {
         return Ok(());
     }
     let tx = c.transaction()?;
-    let has_requests: bool = tx
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='requests'",
-            [],
-            |_| Ok(true),
-        )
-        .optional()?
-        .unwrap_or(false);
-    if has_requests && v == 1 {
-        tx.execute_batch(MIGRATE_1_TO_2)?;
+    if version == 0 {
+        tx.execute_batch(LATEST)?;
+        crate::migrate_v12::load_or_create_aliaser(&tx)?;
+    } else {
+        for &(to, step) in STEPS {
+            if version < to {
+                step(&tx)?;
+            }
+        }
+        tx.execute_batch(LATEST)?;
     }
-    if has_requests && (1..=2).contains(&v) {
-        tx.execute_batch(MIGRATE_2_TO_3)?;
-    }
-    if has_requests && (1..=4).contains(&v) {
-        tx.execute_batch(MIGRATE_4_TO_5)?;
-    }
-    if has_requests && (1..=6).contains(&v) {
-        tx.execute_batch(MIGRATE_6_TO_7)?;
-    }
-    if has_requests && (1..=8).contains(&v) {
-        tx.execute_batch(MIGRATE_8_TO_9)?;
-    }
-    let has_detail: bool = tx
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='error_detail'",
-            [],
-            |_| Ok(true),
-        )
-        .optional()?
-        .unwrap_or(false);
-    if has_detail && (4..=8).contains(&v) {
-        tx.execute_batch(MIGRATE_8_TO_9_DETAIL)?;
-    }
-    tx.execute_batch(CREATE_V3)?;
-    tx.execute_batch(crate::observation::CREATE)?;
-    // v12: rewrite account labels to aliases and scrub historical error payloads.
-    // Runs for every upgrade into 12 (including fresh DBs, where it only seeds alias_key).
-    if v < 12 {
-        tx.execute_batch("PRAGMA secure_delete = ON;")?;
-        crate::migrate_v12::rewrite(&tx)?;
-    }
-    crate::history::migrate_v15(&tx, v)?;
-    tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
+    tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     tx.commit()?;
-    if v < 12 {
-        // Drop free pages that still held pre-rewrite bytes; no VACUUM (disk doubling).
-        let _ = c.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    if (1..12).contains(&version) {
+        let _ = c.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)");
     }
     Ok(())
 }
@@ -249,8 +371,7 @@ pub(crate) fn open_and_migrate(p: &Path) -> Result<Connection, UsageError> {
     Ok(c)
 }
 
-/// A short-lived query connection. All reads share the first SELECT's snapshot,
-/// so a concurrent writer cannot insert rows after we have loaded their labels.
+/// Open a reusable read-only connection; its caller owns the snapshot transaction.
 pub(crate) fn open_read(p: &Path) -> Result<Connection, UsageError> {
     let c = Connection::open_with_flags(
         p,
@@ -260,6 +381,7 @@ pub(crate) fn open_read(p: &Path) -> Result<Connection, UsageError> {
     Ok(c)
 }
 
+#[cfg(test)]
 pub(crate) use open_and_migrate as open_rw;
 
 pub(crate) fn open_write(p: &Path) -> Result<Connection, UsageError> {

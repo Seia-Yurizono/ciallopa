@@ -1,6 +1,6 @@
-use crate::filter::{label_id, label_map, Filters};
+use crate::filter::{label_id, Filters, LabelNames};
+use crate::prices::{QueryPrices, Usage};
 use crate::problem::{failure_class, Outcome};
-use crate::records::row_cost;
 use crate::refusals::refusal_minutes;
 use crate::{RefusalQuery, PREWARM_ENDPOINT};
 use crate::{Transport, UsageError, SEQ_BITS};
@@ -226,6 +226,47 @@ pub struct DayBucket {
     pub unknown_price: u64,
 }
 
+struct BucketAcc {
+    view: DayBucket,
+    acc: Acc,
+    incomplete: u64,
+}
+impl BucketAcc {
+    fn add(&mut self, facts: RowFacts) {
+        // Preserve the legacy day figure: unknown outcomes are excluded from incomplete.
+        self.incomplete += u64::from(
+            facts.counted && facts.incomplete && !facts.err && !facts.cancelled && !facts.unknown,
+        );
+        self.acc.add(facts);
+    }
+    fn finish(mut self) -> DayBucket {
+        let figures = self.acc.finish(Default::default());
+        self.view.count = figures.count;
+        self.view.errors = figures.errors;
+        self.view.failures = figures.failures;
+        self.view.failure_classes = figures.failure_classes;
+        self.view.upstream_failures = figures.upstream_failures;
+        self.view.cancelled = figures.cancelled;
+        self.view.unknown = figures.unknown;
+        self.view.prewarm_count = figures.prewarm_count;
+        self.view.stream_ttft_p50_ms = figures.stream_ttft_p50_ms;
+        self.view.stream_ttft_p90_ms = figures.stream_ttft_p90_ms;
+        self.view.stream_ttft_p99_ms = figures.stream_ttft_p99_ms;
+        self.view.duration_p50_ms = figures.duration_p50_ms;
+        self.view.duration_p90_ms = figures.duration_p90_ms;
+        self.view.duration_p99_ms = figures.duration_p99_ms;
+        self.view.usage_samples = figures.usage_samples;
+        self.view.input_tokens = figures.input_tokens;
+        self.view.output_tokens = figures.output_tokens;
+        self.view.cached_tokens = figures.cached_tokens;
+        self.view.reasoning_tokens = figures.reasoning_tokens;
+        self.view.cost_usd = figures.cost_usd;
+        self.view.unknown_price = figures.unknown_price;
+        self.view.incomplete = self.incomplete;
+        self.view
+    }
+}
+
 /// days since epoch → `YYYY-MM-DD` (civil_from_days).
 fn civil(z: i64) -> String {
     let z = z + 719_468;
@@ -272,7 +313,8 @@ struct Acc {
     unknown: u64,
 }
 
-struct Observation {
+#[derive(Clone, Copy)]
+struct RowFacts {
     counted: bool,
     err: bool,
     /// Set for failures.
@@ -292,8 +334,8 @@ struct Observation {
 }
 
 impl Acc {
-    fn add(&mut self, o: Observation) {
-        let Observation {
+    fn add(&mut self, o: RowFacts) {
+        let RowFacts {
             counted,
             err,
             class,
@@ -473,7 +515,7 @@ pub(crate) fn summary(
     q: &SummaryQuery,
     prices: &crate::PriceTable,
 ) -> Result<Summary, UsageError> {
-    let names = label_map(c)?;
+    let mut names = LabelNames::new(c);
     let dims = if q.total_only {
         vec![]
     } else if q.group_by.is_empty() {
@@ -518,27 +560,30 @@ pub(crate) fn summary(
     let mut st = c.prepare(&sql)?;
     let mut groups: HashMap<Vec<Option<i64>>, Acc> = HashMap::new();
     let mut rows = st.query(params_from_iter(ps))?;
+    let mut pricing = QueryPrices::new(prices);
     let mut unknown_models = std::collections::BTreeSet::new();
-    let mut days: std::collections::BTreeMap<i64, DayBucket> = Default::default();
-    // Per-bucket latency samples (stream first output, duration), turned into percentiles.
-    let mut lat: HashMap<i64, (Vec<u32>, Vec<u32>)> = HashMap::new();
+    let mut days: std::collections::BTreeMap<i64, BucketAcc> = Default::default();
     let width = if q.bucket_hour { 3_600_000 } else { 86_400_000 };
     let off = i64::from(q.bucket_day.unwrap_or(0)) * 60_000;
     let bucket_of = |k: i64| {
         let local = k * width;
-        DayBucket {
-            day: if q.bucket_hour {
-                format!(
-                    "{} {:02}",
-                    civil(local.div_euclid(86_400_000)),
-                    local.rem_euclid(86_400_000) / 3_600_000
-                )
-            } else {
-                civil(k)
+        BucketAcc {
+            view: DayBucket {
+                day: if q.bucket_hour {
+                    format!(
+                        "{} {:02}",
+                        civil(local.div_euclid(86_400_000)),
+                        local.rem_euclid(86_400_000) / 3_600_000
+                    )
+                } else {
+                    civil(k)
+                },
+                start_ms: k * width - off,
+                end_ms: (k + 1) * width - off,
+                ..Default::default()
             },
-            start_ms: k * width - off,
-            end_ms: (k + 1) * width - off,
-            ..Default::default()
+            acc: Acc::default(),
+            incomplete: 0,
         }
     };
     while let Some(r) = rows.next()? {
@@ -550,8 +595,27 @@ pub(crate) fn summary(
         let tok: [Option<i64>; 4] = [r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?];
         let m: Option<i64> = r.get(8)?;
         let t: Option<i64> = r.get(10)?;
+        names.load([err, m, t, r.get(12)?, r.get(13)?])?;
+        names.load(
+            dims.iter()
+                .zip(&key)
+                .filter_map(|(dim, id)| (*dim != Dim::Transport).then_some(*id)),
+        )?;
         let lbl = |x: Option<i64>| x.and_then(|x| names.get(&x)).map(String::as_str);
-        let cost = row_cost(prices, lbl(m), lbl(t), r.get(9)?, tok, r.get(11)?);
+        let price = pricing.resolve((m, t), r.get::<_, i64>(9)? >> SEQ_BITS, lbl(m), lbl(t));
+        let cost = if tok[0].is_none() && tok[1].is_none() {
+            (None, "no_tokens")
+        } else {
+            (
+                price.cost(Usage {
+                    input: tok[0].unwrap_or(0),
+                    output: tok[1].unwrap_or(0),
+                    cached: tok[2].unwrap_or(0),
+                    cache_write: r.get::<_, Option<i64>>(11)?.unwrap_or(0),
+                }),
+                price.status(),
+            )
+        };
         // Codex WS prewarm (`generate:false`): billed tokens count, the request itself does not.
         let counted = lbl(r.get(12)?) != Some(PREWARM_ENDPOINT);
         let (src, up): (Option<i64>, Option<u16>) = (r.get(13)?, r.get(16)?);
@@ -581,52 +645,18 @@ pub(crate) fn summary(
         let dur: u32 = r.get(3)?;
         if cost.1 == "unknown_price" {
             let k = match lbl(t) {
-                Some(t) if crate::Tier::from_service_tier(Some(t)) != crate::Tier::Standard => {
+                Some(t) if pricing.tier(r.get(10)?, Some(t)) != crate::Tier::Standard => {
                     format!(
                         "{} ({})",
                         lbl(m).unwrap_or("?"),
-                        crate::Tier::from_service_tier(Some(t)).name()
+                        pricing.tier(r.get(10)?, Some(t)).name()
                     )
                 }
                 _ => lbl(m).unwrap_or("?").to_string(),
             };
             unknown_models.insert(k);
         }
-        if q.bucket_day.is_some() {
-            let id: i64 = r.get(9)?;
-            let k = ((id >> SEQ_BITS) + off).div_euclid(width);
-            let b = days.entry(k).or_insert_with(|| bucket_of(k));
-            if counted {
-                b.count += 1;
-                b.errors += u64::from(err.is_some() || status >= 400);
-                b.failures += u64::from(failed);
-                b.upstream_failures += u64::from(upstream);
-                if let Some(c) = class {
-                    *b.failure_classes.entry(c).or_default() += 1;
-                }
-                let l = lat.entry(k).or_default();
-                if let (Some(t), true) = (ttft, streaming) {
-                    l.0.push(t);
-                }
-                l.1.push(dur);
-                b.cancelled += u64::from(cancelled);
-                b.incomplete += u64::from(incomplete && !failed && !cancelled && !unknown);
-                b.unknown += u64::from(unknown);
-            } else {
-                b.prewarm_count += 1;
-            }
-            b.input_tokens += tok[0].unwrap_or(0);
-            b.usage_samples += u64::from(tok[0].is_some() || tok[1].is_some());
-            b.output_tokens += tok[1].unwrap_or(0);
-            b.cached_tokens += tok[2].unwrap_or(0);
-            b.reasoning_tokens += tok[3].unwrap_or(0);
-            match cost {
-                (Some(c), _) => *b.cost_usd.get_or_insert(0.0) += c,
-                (None, "unknown_price") => b.unknown_price += 1,
-                _ => {}
-            }
-        }
-        groups.entry(key).or_default().add(Observation {
+        let facts = RowFacts {
             counted,
             err: err.is_some() || status >= 400,
             class,
@@ -642,7 +672,13 @@ pub(crate) fn summary(
             dur,
             tok,
             cost,
-        });
+        };
+        if q.bucket_day.is_some() {
+            let id: i64 = r.get(9)?;
+            let k = ((id >> SEQ_BITS) + off).div_euclid(width);
+            days.entry(k).or_insert_with(|| bucket_of(k)).add(facts);
+        }
+        groups.entry(key).or_default().add(facts);
     }
     let value = |d: Dim, id: Option<i64>| -> Option<String> {
         match d {
@@ -669,16 +705,6 @@ pub(crate) fn summary(
         out.groups = gs;
     }
     out.unknown_price_models = unknown_models.into_iter().collect();
-    for (k, (mut t, mut d)) in lat {
-        if let Some(b) = days.get_mut(&k) {
-            b.stream_ttft_p50_ms = pct(&mut t, 0.5);
-            b.stream_ttft_p90_ms = pct(&mut t, 0.9);
-            b.stream_ttft_p99_ms = pct(&mut t, 0.99);
-            b.duration_p50_ms = pct(&mut d, 0.5);
-            b.duration_p90_ms = pct(&mut d, 0.9);
-            b.duration_p99_ms = pct(&mut d, 0.99);
-        }
-    }
     if q.bucket_day.is_some()
         && q.bucket_refusals
         && q.filters.account.is_none()
@@ -695,11 +721,13 @@ pub(crate) fn summary(
             // A minute row belongs to the bucket holding its start, clipped to the window.
             let k = (minute.max(q.from_ms) + off).div_euclid(width);
             let b = days.entry(k).or_insert_with(|| bucket_of(k));
-            b.refused += n;
-            *b.refusals.entry(reason.as_str()).or_default() += n;
+            b.view.refused += n;
+            *b.view.refusals.entry(reason.as_str()).or_default() += n;
         }
     }
-    out.buckets = q.bucket_day.map(|_| days.into_values().collect());
+    out.buckets = q
+        .bucket_day
+        .map(|_| days.into_values().map(BucketAcc::finish).collect());
     Ok(out)
 }
 

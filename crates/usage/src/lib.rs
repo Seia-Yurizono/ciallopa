@@ -1,6 +1,6 @@
 //! Per-request usage log. **Never blocks forwarding**: `Recorder::record` is a non-blocking
 //! `try_send` into a bounded queue (full ⇒ drop + count); one dedicated OS thread batch-writes
-//! to SQLite (WAL). Reads open their own read-only connections. Design: docs/USAGE.md.
+//! to SQLite (WAL). A bounded pool reuses read-only connections. Design: docs/USAGE.md.
 pub(crate) mod classify;
 pub(crate) mod credits;
 pub mod detail;
@@ -568,7 +568,19 @@ impl Recorder {
         self.read(move |c| {
             let mut counts = filter::problem_counts(c, &q)?;
             if let Some(q) = refusals {
-                counts.refused = Some(crate::refusals::refusal_totals(c, &q)?.count);
+                let totals = crate::refusals::refusal_totals(c, &q)?;
+                counts.refused = Some(totals.count);
+                counts.causes.insert(
+                    "refused",
+                    [
+                        ("inflight", totals.inflight),
+                        ("ws", totals.ws),
+                        ("body", totals.body),
+                        ("ws_msg", totals.ws_msg),
+                    ]
+                    .into_iter()
+                    .collect(),
+                );
             }
             Ok(counts)
         })
