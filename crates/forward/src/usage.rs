@@ -464,13 +464,6 @@ impl Tracker {
         self.conclude(End::Completed);
     }
 
-    /// Transport ended, but an oversized event prevented reliable terminal observation.
-    /// Never turn missing observation into a client cancellation or overwrite a known error.
-    #[allow(dead_code)] // Compatibility method until all forwarding callers migrate.
-    pub(crate) fn observation_incomplete(&mut self) {
-        self.conclude(End::ObservationIncomplete);
-    }
-
     /// The actual client response is ordinary HTTP, even when a Responses request was
     /// initially expected to stream. Keep header timing separate from SSE/WS output timing.
     pub(crate) fn http_response(&mut self) {
@@ -479,12 +472,6 @@ impl Tracker {
 
     pub(crate) fn sse_response(&mut self) {
         self.rec.transport = Transport::Sse;
-    }
-
-    /// The client went away. After a terminal event that is a normal end of stream (Codex closes
-    /// as soon as it has `response.completed`), not an error; before it the client is the source.
-    pub(crate) fn client_gone(&mut self) {
-        self.conclude(End::ClientGone);
     }
 
     pub(crate) fn finish(mut self, end: End) {
@@ -534,8 +521,6 @@ impl Tracker {
     }
 
     /// Buffered responses are complete; WS handshake/turn errors keep their transport.
-    // Phase 2 migrates the remaining buffered-response callers.
-    #[allow(dead_code)]
     pub(crate) fn record_response(&mut self, parts: &http::response::Parts, body: &[u8]) {
         self.status(parts.status.as_u16());
         if self.rec.transport != Transport::Ws {
@@ -558,14 +543,6 @@ impl Tracker {
     /// request counts, error rate and latency percentiles while its tokens still count.
     pub(crate) fn prewarm(&mut self) {
         self.rec.endpoint = ciallopa_usage::PREWARM_ENDPOINT;
-    }
-
-    /// TTFT is the first event that carries model output (see `is_output_event`).
-    #[allow(dead_code)] // Kept until the phase-2 Tracker API cleanup lands.
-    pub(crate) fn output_event(&mut self, ev: &[u8]) {
-        if self.rec.ttft_ms.is_none() && is_output_event(ev) {
-            self.ttft();
-        }
     }
 
     pub(crate) fn ttft(&mut self) {
@@ -832,17 +809,18 @@ pub(crate) fn event_type(text: &str) -> Option<Cow<'_, str>> {
         .map(|v| v.ty)
 }
 
-/// First token = first event carrying generated output: any `*.delta` (output text, reasoning
-/// summary / text, tool-call arguments, …) or a finished output item (items streamed without
-/// deltas). `response.created`, `in_progress`, `output_item.added`, `codex.*` metadata and
-/// rate-limit events are not output.
-pub(crate) fn is_output_event(ev: &[u8]) -> bool {
+#[cfg(test)]
+fn is_output_event(ev: &[u8]) -> bool {
     std::str::from_utf8(ev)
         .ok()
         .and_then(event_type)
         .is_some_and(|ty| is_output_type(&ty))
 }
 
+/// First token = first event carrying generated output: any `*.delta` (output text, reasoning
+/// summary / text, tool-call arguments, …) or a finished output item (items streamed without
+/// deltas). `response.created`, `in_progress`, `output_item.added`, `codex.*` metadata and
+/// rate-limit events are not output.
 fn is_output_type(ty: &str) -> bool {
     !ty.starts_with("codex.")
         && !ty.starts_with("responsesapi.")
