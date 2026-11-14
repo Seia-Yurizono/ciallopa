@@ -463,7 +463,7 @@ async fn d2_http_records_credentials_and_dial_attempts_ws_records_neither() {
             .usage
             .as_ref()
             .unwrap()
-            .detail(&row.request_id)
+            .detail(i64::from_str_radix(&row.request_id, 16).unwrap())
             .await
             .unwrap()
             .unwrap();

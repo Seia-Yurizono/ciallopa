@@ -856,32 +856,7 @@ impl ConsumeCode {
         })
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConsumeStatus {
-    Pending,
-    Done,
-    Failed,
-    Superseded,
-}
-impl ConsumeStatus {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Pending => "pending",
-            Self::Done => "done",
-            Self::Failed => "failed",
-            Self::Superseded => "superseded",
-        }
-    }
-    pub(crate) fn parse(s: &str) -> Option<Self> {
-        Some(match s {
-            "pending" => Self::Pending,
-            "done" => Self::Done,
-            "failed" => Self::Failed,
-            "superseded" => Self::Superseded,
-            _ => return None,
-        })
-    }
-}
+pub use ciallopa_usage::reset::ConsumeStatus;
 
 struct Classified {
     status: ConsumeStatus,
@@ -952,7 +927,7 @@ fn classify(res: Result<(u16, String), UpstreamErr>) -> Classified {
         status: state,
         code,
         outcome: ConsumeOutcome {
-            status: state.as_str(),
+            status: state,
             http_status,
             code: code.map(|c| c.as_str().to_string()),
             windows_reset,
@@ -1100,7 +1075,7 @@ async fn consume_locked(
                 .reset_finish(
                     p.id,
                     ConsumeOutcome {
-                        status: ConsumeStatus::Superseded.as_str(),
+                        status: ConsumeStatus::Superseded,
                         error: Some(format!("retried as attempt {row}")),
                         ..Default::default()
                     },

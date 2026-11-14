@@ -128,7 +128,7 @@ pub(crate) fn history<'a>(
         let e = h.entry(c.clone()).or_default();
         // every row is one POST (a superseded row was a real send whose answer was lost)
         e.tries += 1;
-        e.stop |= ConsumeStatus::parse(&r.status) == Some(ConsumeStatus::Done);
+        e.stop |= r.status == ConsumeStatus::Done;
         e.last_ms = e.last_ms.max(r.started_ms);
         // (`AutoState::history` replaces `last_ms` with the sweep-clock time)
     }
@@ -346,7 +346,7 @@ pub async fn sweep_once(
         let hist = rc.auto.history(&rows, &id);
         let pending = rows.iter().find(|r| {
             r.account == id
-                && ConsumeStatus::parse(&r.status) == Some(ConsumeStatus::Pending)
+                && r.status == ConsumeStatus::Pending
                 && wall - r.started_ms <= ciallopa_usage::reset::PENDING_REUSE_MS
         });
         match decide(now, lead, &credits, &hist, pending) {
@@ -495,7 +495,7 @@ mod tests {
             instance: None,
             started_ms: 0,
             finished_ms: None,
-            status: "pending".into(),
+            status: ConsumeStatus::Pending,
             http_status: None,
             code: None,
             windows_reset: None,
