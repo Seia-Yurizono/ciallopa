@@ -17,17 +17,10 @@ pub(crate) struct Tracker {
     rec: Record,
     sink: Arc<Recorder>,
     start: Instant,
-    /// A terminal Responses event was seen (or the response is not a stream).
-    terminal: bool,
-    /// A terminal Responses event has been recorded. Its outcome is final: a later read
-    /// error, idle timeout or close is a normal end of the stream, never the request's error.
-    settled: bool,
-    /// `response.created` already parsed.
-    created: bool,
-    /// A terminal event set the served tier (`response.created` must not override it).
-    tier_final: bool,
+    outcome: Outcome,
+    response_meta: ResponseMeta,
     drain: Arc<ciallopa_upstream::drain::Drain>,
-    emit: bool,
+    emit: Emit,
     /// WS turn replays (switch / wait+retry); allocated on the first replay only, so a turn
     /// without one stores no attempt chain.
     replays: Option<crate::errors::Attempts>,
@@ -40,8 +33,39 @@ pub(crate) struct Tracker {
     /// `duration_ms` fixed early (WS: before the terminal frame's downstream send, so the
     /// observed send does not change the existing duration semantics).
     frozen_ms: Option<u32>,
-    /// SSE: the record waits for the response body (downstream yield fields).
-    link: Option<Arc<crate::downstream::DownLink>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Outcome {
+    Open,
+    Completed,
+    /// A terminal Responses event makes the outcome immutable.
+    Settled,
+}
+
+enum Emit {
+    OnDrop,
+    ViaBody(Arc<crate::downstream::DownLink>),
+    Never,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResponseMeta {
+    None,
+    Provisional,
+    Final,
+}
+
+pub(crate) enum End {
+    Completed,
+    ClientGone,
+    Forced,
+    Failed {
+        code: Cow<'static, str>,
+        source: &'static str,
+        message: Option<String>,
+    },
+    ObservationIncomplete,
 }
 
 /// Capture the record ID and monotonic start together.
@@ -200,24 +224,21 @@ impl Tracker {
             rec,
             sink,
             start: started.at,
-            terminal: false,
-            settled: false,
-            created: false,
-            tier_final: false,
+            outcome: Outcome::Open,
+            response_meta: ResponseMeta::None,
             drain: st.upstream.drain.clone(),
-            emit: true,
+            emit: Emit::OnDrop,
             replays: None,
             last_upstream: None,
             obs: Observation::default(),
             frozen_ms: None,
-            link: None,
         })
     }
 
     /// Successful WS handshakes are represented by their turns. Keep cancellation
     /// observable while preparing, then discard this provisional handshake record.
     pub(crate) fn discard(mut self) {
-        self.emit = false;
+        self.emit = Emit::Never;
     }
 
     /// Codex `thread-id` header and `x-codex-turn-metadata` (JSON: `thread_id`, `turn_id`).
@@ -398,7 +419,7 @@ impl Tracker {
 
     /// SSE: hand the finished record to the response body's observer.
     pub(crate) fn defer_to(&mut self, link: Arc<crate::downstream::DownLink>) {
-        self.link = Some(link);
+        self.emit = Emit::ViaBody(link);
     }
 
     pub(crate) fn switch_to(&mut self, acct: &AccountId) {
@@ -427,19 +448,13 @@ impl Tracker {
 
     /// The response completed; this is independent of HTTP / SSE / WS transport.
     pub(crate) fn finish_response(&mut self) {
-        self.terminal = true;
+        self.conclude(End::Completed);
     }
 
     /// Transport ended, but an oversized event prevented reliable terminal observation.
     /// Never turn missing observation into a client cancellation or overwrite a known error.
     pub(crate) fn observation_incomplete(&mut self) {
-        if !self.terminal && self.rec.error.is_none() && self.rec.status < 400 {
-            self.fail_msg(
-                "observation_incomplete",
-                "response transfer ended, but an event exceeded the observation limit; final outcome is unknown",
-            );
-            self.source(crate::errors::SRC_LOCAL);
-        }
+        self.conclude(End::ObservationIncomplete);
     }
 
     /// The actual client response is ordinary HTTP, even when a Responses request was
@@ -455,30 +470,69 @@ impl Tracker {
     /// The client went away. After a terminal event that is a normal end of stream (Codex closes
     /// as soon as it has `response.completed`), not an error; before it the client is the source.
     pub(crate) fn client_gone(&mut self) {
-        if self.terminal {
-            return;
-        }
-        if self.drain.phase() == ciallopa_upstream::drain::Phase::Force {
-            if self.rec.status == 0 && self.rec.transport != Transport::Ws {
-                // Admission returns 503 when force interrupts a handler before headers.
-                self.rec.status = 503;
+        self.conclude(End::ClientGone);
+    }
+
+    pub(crate) fn finish(mut self, end: End) {
+        self.conclude(end);
+    }
+
+    fn conclude(&mut self, end: End) {
+        match end {
+            End::Completed if self.outcome != Outcome::Settled => {
+                self.outcome = Outcome::Completed;
             }
-            self.fail("shutdown");
-            self.source(crate::errors::SRC_LOCAL);
-        } else {
-            let msg = match self.last_upstream {
-                Some(t) => format!(
-                    "client disconnected before the response completed; upstream silent for {:.1}s",
-                    t.elapsed().as_secs_f64()
-                ),
-                None => format!(
-                    "client disconnected before the response completed; upstream silent for {:.1}s (no upstream data yet)",
-                    self.start.elapsed().as_secs_f64()
-                ),
-            };
-            self.fail_msg("client_closed", msg);
-            self.source(crate::errors::SRC_CLIENT);
+            End::ClientGone if self.outcome == Outcome::Open => {
+                if self.drain.phase() == ciallopa_upstream::drain::Phase::Force {
+                    self.conclude(End::Forced);
+                } else {
+                    cancel_record(&mut self.rec, self.start, self.last_upstream, false);
+                }
+            }
+            End::Forced if self.outcome == Outcome::Open => {
+                cancel_record(&mut self.rec, self.start, self.last_upstream, true);
+            }
+            End::Failed {
+                code,
+                source,
+                message,
+            } => {
+                if let Some(message) = message {
+                    self.fail_msg(&code, message);
+                } else {
+                    self.fail(&code);
+                }
+                self.source(source);
+            }
+            End::ObservationIncomplete
+                if self.outcome == Outcome::Open
+                    && self.rec.error.is_none()
+                    && self.rec.status < 400 =>
+            {
+                self.fail_msg(
+                    "observation_incomplete",
+                    "response transfer ended, but an event exceeded the observation limit; final outcome is unknown",
+                );
+                self.source(crate::errors::SRC_LOCAL);
+            }
+            _ => {}
         }
+    }
+
+    /// Buffered responses are complete; WS handshake/turn errors keep their transport.
+    // Phase 2 migrates the remaining buffered-response callers.
+    #[allow(dead_code)]
+    pub(crate) fn record_response(&mut self, parts: &http::response::Parts, body: &[u8]) {
+        self.status(parts.status.as_u16());
+        if self.rec.transport != Transport::Ws {
+            self.http_response();
+        }
+        self.finish_response();
+        self.error_headers(&parts.headers);
+        if let Some(meta) = parts.extensions.get::<crate::errors::ErrMeta>() {
+            self.meta_err(meta);
+        }
+        self.error_body(body);
     }
 
     /// The upstream sent data (a body chunk or WS frame) for this request / turn.
@@ -507,7 +561,7 @@ impl Tracker {
 
     /// First error wins (later ones are usually consequences).
     pub(crate) fn fail(&mut self, kind: &str) {
-        if self.settled {
+        if self.outcome == Outcome::Settled {
             return;
         }
         if self.rec.error.is_none() {
@@ -517,7 +571,7 @@ impl Tracker {
 
     /// `fail` plus a human-readable message for the error detail (first message wins).
     pub(crate) fn fail_msg(&mut self, kind: &str, msg: impl Into<String>) {
-        if self.settled {
+        if self.outcome == Outcome::Settled {
             return;
         }
         self.fail(kind);
@@ -533,7 +587,7 @@ impl Tracker {
 
     /// Where the (first) error came from; first one wins.
     pub(crate) fn source(&mut self, src: &'static str) {
-        if self.settled {
+        if self.outcome == Outcome::Settled {
             return;
         }
         if self.rec.err_source.is_none() {
@@ -563,7 +617,7 @@ impl Tracker {
 
     /// Provenance attached to a ready-made error response.
     pub(crate) fn meta_err(&mut self, m: &crate::errors::ErrMeta) {
-        if self.settled {
+        if self.outcome == Outcome::Settled {
             return;
         }
         self.source(m.source);
@@ -617,20 +671,20 @@ impl Tracker {
 
     /// `response.created`: provisional response model / effort / tier (terminal events win).
     pub(crate) fn created_event(&mut self, v: &Value) {
-        if self.created || self.terminal {
+        if self.response_meta != ResponseMeta::None || self.outcome != Outcome::Open {
             return;
         }
-        self.created = true;
+        self.response_meta = ResponseMeta::Provisional;
         if let Some(r) = v.get("response") {
             self.obs_response_id(r);
-            self.response_meta(r, false);
+            self.response_meta(r, ResponseMeta::Provisional);
         }
     }
 
-    fn response_meta(&mut self, r: &Value, terminal: bool) {
+    fn response_meta(&mut self, r: &Value, stage: ResponseMeta) {
         let s = |k: &str| r.get(k).and_then(|v| v.as_str()).and_then(short);
         if let Some(m) = s("model") {
-            if terminal || self.rec.resp_model.is_none() {
+            if stage == ResponseMeta::Final || self.rec.resp_model.is_none() {
                 self.rec.resp_model = Some(m);
             }
         }
@@ -640,15 +694,14 @@ impl Tracker {
             .and_then(|v| v.as_str())
             .and_then(short)
         {
-            if terminal || self.rec.resp_effort.is_none() {
+            if stage == ResponseMeta::Final || self.rec.resp_effort.is_none() {
                 self.rec.resp_effort = Some(e);
             }
         }
         // `auto` is a request-side alias, never the served tier.
         if let Some(t) = s("service_tier").filter(|t| !t.eq_ignore_ascii_case("auto")) {
-            if terminal || !self.tier_final {
+            if stage == ResponseMeta::Final || self.response_meta != ResponseMeta::Final {
                 self.rec.service_tier = Some(t);
-                self.tier_final |= terminal;
             }
         }
     }
@@ -656,22 +709,22 @@ impl Tracker {
     /// Records only the `response.incomplete` reason (no tokens or error), for callers that
     /// answer from the event themselves.
     pub(crate) fn incomplete(&mut self, v: &Value) {
-        if !self.settled {
+        if self.outcome != Outcome::Settled {
             self.rec.incomplete = Some(incomplete_reason(v));
         }
     }
 
     /// A terminal Responses event (`response.completed` / `failed` / `incomplete` / `error`).
     pub(crate) fn terminal_event(&mut self, v: &Value) {
-        if self.settled {
+        if self.outcome == Outcome::Settled {
             return;
         }
         self.terminal_outcome(v);
-        self.settled = true;
+        self.outcome = Outcome::Settled;
+        self.response_meta = ResponseMeta::Final;
     }
 
     fn terminal_outcome(&mut self, v: &Value) {
-        self.terminal = true;
         let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
         let resp = v.get("response");
         if let Some(u) = resp.and_then(|r| r.get("usage")) {
@@ -691,7 +744,7 @@ impl Tracker {
         // The tier actually used (e.g. `priority` may be downgraded) wins over the request's.
         if let Some(r) = resp {
             self.obs_response_id(r);
-            self.response_meta(r, true);
+            self.response_meta(r, ResponseMeta::Final);
         }
         match ty {
             "response.completed" | "response.done" => {}
@@ -734,7 +787,7 @@ impl Tracker {
         if let Some(ty) = ty {
             self.obs_event(ty);
         }
-        if self.terminal {
+        if self.outcome != Outcome::Open {
             return;
         }
         let Some(ty) = ty else { return };
@@ -745,7 +798,7 @@ impl Tracker {
             if let Ok(v) = serde_json::from_str(text) {
                 self.terminal_event(&v);
             }
-        } else if !self.created && ty == "response.created" {
+        } else if self.response_meta == ResponseMeta::None && ty == "response.created" {
             if let Ok(v) = serde_json::from_str(text) {
                 self.created_event(&v);
             }
@@ -843,85 +896,132 @@ fn elapsed_ms(t: Instant) -> u32 {
     t.elapsed().as_millis().min(u128::from(u32::MAX)) as u32
 }
 
+/// A cancellation keeps the first error, message and source, just like an explicit failure.
+fn cancel_record(rec: &mut Record, start: Instant, last_upstream: Option<Instant>, forced: bool) {
+    let (code, source, message) = if forced {
+        if rec.status == 0 && rec.transport != Transport::Ws {
+            // Admission returns 503 when force interrupts a handler before headers.
+            rec.status = 503;
+        }
+        ("shutdown", crate::errors::SRC_LOCAL, None)
+    } else {
+        let message = match last_upstream {
+            Some(t) => format!(
+                "client disconnected before the response completed; upstream silent for {:.1}s",
+                t.elapsed().as_secs_f64()
+            ),
+            None => format!(
+                "client disconnected before the response completed; upstream silent for {:.1}s (no upstream data yet)",
+                start.elapsed().as_secs_f64()
+            ),
+        };
+        ("client_closed", crate::errors::SRC_CLIENT, Some(message))
+    };
+    rec.error.get_or_insert_with(|| code.into());
+    rec.err_source.get_or_insert(source);
+    if let Some(message) = message {
+        rec.detail
+            .get_or_insert_with(Default::default)
+            .message
+            .get_or_insert(message);
+    }
+}
+
+/// Finalize a row independently of persistence and downstream emission.
+fn into_record(
+    mut rec: Record,
+    outcome: Outcome,
+    replays: Option<crate::errors::Attempts>,
+    obs: Observation,
+    start: Instant,
+    last_upstream: Option<Instant>,
+    forced: bool,
+) -> Record {
+    if outcome == Outcome::Open && rec.error.is_none() && rec.status < 400 {
+        cancel_record(&mut rec, start, last_upstream, forced);
+    }
+    if rec.status >= 400 && rec.error.is_none() {
+        let code = rec
+            .detail
+            .as_ref()
+            .and_then(|d| crate::errors::body_code(&d.body))
+            .unwrap_or_else(|| format!("http_{}", rec.status));
+        rec.error = Some(code);
+        if outcome != Outcome::Settled {
+            let source = if rec.upstream_status.is_some() {
+                crate::errors::SRC_UPSTREAM
+            } else {
+                crate::errors::SRC_LOCAL
+            };
+            rec.err_source.get_or_insert(source);
+        }
+    }
+    if rec.error.is_some() && rec.err_source.is_none() {
+        rec.err_source = Some(crate::errors::SRC_LOCAL);
+    }
+    if rec.error.is_none() {
+        rec.upstream_status = None;
+    }
+    if let Some(mut chain) = replays {
+        let mut a = crate::errors::attempt(rec.account.as_deref().unwrap_or(""), "stream");
+        a.code = rec.error.clone();
+        a.action = if rec.error.is_none() { "ok" } else { "stop" }.into();
+        chain.push(a);
+        let d = rec.detail.get_or_insert_with(Default::default);
+        if d.attempts.is_none() {
+            d.attempts = Some(chain.to_json());
+        }
+    }
+    match rec.error.as_deref() {
+        None => {
+            // Success keeps only the attempt chain.
+            let attempts = rec.detail.take().and_then(|d| d.attempts);
+            if let Some(attempts) = attempts {
+                rec.detail = Some(Box::new(ErrorDetail {
+                    attempts: Some(attempts),
+                    ..Default::default()
+                }));
+            }
+        }
+        Some(kind) => {
+            let detail = rec.detail.get_or_insert_with(Default::default);
+            if detail.message.is_none() {
+                detail.message = Some(describe(kind, rec.status));
+            }
+        }
+    }
+    if !obs.is_empty() {
+        rec.obs = Some(Box::new(obs));
+    }
+    rec
+}
+
 impl Drop for Tracker {
     fn drop(&mut self) {
-        if !self.emit {
+        let emit = std::mem::replace(&mut self.emit, Emit::Never);
+        if matches!(emit, Emit::Never) {
             return;
         }
         self.rec.duration_ms = self.frozen_ms.unwrap_or_else(|| elapsed_ms(self.start));
-        if !self.terminal && self.rec.error.is_none() && self.rec.status < 400 {
-            self.client_gone();
-        }
-        if self.rec.status >= 400 && self.rec.error.is_none() {
-            // No structured classification: an upstream status passed through keeps the
-            // upstream's own code; never guess a local cause from the status alone.
-            let code = self
-                .rec
-                .detail
-                .as_ref()
-                .and_then(|d| crate::errors::body_code(&d.body))
-                .unwrap_or_else(|| format!("http_{}", self.rec.status));
-            self.rec.error = Some(code);
-            if self.rec.upstream_status.is_some() {
-                self.source(crate::errors::SRC_UPSTREAM);
-            } else {
-                self.source(crate::errors::SRC_LOCAL);
+        let forced = self.drain.phase() == ciallopa_upstream::drain::Phase::Force;
+        let rec = into_record(
+            std::mem::replace(&mut self.rec, Record::new(0, Transport::Http, "")),
+            self.outcome,
+            self.replays.take(),
+            std::mem::take(&mut self.obs),
+            self.start,
+            self.last_upstream,
+            forced,
+        );
+        match emit {
+            Emit::ViaBody(link) => {
+                let forced = self.drain.phase() == ciallopa_upstream::drain::Phase::Force;
+                link.finish(rec, self.sink.clone(), forced);
             }
-        }
-        if self.rec.error.is_some() && self.rec.err_source.is_none() {
-            self.rec.err_source = Some(crate::errors::SRC_LOCAL);
-        }
-        if self.rec.error.is_none() {
-            self.rec.upstream_status = None;
-        }
-        if let Some(mut chain) = self.replays.take() {
-            // The final attempt of a replayed WS turn: how it ended on the last account.
-            let mut a = crate::errors::attempt(self.rec.account.as_deref().unwrap_or(""), "stream");
-            a.code = self.rec.error.clone();
-            a.action = if self.rec.error.is_none() {
-                "ok"
-            } else {
-                "stop"
-            }
-            .into();
-            chain.push(a);
-            let d = self.detail();
-            if d.attempts.is_none() {
-                d.attempts = Some(chain.to_json());
-            }
-        }
-        match self.rec.error.as_deref() {
-            None => {
-                // Success: keep only the attempt chain (retried / switched requests).
-                let a = self.rec.detail.take().and_then(|d| d.attempts);
-                if let Some(a) = a {
-                    self.rec.detail = Some(Box::new(ErrorDetail {
-                        attempts: Some(a),
-                        ..Default::default()
-                    }));
-                }
-            }
-            Some(kind) => {
-                let (kind, status) = (kind.to_string(), self.rec.status);
-                let d = self.detail();
-                if d.message.is_none() {
-                    d.message = Some(describe(&kind, status));
-                }
-            }
-        }
-        let mut rec = std::mem::replace(&mut self.rec, Record::new(0, Transport::Http, ""));
-        let obs = std::mem::take(&mut self.obs);
-        if !obs.is_empty() {
-            rec.obs = Some(Box::new(obs));
-        }
-        match self.link.take() {
-            Some(link) => {
-                let force = self.drain.phase() == ciallopa_upstream::drain::Phase::Force;
-                link.finish(rec, self.sink.clone(), force);
-            }
-            None => {
+            Emit::OnDrop => {
                 self.sink.record(rec);
             }
+            Emit::Never => {}
         }
     }
 }
@@ -1032,6 +1132,235 @@ pub(crate) fn incomplete_code(reason: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drop_outcome_and_status_table() {
+        for (outcome, status, upstream_status, body, code, source) in [
+            (
+                Outcome::Open,
+                200,
+                None,
+                "",
+                Some("client_closed"),
+                Some("client"),
+            ),
+            (
+                Outcome::Open,
+                0,
+                None,
+                "",
+                Some("client_closed"),
+                Some("client"),
+            ),
+            (Outcome::Completed, 200, Some(503), "", None, None),
+            (Outcome::Settled, 200, Some(503), "", None, None),
+            (
+                Outcome::Open,
+                400,
+                None,
+                "",
+                Some("http_400"),
+                Some("local"),
+            ),
+            (
+                Outcome::Completed,
+                503,
+                Some(503),
+                "",
+                Some("http_503"),
+                Some("upstream"),
+            ),
+            (
+                Outcome::Completed,
+                403,
+                Some(403),
+                r#"{"error":{"code":"denied"}}"#,
+                Some("denied"),
+                Some("upstream"),
+            ),
+            (
+                Outcome::Completed,
+                502,
+                None,
+                "not JSON",
+                Some("http_502"),
+                Some("local"),
+            ),
+            // Even a settled record still gets a status-derived code on drop; source() is frozen.
+            (
+                Outcome::Settled,
+                503,
+                Some(503),
+                "",
+                Some("http_503"),
+                Some("local"),
+            ),
+        ] {
+            let mut rec = Record::new(7, Transport::Sse, "responses");
+            rec.status = status;
+            rec.upstream_status = upstream_status;
+            rec.duration_ms = 123;
+            rec.detail = Some(Box::new(ErrorDetail::default()));
+            rec.detail.as_mut().unwrap().push_body(body.as_bytes());
+            let start = Instant::now();
+            let rec = into_record(
+                rec,
+                outcome,
+                None,
+                Observation::default(),
+                start,
+                None,
+                false,
+            );
+            assert_eq!(
+                (rec.error.as_deref(), rec.err_source),
+                (code, source),
+                "{outcome:?}, {status}"
+            );
+            assert_eq!(rec.upstream_status, code.and(upstream_status));
+            assert_eq!(rec.duration_ms, 123);
+            if code.is_none() {
+                assert!(rec.detail.is_none());
+            } else {
+                let detail = rec.detail.unwrap();
+                assert_eq!(detail.body, body.as_bytes());
+                assert!(detail.message.is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn drop_cancellation_and_force_table() {
+        for outcome in [Outcome::Open, Outcome::Completed, Outcome::Settled] {
+            for transport in [Transport::Http, Transport::Sse, Transport::Ws] {
+                for status in [0, 200] {
+                    for forced in [false, true] {
+                        for upstream_data in [false, true] {
+                            let mut rec = Record::new(7, transport, "responses");
+                            rec.status = status;
+                            let start = Instant::now();
+                            let rec = into_record(
+                                rec,
+                                outcome,
+                                None,
+                                Observation::default(),
+                                start,
+                                upstream_data.then_some(start),
+                                forced,
+                            );
+                            if outcome != Outcome::Open {
+                                assert_eq!(rec.error, None);
+                                assert_eq!(rec.status, status);
+                                assert_eq!(rec.detail, None);
+                            } else if forced {
+                                assert_eq!(rec.error.as_deref(), Some("shutdown"));
+                                assert_eq!(rec.err_source, Some("local"));
+                                assert_eq!(
+                                    rec.status,
+                                    if status == 0 && transport != Transport::Ws {
+                                        503
+                                    } else {
+                                        status
+                                    }
+                                );
+                                assert_eq!(rec.detail.unwrap().message.as_deref(), Some("server shutdown interrupted the response before completion"));
+                            } else {
+                                assert_eq!(rec.error.as_deref(), Some("client_closed"));
+                                assert_eq!(rec.err_source, Some("client"));
+                                assert_eq!(rec.status, status);
+                                let message = rec.detail.unwrap().message.unwrap();
+                                assert!(message.starts_with("client disconnected before the response completed; upstream silent for "));
+                                assert_eq!(
+                                    message.ends_with("(no upstream data yet)"),
+                                    !upstream_data
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn drop_preserves_first_failure_and_success_keeps_only_attempts() {
+        let start = Instant::now();
+        let mut rec = Record::new(7, Transport::Ws, "responses");
+        rec.status = 200;
+        rec.upstream_status = Some(503);
+        rec.error = Some("idle_timeout".into());
+        rec.err_source = Some("network");
+        let mut detail = ErrorDetail {
+            message: Some("first failure".into()),
+            attempts: Some(serde_json::json!([{"action":"retry"}])),
+            ..Default::default()
+        };
+        detail.push_body(b"upstream body");
+        rec.detail = Some(Box::new(detail));
+        let obs = Observation {
+            up_events: Some(3),
+            ..Default::default()
+        };
+        let mut expected = rec.clone();
+        expected.obs = Some(Box::new(obs.clone()));
+        for outcome in [Outcome::Open, Outcome::Completed, Outcome::Settled] {
+            let got = into_record(rec.clone(), outcome, None, obs.clone(), start, None, true);
+            assert_eq!(got, expected);
+        }
+        rec.error = None;
+        rec.err_source = None;
+        expected = rec.clone();
+        expected.upstream_status = None;
+        expected.detail = Some(Box::new(ErrorDetail {
+            attempts: rec.detail.as_ref().unwrap().attempts.clone(),
+            ..Default::default()
+        }));
+        let got = into_record(
+            rec,
+            Outcome::Completed,
+            None,
+            Observation::default(),
+            start,
+            None,
+            false,
+        );
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn drop_appends_the_final_replay_outcome() {
+        for error in [None, Some("usage_limit")] {
+            let start = Instant::now();
+            let mut rec = Record::new(7, Transport::Ws, "responses");
+            rec.status = 200;
+            rec.account = Some("last".into());
+            rec.error = error.map(str::to_owned);
+            let mut chain = crate::errors::Attempts::default();
+            let mut first = crate::errors::attempt("first", "stream");
+            first.code = Some("overloaded".into());
+            first.action = "switch".into();
+            chain.push(first);
+            let rec = into_record(
+                rec,
+                Outcome::Settled,
+                Some(chain),
+                Observation::default(),
+                start,
+                None,
+                false,
+            );
+            let attempts = rec.detail.unwrap().attempts.unwrap();
+            assert_eq!(attempts[0]["action"], "switch");
+            assert_eq!(attempts[1]["account"], "last");
+            assert_eq!(attempts[1]["kind"], "stream");
+            assert_eq!(
+                attempts[1]["action"],
+                if error.is_some() { "stop" } else { "ok" }
+            );
+            assert_eq!(attempts[1].get("code").and_then(Value::as_str), error);
+        }
+    }
+
     #[test]
     fn terminal_detection() {
         for ty in ["response.completed", "response.done", "error"] {
