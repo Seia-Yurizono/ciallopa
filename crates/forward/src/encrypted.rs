@@ -80,16 +80,20 @@ pub(crate) fn rejection(v: &Value) -> Option<String> {
 }
 
 /// Same, on raw JSON text. Cheap byte check first: most events never mention it.
-pub(crate) fn rejection_text_json(text: &str) -> Option<String> {
-    let lower_hit = text.contains(CODE)
-        || text.contains("ncrypted content")
-        || text.contains("thinking_signature_invalid");
-    if !lower_hit {
+#[cfg(test)]
+fn rejection_text_json(text: &str) -> Option<String> {
+    if !maybe_rejection(text) {
         return None;
     }
     serde_json::from_str::<Value>(text)
         .ok()
         .and_then(|v| rejection(&v))
+}
+
+pub(crate) fn maybe_rejection(text: &str) -> bool {
+    text.contains(CODE)
+        || text.contains("ncrypted content")
+        || text.contains("thinking_signature_invalid")
 }
 
 /// The upstream-shaped error object with the clear message (`param` kept when given).
@@ -170,14 +174,8 @@ pub(crate) fn ws_frame(upstream: &Value) -> String {
 }
 
 /// One SSE event's joined `data:` payload (None when it has none).
-pub(crate) fn sse_data(ev: &[u8]) -> Option<String> {
-    let ev = std::str::from_utf8(ev).ok()?;
-    let data: Vec<&str> = ev
-        .lines()
-        .filter_map(|l| l.strip_prefix("data:"))
-        .map(|d| d.strip_prefix(' ').unwrap_or(d))
-        .collect();
-    (!data.is_empty()).then(|| data.join("\n"))
+pub(crate) fn sse_data(ev: &[u8]) -> Option<std::borrow::Cow<'_, str>> {
+    crate::sse::data(ev)
 }
 
 #[cfg(test)]

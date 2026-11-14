@@ -2,13 +2,18 @@
 use ciallopa_usage::detail::CAPTURE_CAP;
 use serde_json::Value;
 
-#[derive(Default)]
 pub(crate) struct ImageErrors {
-    event: Vec<u8>,
-    skip: bool,
-    line_has_bytes: bool,
-    cr: bool,
+    framer: crate::sse::Framer,
     done: bool,
+}
+
+impl Default for ImageErrors {
+    fn default() -> Self {
+        Self {
+            framer: crate::sse::Framer::image_errors(CAPTURE_CAP),
+            done: false,
+        }
+    }
 }
 
 pub(crate) struct ImageError {
@@ -23,38 +28,19 @@ impl ImageErrors {
         if self.done {
             return None;
         }
-        for &byte in chunk {
-            if !self.skip {
-                if self.event.len() < CAPTURE_CAP {
-                    self.event.push(byte);
-                } else {
-                    self.event.clear();
-                    self.skip = true;
+        // Do not copy an arbitrarily large upstream chunk just to observe a bounded event.
+        for chunk in chunk.chunks(CAPTURE_CAP) {
+            for frame in self.framer.push(bytes::Bytes::copy_from_slice(chunk)) {
+                let crate::sse::Frame::Event(event) = frame else {
+                    continue;
+                };
+                if let Some(message) = error_message(&event) {
+                    self.done = true;
+                    return Some(ImageError {
+                        message,
+                        event: event.to_vec(),
+                    });
                 }
-            }
-            // CRLF is one line break. A bare CR is also an SSE line break.
-            if byte == b'\n' && self.cr {
-                self.cr = false;
-                continue;
-            }
-            self.cr = byte == b'\r';
-            if matches!(byte, b'\r' | b'\n') {
-                if !self.line_has_bytes {
-                    if !self.skip {
-                        if let Some(message) = error_message(&self.event) {
-                            self.done = true;
-                            return Some(ImageError {
-                                message,
-                                event: std::mem::take(&mut self.event),
-                            });
-                        }
-                    }
-                    self.event.clear();
-                    self.skip = false;
-                }
-                self.line_has_bytes = false;
-            } else {
-                self.line_has_bytes = true;
             }
         }
         None
@@ -64,31 +50,20 @@ impl ImageErrors {
 fn error_message(event: &[u8]) -> Option<String> {
     let text = String::from_utf8_lossy(event);
     let mut name = "";
-    let mut data = String::new();
-    let mut has_data = false;
     for line in text.split(['\r', '\n']) {
         let (field, value) = line.split_once(':').unwrap_or((line, ""));
-        let value = value.strip_prefix(' ').unwrap_or(value);
-        match field {
-            "event" => name = value,
-            "data" => {
-                if has_data {
-                    data.push('\n');
-                }
-                data.push_str(value);
-                has_data = true;
-            }
-            _ => {}
+        if field == "event" {
+            name = value.strip_prefix(' ').unwrap_or(value);
         }
     }
+    let data = crate::sse::data(text.as_bytes())?;
     let json = serde_json::from_str::<Value>(&data).ok();
-    if !has_data
-        || (name != "error"
-            && json
-                .as_ref()
-                .and_then(|v| v.get("type"))
-                .and_then(Value::as_str)
-                != Some("error"))
+    if name != "error"
+        && json
+            .as_ref()
+            .and_then(|v| v.get("type"))
+            .and_then(Value::as_str)
+            != Some("error")
     {
         return None;
     }
@@ -136,7 +111,6 @@ mod tests {
         );
         for chunk in big.as_bytes().chunks(71) {
             assert!(observer.feed(chunk).is_none());
-            assert!(observer.event.len() <= CAPTURE_CAP);
         }
         assert!(
             observer.feed(b"\n").is_none(),
