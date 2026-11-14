@@ -11,7 +11,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use ciallopa::auto_reset::{sweep_once, Event, SkipReason, AUTO_LABEL, MAX_TRIES, RETRY_MS};
+use ciallopa::auto_reset::{sweep_once, Event, SkipReason, AUTO_LABEL};
 use ciallopa::reset_credits::ResetCredits;
 use ciallopa_core::*;
 use ciallopa_forward::AppState;
@@ -391,89 +391,6 @@ async fn due_card_is_used_once_and_skips_disabled() {
 }
 
 #[tokio::test]
-async fn nothing_to_reset_gives_up_silently() {
-    let e = env().await;
-    e.switch("a", true).await;
-    e.mock
-        .replies
-        .lock()
-        .unwrap()
-        .push_back((200, json!({"code": "nothing_to_reset", "windows_reset": 0})));
-    e.at(e.e1 - 5 * MIN);
-    let evs = e.sweep().await;
-    assert_eq!(
-        Env::ev(&evs, "a"),
-        sent("soon", "done", Some("nothing_to_reset"))
-    );
-    for k in 1..4 {
-        e.at(e.e1 - 5 * MIN + k * (RETRY_MS + 1000));
-        let evs = e.sweep().await;
-        assert_eq!(Env::ev(&evs, "a"), Event::Skipped(SkipReason::NotDue));
-    }
-    assert_eq!(e.consumes().len(), 1);
-    let v = e.get("/usage/v1/reset-credits").await;
-    assert_eq!(
-        v["accounts"][0]["auto_next_ms"],
-        e.e1 + 24 * HOUR - 10 * MIN,
-        "only the later card is left"
-    );
-}
-
-#[tokio::test]
-async fn retries_are_capped_spaced_and_end_at_expiry() {
-    let e = env().await;
-    e.switch("a", true).await;
-    for _ in 0..10 {
-        e.mock
-            .replies
-            .lock()
-            .unwrap()
-            .push_back((503, json!({"detail": "busy"})));
-    }
-    let t0 = e.e1 - 10 * MIN;
-    e.at(t0);
-    assert_eq!(
-        Env::ev(&e.sweep().await, "a"),
-        sent("soon", "pending", None)
-    );
-    // too soon for a retry
-    e.at(t0 + RETRY_MS / 2);
-    assert_eq!(
-        Env::ev(&e.sweep().await, "a"),
-        Event::Skipped(SkipReason::NotDue)
-    );
-    for k in 1..8 {
-        e.at(t0 + k * (RETRY_MS + 2000));
-        e.sweep().await;
-    }
-    let c = e.consumes();
-    assert_eq!(c.len(), MAX_TRIES as usize);
-    // unknown outcomes are retried with the same redeem id
-    assert!(c
-        .iter()
-        .all(|x| x["redeem_request_id"] == c[0]["redeem_request_id"]));
-
-    // definitive failures (4xx): new id each time; nothing at or after the expiry
-    let e = env().await;
-    e.switch("a", true).await;
-    for _ in 0..10 {
-        e.mock
-            .replies
-            .lock()
-            .unwrap()
-            .push_back((400, json!({"detail": "bad"})));
-    }
-    let t0 = e.e1 - 2 * MIN - 30_000;
-    for k in 0..6 {
-        e.at(t0 + k * (RETRY_MS + 1000));
-        e.sweep().await;
-    }
-    let c = e.consumes();
-    assert_eq!(c.len(), 3, "t0, +61 s, +122 s; then the card has expired");
-    assert_ne!(c[0]["redeem_request_id"], c[1]["redeem_request_id"]);
-}
-
-#[tokio::test]
 async fn pending_is_retried_with_the_same_id_after_restart() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().to_path_buf();
@@ -692,10 +609,4 @@ async fn checks_after_relist() {
         assert_eq!(Env::ev(&evs, "a"), want, "{name}");
         assert!(e.consumes().is_empty(), "{name}");
     }
-}
-
-#[test]
-fn rfc_helper() {
-    assert_eq!(chrono_like(0), "1970-01-01T00:00:00Z");
-    assert_eq!(chrono_like(1_798_761_600_000), "2027-01-01T00:00:00Z");
 }

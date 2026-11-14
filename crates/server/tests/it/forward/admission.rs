@@ -213,111 +213,6 @@ async fn admission_holds_http_body_and_hot_limit_keeps_existing_occupancy() {
 }
 
 #[tokio::test]
-async fn idle_websocket_is_a_session_without_an_inflight_slot() {
-    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as M};
-    let e = env(300).await;
-    let mut cfg = (*e.config.load()).clone();
-    cfg.max_inflight_requests = 1;
-    e.config.store(cfg);
-    let mut req = format!("ws://{}/v1/responses", e.proxy)
-        .into_client_request()
-        .unwrap();
-    req.headers_mut()
-        .insert("authorization", format!("Bearer {KEY}").parse().unwrap());
-    let (mut ws, response) = tokio_tungstenite::connect_async(req).await.unwrap();
-    assert_eq!(response.status(), 101);
-    // Ping/pong proves the detached relay has started; no turn is active.
-    ws.send(M::Ping(Bytes::from_static(b"ready")))
-        .await
-        .unwrap();
-    assert!(matches!(
-        tokio::time::timeout(Duration::from_secs(2), ws.next())
-            .await
-            .unwrap(),
-        Some(Ok(M::Pong(_)))
-    ));
-    assert_eq!(e.drain.inflight(), 0, "an idle socket holds no slot");
-    assert_eq!(
-        e.drain.active(),
-        1,
-        "but shutdown still waits for its session"
-    );
-    assert_eq!(held_response(&e).await.status(), 200);
-    wait_inflight(&e, 0).await;
-    ws.send(M::Close(None)).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            // Both the WebSocket implementation and relay can answer the readiness
-            // ping. A second pong may already be queued ahead of the close reply.
-            match ws.next().await.unwrap().unwrap() {
-                M::Close(_) => break,
-                M::Pong(_) | M::Ping(_) => continue,
-                other => panic!("unexpected frame while closing: {other:?}"),
-            }
-        }
-    })
-    .await
-    .unwrap();
-    drop(ws);
-    assert_eq!(e.drain.wait_idle(Duration::from_secs(3)).await, 0);
-    assert_eq!(e.drain.inflight(), 0);
-    assert_eq!(held_response(&e).await.status(), 200);
-
-    let mut req = format!("ws://{}/v1/responses", e.proxy)
-        .into_client_request()
-        .unwrap();
-    req.headers_mut()
-        .insert("authorization", format!("Bearer {KEY}").parse().unwrap());
-    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
-    ws.send(M::text(r#"{"type":"response.create","input":"held"}"#))
-        .await
-        .unwrap();
-    let output = tokio::time::timeout(Duration::from_secs(2), ws.next())
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
-    assert!(output
-        .to_text()
-        .unwrap()
-        .contains("response.output_text.delta"));
-    assert_eq!(e.drain.inflight(), 1, "the running turn holds the slot");
-    let drain = e.drain.clone();
-    let stopped = tokio::spawn(async move {
-        drain
-            .shutdown(Duration::from_millis(30), Duration::from_secs(2))
-            .await
-    });
-    // Cut mid-turn: a retryable response.failed (Codex replays after retry-after), then 1001.
-    let close = loop {
-        let m = tokio::time::timeout(Duration::from_secs(2), ws.next())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        match m {
-            M::Text(t) if t.contains("response.output_text.delta") => continue,
-            M::Text(t) => {
-                assert!(
-                    t.contains("\"response.failed\"") && t.contains("gateway_restarting"),
-                    "{t}"
-                );
-                break tokio::time::timeout(Duration::from_secs(2), ws.next())
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .unwrap();
-            }
-            other => break other,
-        }
-    };
-    assert!(matches!(close, M::Close(Some(frame)) if u16::from(frame.code) == 1001));
-    drop(ws);
-    assert!(stopped.await.unwrap() > 0);
-    assert_eq!(e.drain.inflight(), 0);
-}
-
-#[tokio::test]
 async fn ws_connection_cap_refuses_handshakes_until_one_closes() {
     use tokio_tungstenite::tungstenite::Message as M;
     let e = env(300).await;
@@ -717,4 +612,199 @@ async fn idle_websockets_hold_no_inflight_slot_only_running_turns_do() {
             .sum()
     };
     assert_eq!((by("ws"), by("http")), (1, 1), "{v}");
+}
+
+#[tokio::test]
+async fn refusals_are_stored_per_minute_and_served_by_the_usage_api() {
+    use tower::ServiceExt;
+    let d = tempfile::tempdir().unwrap();
+    let rec = usage_recorder(d.path());
+    let e = env_usage(300, Some(rec.clone())).await;
+    let mut cfg = (*e.config.load()).clone();
+    cfg.max_inflight_requests = 1;
+    e.config.store(cfg);
+    let held = held_response(&e).await;
+    assert_eq!(held.status(), 200, "the first turn holds the only slot");
+    for _ in 0..3 {
+        let r = e
+            .app
+            .clone()
+            .oneshot(
+                http::Request::post("/v1/responses?trace=abc")
+                    .header("authorization", format!("Bearer {KEY}"))
+                    .header("user-agent", "codex_cli_rs/0.99 test")
+                    .body(Body::from(r#"{"stream":true,"input":[]}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 503);
+    }
+    assert_eq!(e.drain.rejected_by(), [3, 0, 0, 0]);
+    let r2 = rec.clone();
+    tokio::task::spawn_blocking(move || r2.flush_blocking())
+        .await
+        .unwrap()
+        .unwrap();
+    let get = |path: String| {
+        let h = e.http.clone();
+        async move {
+            h.get(path)
+                .bearer_auth(KEY)
+                .send()
+                .await
+                .unwrap()
+                .json::<serde_json::Value>()
+                .await
+                .unwrap()
+        }
+    };
+    let v = get(format!("http://{}/usage/v1/refusals?range=1h", e.proxy)).await;
+    assert_eq!(v["totals"]["count"], 3, "{v}");
+    assert_eq!(v["totals"]["inflight"], 3);
+    let rows = v["rows"].as_array().unwrap();
+    // One group per minute (two if the requests straddle a minute boundary).
+    assert!(matches!(rows.len(), 1 | 2), "{v}");
+    let n: u64 = rows.iter().map(|r| r["count"].as_u64().unwrap()).sum();
+    assert_eq!(n, 3);
+    let row = &rows[0];
+    assert_eq!(row["reason"], "inflight");
+    assert_eq!(row["transport"], "http");
+    assert_eq!(row["route"], "/v1/responses", "query stripped");
+    assert_eq!(row["ua"], "codex_cli_rs/0.99 test");
+    assert_eq!(row["limit"], 1);
+    assert_eq!(row["max_inflight"], 1);
+    assert!(row["key"].is_string());
+    let label = row["key"].as_str().unwrap().to_string();
+    let none = get(format!(
+        "http://{}/usage/v1/refusals?range=1h&reason=ws",
+        e.proxy
+    ))
+    .await;
+    assert_eq!(none["totals"]["count"], 0);
+    let other = get(format!(
+        "http://{}/usage/v1/refusals?range=1h&key=nobody",
+        e.proxy
+    ))
+    .await;
+    assert_eq!(other["rows"].as_array().unwrap().len(), 0);
+    let s = get(format!(
+        "http://{}/usage/v1/summary?range=1h&key={label}",
+        e.proxy
+    ))
+    .await;
+    assert_eq!(s["refusals"]["count"], 3, "{s}");
+    let s = get(format!(
+        "http://{}/usage/v1/summary?range=1h&account=x",
+        e.proxy
+    ))
+    .await;
+    assert!(
+        s["refusals"].is_null(),
+        "no refusal count under an account filter"
+    );
+    // The request list's chip counts carry the same refusals (本地拒绝) and their reasons.
+    let c = get(format!(
+        "http://{}/usage/v1/records/counts?range=1h&key={label}",
+        e.proxy
+    ))
+    .await;
+    assert_eq!(c["refused"], 3, "{c}");
+    assert_eq!(c["causes"]["refused"]["inflight"], 3, "{c}");
+    assert_eq!(c["causes"]["refused"]["ws"], 0, "{c}");
+    let c = get(format!(
+        "http://{}/usage/v1/records/counts?range=1h&account=x",
+        e.proxy
+    ))
+    .await;
+    assert!(c["refused"].is_null(), "{c}");
+    assert!(c["causes"].get("refused").is_none(), "{c}");
+    drop(held);
+}
+
+/// The sampler stores current occupancy, exact peaks between samples and the limits in
+/// effect; `/usage/v1/occupancy` serves them per minute and instance.
+#[tokio::test]
+async fn occupancy_samples_are_stored_and_served_by_the_usage_api() {
+    use tokio_tungstenite::tungstenite::Message as M;
+    let d = tempfile::tempdir().unwrap();
+    let rec = usage_recorder(d.path());
+    let e = env_usage(300, Some(rec.clone())).await;
+    let mut cfg = (*e.config.load()).clone();
+    cfg.max_inflight_requests = 4;
+    cfg.ws_max_connections = 3;
+    e.config.store(cfg);
+    let (mut ws, r) = tokio_tungstenite::connect_async(ws_req(&e)).await.unwrap();
+    assert_eq!(r.status(), 101);
+    ws.send(M::Ping(Bytes::from_static(b"ready")))
+        .await
+        .unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(2), ws.next()).await;
+    // A burst between samples: two turns start and one ends before the sample.
+    let a = held_response(&e).await;
+    let b = held_response(&e).await;
+    assert_eq!((a.status().as_u16(), b.status().as_u16()), (200, 200));
+    drop(b);
+    wait_inflight(&e, 1).await;
+    let s = ciallopa_forward::occupancy::sample(&e.state).unwrap();
+    assert_eq!(
+        (s.inflight, s.peak_inflight),
+        (1, 2),
+        "the burst peak is kept"
+    );
+    assert_eq!((s.ws, s.peak_ws), (1, 1));
+    assert_eq!((s.limit_inflight, s.limit_ws), (4, 3));
+    rec.occupancy(s);
+    ciallopa_forward::occupancy::record(&e.state);
+    drop(a);
+    drop(ws);
+    let r2 = rec.clone();
+    tokio::task::spawn_blocking(move || r2.flush_blocking())
+        .await
+        .unwrap()
+        .unwrap();
+    let get = |q: &str| {
+        e.http
+            .get(format!("http://{}/usage/v1/occupancy?{q}", e.proxy))
+            .bearer_auth(KEY)
+            .send()
+    };
+    let v = get("range=1h")
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(v["step_min"], 1, "{v}");
+    let rows = v["rows"].as_array().unwrap();
+    // One minute (two if the samples straddle a boundary).
+    assert!(matches!(rows.len(), 1 | 2), "{v}");
+    let n: u64 = rows.iter().map(|r| r["samples"].as_u64().unwrap()).sum();
+    assert_eq!(n, 2);
+    let peak = rows
+        .iter()
+        .map(|r| r["inflight_peak"].as_u64().unwrap())
+        .max();
+    assert_eq!(peak, Some(2), "{v}");
+    let row = &rows[0];
+    assert_eq!(row["ws_peak"], 1);
+    assert_eq!(row["max_inflight_requests"], 4);
+    assert_eq!(row["ws_max_connections"], 3);
+    assert!(row["instance"].is_string(), "{v}");
+    let v = get("range=1h&instance=nowhere")
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(v["rows"].as_array().unwrap().len(), 0);
+    let v = get("range=7d&step=1m")
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(v["step_min"], 7, "a week is at most 1440 buckets");
+    assert_eq!(get("step=90s").await.unwrap().status(), 400);
+    assert_eq!(get("range=bogus").await.unwrap().status(), 400);
 }

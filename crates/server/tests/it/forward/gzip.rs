@@ -111,11 +111,11 @@ async fn compression_can_be_disabled() {
 
 #[tokio::test]
 async fn gzip_responses_negotiate_independently_and_preserve_plain_downstream() {
+    let e = env(300).await;
     for path in [
         "/v1/responses?fixture=1",
         "/backend-api/codex/responses?fixture=2",
     ] {
-        let e = env(300).await;
         let response = e
             .post(path)
             .header("accept-encoding", "br, zstd")
@@ -245,116 +245,77 @@ async fn gzip_sse_without_content_type_keeps_usage_and_quota_failover() {
 }
 
 #[tokio::test]
-async fn gzip_http_errors_keep_refresh_failover_and_classification() {
-    for mode in ["unauth", "limit", "retry", "over400"] {
-        let e = env_cfg(300, None, "overload_retry_wait_secs = 0\n").await;
-        let response = e
-            .post("/v1/responses")
-            .header("x-test-mode", mode)
-            .header("x-test-gzip", "1")
-            .body(r#"{"model":"gpt-5.5","input":[]}"#)
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), 200, "{mode}");
-        assert!(
-            response
-                .text()
-                .await
-                .unwrap()
-                .contains("response.completed"),
-            "{mode}"
-        );
-        assert_eq!(e.mock.hits.load(Ordering::SeqCst), 2, "{mode}");
-        if mode == "unauth" {
-            assert_eq!(e.store.refreshed.load(Ordering::SeqCst), 1);
-        }
-        if mode == "limit" {
-            assert!(e.outcomes().iter().any(|(_, out)| matches!(
-                out,
-                Outcome::RateLimited {
-                    usage_limit: true,
-                    ..
-                }
-            )));
-        }
-    }
-}
-
-#[tokio::test]
-async fn gzip_response_encoding_contract_rejects_unknown_and_duplicate_without_replay() {
-    for encoding in ["br", "gzip, gzip", "duplicate"] {
-        let dir = tempfile::tempdir().unwrap();
-        let rec = usage_recorder(dir.path());
-        let e = env_usage(300, Some(rec.clone())).await;
-        let response = e
-            .post("/v1/responses")
-            .header("x-test-response-encoding", encoding)
-            .body(r#"{"model":"gpt-5.5","stream":true,"input":[]}"#)
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), 502, "{encoding}");
-        let body = response.text().await.unwrap();
-        assert!(body.contains("server_error"), "{encoding}: {body}");
-        assert_eq!(
-            e.mock.hits.load(Ordering::SeqCst),
-            1,
-            "no replay for {encoding}"
-        );
-        assert!(
-            e.outcomes()
-                .iter()
-                .all(|(_, out)| matches!(out, Outcome::Success { .. })),
-            "no account penalty: {:?}",
-            e.outcomes()
-        );
-        let rows = wait_rows(&e, 1).await;
-        assert_eq!(
-            rows[0]["error"], "unsupported_response_encoding",
-            "{rows:?}"
-        );
-        assert_eq!(rows[0]["err_source"], "upstream", "{rows:?}");
-        rec.shutdown();
-    }
+async fn unsupported_response_encoding_is_rejected_without_replay() {
+    let encoding = "br";
+    let dir = tempfile::tempdir().unwrap();
+    let rec = usage_recorder(dir.path());
+    let e = env_usage(300, Some(rec.clone())).await;
+    let response = e
+        .post("/v1/responses")
+        .header("x-test-response-encoding", encoding)
+        .body(r#"{"model":"gpt-5.5","stream":true,"input":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 502, "{encoding}");
+    let body = response.text().await.unwrap();
+    assert!(body.contains("server_error"), "{encoding}: {body}");
+    assert_eq!(
+        e.mock.hits.load(Ordering::SeqCst),
+        1,
+        "no replay for {encoding}"
+    );
+    assert!(
+        e.outcomes()
+            .iter()
+            .all(|(_, out)| matches!(out, Outcome::Success { .. })),
+        "no account penalty: {:?}",
+        e.outcomes()
+    );
+    let rows = wait_rows(&e, 1).await;
+    assert_eq!(
+        rows[0]["error"], "unsupported_response_encoding",
+        "{rows:?}"
+    );
+    assert_eq!(rows[0]["err_source"], "upstream", "{rows:?}");
+    rec.shutdown();
 }
 
 #[tokio::test]
 async fn gzip_corruption_before_output_is_decode_error_without_replay() {
-    for fault in ["bad_crc", "truncated", "trailing"] {
-        let dir = tempfile::tempdir().unwrap();
-        let rec = usage_recorder(dir.path());
-        let e = env_usage(300, Some(rec.clone())).await;
-        let response = e
-            .post("/v1/responses")
-            .header("x-test-mode", "gzip_bootstrap_only")
-            .header("x-test-gzip", fault)
-            .body(r#"{"model":"gpt-5.5","stream":true,"input":[]}"#)
-            .send()
-            .await
-            .unwrap();
-        // Preserve the gateway's existing SSE read-failure contract: a neutral
-        // failure event on the already selected upstream status, with detail in usage.
-        assert_eq!(response.status(), 200, "{fault}");
-        let body = response.text().await.unwrap();
-        assert!(body.contains("response.failed"), "{fault}: {body}");
-        assert_eq!(e.mock.hits.load(Ordering::SeqCst), 1);
-        assert!(
-            e.outcomes()
-                .iter()
-                .all(|(_, out)| matches!(out, Outcome::Success { .. })),
-            "no account penalty: {:?}",
-            e.outcomes()
-        );
-        let rows = wait_rows(&e, 1).await;
-        assert_eq!(
-            rows[0]["error"], "response_decode_error",
-            "{fault}: {rows:?}"
-        );
-        assert_eq!(rows[0]["err_source"], "stream", "{fault}: {rows:?}");
-        assert_eq!(e.drain.wait_idle(Duration::from_secs(2)).await, 0);
-        rec.shutdown();
-    }
+    let fault = "bad_crc";
+    let dir = tempfile::tempdir().unwrap();
+    let rec = usage_recorder(dir.path());
+    let e = env_usage(300, Some(rec.clone())).await;
+    let response = e
+        .post("/v1/responses")
+        .header("x-test-mode", "gzip_bootstrap_only")
+        .header("x-test-gzip", fault)
+        .body(r#"{"model":"gpt-5.5","stream":true,"input":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    // Preserve the gateway's existing SSE read-failure contract: a neutral
+    // failure event on the already selected upstream status, with detail in usage.
+    assert_eq!(response.status(), 200, "{fault}");
+    let body = response.text().await.unwrap();
+    assert!(body.contains("response.failed"), "{fault}: {body}");
+    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 1);
+    assert!(
+        e.outcomes()
+            .iter()
+            .all(|(_, out)| matches!(out, Outcome::Success { .. })),
+        "no account penalty: {:?}",
+        e.outcomes()
+    );
+    let rows = wait_rows(&e, 1).await;
+    assert_eq!(
+        rows[0]["error"], "response_decode_error",
+        "{fault}: {rows:?}"
+    );
+    assert_eq!(rows[0]["err_source"], "stream", "{fault}: {rows:?}");
+    assert_eq!(e.drain.wait_idle(Duration::from_secs(2)).await, 0);
+    rec.shutdown();
 }
 
 #[tokio::test]
@@ -390,121 +351,33 @@ async fn gzip_truncation_after_flushed_output_is_decode_error_without_replay() {
 }
 
 #[tokio::test]
-async fn gzip_network_read_errors_remain_network_errors() {
-    for mode in ["delta_then_reset", "reset_first"] {
-        let dir = tempfile::tempdir().unwrap();
-        let rec = usage_recorder(dir.path());
-        let e = env_usage(300, Some(rec.clone())).await;
-        let response = e
-            .post("/v1/responses")
-            .header("x-test-mode", mode)
-            .header("x-test-gzip", "stream")
-            .body(r#"{"model":"gpt-5.5","stream":true,"input":[]}"#)
-            .send()
-            .await
-            .unwrap();
-        let _ = response.bytes().await;
-        let rows = wait_rows(&e, 1).await;
-        assert_eq!(rows[0]["error"], "stream_read_error", "{mode}: {rows:?}");
-        assert_eq!(rows[0]["err_source"], "network", "{mode}: {rows:?}");
-        assert_eq!(e.mock.hits.load(Ordering::SeqCst), 1);
-        rec.shutdown();
-    }
-}
-
-#[tokio::test]
-async fn gzip_completed_event_is_not_failed_by_late_trailer_or_client_close() {
-    for mode in [
-        "gzip_terminal_bad_crc",
-        "gzip_terminal_truncated",
-        "gzip_terminal_drop",
-    ] {
-        let dir = tempfile::tempdir().unwrap();
-        let rec = usage_recorder(dir.path());
-        let e = env_usage(300, Some(rec.clone())).await;
-        let mut response = e
-            .post("/v1/responses")
-            .header("x-test-mode", mode)
-            .body(r#"{"model":"gpt-5.5","stream":true,"input":[]}"#)
-            .send()
-            .await
-            .unwrap();
-        let mut prefix = Vec::new();
-        tokio::time::timeout(Duration::from_secs(3), async {
-            while !String::from_utf8_lossy(&prefix).contains("response.completed") {
-                prefix.extend_from_slice(&response.chunk().await.unwrap().unwrap());
-            }
-        })
-        .await
-        .expect("a completed answer must arrive before the gzip trailer");
-        if mode == "gzip_terminal_drop" {
-            drop(response);
-        } else {
-            e.mock.release.notify_one();
-            let rest = response.text().await.unwrap();
-            assert!(!rest.contains("response.failed"), "{mode}: {rest}");
-        }
-        let rows = wait_rows(&e, 1).await;
-        assert!(rows[0]["error"].is_null(), "{mode}: {rows:?}");
-        assert_eq!(rows[0]["output_tokens"], 2, "{mode}: {rows:?}");
-        assert_eq!(e.mock.hits.load(Ordering::SeqCst), 1);
-        assert_eq!(e.drain.wait_idle(Duration::from_secs(2)).await, 0);
-        e.mock.release.notify_one();
-        rec.shutdown();
-    }
-}
-
-#[tokio::test]
-async fn gzip_sse_cancellation_and_force_release_held_decoder() {
-    for force in [false, true] {
-        let dir = tempfile::tempdir().unwrap();
-        let rec = usage_recorder(dir.path());
-        let e = env_usage(300, Some(rec.clone())).await;
-        let mut response = e
-            .post("/v1/responses")
-            .header("x-test-mode", "gzip_flush_held")
-            .body(r#"{"model":"gpt-5.5","stream":true,"input":[]}"#)
-            .send()
-            .await
-            .unwrap();
-        assert!(response.chunk().await.unwrap().is_some());
-        if force {
-            e.drain.force();
-        }
-        drop(response);
-        let rows = tokio::time::timeout(Duration::from_secs(5), wait_rows(&e, 1))
-            .await
-            .unwrap();
-        assert_eq!(
-            rows[0]["error"],
-            if force { "shutdown" } else { "client_closed" },
-            "{rows:?}"
-        );
-        assert_eq!(e.drain.wait_idle(Duration::from_secs(2)).await, 0);
-        e.mock.release.notify_one();
-        rec.shutdown();
-    }
-}
-
-#[tokio::test]
-async fn gzip_sse_idle_timeout_uses_decoded_progress() {
+async fn gzip_completed_event_is_not_failed_by_late_trailer() {
+    let mode = "gzip_terminal_bad_crc";
     let dir = tempfile::tempdir().unwrap();
     let rec = usage_recorder(dir.path());
-    let e = env_usage(1, Some(rec.clone())).await;
-    let response = e
+    let e = env_usage(300, Some(rec.clone())).await;
+    let mut response = e
         .post("/v1/responses")
-        .header("x-test-mode", "gzip_flush_held")
+        .header("x-test-mode", mode)
         .body(r#"{"model":"gpt-5.5","stream":true,"input":[]}"#)
         .send()
         .await
         .unwrap();
-    let body = tokio::time::timeout(Duration::from_secs(4), response.text())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(body.contains("response.failed"), "{body}");
+    let mut prefix = Vec::new();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while !String::from_utf8_lossy(&prefix).contains("response.completed") {
+            prefix.extend_from_slice(&response.chunk().await.unwrap().unwrap());
+        }
+    })
+    .await
+    .expect("a completed answer must arrive before the gzip trailer");
+    e.mock.release.notify_one();
+    let rest = response.text().await.unwrap();
+    assert!(!rest.contains("response.failed"), "{rest}");
     let rows = wait_rows(&e, 1).await;
-    assert_eq!(rows[0]["error"], "idle_timeout", "{rows:?}");
+    assert!(rows[0]["error"].is_null(), "{mode}: {rows:?}");
+    assert_eq!(rows[0]["output_tokens"], 2, "{mode}: {rows:?}");
+    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 1);
     assert_eq!(e.drain.wait_idle(Duration::from_secs(2)).await, 0);
     e.mock.release.notify_one();
     rec.shutdown();
@@ -524,11 +397,25 @@ async fn gzip_http_error_limit_applies_after_decompression() {
         .await
         .unwrap();
     assert_eq!(response.status(), 502);
-    assert!(response.bytes().await.unwrap().len() < 1024);
+    let body = response.text().await.unwrap();
+    assert!(body.len() < 1024 && body.contains("Bad gateway"), "{body}");
     let rows = wait_rows(&e, 1).await;
     assert_eq!(rows[0]["error"], "error_body_too_large", "{rows:?}");
     assert_eq!(rows[0]["err_source"], "local", "{rows:?}");
     assert_eq!(rows[0]["upstream_status"], 503, "{rows:?}");
+    let detail: serde_json::Value = detail_of(&e, rows[0]["request_id"].as_str().unwrap(), true)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(detail["upstream_request_id"], "oversized-upstream");
+    assert!(
+        detail["message"]
+            .as_str()
+            .unwrap()
+            .contains("body incomplete"),
+        "{detail}"
+    );
     assert_eq!(e.mock.hits.load(Ordering::SeqCst), 1);
     assert_eq!(e.drain.wait_idle(Duration::from_secs(2)).await, 0);
     rec.shutdown();

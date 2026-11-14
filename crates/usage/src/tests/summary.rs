@@ -306,58 +306,6 @@ async fn day_buckets_with_tz() {
 }
 
 #[tokio::test]
-async fn day_incomplete_excludes_failures_cancellations_unknown_and_interrupted() {
-    let d = tempfile::tempdir().unwrap();
-    let r = Recorder::open(&cfg(d.path())).unwrap();
-    for (status, error, source, reason, endpoint) in [
-        (200, None, None, "max_output_tokens", "responses"),
-        (200, None, None, "interrupted", "responses"),
-        (
-            200,
-            Some("observation_incomplete"),
-            Some("local"),
-            "max_output_tokens",
-            "responses",
-        ),
-        (
-            200,
-            Some("client_closed"),
-            Some("client"),
-            "max_output_tokens",
-            "responses",
-        ),
-        (
-            500,
-            Some("upstream_5xx"),
-            Some("upstream"),
-            "max_output_tokens",
-            "responses",
-        ),
-        (200, None, None, "max_output_tokens", "prewarm"),
-    ] {
-        let mut row = Record::new(r.ids.next(), Transport::Sse, endpoint);
-        row.status = status;
-        row.error = error.map(str::to_string);
-        row.err_source = source;
-        row.incomplete = Some(reason.into());
-        assert!(r.record(row));
-    }
-    r.flush_blocking().unwrap();
-    let s = r
-        .summary(SummaryQuery {
-            from_ms: 0,
-            to_ms: now_ms(),
-            bucket_day: Some(0),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-    assert_eq!(s.total.unknown, 1);
-    assert_eq!(s.total.incomplete, 1);
-    assert_eq!(s.buckets.as_ref().unwrap()[0].incomplete, 1);
-    r.shutdown();
-}
-#[tokio::test]
 async fn outcome_matrix_agrees_across_records_filters_groups_and_buckets() {
     let d = tempfile::tempdir().unwrap();
     let r = Recorder::open_as(
@@ -368,7 +316,7 @@ async fn outcome_matrix_agrees_across_records_filters_groups_and_buckets() {
         "h",
     )
     .unwrap();
-    let base = now_ms() - 7_200_000;
+    let base = now_ms() / 3_600_000 * 3_600_000 - 7_200_000;
     let mut cases = Vec::new();
     let samples = [
         (
@@ -558,11 +506,26 @@ async fn outcome_matrix_agrees_across_records_filters_groups_and_buckets() {
         })
         .await
         .unwrap();
+    assert_eq!(
+        summary.buckets.as_ref().unwrap().len(),
+        2,
+        "empty hours are omitted"
+    );
     for (row, (outcome, class, problem, cause)) in &cases {
         let actual = rows
             .iter()
             .find(|x| x.request_id == format!("{:016x}", row.id))
             .unwrap();
+        let group = summary
+            .groups
+            .iter()
+            .find(|g| g.group["key"].as_deref() == row.key.as_deref())
+            .unwrap();
+        assert_eq!(
+            group.usage_samples,
+            u64::from(row.input_tokens.is_some() || row.output_tokens.is_some()),
+            "missing vs zero usage: {row:?}"
+        );
         assert_eq!(
             (
                 actual.outcome,

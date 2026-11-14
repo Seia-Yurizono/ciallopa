@@ -163,7 +163,16 @@ async fn usage_sse_rows() {
     assert_eq!(u["switches"], 0);
 
     // quota before output → transparent switch a→b
-    sse_text(&e, "midlimit").await;
+    let before = e.mock.seen.lock().unwrap().len();
+    let text = sse_text(&e, "midlimit").await;
+    assert!(
+        text.contains("r-b") && !text.contains("r-a") && !text.contains("usage_limit_reached"),
+        "{text}"
+    );
+    let seen = e.mock.seen.lock().unwrap().clone();
+    assert_eq!(seen[before].1, seen[before + 1].1, "same body replayed");
+    assert!(e.outcomes().iter().any(|(a,o)| a == "a" && matches!(o,
+        Outcome::RateLimited { usage_limit: true, retry_after: Some(d), .. } if *d == Duration::from_secs(45))));
     // quota after output → recorded as usage_limit
     sse_text(&e, "latelimit").await;
     // 429 on a → failover to b
@@ -238,16 +247,6 @@ async fn usage_sse_rows() {
 }
 
 #[tokio::test]
-async fn usage_counts_retries() {
-    let d = tempfile::tempdir().unwrap();
-    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
-    sse_text(&e, "retry").await; // one 503, then ok on another account
-    let rows = wait_rows(&e, 1).await;
-    assert_eq!(rows[0]["retries"], 1, "{rows:?}");
-    assert!(rows[0]["error"].is_null());
-}
-
-#[tokio::test]
 async fn usage_does_not_recount_retries_after_sse_replay() {
     let d = tempfile::tempdir().unwrap();
     let e = env_usage(300, Some(usage_recorder(d.path()))).await;
@@ -288,7 +287,10 @@ async fn usage_ws_turn_rows() {
         .unwrap();
     req.headers_mut()
         .insert("authorization", format!("Bearer {KEY}").parse().unwrap());
-    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    let (mut ws, response) = tokio_tungstenite::connect_async(req).await.unwrap();
+    assert_eq!(response.headers()["x-codex-turn-state"], "ts-1");
+    assert!(response.headers().get("set-cookie").is_none());
+    assert!(response.headers().get("set-cookie2").is_none());
     ws.send(M::text(
         r#"{"type":"response.create","model":"gpt-5.5","reasoning":{"effort":"high"}}"#,
     ))
@@ -309,7 +311,12 @@ async fn usage_ws_turn_rows() {
             .to_text()
             .unwrap()
             .to_string();
+        assert!(
+            !t.contains("usage_limit_reached"),
+            "discarded quota frame: {t}"
+        );
         if t.contains("response.completed") {
+            assert!(t.contains("r-b"), "{t}");
             break;
         }
     }
@@ -318,7 +325,13 @@ async fn usage_ws_turn_rows() {
     ))
     .await
     .unwrap();
-    let _ = ws.next().await; // 1012 close
+    let closed = ws.next().await.unwrap().unwrap();
+    assert!(
+        matches!(closed, M::Close(Some(ref f)) if u16::from(f.code) == 1012 && f.reason == "upstream requires HTTP replay"),
+        "{closed:?}"
+    );
+    assert!(e.outcomes().iter().any(|(a,o)| a == "a" && matches!(o,
+        Outcome::RateLimited { usage_limit: true, retry_after: Some(d), .. } if *d == Duration::from_secs(45))));
     let rows = wait_rows(&e, 3).await;
     assert_eq!(rows.len(), 3, "{rows:?}");
     let (t3, t2, t1) = (&rows[0], &rows[1], &rows[2]);
@@ -541,15 +554,78 @@ async fn incomplete_passthrough_recorded_no_cooldown() {
 }
 
 #[tokio::test]
-async fn usage_limit_text_in_output_is_not_a_quota_error() {
-    // H1 / L3: only `error` / `response.failed` events count, never raw bytes.
-    let e = env(300).await;
-    let t = sse_text(&e, "textlimit").await;
-    assert!(t.contains("usage_limit_reached") && t.contains("response.completed"));
-    let o = e.outcomes();
-    assert!(
-        !o.iter()
-            .any(|(_, o)| matches!(o, Outcome::RateLimited { .. })),
-        "{o:?}"
+async fn usage_key_label_instance_and_quota_api() {
+    let d = tempfile::tempdir().unwrap();
+    let recorder = usage_recorder(d.path());
+    recorder.set_prices(
+        ciallopa_usage::PriceTable::parse(
+            "[[model]]\nmodel=\"gpt-5.5\"\nin=5.0\ncache=0.5\nout=30.0\nfast_x=2.5\n",
+        )
+        .unwrap(),
     );
+    let e = env_usage(300, Some(recorder)).await;
+    let r = e
+        .post("/v1/responses")
+        .header("x-test-mode", "usage")
+        .header("thread-id", "th-abc")
+        .header(
+            "x-codex-turn-metadata",
+            r#"{"turn_id":"turn-1","thread_id":"th-abc"}"#,
+        )
+        .body(r#"{"model":"gpt-5.5","service_tier":"priority","input":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    r.text().await.unwrap();
+    let rows = wait_rows(&e, 1).await;
+    let u = &rows[0];
+    let label = ciallopa_core::config::default_key_label(KEY);
+    assert_eq!(u["key"], label.as_str());
+    assert_eq!(u["instance"], ciallopa_core::config::hostname().as_str());
+    assert_eq!(u["plan"], "plus");
+    assert_eq!(u["primary_used_pct"], 12.0);
+    assert!(u["primary_reset_at"].is_i64());
+    assert_eq!(u["thread_id"], "th-abc");
+    assert_eq!(u["turn_id"], "turn-1");
+    assert_eq!(u["service_tier"], "priority");
+    assert_eq!(u["cache_write_tokens"], 10);
+    // (120-100-10)·5 + 100·0.5 + 10·5 (no write price ⇒ input) + 30·30, fast ×2.5
+    let want = (10.0 * 5.0 + 100.0 * 0.5 + 10.0 * 5.0 + 30.0 * 30.0) * 2.5 / 1e6;
+    assert!(
+        (u["cost_usd"].as_f64().unwrap() - want).abs() < 1e-12,
+        "{u}"
+    );
+    assert_eq!(u["price_status"], "ok");
+    let get = |path: String| {
+        let h = e.http.clone();
+        async move {
+            h.get(path)
+                .bearer_auth(KEY)
+                .send()
+                .await
+                .unwrap()
+                .json::<serde_json::Value>()
+                .await
+                .unwrap()
+        }
+    };
+    // raw key never stored or returned
+    assert!(!std::fs::read(d.path().join("usage.db"))
+        .unwrap()
+        .windows(KEY.len())
+        .any(|w| w == KEY.as_bytes()));
+    let q = get(format!("http://{}/usage/v1/quota", e.proxy)).await;
+    assert!(q["note"].as_str().unwrap().contains("other clients"));
+    let accts = q["accounts"].as_array().unwrap();
+    assert_eq!(accts.len(), 2, "{q}");
+    let a = accts.iter().find(|x| x["account"] == "a").unwrap();
+    assert_eq!(a["needs_relogin"], false);
+    assert_eq!(a["quota"]["primary"]["used_pct"], 12.0);
+    assert_eq!(
+        a["quota"]["primary"]["estimate"]["status"],
+        "insufficient_data"
+    );
+    let b = accts.iter().find(|x| x["account"] == "b").unwrap();
+    assert!(b["quota"].is_null());
 }

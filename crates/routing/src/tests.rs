@@ -163,14 +163,6 @@ fn fill_first_deterministic() {
 }
 
 #[test]
-fn round_robin_cycles_deterministic() {
-    let (r, _) = router(cfg(Strategy::RoundRobin));
-    let a = [acct("b"), acct("a"), acct("c")];
-    let got: Vec<String> = (0..6).map(|_| pick(&r, &rq("m"), &a)).collect();
-    assert_eq!(got, ["a", "b", "c", "a", "b", "c"]);
-}
-
-#[test]
 fn round_robin_cursor_per_model_and_thinking_suffix_shares_cursor() {
     let (r, _) = router(cfg(Strategy::RoundRobin));
     let a = [acct("a"), acct("b")];
@@ -207,6 +199,9 @@ fn fill_first_priority_fallback_cooldown() {
 #[test]
 fn round_robin_resumes_rotation_across_retry_exclusions() {
     let (r, _) = router(cfg(Strategy::RoundRobin));
+    let unordered = [acct("b"), acct("a"), acct("c")];
+    let cycle: Vec<_> = (0..6).map(|_| pick(&r, &rq("order"), &unordered)).collect();
+    assert_eq!(cycle, ["a", "b", "c", "a", "b", "c"]);
     let ids = ["aaa", "bbb", "ccc", "ddd", "eee"];
     let a: Vec<Account> = ids.iter().map(|i| acct(i)).collect();
     let (mut first, mut all) = (HashMap::<String, i32>::new(), HashMap::<String, i32>::new());

@@ -14,5 +14,5 @@ mod runtime_api;
 mod settings;
 mod shutdown;
 mod support;
-mod ui_labels;
+mod usage_api;
 mod ws_model_cooldown;

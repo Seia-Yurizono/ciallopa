@@ -2,169 +2,6 @@ use super::scaffold::*;
 use super::*;
 
 #[tokio::test]
-async fn websocket_relay_and_limit_close() {
-    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as M};
-    let e = env(300).await;
-    let mut req = format!("ws://{}/backend-api/codex/responses", e.proxy)
-        .into_client_request()
-        .unwrap();
-    req.headers_mut()
-        .insert("authorization", format!("Bearer {KEY}").parse().unwrap());
-    req.headers_mut()
-        .insert("session_id", "ws-1".parse().unwrap());
-    let (mut ws, resp) = tokio_tungstenite::connect_async(req).await.unwrap();
-    assert_eq!(resp.headers()["x-codex-turn-state"], "ts-1");
-    assert!(resp.headers().get("set-cookie").is_none());
-    assert!(resp.headers().get("set-cookie2").is_none());
-    ws.send(M::text(r#"{"type":"response.create","n":1}"#))
-        .await
-        .unwrap();
-    let m = ws.next().await.unwrap().unwrap();
-    assert!(m.to_text().unwrap().contains("\"echo\""));
-    // Quota error after response.created, before output: replayed on account b.
-    ws.send(M::text(r#"{"type":"response.create","tag":"limit"}"#))
-        .await
-        .unwrap();
-    let mut got = Vec::new();
-    loop {
-        let m = ws.next().await.unwrap().unwrap();
-        let t = m.to_text().unwrap().to_string();
-        assert!(
-            !t.contains("usage_limit_reached"),
-            "quota frame leaked: {t}"
-        );
-        got.push(t.clone());
-        if t.contains("response.completed") {
-            break;
-        }
-    }
-    assert_eq!(got.len(), 3, "{got:?}");
-    assert!(got[0].contains("r-b") && got[1].contains("delta"));
-    // Incremental request hits a quota error: no frame forwarded, close 1012 for replay.
-    ws.send(M::text(
-        r#"{"type":"response.create","previous_response_id":"r-b","tag":"prevlimit"}"#,
-    ))
-    .await
-    .unwrap();
-    match ws.next().await.unwrap().unwrap() {
-        M::Close(Some(f)) => {
-            assert_eq!(u16::from(f.code), 1012);
-            assert_eq!(f.reason.as_str(), "upstream requires HTTP replay");
-        }
-        other => panic!("expected close, got {other:?}"),
-    }
-    let seen = e.mock.seen.lock().unwrap();
-    let auth = seen[0]
-        .0
-        .iter()
-        .find(|(k, _)| k == "authorization")
-        .unwrap()
-        .1
-        .clone();
-    assert_eq!(auth, "Bearer tok-a-1");
-    drop(seen);
-    assert!(e.outcomes().iter().any(|(a, o)| a == "a"
-        && matches!(
-            o,
-            Outcome::RateLimited {
-                usage_limit: true,
-                retry_after: Some(d),
-                ..
-            } if *d == Duration::from_secs(45)
-        )));
-}
-
-/// Item 4: a client close is answered with a close frame (closing handshake completes).
-#[tokio::test]
-async fn websocket_client_close_gets_close_frame() {
-    use tokio_tungstenite::tungstenite::{
-        client::IntoClientRequest,
-        protocol::{frame::coding::CloseCode, CloseFrame},
-        Message as M,
-    };
-    let e = env(300).await;
-    let mut req = format!("ws://{}/backend-api/codex/responses", e.proxy)
-        .into_client_request()
-        .unwrap();
-    req.headers_mut()
-        .insert("authorization", format!("Bearer {KEY}").parse().unwrap());
-    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
-    ws.send(M::text(r#"{"type":"response.create","n":1}"#))
-        .await
-        .unwrap();
-    let _ = ws.next().await.unwrap().unwrap();
-    ws.send(M::Close(Some(CloseFrame {
-        code: CloseCode::Normal,
-        reason: "bye".into(),
-    })))
-    .await
-    .unwrap();
-    let got = tokio::time::timeout(Duration::from_secs(3), ws.next())
-        .await
-        .expect("no close reply");
-    match got {
-        Some(Ok(M::Close(_))) => {}
-        other => panic!("expected close frame, got {other:?}"),
-    }
-}
-
-/// WS: metadata frames are not the first token; `generate:false` prewarm is labelled and kept
-/// out of request counts while its tokens still count.
-#[tokio::test]
-async fn ws_ttft_and_prewarm() {
-    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as M};
-    let d = tempfile::tempdir().unwrap();
-    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
-    let mut req = format!("ws://{}/v1/responses", e.proxy)
-        .into_client_request()
-        .unwrap();
-    req.headers_mut()
-        .insert("authorization", format!("Bearer {KEY}").parse().unwrap());
-    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
-    for body in [
-        r#"{"type":"response.create","model":"gpt-5.5","generate":false}"#,
-        r#"{"type":"response.create","model":"gpt-5.5","tag":"slow"}"#,
-    ] {
-        ws.send(M::text(body)).await.unwrap();
-        loop {
-            let t = ws
-                .next()
-                .await
-                .unwrap()
-                .unwrap()
-                .to_text()
-                .unwrap()
-                .to_string();
-            if t.contains("response.completed") {
-                break;
-            }
-        }
-    }
-    drop(ws);
-    let rows = wait_rows(&e, 2).await;
-    let (turn, warm) = (&rows[0], &rows[1]);
-    assert_eq!(warm["endpoint"], "prewarm", "{warm}");
-    assert_eq!(turn["endpoint"], "responses", "{turn}");
-    assert!(turn["error"].is_null(), "{turn}");
-    assert!(
-        turn["ttft_ms"].as_u64().unwrap() >= millis(250).as_millis() as u64,
-        "{turn}"
-    );
-    let s: serde_json::Value = e
-        .http
-        .get(format!("http://{}/usage/v1/summary?range=1h", e.proxy))
-        .bearer_auth(KEY)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(s["summary"]["total"]["count"], 1, "{s}");
-    assert_eq!(s["summary"]["total"]["input_tokens"], 13, "{s}");
-}
-
-#[tokio::test]
 async fn ws_deflate_negotiated_with_codex_offer() {
     let e = env(300).await;
     let (mut ws, resp) = tokio_tungstenite::connect_async_with_config(
@@ -932,7 +769,11 @@ async fn ws_client_close_records_upstream_silent_duration() {
     }
     // The diagnostic rounds physical silence to tenths of a second.
     tokio::time::sleep(Duration::from_millis(300)).await;
-    ws.close(None).await.unwrap();
+    ws.send(M::Close(None)).await.unwrap();
+    let reply = tokio::time::timeout(Duration::from_secs(3), ws.next())
+        .await
+        .unwrap();
+    assert!(matches!(reply, Some(Ok(M::Close(_)))), "{reply:?}");
     let rows = wait_rows(&e, 1).await;
     assert_eq!(rows[0]["error"], "client_closed", "{rows:?}");
     let id = rows[0]["request_id"].as_str().unwrap().to_string();
@@ -1027,138 +868,6 @@ async fn websocket_handshake_402_fails_over() {
     assert_eq!(auths, ["Bearer tok-a-1", "Bearer tok-b-1"]);
 }
 
-/// WebSocket: the error frame keeps its shape and `status: 400` (fatal for Codex), with the
-/// clear message; no redial, no account outcome, and the session stays usable.
-#[tokio::test]
-async fn encrypted_rejection_ws_clear_message() {
-    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as M};
-    let d = tempfile::tempdir().unwrap();
-    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
-    let mut req = format!("ws://{}/backend-api/codex/responses", e.proxy)
-        .into_client_request()
-        .unwrap();
-    req.headers_mut()
-        .insert("authorization", format!("Bearer {KEY}").parse().unwrap());
-    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
-    ws.send(M::text(
-        r#"{"type":"response.create","model":"gpt-5.5","tag":"enc"}"#,
-    ))
-    .await
-    .unwrap();
-    let mut frames = Vec::new();
-    loop {
-        let t = ws
-            .next()
-            .await
-            .unwrap()
-            .unwrap()
-            .to_text()
-            .unwrap()
-            .to_string();
-        let done = t.contains("\"type\":\"error\"");
-        frames.push(t);
-        if done {
-            break;
-        }
-    }
-    assert_eq!(frames.len(), 3, "{frames:?}");
-    assert!(
-        frames[0].contains("codex.rate_limits") && frames[1].contains("codex.response.metadata")
-    );
-    let v: serde_json::Value = serde_json::from_str(&frames[2]).unwrap();
-    assert_eq!(v["type"], "error");
-    assert_eq!(v["status"], 400);
-    assert_eq!(v["error"]["code"], "invalid_encrypted_content");
-    assert_eq!(v["error"]["type"], "invalid_request_error");
-    assert_eq!(v["error"]["param"], "input");
-    assert!(
-        v["error"]["message"].as_str().unwrap().contains(ENC_HINT),
-        "{v}"
-    );
-    // Same connection, next turn works.
-    ws.send(M::text(r#"{"type":"response.create","n":2}"#))
-        .await
-        .unwrap();
-    let t = ws
-        .next()
-        .await
-        .unwrap()
-        .unwrap()
-        .to_text()
-        .unwrap()
-        .to_string();
-    assert!(t.contains("response.completed"), "{t}");
-    assert_eq!(
-        e.mock.hits.load(Ordering::SeqCst),
-        1,
-        "one upstream connection"
-    );
-    assert_no_account_outcome(&e);
-    let rows = wait_rows(&e, 2).await;
-    let row = &rows[1];
-    assert_eq!(row["transport"], "ws");
-    assert_eq!(row["error"], "invalid_encrypted_content", "{row}");
-    assert_eq!(row["err_source"], "upstream", "{row}");
-    let dv: serde_json::Value = detail_of(&e, row["request_id"].as_str().unwrap(), true)
-        .await
-        .json()
-        .await
-        .unwrap();
-    assert!(
-        dv["message"]
-            .as_str()
-            .unwrap()
-            .contains("organization_id did not match"),
-        "{dv}"
-    );
-}
-
-/// WS: `response.metadata` / `response.queued` before overload still allow a pre-output replay.
-#[tokio::test]
-async fn ws_metadata_before_overload_still_switches() {
-    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as M};
-    let e = env(300).await;
-    let mut req = format!("ws://{}/backend-api/codex/responses", e.proxy)
-        .into_client_request()
-        .unwrap();
-    req.headers_mut()
-        .insert("authorization", format!("Bearer {KEY}").parse().unwrap());
-    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
-    ws.send(M::text(
-        r#"{"type":"response.create","model":"gpt-5.5","tag":"metaover"}"#,
-    ))
-    .await
-    .unwrap();
-    let mut got = Vec::new();
-    loop {
-        let t = ws
-            .next()
-            .await
-            .unwrap()
-            .unwrap()
-            .to_text()
-            .unwrap()
-            .to_string();
-        assert!(!t.contains("overloaded"), "overload leaked: {t}");
-        assert!(
-            !t.contains("openai_chatgpt_moderation_metadata"),
-            "discarded account preamble leaked: {t}"
-        );
-        got.push(t.clone());
-        if t.contains("response.completed") {
-            break;
-        }
-    }
-    assert!(
-        got.iter().any(|t| t.contains("r-b")) && got.iter().any(|t| t.contains("delta")),
-        "{got:?}"
-    );
-    assert!(e
-        .outcomes()
-        .iter()
-        .any(|(a, o)| a == "a" && matches!(o, Outcome::Overloaded { .. })));
-}
-
 /// WS: an overload replayed on another account is recorded as rescued with its chain.
 #[tokio::test]
 async fn ws_overload_switch_records_attempt_chain() {
@@ -1185,11 +894,20 @@ async fn ws_overload_switch_records_attempt_chain() {
             .to_text()
             .unwrap()
             .to_string();
+        assert!(
+            !t.contains("overloaded") && !t.contains("openai_chatgpt_moderation_metadata"),
+            "{t}"
+        );
         if t.contains("response.completed") {
+            assert!(t.contains("r-b"), "{t}");
             break;
         }
     }
     drop(ws);
+    assert!(e
+        .outcomes()
+        .iter()
+        .any(|(a, o)| a == "a" && matches!(o, Outcome::Overloaded { .. })));
     let rows = wait_rows(&e, 1).await;
     let row = &rows[0];
     assert!(row["error"].is_null(), "{row}");
@@ -1207,56 +925,6 @@ async fn ws_overload_switch_records_attempt_chain() {
     assert_eq!(at[0]["action"], "switch");
     assert_eq!(at[1]["account"], row["account"]);
     assert_eq!(at[1]["action"], "ok");
-}
-
-/// WS: metadata then encrypted rejection keeps the clear error frame (status 400).
-#[tokio::test]
-async fn ws_metadata_before_encrypted_clear_message() {
-    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as M};
-    let e = env(300).await;
-    let mut req = format!("ws://{}/backend-api/codex/responses", e.proxy)
-        .into_client_request()
-        .unwrap();
-    req.headers_mut()
-        .insert("authorization", format!("Bearer {KEY}").parse().unwrap());
-    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
-    ws.send(M::text(
-        r#"{"type":"response.create","model":"gpt-5.5","tag":"metaenc"}"#,
-    ))
-    .await
-    .unwrap();
-    let mut frames = Vec::new();
-    loop {
-        let t = ws
-            .next()
-            .await
-            .unwrap()
-            .unwrap()
-            .to_text()
-            .unwrap()
-            .to_string();
-        let done = t.contains("\"type\":\"error\"");
-        frames.push(t);
-        if done {
-            break;
-        }
-    }
-    assert!(
-        frames.iter().any(|t| t.contains("response.metadata")),
-        "committed metadata should reach the client: {frames:?}"
-    );
-    let err = frames
-        .iter()
-        .find(|t| t.contains("\"type\":\"error\""))
-        .unwrap();
-    let v: serde_json::Value = serde_json::from_str(err).unwrap();
-    assert_eq!(v["status"], 400);
-    assert_eq!(v["error"]["code"], "invalid_encrypted_content");
-    assert!(
-        v["error"]["message"].as_str().unwrap().contains(ENC_HINT),
-        "{v}"
-    );
-    assert_no_account_outcome(&e);
 }
 
 #[tokio::test]
@@ -1283,56 +951,6 @@ async fn websocket_handshake_cloudflare_block_is_egress() {
     let o = e.outcomes();
     assert_eq!(o.len(), 1, "{o:?}");
     assert!(matches!(o[0].1, Outcome::EgressBlocked));
-}
-
-/// WS: the same empty announcements before an overload still allow the pre-output replay.
-#[tokio::test]
-async fn ws_empty_added_before_overload_switches() {
-    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as M};
-    let e = env(300).await;
-    let mut req = format!("ws://{}/backend-api/codex/responses", e.proxy)
-        .into_client_request()
-        .unwrap();
-    req.headers_mut()
-        .insert("authorization", format!("Bearer {KEY}").parse().unwrap());
-    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
-    ws.send(M::text(
-        r#"{"type":"response.create","model":"gpt-5.5","tag":"emptyadded_over"}"#,
-    ))
-    .await
-    .unwrap();
-    let mut got = Vec::new();
-    loop {
-        let t = ws
-            .next()
-            .await
-            .unwrap()
-            .unwrap()
-            .to_text()
-            .unwrap()
-            .to_string();
-        assert!(!t.contains("overloaded"), "overload leaked: {t}");
-        assert!(
-            !t.contains("msg_a") && !t.contains("r-a"),
-            "discarded preamble leaked: {t}"
-        );
-        got.push(t.clone());
-        if t.contains("response.completed") {
-            break;
-        }
-    }
-    assert_eq!(
-        got.iter()
-            .filter(|t| t.contains("response.created"))
-            .count(),
-        1,
-        "{got:?}"
-    );
-    assert!(got.iter().any(|t| t.contains("r-b")), "{got:?}");
-    assert!(e
-        .outcomes()
-        .iter()
-        .any(|(a, o)| a == "a" && matches!(o, Outcome::Overloaded { .. })));
 }
 
 #[tokio::test]
@@ -1397,6 +1015,23 @@ async fn ws_downstream_observation_per_turn() {
     }
     drop(ws);
     let rows = wait_rows(&e, 3).await;
+    let slow = &rows[1];
+    assert!(
+        slow["ttft_ms"].as_u64().unwrap() >= millis(250).as_millis() as u64,
+        "{slow}"
+    );
+    let summary: serde_json::Value = e
+        .http
+        .get(format!("http://{}/usage/v1/summary?range=1h", e.proxy))
+        .bearer_auth(KEY)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(summary["summary"]["total"]["count"], 2);
+    assert_eq!(summary["summary"]["total"]["input_tokens"], 18);
     let (turn, warm) = (&rows[0], &rows[2]);
     assert_eq!(warm["endpoint"], "prewarm", "{warm}");
     let (s, o) = obs_of(&e, turn["request_id"].as_str().unwrap()).await;

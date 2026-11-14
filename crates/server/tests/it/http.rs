@@ -6,17 +6,10 @@ use http::{Request, StatusCode};
 use std::sync::Arc;
 use tower::ServiceExt;
 
-async fn app() -> axum::Router {
-    let cfg = Config::parse(
-        "api_keys = [\"sk-cpa-0123456789abcdef\"]\nauth_dir = \"/nonexistent-ciallopa\"",
-    )
-    .unwrap();
+async fn app(enabled: bool) -> axum::Router {
+    let cfg = Config::parse(&format!("api_keys = [\"sk-cpa-0123456789abcdef\", \"sk-cpa-zzzzzzzzzzzzzzzz\"]\n[ui]\nenabled = {enabled}")).unwrap();
     let state = AppState {
-        accounts: Arc::new(
-            ciallopa_auth::FileAccountStore::open(cfg.auth_dir.clone())
-                .await
-                .unwrap(),
-        ),
+        accounts: Arc::new(super::support::FixedStore::new(&[])),
         router: Arc::new(ciallopa_routing::CpaRouter::new(cfg.routing.clone())),
         upstream: Arc::new(ciallopa_upstream::UpstreamClient::new(&cfg).unwrap()),
         usage: None,
@@ -26,71 +19,63 @@ async fn app() -> axum::Router {
     ciallopa::build_app(state)
 }
 
-async fn status(req: Request<Body>) -> StatusCode {
-    app().await.oneshot(req).await.unwrap().status()
-}
-
 #[tokio::test]
 async fn health_and_auth() {
-    let get = |p: &str| Request::get(p);
-    assert_eq!(
-        status(get("/healthz").body(Body::empty()).unwrap()).await,
-        StatusCode::OK
-    );
-    assert_eq!(
-        status(
-            get("/backend-api/codex/models")
-                .body(Body::empty())
+    let app = app(true).await;
+    for (path, key, status) in [
+        ("/healthz", None, StatusCode::OK),
+        ("/backend-api/codex/models", None, StatusCode::UNAUTHORIZED),
+        (
+            "/backend-api/codex/models",
+            Some(""),
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "/backend-api/codex/models",
+            Some("wrong-key-xxxxxxxx"),
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "/backend-api/codex/models",
+            Some("sk-cpa-0123456789abcde"),
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "/backend-api/codex/models",
+            Some("sk-cpa-0123456789abcdef"),
+            StatusCode::SERVICE_UNAVAILABLE,
+        ),
+        (
+            "/backend-api/codex/models",
+            Some("sk-cpa-zzzzzzzzzzzzzzzz"),
+            StatusCode::SERVICE_UNAVAILABLE,
+        ),
+        ("/other", None, StatusCode::NOT_FOUND),
+    ] {
+        let mut req = Request::get(path);
+        if let Some(key) = key {
+            req = req.header("authorization", format!("Bearer {key}"));
+        }
+        assert_eq!(
+            app.clone()
+                .oneshot(req.body(Body::empty()).unwrap())
+                .await
                 .unwrap()
-        )
-        .await,
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(
-        status(
-            get("/backend-api/codex/models")
-                .header("authorization", "Bearer wrong-key-xxxxxxxx")
-                .body(Body::empty())
-                .unwrap()
-        )
-        .await,
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(
-        status(
-            get("/backend-api/codex/models")
-                .header("authorization", "Bearer sk-cpa-0123456789abcdef")
-                .body(Body::empty())
-                .unwrap()
-        )
-        .await,
-        StatusCode::SERVICE_UNAVAILABLE
-    );
-    assert_eq!(
-        status(
+                .status(),
+            status,
+            "{path}"
+        );
+    }
+    let response = app
+        .oneshot(
             Request::post("/v1/images/generations")
                 .header("x-api-key", "sk-cpa-0123456789abcdef")
                 .body(Body::empty())
-                .unwrap()
+                .unwrap(),
         )
-        .await,
-        StatusCode::BAD_REQUEST
-    );
-    assert_eq!(
-        status(get("/other").body(Body::empty()).unwrap()).await,
-        StatusCode::NOT_FOUND
-    );
-}
-
-#[test]
-fn key_compare() {
-    let k = vec![
-        "sk-cpa-0123456789abcdef".to_string(),
-        "sk-cpa-zzzzzzzzzzzzzzzz".into(),
-    ];
-    assert!(ciallopa::key_matches(&k, "sk-cpa-zzzzzzzzzzzzzzzz"));
-    assert!(!ciallopa::key_matches(&k, "sk-cpa-0123456789abcde"));
-    assert!(!ciallopa::key_matches(&[], ""));
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -98,7 +83,7 @@ async fn healthcheck_probe() {
     use std::time::Duration;
     let ln = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = ln.local_addr().unwrap().port();
-    let app = app().await;
+    let app = app(true).await;
     let srv = tokio::spawn(async move { axum::serve(ln, app).await.unwrap() });
     let t = Duration::from_secs(3);
     // An unspecified listen address is probed on loopback.
@@ -116,4 +101,69 @@ async fn healthcheck_probe() {
     );
     assert!(started.elapsed() < Duration::from_secs(2));
     drop(mute);
+}
+
+#[tokio::test]
+async fn ui_pages_and_toggle() {
+    use base64::Engine;
+    use sha2::Digest;
+    let app = app(true).await;
+    for path in ["/ui", "/ui/settings", "/ui/accounts"] {
+        let r = app
+            .clone()
+            .oneshot(Request::get(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK, "{path}");
+        assert_eq!(r.headers()["x-content-type-options"], "nosniff");
+        assert_eq!(r.headers()["cache-control"], "no-store, no-transform");
+        let csp = r.headers()["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(csp.contains("default-src 'none'") && !csp.contains("unsafe"));
+        let body = String::from_utf8(
+            axum::body::to_bytes(r.into_body(), 1 << 20)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(!body.contains("sk-cpa-") && !body.contains('\u{FFFD}'));
+        for tag in ["script", "style"] {
+            let open = format!("<{tag}>");
+            let close = format!("</{tag}>");
+            let content = body
+                .split_once(&open)
+                .unwrap()
+                .1
+                .split_once(&close)
+                .unwrap()
+                .0;
+            let hash = base64::engine::general_purpose::STANDARD
+                .encode(sha2::Sha256::digest(content.as_bytes()));
+            assert!(
+                csp.contains(&format!("'sha256-{hash}'")),
+                "{path}: {tag} blocked by CSP"
+            );
+        }
+    }
+    let r = app
+        .clone()
+        .oneshot(Request::get("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::TEMPORARY_REDIRECT);
+    assert_eq!(r.headers()["location"], "/ui");
+    let off = self::app(false).await;
+    for path in ["/ui", "/ui/settings", "/ui/accounts"] {
+        assert_eq!(
+            off.clone()
+                .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+    }
 }
