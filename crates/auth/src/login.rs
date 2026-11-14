@@ -3,7 +3,9 @@
 //! - paste callback URL: print PKCE auth URL, user pastes `http://localhost:1455/auth/callback?code=..&state=..`
 //! - PKCE 1455: listener on 127.0.0.1 only, 5 min lifetime
 //! - import: `~/.codex/auth.json`
-use crate::file::{account_id_for, existing_for, merge_tokens, write_auth_file, FileLock};
+use crate::file::{
+    account_id_for, blocking, existing_for, merge_tokens, write_auth_file, FileLock,
+};
 use crate::oauth::{random_state, OAuthClient, Pkce, TokenResponse, LOCAL_REDIRECT_URI};
 use ciallopa_core::{AuthError, ImportOutcome};
 use serde::Deserialize;
@@ -26,6 +28,11 @@ pub fn save_tokens(auth_dir: &Path, t: &TokenResponse) -> Result<String, AuthErr
     write_auth_file(auth_dir, &id, &v)?;
     remove_legacy(auth_dir, legacy);
     Ok(id)
+}
+
+async fn save_tokens_async(auth_dir: &Path, tokens: TokenResponse) -> Result<String, AuthError> {
+    let dir = auth_dir.to_path_buf();
+    blocking(move || save_tokens(&dir, &tokens)).await
 }
 
 fn remove_legacy(dir: &Path, legacy: Option<String>) {
@@ -80,7 +87,7 @@ pub async fn device_code_with(
     let api = format!("{}/api/accounts", oauth.issuer);
     let err = |m: String| AuthError::Refresh(m);
     let resp = oauth
-        .http
+        .http(None)?
         .post(format!("{api}/deviceauth/usercode"))
         .headers(crate::oauth::client_headers())
         .header("Content-Type", "application/json")
@@ -108,7 +115,7 @@ pub async fn device_code_with(
     let start = Instant::now();
     let code = loop {
         let r = oauth
-            .http
+            .http(None)?
             .post(format!("{api}/deviceauth/token"))
             .headers(crate::oauth::client_headers())
             .header("Content-Type", "application/json")
@@ -153,7 +160,7 @@ pub async fn device_code_with(
     let t = oauth
         .exchange_code(&code.authorization_code, &redirect, &code.code_verifier)
         .await?;
-    save_tokens(auth_dir, &t)
+    save_tokens_async(auth_dir, t).await
 }
 
 // ---------- PKCE (paste / localhost) ----------
@@ -208,7 +215,7 @@ pub async fn paste_callback_with<R: AsyncBufRead + Unpin>(
     let t = oauth
         .exchange_code(&code, LOCAL_REDIRECT_URI, &pkce.verifier)
         .await?;
-    save_tokens(auth_dir, &t)
+    save_tokens_async(auth_dir, t).await
 }
 
 pub async fn pkce_localhost(oauth: &OAuthClient, auth_dir: &Path) -> Result<String, AuthError> {
@@ -268,7 +275,7 @@ pub async fn pkce_localhost_with(
                     )
                 };
                 let _ = respond(&mut sock, st, msg).await;
-                return save_tokens(auth_dir, &r?);
+                return save_tokens_async(auth_dir, r?).await;
             }
             Err(e) => {
                 let _ = respond(

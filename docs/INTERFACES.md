@@ -28,9 +28,10 @@ The source is authoritative; avoid maintaining a second copy of Rust signatures 
   `RouteRequest`, `Selection`, `QuotaSnapshot`, `Outcome`, account patches and import results.
   `Credentials::Debug` redacts the access token. `RouteRequest::attempt_at` prevents an old
   in-flight success from clearing a newer cooldown.
-- [`core/src/traits.rs`](../crates/core/src/traits.rs): `AccountStore` exposes snapshots,
-  credentials/refresh, reload and account management. `Router` selects, receives attempt
-  outcomes, updates config and exposes/clears routing state. Its methods remain synchronous
+- [`core/src/traits.rs`](../crates/core/src/traits.rs): `AccountStore` exposes synchronous,
+  shared `accounts()` snapshots, `generation()` and `len()`, plus async credentials/refresh,
+  reload and account management (`list()` copies the snapshot for admin callers). `Router`
+  selects, receives attempt outcomes, updates config and exposes/clears routing state. Its methods remain synchronous
   and free of I/O; internal short critical sections are allowed.
 - [`core/src/settings.rs`](../crates/core/src/settings.rs): `SharedConfig` uses atomically
   replaceable snapshots; `SCHEMA` declares hot/restart, editable and secret fields. New config

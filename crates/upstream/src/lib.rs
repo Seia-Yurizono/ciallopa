@@ -88,24 +88,37 @@ pub fn build_reqwest(opts: &ClientOptions) -> Result<reqwest::Client, UpstreamEr
 /// fingerprint stay identical.
 #[derive(Debug)]
 pub struct ClientPool {
-    opts: std::sync::Mutex<ClientOptions>,
-    map: std::sync::Mutex<std::collections::HashMap<String, PoolEntry>>,
-    /// Cookie jars preserved across a proxy / timeout rebuild (clients are dropped).
-    jars: std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<cookies::CookieJar>>>,
+    egress: arc_swap::ArcSwap<Egress>,
+    state: std::sync::Mutex<PoolState>,
+    changes: tokio::sync::watch::Sender<u64>,
     any_cookie_host: std::sync::atomic::AtomicBool,
+}
+#[derive(Debug)]
+struct Egress {
+    opts: ClientOptions,
+    generation: u64,
+}
+#[derive(Debug, Default)]
+struct PoolState {
+    clients: std::collections::HashMap<String, PoolEntry>,
+    // The only owner map; client rebuilds preserve jars, cookie toggles discard them.
+    jars: std::collections::HashMap<String, std::sync::Arc<cookies::CookieJar>>,
 }
 #[derive(Debug, Clone)]
 struct PoolEntry {
+    generation: u64,
     client: reqwest::Client,
     via_proxy: bool,
-    jar: Option<std::sync::Arc<cookies::CookieJar>>,
 }
 impl ClientPool {
     pub fn new(opts: ClientOptions) -> Self {
         Self {
-            opts: std::sync::Mutex::new(opts),
-            map: Default::default(),
-            jars: Default::default(),
+            egress: arc_swap::ArcSwap::from_pointee(Egress {
+                opts,
+                generation: 0,
+            }),
+            state: Default::default(),
+            changes: tokio::sync::watch::Sender::new(0),
             any_cookie_host: Default::default(),
         }
     }
@@ -124,97 +137,73 @@ impl ClientPool {
         mut build: impl FnMut(&ClientOptions) -> Result<reqwest::Client, UpstreamError>,
     ) -> Result<PoolEntry, UpstreamError> {
         loop {
-            let opts = {
-                let m = self.map.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(e) = m.get(account) {
-                    return Ok(e.clone());
+            let egress = {
+                let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                let egress = self.egress.load_full();
+                if let Some(entry) = state.clients.get(account) {
+                    debug_assert_eq!(entry.generation, egress.generation);
+                    return Ok(entry.clone());
                 }
-                self.options()
+                egress
             };
-            // Build outside the map lock: crypto / resolver initialization may block
-            // briefly, while other accounts and configuration reloads must keep serving.
-            let built = build(&opts);
-            let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(e) = m.get(account) {
-                return Ok(e.clone());
+            // Build outside the lock; reloads and other accounts keep serving.
+            let built = build(&egress.opts);
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let current = self.egress.load();
+            if let Some(entry) = state.clients.get(account) {
+                return Ok(entry.clone());
             }
-            // A reload may have cleared the map while this client was being built.
-            // Publish only under the configuration that produced it, including cookies.
-            // Holding the map lock also keeps reconfigure from changing these options.
-            if self.options() != opts {
+            if current.generation != egress.generation {
                 continue;
             }
-            let client = built?;
-            let jar = if opts.cloudflare_cookies {
-                let mut jars = self.jars.lock().unwrap_or_else(|e| e.into_inner());
-                Some(
-                    jars.entry(account.to_string())
-                        .or_insert_with(|| {
-                            std::sync::Arc::new(cookies::CookieJar::new(
-                                self.any_cookie_host
-                                    .load(std::sync::atomic::Ordering::SeqCst),
-                            ))
-                        })
-                        .clone(),
-                )
-            } else {
-                None
-            };
             let fresh = PoolEntry {
-                client,
-                via_proxy: !opts.proxy_url.is_empty(),
-                jar,
+                generation: current.generation,
+                client: built?,
+                via_proxy: !current.opts.proxy_url.is_empty(),
             };
-            m.insert(account.to_string(), fresh.clone());
+            state.clients.insert(account.to_string(), fresh.clone());
             return Ok(fresh);
         }
     }
     pub fn options(&self) -> ClientOptions {
-        self.opts.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.egress.load().opts.clone()
     }
-    /// Hot-reload. Proxy or connect-timeout changes drop every cached *client* (rebuilt
-    /// lazily on next use; in-flight requests / WebSockets keep the client they already
-    /// hold) but **preserve** each account's cookie jar across the rebuild so a proxy
-    /// change does not look like a brand-new Cloudflare client. A cookie toggle only
-    /// adds empty jars or drops all jars; connections are kept. Fails (and changes
-    /// nothing) when a client cannot be built with `new`.
+    /// Apply just the effective proxy and address-family policy (OAuth keeps its own timeout).
+    pub fn reconfigure_egress(&self, cfg: &Config) -> Result<(), UpstreamError> {
+        let mut options = self.options();
+        options.proxy_url = cfg.effective_proxy();
+        options.ipv6 = cfg.ipv6;
+        self.reconfigure(options)
+    }
+    /// Validate before publishing. Connection changes discard clients but preserve jars;
+    /// cookie toggles discard jars and keep connections. In-flight clients remain usable.
     pub fn reconfigure(&self, new: ClientOptions) -> Result<(), UpstreamError> {
         build_reqwest(&new)?;
-        let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
-        let mut o = self.opts.lock().unwrap_or_else(|e| e.into_inner());
-        let mut jars = self.jars.lock().unwrap_or_else(|e| e.into_inner());
-        if o.proxy_url != new.proxy_url
-            || o.connect_timeout != new.connect_timeout
-            || o.ipv6 != new.ipv6
-        {
-            // Preserve jars (if cookies stay on), drop clients; next `entry()` rebuilds
-            // outside this lock.
-            if new.cloudflare_cookies {
-                for (k, e) in m.drain() {
-                    if let Some(j) = e.jar {
-                        jars.insert(k, j);
-                    }
-                }
-            } else {
-                m.clear();
-                jars.clear();
-            }
-        } else if o.cloudflare_cookies != new.cloudflare_cookies {
-            jars.clear();
-            if new.cloudflare_cookies {
-                let any = self
-                    .any_cookie_host
-                    .load(std::sync::atomic::Ordering::SeqCst);
-                for e in m.values_mut() {
-                    e.jar = Some(std::sync::Arc::new(cookies::CookieJar::new(any)));
-                }
-            } else {
-                for e in m.values_mut() {
-                    e.jar = None;
-                }
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let current = self.egress.load();
+        if current.opts == new {
+            return Ok(());
+        }
+        let generation = current.generation + 1;
+        let moved = current.opts.proxy_url != new.proxy_url || current.opts.ipv6 != new.ipv6;
+        if moved || current.opts.connect_timeout != new.connect_timeout {
+            state.clients.clear();
+        } else {
+            // Cookie policy does not change the HTTP builder or its connections.
+            for entry in state.clients.values_mut() {
+                entry.generation = generation;
             }
         }
-        *o = new;
+        if !new.cloudflare_cookies || current.opts.cloudflare_cookies != new.cloudflare_cookies {
+            state.jars.clear();
+        }
+        self.egress.store(std::sync::Arc::new(Egress {
+            opts: new,
+            generation,
+        }));
+        if moved {
+            self.changes.send_replace(generation);
+        }
         Ok(())
     }
     /// The account's own client, created on first use.
@@ -223,25 +212,40 @@ impl ClientPool {
     }
     /// The account's cookie jar (`None` when `cloudflare_cookies` is off).
     pub fn jar(&self, account: &str) -> Option<std::sync::Arc<cookies::CookieJar>> {
-        self.entry(account).ok()?.jar
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if !self.egress.load().opts.cloudflare_cookies {
+            return None;
+        }
+        Some(
+            state
+                .jars
+                .entry(account.to_string())
+                .or_insert_with(|| {
+                    std::sync::Arc::new(cookies::CookieJar::new(
+                        self.any_cookie_host
+                            .load(std::sync::atomic::Ordering::SeqCst),
+                    ))
+                })
+                .clone(),
+        )
     }
-    /// Drop clients (and their idle connections) of accounts that no longer exist.
+    /// Drop clients and cookie jars of accounts that no longer exist.
     pub fn retain<F: Fn(&str) -> bool>(&self, keep: F) {
-        let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
-        m.retain(|k, _| keep(k));
-        let mut jars = self.jars.lock().unwrap_or_else(|e| e.into_inner());
-        jars.retain(|k, _| keep(k));
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.clients.retain(|k, _| keep(k));
+        state.jars.retain(|k, _| keep(k));
     }
     pub fn remove(&self, account: &str) {
-        let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
-        m.remove(account);
-        self.jars
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(account);
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.clients.remove(account);
+        state.jars.remove(account);
     }
     pub fn len(&self) -> usize {
-        self.map.lock().unwrap_or_else(|e| e.into_inner()).len()
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clients
+            .len()
     }
     pub fn is_empty(&self) -> bool {
         self.len() == 0
@@ -260,60 +264,34 @@ pub use ws::{close as ws_close, UpstreamWs, WsMessage};
 #[derive(Clone)]
 pub struct UpstreamClient {
     pub base_url: String,
-    /// Account-less client (not used for account traffic).
-    pub http: reqwest::Client,
-    /// Current options (swapped by [`Self::reconfigure`]); WebSocket connects read them.
-    pub opts: std::sync::Arc<arc_swap::ArcSwap<ClientOptions>>,
-    /// Per-account clients; all account-authenticated HTTP goes through [`Self::http_for`].
+    /// Per-account clients and the shared HTTP/WS egress configuration.
     pub pools: std::sync::Arc<ClientPool>,
-    /// Egress generation: bumped (after `opts` is swapped) whenever the effective egress proxy
-    /// changes. Long-lived upstream WebSockets watch it to reconnect between turns.
-    pub egress: std::sync::Arc<tokio::sync::watch::Sender<u64>>,
     /// Graceful shutdown of open client WebSocket sessions (see [`drain`]).
     pub drain: std::sync::Arc<drain::Drain>,
 }
 impl UpstreamClient {
     pub fn new(cfg: &Config) -> Result<Self, UpstreamError> {
         let opts = ClientOptions::from(cfg);
+        build_reqwest(&opts)?;
         Ok(Self {
             base_url: cfg.upstream.trim_end_matches('/').to_string(),
-            http: build_reqwest(&opts)?,
-            pools: std::sync::Arc::new(ClientPool::new(opts.clone())),
-            opts: std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(opts)),
-            egress: std::sync::Arc::new(tokio::sync::watch::Sender::new(0)),
+            pools: std::sync::Arc::new(ClientPool::new(opts)),
             drain: Default::default(),
         })
     }
     /// Hot-reload of `proxy_url` / `proxy_enabled` / `connect_timeout_secs` /
     /// `cloudflare_cookies`. A change of the effective egress proxy bumps the egress generation.
     pub fn reconfigure(&self, cfg: &Config) -> Result<(), UpstreamError> {
-        let o = ClientOptions::from(cfg);
-        self.pools.reconfigure(o.clone())?;
-        let moved = {
-            let cur = self.opts.load();
-            cur.proxy_url != o.proxy_url || cur.ipv6 != o.ipv6
-        };
-        self.opts.store(std::sync::Arc::new(o));
-        if moved {
-            self.egress.send_modify(|g| *g += 1);
-        }
-        Ok(())
+        self.pools.reconfigure(ClientOptions::from(cfg))
     }
     /// Current egress generation. Read it *before* connecting: a connection made with an
     /// older proxy then never carries the newer generation.
     pub fn egress_gen(&self) -> u64 {
-        *self.egress.borrow()
+        *self.pools.changes.borrow()
     }
     /// Notified on every egress generation change.
     pub fn egress_watch(&self) -> tokio::sync::watch::Receiver<u64> {
-        self.egress.subscribe()
-    }
-    /// The account's own client/connection pool (lazy). Falls back to the shared client only
-    /// if building fails, which cannot happen for a config that already built `http`.
-    pub fn http_for(&self, account: &str) -> reqwest::Client {
-        self.pools
-            .get(account)
-            .unwrap_or_else(|_| self.http.clone())
+        self.pools.changes.subscribe()
     }
     /// The account client and its actual egress, kept together across a configuration
     /// reload. Failure classification must describe this attempt, not the next client's
@@ -374,7 +352,12 @@ impl UpstreamClient {
         headers: http::HeaderMap,
     ) -> Result<(UpstreamWs, http::Response<Option<Vec<u8>>>), UpstreamError> {
         ensure_rustls_crypto_provider();
-        ws::connect(&self.ws_url(path), headers, &self.opts.load()).await
+        ws::connect(
+            &self.ws_url(path),
+            headers,
+            &self.pools.egress.load_full().opts,
+        )
+        .await
     }
     pub fn ws_url(&self, path: &str) -> String {
         let u = self.url(path);
@@ -463,7 +446,8 @@ mod tests {
         })
         .unwrap();
         assert_eq!(p.len(), 1, "cookie toggle keeps connections");
-        assert!(p.jar("a").is_some());
+        let jar = p.jar("a").unwrap();
+        assert!(!std::sync::Arc::ptr_eq(&jar, &p.jar("b").unwrap()));
         p.reconfigure(ClientOptions {
             proxy_url: "http://127.0.0.1:3128".into(),
             cloudflare_cookies: true,
@@ -471,7 +455,12 @@ mod tests {
         })
         .unwrap();
         assert!(p.is_empty(), "proxy change drops clients (rebuilt lazily)");
-        assert!(p.jar("a").is_some(), "jar preserved across rebuild");
+        assert!(
+            std::sync::Arc::ptr_eq(&jar, &p.jar("a").unwrap()),
+            "jar preserved across rebuild"
+        );
+        assert!(p.is_empty(), "reading a jar does not build an HTTP client");
+        let generation = p.egress.load().generation;
         assert!(p
             .reconfigure(ClientOptions {
                 proxy_url: "http://[::1".into(),
@@ -479,6 +468,27 @@ mod tests {
             })
             .is_err());
         assert_eq!(p.options().proxy_url, "http://127.0.0.1:3128");
+        assert_eq!(
+            p.egress.load().generation,
+            generation,
+            "failed reload changes nothing"
+        );
+        let mut options = p.options();
+        options.cloudflare_cookies = false;
+        p.reconfigure(options.clone()).unwrap();
+        assert!(p.jar("a").is_none());
+        options.cloudflare_cookies = true;
+        p.reconfigure(options).unwrap();
+        assert!(
+            !std::sync::Arc::ptr_eq(&jar, &p.jar("a").unwrap()),
+            "toggle discards old cookies"
+        );
+        let jar = p.jar("a").unwrap();
+        p.remove("a");
+        assert!(
+            !std::sync::Arc::ptr_eq(&jar, &p.jar("a").unwrap()),
+            "account removal discards its jar"
+        );
         drop(held);
     }
 
@@ -502,6 +512,7 @@ mod tests {
                 build_reqwest(options)
             })
             .unwrap();
+        assert_eq!(entry.generation, pool.egress.load().generation);
         assert!(
             pool.jar("a").is_none(),
             "cookie storage was disabled by reload"

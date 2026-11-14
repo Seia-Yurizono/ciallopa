@@ -2,7 +2,7 @@
 //! disabled switch, CSRF guards, and "automatic only through the per-account switch"
 //! against a mock upstream (the automatic use itself is tested in `tests/auto_reset.rs`).
 #![allow(clippy::unwrap_used)]
-use async_trait::async_trait;
+use super::support::FixedStore as Store;
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
@@ -21,43 +21,19 @@ const KEY: &str = "sk-cpa-0123456789abcdef";
 // QUOTA_LAST is process-global; serialize quota-refresh tests and clear it first.
 static QUOTA_REFRESH_TEST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-struct Store;
-#[async_trait]
-impl AccountStore for Store {
-    async fn list(&self) -> Vec<Account> {
-        ["a", "b"]
-            .iter()
-            .map(|i| Account {
-                id: i.to_string(),
-                email: Some(format!("{i}@example.test")),
-                chatgpt_account_id: Some(format!("acct-{i}")),
-                plan_type: None,
-                priority: 0,
-                weight: 1,
-                // a disabled account still lists (and can use) its reset cards
-                disabled: *i == "b",
-            })
-            .collect()
-    }
-    async fn credentials(&self, id: &AccountId) -> Result<Credentials, AuthError> {
-        Ok(Credentials {
-            account: id.clone(),
-            access_token: format!("tok-{id}"),
-            chatgpt_account_id: Some(format!("acct-{id}")),
-        })
-    }
-    async fn force_refresh(&self, id: &AccountId) -> Result<Credentials, AuthError> {
-        self.credentials(id).await
-    }
-    async fn reload(&self) -> Result<(), AuthError> {
-        Ok(())
-    }
-}
-
 /// Records `clear_quota_cooldown` calls.
 #[derive(Default)]
 struct NoRoute(Mutex<Vec<String>>);
 impl ciallopa_core::Router for NoRoute {
+    fn cooling_until(&self, _: &AccountId) -> Option<std::time::SystemTime> {
+        None
+    }
+    fn model_cooling_until(&self, _: &AccountId, _: &str) -> Option<std::time::SystemTime> {
+        None
+    }
+    fn note_attempt(&self, _: &AccountId) {}
+    fn content_ok(&self, _: &AccountId) {}
+
     fn clear_quota_cooldown(&self, id: &AccountId) -> bool {
         self.0.lock().unwrap().push(id.to_string());
         true
@@ -174,7 +150,20 @@ async fn env_cfg(allow: bool, write: bool) -> Env {
     let usage = Some(ciallopa_usage::Recorder::open_as(&cfg.usage, "inst").unwrap());
     let router = Arc::new(NoRoute::default());
     let state = AppState {
-        accounts: Arc::new(Store),
+        accounts: Arc::new(Store::with_accounts(
+            ["a", "b"]
+                .into_iter()
+                .map(|id| Account {
+                    id: id.into(),
+                    email: Some(format!("{id}@example.test")),
+                    chatgpt_account_id: Some(format!("acct-{id}")),
+                    plan_type: None,
+                    priority: 0,
+                    weight: 1,
+                    disabled: id == "b",
+                })
+                .collect(),
+        )),
         router: router.clone(),
         upstream: Arc::new(ciallopa_upstream::UpstreamClient::new(&cfg).unwrap()),
         usage,

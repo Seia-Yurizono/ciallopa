@@ -293,9 +293,11 @@ pub(crate) async fn upstream_req(
     // Latest learned Codex client fingerprint (built-in default until one is seen).
     let (ua, originator) = ciallopa_core::fingerprint::headers();
     let url = st.upstream.url(path);
-    let mut req = st
+    let (http, _) = st
         .upstream
-        .http_for(account)
+        .http_for_attempt(account)
+        .map_err(|e| format!("http client: {e}"))?;
+    let mut req = http
         .request(method, &url)
         .timeout(timeout)
         .header(reqwest::header::USER_AGENT, ua)

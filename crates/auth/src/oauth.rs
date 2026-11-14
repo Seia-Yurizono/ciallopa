@@ -21,7 +21,7 @@ pub const LOCAL_REDIRECT_URI: &str = "http://localhost:1455/auth/callback";
 pub struct OAuthClient {
     pub issuer: String,
     pub client_id: String,
-    pub http: reqwest::Client,
+    http: reqwest::Client,
     /// Per-account clients for token refresh (same builder, separate connection pools).
     pub pools: Option<std::sync::Arc<ciallopa_upstream::ClientPool>>,
 }
@@ -66,12 +66,14 @@ impl OAuthClient {
             pools: None,
         }
     }
-    /// Client for one account's token traffic: its own pool when configured.
-    pub fn http_for(&self, account: &str) -> reqwest::Client {
-        self.pools
-            .as_ref()
-            .and_then(|p| p.get(account).ok())
-            .unwrap_or_else(|| self.http.clone())
+    /// Every production OAuth request follows the current pool egress, including logins.
+    pub(crate) fn http(&self, account: Option<&str>) -> Result<reqwest::Client, AuthError> {
+        match &self.pools {
+            Some(pools) => pools
+                .get(account.unwrap_or(""))
+                .map_err(|e| AuthError::Refresh(format!("http client: {e}"))),
+            None => Ok(self.http.clone()),
+        }
     }
     pub fn token_url(&self) -> String {
         format!("{}/oauth/token", self.issuer)
@@ -111,7 +113,7 @@ impl OAuthClient {
             .append_pair("code_verifier", verifier)
             .finish();
         let resp = self
-            .http
+            .http(None)?
             .post(self.token_url())
             .headers(client_headers())
             .header("Content-Type", "application/x-www-form-urlencoded")
@@ -130,12 +132,6 @@ impl OAuthClient {
             .map_err(|_| AuthError::Refresh("token exchange: invalid response".into()))
     }
 
-    /// refresh_token grant, JSON (codex-rs `request_chatgpt_token_refresh`, `TokenEncoding::Json`).
-    /// Sent as a manual refresh (`refresh_reason: "forced"`).
-    pub async fn refresh(&self, refresh_token: &str) -> Result<TokenResponse, RefreshFailure> {
-        self.refresh_as(None, refresh_token, RefreshReason::Forced)
-            .await
-    }
     /// Refresh over `account`'s own connection pool (if any).
     pub async fn refresh_as(
         &self,
@@ -143,10 +139,9 @@ impl OAuthClient {
         refresh_token: &str,
         reason: RefreshReason,
     ) -> Result<TokenResponse, RefreshFailure> {
-        let http = match account {
-            Some(a) => self.http_for(a),
-            None => self.http.clone(),
-        };
+        let http = self
+            .http(account)
+            .map_err(|e| RefreshFailure::Transient(e.to_string()))?;
         let resp = http
             .post(self.token_url())
             .headers(client_headers())

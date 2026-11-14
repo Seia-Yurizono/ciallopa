@@ -2,7 +2,7 @@
 //! upstream requests (reset-credit list, token refresh), persistence across restart (usage DB
 //! and state file). One test: the fingerprint is process-global.
 #![allow(clippy::unwrap_used)]
-use async_trait::async_trait;
+use super::support::FixedStore as Store;
 use axum::{
     body::Body,
     http::HeaderMap,
@@ -17,35 +17,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const KEY: &str = "sk-cpa-0123456789abcdef";
-
-struct Store;
-#[async_trait]
-impl AccountStore for Store {
-    async fn list(&self) -> Vec<Account> {
-        vec![Account {
-            id: "a".into(),
-            email: None,
-            chatgpt_account_id: Some("acct-a".into()),
-            plan_type: None,
-            priority: 0,
-            weight: 1,
-            disabled: false,
-        }]
-    }
-    async fn credentials(&self, id: &AccountId) -> Result<Credentials, AuthError> {
-        Ok(Credentials {
-            account: id.clone(),
-            access_token: "tok-a".into(),
-            chatgpt_account_id: Some("acct-a".into()),
-        })
-    }
-    async fn force_refresh(&self, id: &AccountId) -> Result<Credentials, AuthError> {
-        self.credentials(id).await
-    }
-    async fn reload(&self) -> Result<(), AuthError> {
-        Ok(())
-    }
-}
 
 type Seen = Arc<Mutex<Vec<(String, Option<String>, Option<String>)>>>;
 
@@ -120,7 +91,7 @@ async fn learned_fingerprint_end_to_end() {
     let usage = ciallopa_usage::Recorder::open_as(&cfg.usage, "i").unwrap();
     ciallopa::client_fp::install(&cfg, Some(usage.clone()));
     let state = AppState {
-        accounts: Arc::new(Store),
+        accounts: Arc::new(Store::new(&["a"])),
         router: Arc::new(ciallopa_routing::CpaRouter::new(cfg.routing.clone())),
         upstream: Arc::new(ciallopa_upstream::UpstreamClient::new(&cfg).unwrap()),
         usage: Some(usage.clone()),
@@ -210,7 +181,10 @@ async fn learned_fingerprint_end_to_end() {
         last(&seen, "list"),
         (Some(ua1.into()), Some("codex_cli_rs".into()))
     );
-    oauth.refresh("rt").await.unwrap();
+    oauth
+        .refresh_as(None, "rt", ciallopa_auth::oauth::RefreshReason::Forced)
+        .await
+        .unwrap();
     assert_eq!(
         last(&seen, "refresh"),
         (Some(ua1.into()), Some("codex_cli_rs".into()))

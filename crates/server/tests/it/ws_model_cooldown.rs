@@ -1,7 +1,7 @@
 //! WebSocket turns honour per-model cooldowns: the handshake has no model, so each
 //! `response.create` re-checks its model on the pinned account (review item 16).
 #![allow(clippy::unwrap_used)]
-use async_trait::async_trait;
+use super::support::FixedStore as Store;
 use axum::extract::ws::{Message, WebSocketUpgrade};
 use axum::{body::Body, response::Response, routing::post, Router};
 use ciallopa_core::Router as _;
@@ -14,38 +14,6 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 const KEY: &str = "sk-cpa-0123456789abcdef";
 const MODEL: &str = "gpt-5.5";
-
-struct Store(Vec<&'static str>);
-#[async_trait]
-impl AccountStore for Store {
-    async fn list(&self) -> Vec<Account> {
-        self.0
-            .iter()
-            .map(|id| Account {
-                id: (*id).into(),
-                email: None,
-                chatgpt_account_id: Some(format!("acct-{id}")),
-                plan_type: None,
-                priority: 0,
-                weight: 1,
-                disabled: false,
-            })
-            .collect()
-    }
-    async fn credentials(&self, id: &AccountId) -> Result<Credentials, AuthError> {
-        Ok(Credentials {
-            account: id.clone(),
-            access_token: format!("tok-{id}"),
-            chatgpt_account_id: Some(format!("acct-{id}")),
-        })
-    }
-    async fn force_refresh(&self, id: &AccountId) -> Result<Credentials, AuthError> {
-        self.credentials(id).await
-    }
-    async fn reload(&self) -> Result<(), AuthError> {
-        Ok(())
-    }
-}
 
 type Log = Arc<Mutex<Vec<(String, &'static str, Duration)>>>;
 
@@ -108,7 +76,7 @@ async fn env(ids: Vec<&'static str>) -> (String, Arc<ciallopa_routing::CpaRouter
     .unwrap();
     let router = Arc::new(ciallopa_routing::CpaRouter::new(cfg.routing.clone()));
     let state = AppState {
-        accounts: Arc::new(Store(ids)),
+        accounts: Arc::new(Store::new(&ids)),
         router: router.clone(),
         upstream: {
             let up = ciallopa_upstream::UpstreamClient::new(&cfg).unwrap();

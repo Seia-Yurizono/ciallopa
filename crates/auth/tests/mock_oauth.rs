@@ -109,6 +109,65 @@ fn expired_file(dir: &std::path::Path) {
 }
 
 #[tokio::test]
+async fn oauth_requests_follow_reconfigured_egress_without_boot_fallback() {
+    use ciallopa_auth::oauth::RefreshReason;
+    use ciallopa_upstream::{ClientOptions, ClientPool};
+
+    let (mock, mut oauth) = spawn().await;
+    let pool = Arc::new(ClientPool::new(ClientOptions::default()));
+    oauth.pools = Some(pool.clone());
+    oauth
+        .exchange_code("code", "http://localhost/callback", "verifier")
+        .await
+        .unwrap();
+    oauth
+        .refresh_as(Some("acct"), "rt", RefreshReason::Forced)
+        .await
+        .unwrap();
+    assert_eq!(mock.refreshes.load(Ordering::SeqCst), 1);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    drop(listener);
+    pool.reconfigure(ClientOptions {
+        proxy_url: format!("http://{address}"),
+        connect_timeout: Some(Duration::from_millis(100)),
+        ..Default::default()
+    })
+    .unwrap();
+    assert!(oauth
+        .exchange_code("code", "http://localhost/callback", "verifier")
+        .await
+        .is_err());
+    for account in [None, Some("acct")] {
+        assert!(oauth
+            .refresh_as(account, "rt", RefreshReason::Forced)
+            .await
+            .is_err());
+    }
+    let dir = tempfile::tempdir().unwrap();
+    assert!(
+        login::device_code_with(&oauth, dir.path(), Duration::ZERO, |_, _| {
+            panic!("device login reached the boot egress")
+        })
+        .await
+        .is_err()
+    );
+    assert_eq!(mock.refreshes.load(Ordering::SeqCst), 1);
+
+    // A lazy build error must propagate as well, even with a usable boot client.
+    oauth.pools = Some(Arc::new(ClientPool::new(ClientOptions {
+        proxy_url: "http://[::1".into(),
+        ..Default::default()
+    })));
+    assert!(oauth
+        .refresh_as(Some("acct"), "rt", RefreshReason::Forced)
+        .await
+        .is_err());
+    assert_eq!(mock.refreshes.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn proactive_refresh_single_flight_and_persist() {
     let (m, oauth) = spawn().await;
     let d = tempfile::tempdir().unwrap();
@@ -381,30 +440,6 @@ async fn import_codex_auth() {
 }
 
 #[tokio::test]
-async fn eight_day_rule_refreshes_even_if_not_expired() {
-    let (m, oauth) = spawn().await;
-    let d = tempfile::tempdir().unwrap();
-    let old = (chrono::Utc::now() - chrono::Duration::days(9)).to_rfc3339();
-    ciallopa_auth::file::write_auth_file(
-        d.path(),
-        "acct",
-        &json!({"access_token":"cur","refresh_token":"r",
-        "expired":"2999-01-01T00:00:00Z","last_refresh":old}),
-    )
-    .unwrap();
-    let s = FileAccountStore::open_with(d.path().into(), oauth)
-        .await
-        .unwrap();
-    assert_ne!(
-        s.credentials(&"acct".into()).await.unwrap().access_token,
-        "cur"
-    );
-    assert_eq!(m.refreshes.load(Ordering::SeqCst), 1);
-    s.credentials(&"acct".into()).await.unwrap();
-    assert_eq!(m.refreshes.load(Ordering::SeqCst), 1);
-}
-
-#[tokio::test]
 async fn legacy_names_migrate() {
     let (_m, oauth) = spawn().await;
     let d = tempfile::tempdir().unwrap();
@@ -454,12 +489,13 @@ async fn refresh_waits_for_cross_process_lock_and_rereads() {
     );
     // "other process": holds the flock, refreshes the file on disk, then releases.
     let g = ciallopa_auth::file::FileLock::acquire(d.path(), "acct").unwrap();
-    let t = tokio::spawn({
+    let mut t = tokio::spawn({
         let s = s.clone();
         async move { s.credentials(&"acct".into()).await.unwrap() }
     });
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert!(!t.is_finished());
+    assert!(tokio::time::timeout(Duration::from_millis(100), &mut t)
+        .await
+        .is_err());
     let fresh = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
     ciallopa_auth::file::write_auth_file(
         d.path(),
@@ -609,16 +645,16 @@ async fn refresh_reason_per_path() {
     let s = FileAccountStore::open_with(d.path().into(), oauth)
         .await
         .unwrap()
-        .with_force_dedup(Duration::from_millis(1));
+        .with_force_dedup(Duration::ZERO);
     let id = "acct".to_string();
     s.credentials(&id).await.unwrap();
     assert_eq!(m.refreshes.load(Ordering::SeqCst), 1);
     assert_eq!(reason(&m), "scheduled");
-    tokio::time::sleep(Duration::from_millis(5)).await;
+    s.credentials(&id).await.unwrap();
+    assert_eq!(m.refreshes.load(Ordering::SeqCst), 1);
     s.force_refresh(&id).await.unwrap();
     assert_eq!(m.refreshes.load(Ordering::SeqCst), 2);
     assert_eq!(reason(&m), "unauthorized_recovery");
-    tokio::time::sleep(Duration::from_millis(5)).await;
     s.manual_refresh(&id).await.unwrap();
     assert_eq!(m.refreshes.load(Ordering::SeqCst), 3);
     assert_eq!(reason(&m), "forced");

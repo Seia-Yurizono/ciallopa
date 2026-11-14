@@ -978,13 +978,19 @@ mod tests {
     struct NoAccounts;
     #[async_trait::async_trait]
     impl AccountStore for NoAccounts {
-        async fn list(&self) -> Vec<Account> {
-            vec![]
+        fn accounts(&self) -> Arc<[Account]> {
+            Arc::from([])
+        }
+        fn generation(&self) -> u64 {
+            0
         }
         async fn credentials(&self, _: &AccountId) -> Result<Credentials, AuthError> {
             Err(AuthError::Unimplemented)
         }
         async fn force_refresh(&self, _: &AccountId) -> Result<Credentials, AuthError> {
+            Err(AuthError::Unimplemented)
+        }
+        async fn manual_refresh(&self, _: &AccountId) -> Result<Credentials, AuthError> {
             Err(AuthError::Unimplemented)
         }
         async fn reload(&self) -> Result<(), AuthError> {

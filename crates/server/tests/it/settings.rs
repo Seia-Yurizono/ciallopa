@@ -289,7 +289,7 @@ async fn egress_switch_closes_idle_ws_and_proxy_test() {
     assert_eq!(r.status(), 200);
     assert_eq!(e.upstream.egress_gen(), g0 + 1);
     assert_eq!(
-        e.upstream.opts.load().proxy_url,
+        e.upstream.pools.options().proxy_url,
         "socks5h://127.0.0.1:1",
         "socks5 normalized to proxy-side DNS"
     );
@@ -359,7 +359,7 @@ async fn egress_switch_closes_idle_ws_and_proxy_test() {
         .unwrap();
     assert_eq!(r.status(), 200);
     assert_eq!(e.upstream.egress_gen(), g + 1);
-    assert!(e.upstream.opts.load().ipv6);
+    assert!(e.upstream.pools.options().ipv6);
 }
 
 /// Shutdown drain: an idle session is closed normally at once and the drain completes.

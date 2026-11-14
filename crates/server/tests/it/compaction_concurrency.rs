@@ -3,7 +3,7 @@
 //! session headers. With the real router (round-robin + session affinity) both must land on the
 //! same account, and concurrency alone must never cool an account down.
 #![allow(clippy::unwrap_used)]
-use async_trait::async_trait;
+use super::support::FixedStore as Store;
 use axum::{body::Body, http::HeaderMap, response::Response, routing::post, Router};
 use bytes::Bytes;
 use ciallopa_core::*;
@@ -12,38 +12,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const KEY: &str = "sk-cpa-0123456789abcdef";
-
-struct Store;
-#[async_trait]
-impl AccountStore for Store {
-    async fn list(&self) -> Vec<Account> {
-        ["a", "b", "c"]
-            .iter()
-            .map(|i| Account {
-                id: i.to_string(),
-                email: None,
-                chatgpt_account_id: Some(format!("acct-{i}")),
-                plan_type: None,
-                priority: 0,
-                weight: 1,
-                disabled: false,
-            })
-            .collect()
-    }
-    async fn credentials(&self, id: &AccountId) -> Result<Credentials, AuthError> {
-        Ok(Credentials {
-            account: id.clone(),
-            access_token: format!("tok-{id}"),
-            chatgpt_account_id: Some(format!("acct-{id}")),
-        })
-    }
-    async fn force_refresh(&self, id: &AccountId) -> Result<Credentials, AuthError> {
-        self.credentials(id).await
-    }
-    async fn reload(&self) -> Result<(), AuthError> {
-        Ok(())
-    }
-}
 
 type Hits = Arc<Mutex<Vec<(String, String, bool)>>>;
 
@@ -109,7 +77,7 @@ async fn concurrent_compaction_same_account_no_cooldown() {
     .unwrap();
     let router = Arc::new(ciallopa_routing::CpaRouter::new(cfg.routing.clone()));
     let state = AppState {
-        accounts: Arc::new(Store),
+        accounts: Arc::new(Store::new(&["a", "b", "c"])),
         router: router.clone(),
         upstream: Arc::new(ciallopa_upstream::UpstreamClient::new(&cfg).unwrap()),
         usage: None,
