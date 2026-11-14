@@ -8,7 +8,8 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 
 const KEY: &str = "sk-local-affinity-test-0123456789";
 
-async fn start(config: &Path) -> tokio::process::Child {
+/// Starts the server on a free port and returns it with the address it logged.
+async fn start(config: &Path) -> (tokio::process::Child, std::net::SocketAddr) {
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_ciallopa"))
         .arg("-c")
         .arg(config)
@@ -20,10 +21,15 @@ async fn start(config: &Path) -> tokio::process::Child {
         .spawn()
         .unwrap();
     let mut lines = BufReader::new(child.stderr.take().unwrap()).lines();
-    tokio::time::timeout(Duration::from_secs(10), async {
+    let addr = tokio::time::timeout(Duration::from_secs(10), async {
         while let Some(line) = lines.next_line().await.unwrap() {
             if line.contains("ciallopa listening") {
-                return;
+                let at = line.split("listen=").nth(1).expect("listen field");
+                let addr: String = at.chars().take_while(|c| !c.is_whitespace()).collect();
+                return addr
+                    .trim_end_matches(|c: char| !c.is_ascii_digit())
+                    .parse()
+                    .unwrap();
             }
         }
         panic!("server exited before listening");
@@ -31,7 +37,7 @@ async fn start(config: &Path) -> tokio::process::Child {
     .await
     .expect("server start");
     tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
-    child
+    (child, addr)
 }
 
 async fn stop(mut child: tokio::process::Child) {
@@ -97,15 +103,12 @@ async fn session_binding_survives_a_graceful_restart() {
         )
         .unwrap();
     }
-    let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = reservation.local_addr().unwrap();
-    drop(reservation);
     let config = dir.path().join("config.toml");
     std::fs::write(
         &config,
         format!(
             r#"
-listen = "{addr}"
+listen = "127.0.0.1:0"
 api_keys = ["{KEY}"]
 upstream = "http://{up_addr}/backend-api"
 auth_dir = "{}"
@@ -120,7 +123,7 @@ reset_credits_refresh_mins = 0
     )
     .unwrap();
 
-    let child = start(&config).await;
+    let (child, addr) = start(&config).await;
     // Round-robin: the first pick after a start goes to one account, the session to the other.
     let first = send(addr, None, &seen).await;
     let bound = send(addr, Some("restart-session"), &seen).await;
@@ -129,7 +132,7 @@ reset_credits_refresh_mins = 0
     stop(child).await;
     assert!(dir.path().join("session_affinity.json").exists());
 
-    let child = start(&config).await;
+    let (child, addr) = start(&config).await;
     assert_eq!(send(addr, Some("restart-session"), &seen).await, bound);
     stop(child).await;
     mock.abort();

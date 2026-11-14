@@ -1574,7 +1574,7 @@ mod tests {
     #[allow(clippy::result_large_err)]
     async fn replay_write_failure_has_fresh_progress_and_preserves_cancellation() {
         let warnings = StreamWarnings::default();
-        // Retain both dispatchers, as in server/tests/forward.rs: parallel tests
+        // Retain both dispatchers, as in server/tests/it/forward.rs: parallel tests
         // must not cache `never` for this shared diagnostic callsite.
         let _ordinary = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
         let _capture = tracing::subscriber::set_default(warnings.clone());

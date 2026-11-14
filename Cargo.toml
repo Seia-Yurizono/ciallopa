@@ -55,3 +55,10 @@ tungstenite = { git = "https://github.com/openai-oss-forks/tungstenite-rs", rev 
 
 [workspace.lints.clippy]
 unwrap_used = "warn"
+
+# Line tables keep backtraces readable; full debuginfo mostly costs link time and cache size.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

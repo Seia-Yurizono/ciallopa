@@ -1,5 +1,5 @@
 //! The error codes that can appear in a usage record's `error`, as one list. The admin UI
-//! labels exactly these (server/tests/ui_labels.rs), and `usage::describe` explains only
+//! labels exactly these (server/tests/it/ui_labels.rs), and `usage::describe` explains only
 //! these, so a new code cannot ship unlabelled and a removed one leaves no dead label.
 
 /// Codes the proxy itself records (local decisions, network / stream classification).

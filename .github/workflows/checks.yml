@@ -1,25 +1,36 @@
 name: checks
 
+# Work lands on main as local merges; a release pushes main and its tag together. Pushes to
+# main run lint + test and refresh the musl release caches that the next tag's packaging
+# restores (a tag run can read main's caches, never another tag's).
 on:
-  pull_request:
   push:
-    branches: [main, master]
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
   workflow_call:
 
 permissions:
   contents: read
 
+concurrency:
+  # A newer push to main supersedes an older one; tag (release) runs always finish.
+  group: checks-${{ github.workflow_ref }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check:
+  lint:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - name: Toolchain (rust-toolchain.toml)
         run: rustup toolchain install && rustup show active-toolchain
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Tag matches the crate version
         if: github.ref_type == 'tag'
         run: |
@@ -30,24 +41,49 @@ jobs:
             exit 1
           fi
       - run: cargo fmt --all --check
-      - name: Release version references
+      - name: Release references and registry cleanup rules
         run: |
-          python3 scripts/release-version-test.py
           python3 scripts/release-version.py --check
-      - name: Container cleanup retention rules
-        run: python3 scripts/ghcr-cleanup-test.py
-      - name: Docker smoke script pipe handling
-        run: python3 scripts/docker-smoke-test.py
-      - name: Compose smoke persisted-account checks
-        run: python3 scripts/compose-smoke-test.py
-      - name: UI state regressions
-        run: node scripts/ui-state-check.cjs
-      - name: Settings draft regressions
-        run: node scripts/settings-state-check.cjs
-      - name: Account snapshot regressions
-        run: node scripts/accounts-state-check.cjs
-      - name: Request observation render regressions
-        run: node scripts/ui-observation-check.cjs
+          python3 scripts/ghcr-cleanup-test.py
+      - name: UI state checks
+        run: for f in scripts/*-check.cjs; do echo "== $f"; node "$f"; done
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo test --workspace --locked
-      - run: cargo test --locked -p ciallopa --example loadbench
+
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain (rust-toolchain.toml)
+        run: rustup toolchain install && rustup show active-toolchain
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Test binaries run in parallel, each test in its own process; includes example tests.
+      - run: cargo nextest run --workspace --all-targets --locked --profile ci
+
+  # Keeps the release build cache warm for the next tag (see the note at the top).
+  musl-cache:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain (rust-toolchain.toml) + musl target
+        run: rustup toolchain install && rustup target add "$TARGET"
+      - name: musl-tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: musl-${{ matrix.target }}
+      - run: scripts/package.sh --build-only

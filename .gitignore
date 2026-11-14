@@ -12,3 +12,4 @@ codex-*.json
 .env
 *.zip
 dist/
+__pycache__/

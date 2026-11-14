@@ -11,7 +11,7 @@ relevant edit, failure or new concern. Automated tests use synthetic data and lo
 cargo test --locked -p ciallopa-usage
 
 # A forwarding behavior; omit the final filter to run the integration file.
-cargo test --locked -p ciallopa --test forward sse_disconnect
+cargo test --locked -p ciallopa --test it forward::sse_disconnect
 
 # Embedded UI query and asynchronous state behavior; no npm install needed.
 node scripts/ui-state-check.cjs
@@ -38,7 +38,7 @@ Choose the layer whose behavior is in question rather than running every scenari
 | 429/503, Retry-After, exhausted retries, delayed WS handshake | `cli-smoke.py --suite recovery` | Actual Codex attempts, gateway records, elapsed recovery and WS-to-SSE fallback. |
 | Disconnect after a completed tool result reaches the following generation | `cli-smoke.py --suite tool-recovery` | Actual local callback count, original call/result in recovery input and client/gateway outcomes, on SSE and WS. |
 | Pending tool disconnect/cancel and client crash before tool-result acknowledgement | `cli-smoke.py --suite tool-faults` | Local execution count versus persisted history and resumed request input; distinguishes an unexecuted tool from an executed but unacknowledged side effect. |
-| SSE EOF, missing terminal event, silence, client cancellation | `crates/server/tests/forward.rs`; for example `cargo test --locked -p ciallopa --test forward idle_timeout_aborts_stream` | Forwarded result, failure classification and released request occupancy. |
+| SSE EOF, missing terminal event, silence, client cancellation | `crates/server/tests/it/forward.rs`; for example `cargo test --locked -p ciallopa --test it forward::idle_timeout_aborts_stream` | Forwarded result, failure classification and released request occupancy. |
 | WS abrupt upstream close, preparation cancellation and blocked writes | Forwarding integration tests and focused socket probes described in [PERFORMANCE.md](PERFORMANCE.md) | Close/error behavior and bounded cancellation at the tested boundary; not cancellation of every possible blocked operation. |
 | Proxy reload during an active WS | `caddy-smoke.py` | Real Codex recovery through a real Caddy process with a local upstream. |
 | Process drain and forced shutdown with active SSE/WS | `compose-smoke.py` | Owned container signals, client results, final SQLite records and restart visibility. |
@@ -50,32 +50,29 @@ test capture is not a recommendation to log production prompts or tool results.
 
 ## Before merging
 
-The shared [checks workflow](../.github/workflows/checks.yml) runs on pull requests and
-pushes to `main`/`master`. The [release workflow](../.github/workflows/release.yml) calls
-the same checks before packaging, including checking a version tag against the crate.
-There is one Ubuntu job with the pinned Rust toolchain and Cargo cache:
+The [checks workflow](../.github/workflows/checks.yml) runs on pushes to `main` (and pull
+requests). The [release workflow](../.github/workflows/release.yml) calls it again for the tag,
+in parallel with packaging; only publication waits for it. Two parallel Ubuntu jobs use the
+pinned toolchain and Cargo cache:
 
 ```sh
+# lint
 cargo fmt --all --check
-python3 scripts/release-version-test.py
 python3 scripts/release-version.py --check
 python3 scripts/ghcr-cleanup-test.py
-python3 scripts/docker-smoke-test.py
-python3 scripts/compose-smoke-test.py
-node scripts/ui-state-check.cjs
-node scripts/settings-state-check.cjs
-node scripts/accounts-state-check.cjs
+for f in scripts/*-check.cjs; do node "$f"; done
 cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --locked
-cargo test --locked -p ciallopa --example loadbench
+# test (plain `cargo test --workspace --all-targets --locked` runs the same tests)
+cargo nextest run --workspace --all-targets --locked
 ```
 
-`compose-smoke-test.py` checks fixture configuration generation and persisted-account
-assertions without Docker. It covers both explicit and implicit template defaults so
-duplicate TOML fields fail before container smoke testing.
+All server integration tests are modules of one binary, `crates/server/tests/it/`, so they
+link once; run one module with `cargo test -p ciallopa --test it forward::`. A push to `main`
+also builds the musl release binaries once per architecture, so the next tag's packaging
+restores a warm cache instead of compiling every dependency.
 
-Clippy compiles all targets, so a separate full debug build adds little here. The explicit
-example test command runs loadbench's SSE parser and measurement regressions. These checks
+Clippy compiles all targets, so a separate full debug build adds little here. `--all-targets`
+includes loadbench's SSE parser and measurement tests. These checks
 do not install a browser, run capacity benchmarks or build release packages.
 
 ### Responses gzip regressions
@@ -84,7 +81,7 @@ Use synthetic upstreams for gzip changes; no provider account is needed:
 
 ```sh
 cargo test --locked -p ciallopa-forward response_body
-cargo test --locked -p ciallopa --test forward gzip
+cargo test --locked -p ciallopa --test it forward::gzip
 ```
 
 The stream fixture must flush an output event while withholding the gzip trailer, and the

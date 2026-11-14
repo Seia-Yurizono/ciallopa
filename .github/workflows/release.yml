@@ -24,11 +24,11 @@ env:
   RELEASE_PRERELEASE: ${{ github.ref_name == 'v0.1.0' || contains(github.ref_name, '-') }}
 
 jobs:
+  # Runs alongside packaging; only publishing waits for it.
   check:
     uses: ./.github/workflows/checks.yml
 
   package:
-    needs: check
     strategy:
       matrix:
         include:
@@ -50,9 +50,11 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deb
+      # Restores the cache that checks.yml's musl-cache job saves on main; tags never save.
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          shared-key: musl-${{ matrix.target }}
+          save-if: false
       - name: Build and package
         run: scripts/package.sh
       - name: Smoke test the .deb under systemd
@@ -215,7 +217,7 @@ jobs:
           retention-days: 7
 
   docker-publish:
-    needs: docker
+    needs: [check, docker]
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     concurrency:

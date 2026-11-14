@@ -173,8 +173,9 @@ async fn ws(e: &Env) -> Result<u16, (u16, Option<String>, String)> {
 
 #[tokio::test]
 async fn short_cooldown_is_held_then_routed_http() {
-    let e = env(Duration::from_millis(1200), false, 20).await;
+    // Measured from before the cooldown starts, so a slow setup cannot shorten the hold.
     let t = Instant::now();
+    let e = env(Duration::from_millis(1200), false, 20).await;
     let r = post_http(&e).await;
     assert_eq!(r.status(), 200);
     assert!(r.text().await.unwrap().contains("response.completed"));
@@ -188,8 +189,9 @@ async fn short_cooldown_is_held_then_routed_http() {
 
 #[tokio::test]
 async fn short_cooldown_is_held_then_routed_ws() {
-    let e = env(Duration::from_millis(1200), false, 20).await;
+    // Measured from before the cooldown starts, so a slow setup cannot shorten the hold.
     let t = Instant::now();
+    let e = env(Duration::from_millis(1200), false, 20).await;
     assert_eq!(ws(&e).await.unwrap(), 101);
     assert!(t.elapsed() >= Duration::from_millis(1150));
     assert_eq!(e.hits.load(Ordering::SeqCst), 1);

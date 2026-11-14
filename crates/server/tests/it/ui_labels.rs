@@ -17,7 +17,7 @@ fn keys(html: &str, start: &str) -> BTreeSet<String> {
 
 #[test]
 fn error_labels_cover_codes_one_to_one() {
-    let html = include_str!("../src/ui.html");
+    let html = include_str!("../../src/ui.html");
     let mut labelled = keys(html, "const ERR_LBL=Object.assign({");
     labelled.extend(keys(html, "const PROXY_ERR={"));
     let codes = ciallopa_forward::codes::LOCAL
@@ -46,7 +46,7 @@ fn new_codex_terminal_codes_have_chinese_labels() {
         "codex_workspace_access_denied",
         "budget_reached",
     ];
-    let html = include_str!("../src/ui.html");
+    let html = include_str!("../../src/ui.html");
     let labelled = keys(html, "const ERR_LBL=Object.assign({");
     for code in CODES {
         assert!(

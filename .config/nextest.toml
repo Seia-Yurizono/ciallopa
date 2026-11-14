@@ -1,0 +1,4 @@
+[profile.ci]
+# Report every failure in one run instead of stopping at the first.
+fail-fast = false
+failure-output = "immediate-final"

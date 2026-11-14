@@ -5,7 +5,8 @@
 # Needs: the rust-toolchain.toml toolchain with that target, a musl C compiler for it (musl-tools'
 # musl-gcc on a native host; set CC_<target> when cross-compiling), cargo-deb.
 # Used as-is by .github/workflows/release.yml (once per architecture, on native runners).
-#   --no-build   package an already built binary
+#   --no-build     package an already built binary
+#   --build-only   build only (CI warms the release cache on main with this)
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -27,7 +28,10 @@ esac
 DIST=${DIST:-dist}
 TARGET_DIR=${CARGO_TARGET_DIR:-target}
 BUILD=1
-[[ "${1:-}" == "--no-build" ]] && BUILD=0
+case "${1:-}" in
+    --no-build) BUILD=0 ;;
+    --build-only) BUILD=2 ;;
+esac
 
 VERSION=$(cargo metadata --no-deps --format-version 1 --locked |
     python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="ciallopa"))')
@@ -38,6 +42,7 @@ if (( BUILD )); then
     cc_var="CC_${TARGET//-/_}"
     export "$cc_var=${!cc_var:-musl-gcc}"
     cargo build --release --locked --target "$TARGET" -p ciallopa
+    (( BUILD == 2 )) && exit 0
 fi
 
 "${STRIP:-strip}" "$BIN"

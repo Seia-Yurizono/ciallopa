@@ -13,7 +13,7 @@
 //! forgets them nor spends twice. Only the 60 s spacing between tries is kept in memory (on the
 //! sweep's clock), so the first retry after a restart may come sooner.
 //!
-//! Races and how each one is handled (tests in `tests/auto_reset.rs` where noted):
+//! Races and how each one is handled (tests in `tests/it/auto_reset.rs` where noted):
 //! - **manual vs automatic**: both take [`ResetCredits::lock_for`]; whichever comes second sees
 //!   the first one's result in its fresh listing (auto) or in the pending row (manual gets the
 //!   usual 409 `pending_consume` and can retry that attempt). An unresolved *manual* attempt is

@@ -1,0 +1,15 @@
+//! All server integration tests in one binary (one link step instead of one per file).
+#![allow(clippy::unwrap_used)]
+mod affinity_restart;
+mod auto_reset;
+mod compaction_concurrency;
+mod cooling;
+mod fingerprint;
+mod forward;
+mod http;
+mod prices;
+mod reset_credits;
+mod settings;
+mod shutdown;
+mod ui_labels;
+mod ws_model_cooldown;

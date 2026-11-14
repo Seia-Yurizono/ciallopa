@@ -319,7 +319,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Streamed responses are many small writes; Nagle would hold each behind the
     // client's delayed ACK (about 40 ms per chunk on a kept-alive connection).
     use axum::serve::ListenerExt;
-    let ln = tokio::net::TcpListener::bind(listen).await?.tap_io(|tcp| {
+    let ln = tokio::net::TcpListener::bind(listen).await?;
+    // The bound address, not the configured one: `listen = "...:0"` picks a free port.
+    let listen = ln.local_addr()?;
+    let ln = ln.tap_io(|tcp| {
         if let Err(err) = tcp.set_nodelay(true) {
             tracing::debug!(%err, "TCP_NODELAY not set");
         }

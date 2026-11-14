@@ -538,7 +538,7 @@ async fn refresh_admin_csrf_and_can_consume() {
 fn no_automatic_consume_path() {
     // The upstream consume helper has one caller, `consume_locked`, which is reached only
     // from the manual admin handler and the opt-in automatic use (`auto_reset::attempt`).
-    let src = include_str!("../src/reset_credits.rs");
+    let src = include_str!("../../src/reset_credits.rs");
     assert_eq!(
         src.matches("consume_upstream(").count(),
         2,
@@ -553,7 +553,7 @@ fn no_automatic_consume_path() {
     );
     let handler = src.split("async fn consume(").nth(1).unwrap();
     assert!(handler[..handler.find("\n}\n").unwrap()].contains("consume_locked("));
-    let auto = include_str!("../src/auto_reset.rs");
+    let auto = include_str!("../../src/auto_reset.rs");
     assert_eq!(
         auto.matches("consume_locked(").count(),
         1,
@@ -586,10 +586,10 @@ fn no_automatic_consume_path() {
     }
     // nothing else in the workspace references the consume endpoint
     for other in [
-        include_str!("../../forward/src/proxy.rs"),
-        include_str!("../../forward/src/lib.rs"),
-        include_str!("../../routing/src/lib.rs"),
-        include_str!("../src/main.rs"),
+        include_str!("../../../forward/src/proxy.rs"),
+        include_str!("../../../forward/src/lib.rs"),
+        include_str!("../../../routing/src/lib.rs"),
+        include_str!("../../src/main.rs"),
     ] {
         assert!(!other.contains("reset-credits/consume") && !other.contains("consume_locked"));
     }
