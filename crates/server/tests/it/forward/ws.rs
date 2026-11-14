@@ -1378,6 +1378,7 @@ async fn ws_downstream_observation_per_turn() {
     for body in [
         r#"{"type":"response.create","model":"gpt-5.5","generate":false}"#,
         r#"{"type":"response.create","model":"gpt-5.5","tag":"slow"}"#,
+        r#"{"type":"response.create","model":"gpt-5.5","tag":"meta"}"#,
     ] {
         ws.send(M::text(body)).await.unwrap();
         loop {
@@ -1395,12 +1396,17 @@ async fn ws_downstream_observation_per_turn() {
         }
     }
     drop(ws);
-    let rows = wait_rows(&e, 2).await;
-    let (turn, warm) = (&rows[0], &rows[1]);
+    let rows = wait_rows(&e, 3).await;
+    let (turn, warm) = (&rows[0], &rows[2]);
     assert_eq!(warm["endpoint"], "prewarm", "{warm}");
     let (s, o) = obs_of(&e, turn["request_id"].as_str().unwrap()).await;
     assert_eq!(s, 200, "{o}");
     let term = ms(&o, "up_terminal_ms");
+    assert_eq!(
+        turn["ttft_ms"].as_u64(),
+        Some(ms(&o, "up_first_text_ms")),
+        "{turn} {o}"
+    );
     // The terminal frame's send is attributed to its own turn.
     assert!(ms(&o, "ws_last_send_ms") >= term, "{o}");
     assert!(
@@ -1425,6 +1431,13 @@ async fn ws_downstream_observation_per_turn() {
     }
     // Old duration semantics: fixed when the terminal frame arrived (before its send).
     assert!(turn["duration_ms"].as_u64().unwrap() >= term, "{turn} {o}");
+    let (_, reasoning) = obs_of(&e, rows[1]["request_id"].as_str().unwrap()).await;
+    assert_eq!(
+        rows[1]["ttft_ms"].as_u64(),
+        Some(ms(&reasoning, "up_first_reasoning_ms")),
+        "{} {reasoning}",
+        rows[1]
+    );
     let (s, w) = obs_of(&e, warm["request_id"].as_str().unwrap()).await;
     assert_eq!(s, 200, "{w}");
     assert!(

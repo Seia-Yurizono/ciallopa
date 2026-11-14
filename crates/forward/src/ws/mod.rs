@@ -7,7 +7,7 @@ mod session;
 use self::connect::connect;
 use self::session::{finish_on_shutdown, relay};
 use crate::budget::PreparationBudget;
-use crate::usage::{endpoint_of, Tracker};
+use crate::usage::{endpoint_of, End, Tracker};
 use crate::ws_upgrade::Upgrade;
 use crate::{map_path, pq, proxy, session_route, AppState};
 use axum::extract::{OriginalUri, State};
@@ -87,17 +87,12 @@ pub(crate) async fn handler(
         Ok(Err(r)) | Err(r) => {
             // One row for the failed handshake, including preparation and all retries.
             if let Some(mut t) = handshake {
-                t.status(r.status().as_u16());
-                t.finish_response();
                 let (parts, body) = r.into_parts();
-                t.error_headers(&parts.headers);
-                if let Some(m) = parts.extensions.get::<crate::errors::ErrMeta>() {
-                    t.meta_err(m);
-                }
                 let b = axum::body::to_bytes(body, 1 << 20)
                     .await
                     .unwrap_or_default();
-                t.error_body(&b);
+                t.record_response(&parts, &b);
+                t.finish(End::Completed);
                 return Response::from_parts(parts, axum::body::Body::from(b));
             }
             return r;

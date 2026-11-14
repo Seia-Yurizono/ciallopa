@@ -1,4 +1,4 @@
-use crate::usage::Tracker;
+use crate::usage::{End, Tracker};
 use axum::response::Response;
 use ciallopa_upstream::WsMessage;
 
@@ -44,13 +44,8 @@ pub(super) async fn error_event(resp: Response, turn: Option<Tracker>) -> Messag
         .await
         .unwrap_or_default();
     if let Some(mut t) = turn {
-        t.status(parts.status.as_u16());
-        t.finish_response();
-        t.error_headers(&parts.headers);
-        if let Some(m) = parts.extensions.get::<crate::errors::ErrMeta>() {
-            t.meta_err(m);
-        }
-        t.error_body(&b);
+        t.record_response(&parts, &b);
+        t.finish(End::Completed);
     }
     let error = serde_json::from_slice::<serde_json::Value>(&b)
         .ok()
@@ -93,6 +88,15 @@ impl Head {
         serde_json::from_str(text).ok()
     }
 
+    pub(super) fn replayable(&self) -> bool {
+        self.ty.as_ref().and_then(|t| t.as_str()) == Some("response.create")
+            && self
+                .previous_response_id
+                .as_ref()
+                .and_then(|p| p.as_str())
+                .is_none_or(|p| p.trim().is_empty())
+    }
+
     pub(super) fn to_value(&self) -> serde_json::Value {
         let mut m = serde_json::Map::new();
         for (k, v) in [
@@ -112,12 +116,7 @@ impl Head {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn replayable(text: &str) -> bool {
-    Head::parse(text).is_some_and(|h| {
-        h.ty.as_ref().and_then(|t| t.as_str()) == Some("response.create")
-            && h.previous_response_id
-                .as_ref()
-                .and_then(|p| p.as_str())
-                .is_none_or(|p| p.trim().is_empty())
-    })
+    Head::parse(text).is_some_and(|h| h.replayable())
 }

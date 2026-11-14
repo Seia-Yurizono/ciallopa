@@ -248,10 +248,6 @@ fn data_text(event: &str) -> Option<Cow<'_, str>> {
     Some(Cow::Owned(text))
 }
 
-pub(crate) fn memfind(hay: &[u8], needle: &[u8]) -> bool {
-    hay.windows(needle.len()).any(|w| w == needle)
-}
-
 #[cfg(test)]
 mod quota_tests {
     use super::*;

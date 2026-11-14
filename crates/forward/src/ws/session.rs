@@ -1,11 +1,13 @@
 use super::connect::connect;
-use super::frames::{busy_frame, error_event, replayable, to_down, to_up, Head, Message};
+use super::frames::{busy_frame, error_event, to_down, to_up, Head, Message};
 use super::Ctx;
 use crate::attempt::{quota_plan, Next, OverloadPlan, Policy};
 use crate::budget::PreparationBudget;
+#[cfg(test)]
 use crate::classify::classify_observed;
+use crate::classify::{classify, Class, Terminal};
 use crate::timing;
-use crate::usage::{endpoint_of, StreamObservation, Tracker};
+use crate::usage::{endpoint_of, End, StreamObservation, Tracker};
 use crate::ws_upgrade::DownWs;
 use crate::{proxy, AppState};
 use ciallopa_core::{AccountId, Outcome, RouteRequest};
@@ -72,66 +74,8 @@ enum Redial<'a> {
 enum RedialFailed {
     Budget,
     Refused(axum::response::Response),
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn redial(
-    st: &AppState,
-    ctx: &Ctx,
-    route: &mut RouteRequest,
-    up: &mut UpLink,
-    budget: &mut PreparationBudget,
-    tracker: Option<&mut Tracker>,
-    why: Redial<'_>,
-) -> Result<(), RedialFailed> {
-    let (hold, wait) = match why {
-        Redial::ModelCooldown => (proxy::WS_HOLD_MAX, None),
-        Redial::Overload { wait, .. } => (Duration::MAX, wait),
-        Redial::Quota(_) => (Duration::MAX, None),
-    };
-    let (ws, headers, account, gen) = budget
-        .run(async {
-            if let Some(wait) = wait {
-                tokio::time::sleep(wait).await;
-            }
-            connect(st, &ctx.path, &ctx.headers, route, hold, None).await
-        })
-        .await
-        .map_err(|_| RedialFailed::Budget)?
-        .map_err(RedialFailed::Refused)?;
-    let replacement = UpLink::new(ws, headers, account, gen);
-    let code = match why {
-        Redial::ModelCooldown => "model_cooldown",
-        Redial::Overload { code, .. } => code,
-        Redial::Quota(outcome) => crate::errors::quota_outcome_code(outcome),
-    };
-    tracing::info!(from = %up.account, to = %replacement.account, code, "ws redialed before output");
-    if let Some(tracker) = tracker {
-        tracker.obs_upstream_request_id(replacement.request_id.as_deref());
-        tracker.obs_ws_negotiation(ctx.ws_ext_down.as_deref(), replacement.ext.as_deref());
-        if !matches!(why, Redial::ModelCooldown) || replacement.account != up.account {
-            tracker.replay(
-                &up.account,
-                code,
-                if replacement.account == up.account {
-                    Next::WaitRetry
-                } else {
-                    Next::Switch
-                },
-            );
-        }
-        if replacement.account != up.account {
-            tracker.switch_to(&replacement.account);
-        }
-        tracker.quota(&replacement.quota);
-    }
-    let old = std::mem::replace(up, replacement);
-    tokio::spawn(drain_close(
-        old.tx,
-        old.rx,
-        timing::scale(st, Duration::from_secs(2)),
-    ));
-    Ok(())
+    ClientClosed,
+    WriteFailed,
 }
 
 /// The relay observes shutdown between frames, but a send/connect branch can itself be
@@ -160,11 +104,162 @@ fn close_frame(code: u16, reason: &str) -> Message {
     }))
 }
 
+struct Down {
+    tx: DownTx,
+    rx: DownRx,
+    queued: Option<Message>,
+}
+
+enum Conn {
+    Idle,
+    Turn(Turn),
+    Cutting {
+        turn: Turn,
+        until: tokio::time::Instant,
+    },
+}
+
+impl Conn {
+    fn turn(&self) -> Option<&Turn> {
+        match self {
+            Self::Idle => None,
+            Self::Turn(t) | Self::Cutting { turn: t, .. } => Some(t),
+        }
+    }
+
+    fn turn_mut(&mut self) -> Option<&mut Turn> {
+        match self {
+            Self::Idle => None,
+            Self::Turn(t) | Self::Cutting { turn: t, .. } => Some(t),
+        }
+    }
+
+    fn take_turn(&mut self) -> Option<Turn> {
+        match std::mem::replace(self, Self::Idle) {
+            Self::Idle => None,
+            Self::Turn(t) | Self::Cutting { turn: t, .. } => Some(t),
+        }
+    }
+
+    fn cut_until(&self) -> Option<tokio::time::Instant> {
+        match self {
+            Self::Cutting { until, .. } => Some(*until),
+            _ => None,
+        }
+    }
+
+    fn cut(&mut self, until: tokio::time::Instant) {
+        if let Some(turn) = self.take_turn() {
+            *self = Self::Cutting { turn, until };
+        }
+    }
+}
+
+struct Turn {
+    _slot: ciallopa_upstream::drain::Lease,
+    tracker: Option<Tracker>,
+    budget: PreparationBudget,
+    switches: usize,
+    overload_waited: bool,
+    progress: StreamObservation,
+    phase: TurnPhase,
+}
+
+enum TurnPhase {
+    Prelude {
+        request: Option<Replayable>,
+        held: Held,
+    },
+    Committed {
+        // Keep the turn's budget reservation until terminal or the next client message.
+        permit: Option<ciallopa_upstream::drain::BodyPermit>,
+    },
+}
+
+struct Replayable {
+    text: tungstenite::Utf8Bytes,
+    _permit: ciallopa_upstream::drain::BodyPermit,
+}
+
+#[derive(Default)]
+struct Held {
+    frames: Vec<Message>,
+    bytes: usize,
+}
+
+impl Held {
+    fn push(&mut self, message: Message) {
+        self.bytes += match &message {
+            Message::Text(t) => t.len(),
+            Message::Binary(b) => b.len(),
+            _ => 0,
+        };
+        self.frames.push(message);
+    }
+}
+
+impl Turn {
+    fn request(&self) -> Option<tungstenite::Utf8Bytes> {
+        match &self.phase {
+            TurnPhase::Prelude {
+                request: Some(r), ..
+            } => Some(r.text.clone()),
+            _ => None,
+        }
+    }
+
+    fn discard_request(&mut self) {
+        match &mut self.phase {
+            TurnPhase::Prelude { request, .. } => *request = None,
+            TurnPhase::Committed { permit } => *permit = None,
+        }
+    }
+
+    fn held(&mut self) -> Vec<Message> {
+        match &mut self.phase {
+            TurnPhase::Prelude { held, .. } => std::mem::take(held).frames,
+            TurnPhase::Committed { .. } => Vec::new(),
+        }
+    }
+
+    fn commit(&mut self) -> Vec<Message> {
+        match std::mem::replace(&mut self.phase, TurnPhase::Committed { permit: None }) {
+            TurnPhase::Prelude { request, held } => {
+                self.phase = TurnPhase::Committed {
+                    permit: request.map(|r| r._permit),
+                };
+                held.frames
+            }
+            TurnPhase::Committed { permit } => {
+                self.phase = TurnPhase::Committed { permit };
+                Vec::new()
+            }
+        }
+    }
+}
+
+enum Flow {
+    Continue,
+    Close(Close),
+}
+
+struct Session {
+    st: AppState,
+    ctx: Ctx,
+    route: RouteRequest,
+    up: UpLink,
+    down: Down,
+    state: Conn,
+    max_switches: usize,
+    idle: Duration,
+    sleep: std::pin::Pin<Box<tokio::time::Sleep>>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn relay(
     st: AppState,
     ctx: Ctx,
-    mut route: RouteRequest,
+    route: RouteRequest,
     account: AccountId,
     down: DownWs,
     up: UpstreamWs,
@@ -173,524 +268,788 @@ pub(super) async fn relay(
     handshake: HeaderMap,
     handoff: Option<ciallopa_upstream::drain::Lease>,
 ) {
-    // Egress proxy switch: the upstream WebSocket keeps the proxy it was dialed with, so once
-    // the egress generation moves past `gen`, the session is closed (normal close, both legs)
-    // between turns and the client reconnects through the new egress. A running turn finishes
-    // on the old connection first. Not an error: no cooldown, no usage record.
-    let mut egress = st.upstream.egress_watch();
-    // Graceful shutdown: same rule (close between turns, after the running one), and after
-    // the drain bound a 1001 close. A session opened during the drain sees it at once.
     let _session = st.upstream.drain.enter();
-    // The handshake's (exempt) admission ends once the session is counted. An idle
-    // connection holds no inflight slot; each turn takes one (`turn_slot`).
     drop(handoff);
-    let mut turn_slot: Option<ciallopa_upstream::drain::Lease> = None;
-    let mut drain = st.upstream.drain.watch();
-    drain.mark_changed();
-    let mut up = UpLink::new(up, handshake, account, gen);
-    let mut progress = StreamObservation::new();
-    let (mut dtx, mut drx) = down.split();
-    let mut queued_down = None;
+    let (tx, rx) = down.split();
     let max_switches = st.accounts.len().max(1);
-    let mut switches = 0usize;
-    let mut awaiting = false;
-    // Current turn: the client request (if replayable), upstream preamble frames held back
-    // until the first meaningful event, and whether anything meaningful was sent.
-    // Shares the message's buffer (no copy).
-    let mut pending: Option<tokio_tungstenite::tungstenite::Utf8Bytes> = None;
-    // Budget reservation for the latest client message, held while it (or `pending`, its
-    // replay copy) is in memory.
-    let mut msg_permit: Option<ciallopa_upstream::drain::BodyPermit> = None;
-    let mut held: Vec<Message> = Vec::new();
-    let mut started = false;
-    // The single same-account overload wait-and-retry of the current turn is spent.
-    let mut overload_waited = false;
-    let mut preparation = PreparationBudget::new(ctx.preparation_limit);
-    // Usage: one tracker per turn (client `response.create` → terminal event). Dropping it
-    // emits the record, so every `break` below records the in-flight turn with its error.
-    let endpoint = endpoint_of(&ctx.path);
-    let mut turn: Option<Tracker> = None;
-    let sleep = tokio::time::sleep(idle);
-    tokio::pin!(sleep);
-    // Shutdown cut a running turn: forward what upstream already delivered, then end the turn
-    // with a retryable response.failed and close (see `next_upstream`).
-    let mut cut: Option<tokio::time::Instant> = None;
-    let reason = 'outer: loop {
-        tokio::select! {
-            m = next_downstream(&mut drx, &mut queued_down), if cut.is_none() => match m {
-                Some(Ok(m)) => {
-                    let size = match &m {
-                        Message::Text(t) => Some(t.len()),
-                        Message::Binary(b) => Some(b.len()),
-                        _ => None,
-                    };
-                    if let Some(n) = size {
-                        // This message replaces the previous one and its replay copy.
-                        drop(msg_permit.take());
-                        match crate::reqbody::reserve_message(&st, n).await {
-                            Some(p) => msg_permit = Some(p),
-                            None => {
-                                let budget = st.config.load().max_buffered_body_mb.saturating_mul(1 << 20);
-                                crate::refusal::note(&st, crate::refusal::Refusal {
-                                    kind: ciallopa_upstream::drain::RefusalKind::WsMsg,
-                                    ws: true,
-                                    key: ctx.key.as_deref(),
-                                    path: &ctx.path,
-                                    headers: &ctx.headers,
-                                    model: Some(route.model.as_str()).filter(|m| !m.is_empty()),
-                                    account: Some(&up.account.to_string()),
-                                    limit: budget,
-                                    bytes: Some(n as u64),
-                                });
-                                if dtx.send(busy_frame()).await.is_err() { break 'outer Close::ClientGone; }
-                                continue 'outer;
-                            }
-                        }
-                    }
-                    let is_close = matches!(m, Message::Close(_));
-                    if matches!(m, Message::Text(_) | Message::Binary(_)) && !awaiting {
-                        // A turn holds one `max_inflight_requests` slot from its client
-                        // request to its terminal event (or cancel / close).
-                        let limit = st.config.load().max_inflight_requests;
-                        match st.upstream.drain.admit(limit) {
-                            Ok(l) => turn_slot = Some(l),
-                            Err(ciallopa_upstream::drain::Refused::Busy) => {
-                                let model = match &m {
-                                    Message::Text(t) => Head::parse(t.as_str()).and_then(|h| h.model.and_then(|v| v.as_str().map(str::to_string))),
-                                    _ => None,
-                                };
-                                crate::refusal::note(&st, crate::refusal::Refusal {
-                                    kind: ciallopa_upstream::drain::RefusalKind::Inflight,
-                                    ws: true,
-                                    key: ctx.key.as_deref(),
-                                    path: &ctx.path,
-                                    headers: &ctx.headers,
-                                    model: model.as_deref().filter(|m| !m.is_empty()),
-                                    account: Some(&up.account.to_string()),
-                                    limit: limit as u64,
-                                    bytes: None,
-                                });
-                                drop(msg_permit.take());
-                                if dtx.send(busy_frame()).await.is_err() { break 'outer Close::ClientGone; }
-                                continue 'outer;
-                            }
-                            Err(ciallopa_upstream::drain::Refused::Draining) => {
-                                drop(msg_permit.take());
-                                // The client already sent this turn: ask it to replay later.
-                                break 'outer Close::Shutdown(ShutdownClose::Refused);
-                            }
-                        }
-                    }
-                    if matches!(m, Message::Text(_) | Message::Binary(_)) {
-                        if !awaiting {
-                            progress = StreamObservation::new();
-                            sleep.as_mut().reset(tokio::time::Instant::now() + idle);
-                            held.clear();
-                            started = false;
-                            overload_waited = false;
-                            switches = 0;
-                            preparation = PreparationBudget::new(ctx.preparation_limit);
-                        }
-                        pending = match &m {
-                            Message::Text(t) if !awaiting && replayable(t.as_str()) => Some(t.clone()),
-                            _ => None,
-                        };
-                        if !awaiting {
-                            if let Message::Text(t) = &m {
-                                if t.as_str().contains("response.create") {
-                                    let head = Head::parse(t.as_str());
-                                    // The handshake carries no model: each turn's model scopes this
-                                    // connection's routing reports and cooldown checks.
-                                    if let Some(model) = head.as_ref().and_then(|h| h.model.as_ref()).and_then(|v| v.as_str()).filter(|v| !v.is_empty()) {
-                                        route.model = model.to_string();
-                                    }
-                                    turn = endpoint.and_then(|ep| Tracker::start(&st, Transport::Ws, ep, ctx.key.as_deref())).map(|mut tr| {
-                                        let v = head.as_ref().map(Head::to_value);
-                                        tr.headers(&ctx.headers);
-                                        tr.meta(v.as_ref());
-                                        if v.as_ref().and_then(|v| v.get("generate")).and_then(|g| g.as_bool()) == Some(false) {
-                                            tr.prewarm();
-                                        }
-                                        tr.accounts(&[], Some(&up.account));
-                                        tr.quota(&up.quota);
-                                        tr.status(200);
-                                        tr.obs_upstream_request_id(up.request_id.as_deref());
-                                        tr.obs_ws_negotiation(ctx.ws_ext_down.as_deref(), up.ext.as_deref());
-                                        tr
-                                    });
-                                    if !route.model.is_empty() && st.router.model_cooling_until(&up.account, &route.model).is_some() {
-                                        // This account is cooling down for the turn's model (HTTP would
-                                        // not pick it): move to an account that may serve it, or wait
-                                        // out a short cooldown, before anything is sent upstream.
-                                        if !replayable(t.as_str()) {
-                                            // Its `previous_response_id` lives on this connection only.
-                                            tracing::info!(account = %ciallopa_core::a(&up.account), model = %route.model, "ws turn model cooling on this account; closing for client replay");
-                                            if let Some(tr) = turn.as_mut() { tr.fail_msg("model_cooldown", "account cooling down for this model; closed for client replay"); tr.source(crate::errors::SRC_LOCAL); }
-                                            break 'outer Close::Replay;
-                                        }
-                                        let accounts = st.accounts.accounts();
-                                        let mut r = route.clone();
-                                        if accounts.iter().any(|a| a.id != up.account && !a.disabled && !r.exclude.contains(&a.id) && st.router.model_cooling_until(&a.id, &r.model).is_none()) {
-                                            r.exclude.push(up.account.clone());
-                                        }
-                                        match redial(&st, &ctx, &mut r, &mut up, &mut preparation, turn.as_mut(), Redial::ModelCooldown).await {
-                                            Ok(()) => {}
-                                            Err(RedialFailed::Refused(resp)) => {
-                                                // What HTTP would answer, as an upstream-style error event;
-                                                // the connection stays open and no turn starts.
-                                                let ev = error_event(resp, turn.take()).await;
-                                                pending = None;
-                                                drop(msg_permit.take());
-                                                if dtx.send(ev).await.is_err() { break 'outer Close::ClientGone; }
-                                                continue 'outer;
-                                            }
-                                            Err(RedialFailed::Budget) => {
-                                                preparation_timeout(turn.as_mut());
-                                                break 'outer Close::Replay;
-                                            }
-                                        }
-                                    }
-                                    st.router.note_attempt(&up.account);
-                                }
-                            }
-                        }
-                        awaiting = true;
-                    }
-                    if let Some(u) = to_up(m) {
-                        match write_with_client_close(up.tx.send(u), &mut drx, &mut queued_down).await {
-                            WriteResult::Sent(Ok(())) => {}
-                            WriteResult::ClientClosed => {
-                                if let Some(t) = turn.as_mut() { t.client_gone(); }
-                                break 'outer Close::Interrupted;
-                            }
-                            WriteResult::Sent(Err(e)) => {
-                                // Client Close and forced shutdown retain their cancellation cause.
-                                if !is_close && st.upstream.drain.phase() != Phase::Force {
-                                    if awaiting {
-                                        progress.warn("ws", "write_error", &up.account, up.request_id.as_deref(), turn.as_ref());
-                                    }
-                                    if let Some(t) = turn.as_mut() {
-                                        t.fail_msg("upstream_ws_send_error", format!("upstream websocket send failed (transport error: {e})"));
-                                        t.source(crate::errors::SRC_NETWORK);
-                                    }
-                                }
-                                break 'outer Close::Internal("upstream gone");
-                            }
-                        }
-                    }
-                    if pending.is_none() {
-                        // Forwarded and not kept for replay.
-                        drop(msg_permit.take());
-                    }
-                    if is_close {
-                        if let Some(t) = turn.as_mut() { t.client_gone(); }
-                        break 'outer Close::ClientGone;
-                    }
-                }
-                other => {
-                    if let Some(t) = turn.as_mut() { t.client_gone(); }
-                    if let Some(Err(tokio_tungstenite::tungstenite::Error::Capacity(e))) = &other {
-                        tracing::warn!(account = %ciallopa_core::a(&up.account), error = %e, "websocket message over ws_max_message_mb; closing 1009");
-                        break 'outer Close::TooBig;
-                    }
-                    break 'outer Close::Interrupted;
-                }
-            },
-            m = next_upstream(&mut up.rx, cut) => {
-                let Upstream::Next(m) = m else {
-                    // Everything upstream already delivered has been forwarded: end the turn.
-                    if awaiting {
-                        if let Some(t) = turn.as_mut() { t.fail_msg("shutdown", "closed by server shutdown before the turn finished".to_string()); t.source(crate::errors::SRC_LOCAL); }
-                    }
-                    for h in held.drain(..) { let _ = send_down(&mut dtx, h, turn.as_mut()).await; }
-                    break 'outer Close::Shutdown(ShutdownClose::Cut);
-                };
-                sleep.as_mut().reset(tokio::time::Instant::now() + idle);
-                match m {
-                    Some(Ok(WsMessage::Close(f))) => {
-                        if awaiting {
-                            progress.warn("ws", "close_frame", &up.account, up.request_id.as_deref(), turn.as_ref());
-                        }
-                        let code = f.as_ref().map(|f| u16::from(f.code)).unwrap_or(1000);
-                        if let Some(t) = turn.as_mut() {
-                            let reason = f.as_ref().map(|f| f.reason.to_string()).unwrap_or_default();
-                            t.fail_msg("upstream_ws_close", format!("upstream websocket closed mid-turn (code {code}) {reason}").trim_end().to_string()); t.source(crate::errors::SRC_STREAM);
-                        }
-                        if code != 1000 {
-                            st.router.report(&route, &up.account, &Outcome::Transport);
-                        }
-                        for h in held.drain(..) { let _ = send_down(&mut dtx, h, turn.as_mut()).await; }
-                        break 'outer Close::Upstream(f);
-                    }
-                    Some(Ok(m)) => {
-                        if awaiting {
-                            progress.activity();
-                            if let Some(t) = turn.as_mut() { t.upstream_activity(); }
-                        }
-                        if let Some(t) = turn.as_mut() {
-                            match &m {
-                                WsMessage::Text(x) => {
-                                    t.obs_up_bytes(x.len());
-                                    if let Some(ty) = crate::usage::event_type(x.as_str()) {
-                                        t.obs_event(&ty);
-                                    }
-                                }
-                                WsMessage::Binary(b) => t.obs_up_bytes(b.len()),
-                                _ => {}
-                            }
-                        }
-                        let (kind, done) = match &m {
-                            WsMessage::Text(t) => {
-                                let (k, d, snap) = classify_observed(t.as_str(), &mut progress);
-                                if let Some(o) = snap {
-                                    st.router.report(&route, &up.account, &o);
-                                    if let Some(h) = parse_quota_event_headers(t.as_str().as_bytes()) {
-                                        if let Some(tr) = turn.as_mut() { tr.quota(&h); }
-                                        up.quota = h;
-                                    }
-                                }
-                                // An error frame Codex ignores: forward it, but it neither
-                                // commits the attempt nor counts as model output.
-                                let soft = !d && crate::usage::event_type(t.as_str()).as_deref() == Some("error");
-                                if soft {
-                                    tracing::warn!(account = %ciallopa_core::a(&up.account), record_id = turn.as_ref().map(Tracker::record_id), "upstream websocket error frame without status; forwarded, turn continues");
-                                    if let Some(tr) = turn.as_mut() { tr.error_text(t.as_str().as_bytes()); }
-                                    (proxy::EventKind::Preamble, d)
-                                } else {
-                                    (k, d)
-                                }
-                            }
-                            _ => (proxy::EventKind::Preamble, false),
-                        };
-                        if let (proxy::EventKind::Quota(_), Some(t), WsMessage::Text(txt)) = (&kind, turn.as_mut(), &m) {
-                            t.error_text(txt.as_str().as_bytes());
-                        }
-                        if let proxy::EventKind::Overloaded(code) = &kind {
-                            let accounts = st.accounts.accounts();
-                            let others = proxy::others_usable(&st, &accounts, &route, &up.account);
-                            st.router.report(&route, &up.account, &proxy::overload_outcome(&st, others));
-                            let fresh = awaiting && !started && pending.is_some();
-                            // Only usable account left: wait once and replay on it (Codex does not
-                            // retry an in-stream overload itself).
-                            let plan = if fresh {
-                                Policy::ws_redial().overload_plan(others, overload_waited, &HeaderMap::new(),
-                                    st.config.load().upstream_opts.overload_retry_wait_secs, switches, max_switches)
-                            } else { OverloadPlan::PassThrough };
-                            let wait = match plan { OverloadPlan::WaitRetry(wait) => Some(timing::scale(&st, wait)), _ => None };
-                            let can_replay = plan != OverloadPlan::PassThrough;
-                            if let (true, Some(req)) = (can_replay, pending.clone()) {
-                                if let Some(w) = wait {
-                                    overload_waited = true;
-                                    tracing::info!(account = %ciallopa_core::a(&up.account), code = %code, wait_ms = w.as_millis() as u64, "ws overloaded before output on last usable account; waiting to retry once");
-                                } else {
-                                    switches += 1;
-                                    route.exclude.push(up.account.clone());
-                                }
-                                match redial(&st, &ctx, &mut route, &mut up, &mut preparation, turn.as_mut(), Redial::Overload { code, wait }).await {
-                                    Ok(()) => {
-                                        held.clear();
-                                        st.router.note_attempt(&up.account);
-                                        match write_replay(up.tx.send(WsMessage::Text(req)), &mut drx, &mut queued_down, &st.upstream.drain, &mut progress, &up.account, up.request_id.as_deref(), turn.as_mut()).await {
-                                            WriteResult::Sent(Ok(())) => {
-                                                sleep.as_mut().reset(tokio::time::Instant::now() + idle);
-                                                continue 'outer;
-                                            }
-                                            WriteResult::ClientClosed => {
-                                                if let Some(t) = turn.as_mut() { t.client_gone(); }
-                                                break 'outer Close::Interrupted;
-                                            }
-                                            WriteResult::Sent(Err(_)) => {}
-                                        }
-                                    }
-                                    Err(RedialFailed::Refused(_)) => tracing::warn!("ws redial after overload failed"),
-                                    Err(RedialFailed::Budget) => {
-                                        preparation_timeout(turn.as_mut());
-                                                break 'outer Close::Replay;
-                                    }
-                                }
-                                // Redial failed: stop using the old socket and let the client replay.
-                                if let Some(t) = turn.as_mut() { t.fail_msg(code, "upstream overloaded; redial failed, closed for client replay"); t.source(crate::errors::SRC_STREAM); }
-                                break 'outer Close::Replay;
-                            }
-                            // Output already sent, or no other account: pass it through verbatim.
-                            if let Some(t) = turn.as_mut() {
-                                if let WsMessage::Text(txt) = &m { t.error_text(txt.as_str().as_bytes()); }
-                                t.fail_msg(code, "upstream overloaded");
-                                t.source(crate::errors::SRC_STREAM);
-                            }
-                        }
-                        if let proxy::EventKind::Quota(o) = kind {
-                            // Never forward: Codex would end the turn (UsageLimitReached is fatal).
-                            st.router.report(&route, &up.account, &o);
-                            let next = quota_plan(&mut switches, max_switches);
-                            if awaiting && !started && next == Next::Switch {
-                                if let Some(req) = pending.clone() {
-                                    route.exclude.push(up.account.clone());
-                                    match redial(&st, &ctx, &mut route, &mut up, &mut preparation, turn.as_mut(), Redial::Quota(&o)).await {
-                                        Ok(()) => {
-                                            held.clear();
-                                            match write_replay(up.tx.send(WsMessage::Text(req)), &mut drx, &mut queued_down, &st.upstream.drain, &mut progress, &up.account, up.request_id.as_deref(), turn.as_mut()).await {
-                                                WriteResult::Sent(Ok(())) => {
-                                                    sleep.as_mut().reset(tokio::time::Instant::now() + idle);
-                                                    continue 'outer;
-                                                }
-                                                WriteResult::ClientClosed => {
-                                                    if let Some(t) = turn.as_mut() { t.client_gone(); }
-                                                    break 'outer Close::Interrupted;
-                                                }
-                                                WriteResult::Sent(Err(_)) => {}
-                                            }
-                                        }
-                                        Err(RedialFailed::Refused(_)) => tracing::warn!("ws redial after quota error failed"),
-                                        Err(_) => {
-                                            preparation_timeout(turn.as_mut());
-                                                break 'outer Close::Replay;
-                                        }
-                                    }
-                                }
-                            }
-                            tracing::info!(account = %ciallopa_core::a(&up.account), "ws quota error mid-turn; closing for client replay");
-                            if let Some(t) = turn.as_mut() { t.fail_msg(crate::errors::quota_outcome_code(&o), "usage limit reached mid-turn; closed for client replay"); t.source(crate::errors::SRC_STREAM); }
-                            break 'outer Close::Replay;
-                        }
-                        if let (Some(t), WsMessage::Text(txt)) = (turn.as_mut(), &m) {
-                            if !done && proxy::memfind(txt.as_bytes(), b"\"response.created\"") {
-                                if let Ok(v) = serde_json::from_str::<serde_json::Value>(txt.as_str()) {
-                                    if v.get("type").and_then(|t| t.as_str()) == Some("response.created") {
-                                        t.created_event(&v);
-                                    }
-                                }
-                            }
-                        }
-                        if let (Some(t), WsMessage::Text(txt)) = (turn.as_mut(), &m) {
-                            t.output_event(txt.as_str().as_bytes());
-                        }
-                        let preamble = matches!(kind, proxy::EventKind::Preamble) && !done;
-                        if awaiting && !started && preamble {
-                            if let Some(d) = to_down(m) {
-                                let add = match &d {
-                                    Message::Text(t) => t.len(),
-                                    Message::Binary(b) => b.len(),
-                                    _ => 0,
-                                };
-                                let held_bytes: usize = held.iter().map(|h| match h {
-                                    Message::Text(t) => t.len(),
-                                    Message::Binary(b) => b.len(),
-                                    _ => 0,
-                                }).sum();
-                                // Same cap as HTTP bootstrap: unbounded bookkeeping must not
-                                // grow the hold forever. Over the cap we commit and flush.
-                                if held_bytes + add > proxy::BOOTSTRAP_MAX {
-                                    held.push(d);
-                                    started = true;
-                                    for h in held.drain(..) {
-                                        if send_down(&mut dtx, h, turn.as_mut()).await.is_err() { break 'outer Close::ClientGone; }
-                                    }
-                                    continue;
-                                }
-                                held.push(d);
-                            }
-                            continue;
-                        }
-                        if awaiting {
-                            if !started && matches!(kind, proxy::EventKind::Content) && !done {
-                                st.router.content_ok(&up.account);
-                            }
-                            started = true;
-                        }
-                        for h in held.drain(..) {
-                            if send_down(&mut dtx, h, turn.as_mut()).await.is_err() { break 'outer Close::ClientGone; }
-                        }
-                        // The finished turn's tracker lives until its terminal frame was sent
-                        // downstream (observed send), with `duration_ms` fixed here as before.
-                        let mut finished: Option<Tracker> = None;
-                        if done {
-                            awaiting = false;
-                            drop(turn_slot.take());
-                            pending = None;
-                            drop(msg_permit.take());
-                            if let Some(mut t) = turn.take() {
-                                if let WsMessage::Text(txt) = &m {
-                                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(txt.as_str()) {
-                                        t.terminal_event(&v);
-                                    }
-                                }
-                                t.freeze_duration();
-                                finished = Some(t);
-                            }
-                        }
-                        // Encrypted-content rejection: same frame, clear message (logged above
-                        // with the upstream one). No account outcome: the request is at fault.
-                        let m = match (&kind, m) {
-                            (proxy::EventKind::Encrypted(_), WsMessage::Text(txt)) => {
-                                tracing::info!(account = %ciallopa_core::a(&up.account), "upstream rejected the encrypted content in the request history");
-                                match serde_json::from_str::<serde_json::Value>(txt.as_str()) {
-                                    Ok(v) => WsMessage::text(crate::encrypted::ws_frame(&v)),
-                                    Err(_) => WsMessage::Text(txt),
-                                }
-                            }
-                            (_, m) => m,
-                        };
-                        if let Some(d) = to_down(m) {
-                            let t = finished.as_mut().or(turn.as_mut());
-                            if send_down(&mut dtx, d, t).await.is_err() {
-                                drop(finished);
-                                let _ = up.tx.send(WsMessage::Close(None)).await;
-                                break 'outer Close::ClientGone;
-                            }
-                        }
-                        // `finished` dropped here → record emitted.
-                        drop(finished);
-                        if done && st.upstream.egress_gen() != up.gen {
-                            break 'outer Close::Egress;
-                        }
-                        if done && st.upstream.drain.phase() != Phase::Running {
-                            break 'outer Close::Shutdown(ShutdownClose::BetweenTurns);
-                        }
-                    }
-                    other => {
-                        let (class, code, msg) = upstream_end(&other);
-                        if awaiting {
-                            progress.warn("ws", class, &up.account, up.request_id.as_deref(), turn.as_ref());
-                        } else {
-                            tracing::info!(account = %ciallopa_core::a(&up.account), error_class = class, "upstream websocket transport error between turns");
-                        }
-                        if let Some(t) = turn.as_mut() { t.fail_msg(code, msg); t.source(crate::errors::SRC_NETWORK); }
-                        st.router.report(&route, &up.account, &Outcome::Transport);
-                        break 'outer Close::Internal("upstream disconnected");
-                    }
-                }
-            },
-            _ = egress.changed() => {
-                if !awaiting && *egress.borrow_and_update() != up.gen {
-                    break 'outer Close::Egress;
-                }
+    Session {
+        st,
+        ctx,
+        route,
+        up: UpLink::new(up, handshake, account, gen),
+        down: Down {
+            tx,
+            rx,
+            queued: None,
+        },
+        state: Conn::Idle,
+        max_switches,
+        idle,
+        sleep: Box::pin(tokio::time::sleep(idle)),
+    }
+    .run()
+    .await;
+}
+
+impl Session {
+    async fn run(mut self) {
+        let mut egress = self.st.upstream.egress_watch();
+        let mut drain = self.st.upstream.drain.watch();
+        drain.mark_changed();
+        let reason = loop {
+            let flow = tokio::select! {
+                m = next_downstream(&mut self.down.rx, &mut self.down.queued), if self.state.cut_until().is_none() => self.on_client(m).await,
+                m = next_upstream(&mut self.up.rx, self.state.cut_until()) => self.on_upstream(m).await,
+                _ = egress.changed() => self.on_egress(*egress.borrow_and_update()),
+                _ = drain.changed(), if self.state.cut_until().is_none() => self.on_drain(*drain.borrow_and_update()),
+                _ = &mut self.sleep, if self.state.turn().is_some() => self.on_idle(),
+            };
+            if let Flow::Close(reason) = flow {
+                break reason;
             }
-            _ = drain.changed(), if cut.is_none() => {
-                let phase = *drain.borrow_and_update();
-                if phase == Phase::Force && awaiting {
-                    tracing::warn!(account = %ciallopa_core::a(&up.account), "shutting down; drain bound reached, cutting the running websocket turn");
-                    cut = Some(tokio::time::Instant::now() + timing::scale(&st, CUT_FLUSH_MAX));
-                } else if phase == Phase::Force || (phase == Phase::Draining && !awaiting) {
-                    break 'outer Close::Shutdown(ShutdownClose::BetweenTurns);
-                }
-            }
-            _ = &mut sleep, if awaiting => {
-                progress.warn("ws", "idle_timeout", &up.account, up.request_id.as_deref(), turn.as_ref());
-                if let Some(t) = turn.as_mut() { t.fail_msg("idle_timeout", format!("upstream websocket idle for {}s (timeout)", idle.as_secs())); t.source(crate::errors::SRC_NETWORK); }
-                st.router.report(&route, &up.account, &Outcome::Transport);
-                break 'outer Close::Internal("stream idle timeout");
+        };
+        self.finish_turn(End::ClientGone);
+        close(
+            reason,
+            self.down.tx,
+            self.down.rx,
+            self.up,
+            timing::scale(&self.st, Duration::from_secs(2)),
+        )
+        .await;
+    }
+
+    fn tracker(&self) -> Option<&Tracker> {
+        self.state.turn().and_then(|t| t.tracker.as_ref())
+    }
+    fn tracker_mut(&mut self) -> Option<&mut Tracker> {
+        self.state.turn_mut().and_then(|t| t.tracker.as_mut())
+    }
+
+    fn finish_turn(&mut self, end: End) {
+        if let Some(mut turn) = self.state.take_turn() {
+            if let Some(tracker) = turn.tracker.take() {
+                tracker.finish(end);
             }
         }
-    };
-    close(
-        reason,
-        dtx,
-        drx,
-        up,
-        timing::scale(&st, Duration::from_secs(2)),
-    )
-    .await;
+    }
+
+    fn fail(
+        &mut self,
+        code: impl Into<std::borrow::Cow<'static, str>>,
+        source: &'static str,
+        message: impl Into<String>,
+    ) {
+        self.finish_turn(End::Failed {
+            code: code.into(),
+            source,
+            message: Some(message.into()),
+        });
+    }
+
+    fn reset_idle(&mut self) {
+        self.sleep
+            .as_mut()
+            .reset(tokio::time::Instant::now() + self.idle);
+    }
+
+    fn warn(&self, class: &'static str) {
+        if let Some(turn) = self.state.turn() {
+            turn.progress.warn(
+                "ws",
+                class,
+                &self.up.account,
+                self.up.request_id.as_deref(),
+                turn.tracker.as_ref(),
+            );
+        }
+    }
+
+    fn note_refusal(
+        &self,
+        kind: ciallopa_upstream::drain::RefusalKind,
+        limit: u64,
+        bytes: Option<u64>,
+        model: Option<&str>,
+    ) {
+        crate::refusal::note(
+            &self.st,
+            crate::refusal::Refusal {
+                kind,
+                ws: true,
+                key: self.ctx.key.as_deref(),
+                path: &self.ctx.path,
+                headers: &self.ctx.headers,
+                model: model.filter(|m| !m.is_empty()),
+                account: Some(&self.up.account.to_string()),
+                limit,
+                bytes,
+            },
+        );
+    }
+
+    async fn send(&mut self, message: Message) -> Flow {
+        let tracker = self.state.turn_mut().and_then(|t| t.tracker.as_mut());
+        match send_down(&mut self.down.tx, message, tracker).await {
+            Ok(()) => Flow::Continue,
+            Err(_) => Flow::Close(Close::ClientGone),
+        }
+    }
+
+    async fn flush_held(&mut self, commit: bool) -> Flow {
+        let frames = self
+            .state
+            .turn_mut()
+            .map(|t| if commit { t.commit() } else { t.held() })
+            .unwrap_or_default();
+        for frame in frames {
+            if let Flow::Close(reason) = self.send(frame).await {
+                return Flow::Close(reason);
+            }
+        }
+        Flow::Continue
+    }
+
+    async fn redial(&mut self, why: Redial<'_>) -> Result<(), RedialFailed> {
+        let turn = self.state.turn_mut().expect("redial needs a running turn");
+        let mut model_route;
+        let route = if matches!(why, Redial::ModelCooldown) {
+            model_route = self.route.clone();
+            if self.st.accounts.accounts().iter().any(|a| {
+                a.id != self.up.account
+                    && !a.disabled
+                    && !model_route.exclude.contains(&a.id)
+                    && self
+                        .st
+                        .router
+                        .model_cooling_until(&a.id, &model_route.model)
+                        .is_none()
+            }) {
+                model_route.exclude.push(self.up.account.clone());
+            }
+            &mut model_route
+        } else {
+            &mut self.route
+        };
+        let (hold, wait) = match why {
+            Redial::ModelCooldown => (proxy::WS_HOLD_MAX, None),
+            Redial::Overload { wait, .. } => (Duration::MAX, wait),
+            Redial::Quota(_) => (Duration::MAX, None),
+        };
+        let (ws, headers, account, gen) = turn
+            .budget
+            .run(async {
+                if let Some(wait) = wait {
+                    tokio::time::sleep(wait).await;
+                }
+                connect(
+                    &self.st,
+                    &self.ctx.path,
+                    &self.ctx.headers,
+                    route,
+                    hold,
+                    None,
+                )
+                .await
+            })
+            .await
+            .map_err(|_| RedialFailed::Budget)?
+            .map_err(RedialFailed::Refused)?;
+        let replacement = UpLink::new(ws, headers, account, gen);
+        let code = match why {
+            Redial::ModelCooldown => "model_cooldown",
+            Redial::Overload { code, .. } => code,
+            Redial::Quota(outcome) => crate::errors::quota_outcome_code(outcome),
+        };
+        tracing::info!(from = %self.up.account, to = %replacement.account, code, "ws redialed before output");
+        if let Some(tracker) = turn.tracker.as_mut() {
+            tracker.obs_upstream_request_id(replacement.request_id.as_deref());
+            tracker.obs_ws_negotiation(self.ctx.ws_ext_down.as_deref(), replacement.ext.as_deref());
+            if !matches!(why, Redial::ModelCooldown) || replacement.account != self.up.account {
+                tracker.replay(
+                    &self.up.account,
+                    code,
+                    if replacement.account == self.up.account {
+                        Next::WaitRetry
+                    } else {
+                        Next::Switch
+                    },
+                );
+            }
+            if replacement.account != self.up.account {
+                tracker.switch_to(&replacement.account);
+            }
+            tracker.quota(&replacement.quota);
+        }
+        let old = std::mem::replace(&mut self.up, replacement);
+        tokio::spawn(drain_close(
+            old.tx,
+            old.rx,
+            timing::scale(&self.st, Duration::from_secs(2)),
+        ));
+        Ok(())
+    }
+
+    async fn replay(
+        &mut self,
+        request: tungstenite::Utf8Bytes,
+        why: Redial<'_>,
+    ) -> Result<(), RedialFailed> {
+        let overload = matches!(why, Redial::Overload { .. });
+        self.redial(why).await?;
+        if overload {
+            self.st.router.note_attempt(&self.up.account);
+        }
+        let turn = self.state.turn_mut().expect("replay needs a running turn");
+        turn.held();
+        match write_replay(
+            self.up.tx.send(WsMessage::Text(request)),
+            &mut self.down.rx,
+            &mut self.down.queued,
+            &self.st.upstream.drain,
+            &mut turn.progress,
+            &self.up.account,
+            self.up.request_id.as_deref(),
+            turn.tracker.as_mut(),
+        )
+        .await
+        {
+            WriteResult::Sent(Ok(())) => {
+                self.reset_idle();
+                Ok(())
+            }
+            WriteResult::ClientClosed => Err(RedialFailed::ClientClosed),
+            WriteResult::Sent(Err(_)) => {
+                if self.st.upstream.drain.phase() == Phase::Force {
+                    self.finish_turn(End::Forced);
+                }
+                Err(RedialFailed::WriteFailed)
+            }
+        }
+    }
+
+    fn replay_failed(&mut self, failure: RedialFailed, code: &str, message: &str) -> Flow {
+        match failure {
+            RedialFailed::ClientClosed => Flow::Close(Close::Interrupted),
+            RedialFailed::Budget => {
+                self.fail(
+                    "preparation_timeout",
+                    crate::errors::SRC_LOCAL,
+                    "websocket preparation budget exhausted across retries/account switches",
+                );
+                Flow::Close(Close::Replay)
+            }
+            RedialFailed::Refused(_) | RedialFailed::WriteFailed => {
+                self.fail(code.to_owned(), crate::errors::SRC_STREAM, message);
+                Flow::Close(Close::Replay)
+            }
+        }
+    }
+
+    async fn on_client(&mut self, item: Option<Result<Message, tungstenite::Error>>) -> Flow {
+        let message = match item {
+            Some(Ok(message)) => message,
+            Some(Err(tungstenite::Error::Capacity(error))) => {
+                tracing::warn!(account = %ciallopa_core::a(&self.up.account), %error, "websocket message over ws_max_message_mb; closing 1009");
+                return Flow::Close(Close::TooBig);
+            }
+            _ => return Flow::Close(Close::Interrupted),
+        };
+        if matches!(message, Message::Close(_)) {
+            return Flow::Close(Close::ClientGone);
+        }
+        let size = match &message {
+            Message::Text(t) => Some(t.len()),
+            Message::Binary(b) => Some(b.len()),
+            _ => None,
+        };
+        let head = match &message {
+            Message::Text(text) if self.state.turn().is_none() => Head::parse(text.as_str()),
+            _ => None,
+        };
+        let mut permit;
+        if let Some(size) = size {
+            if let Some(turn) = self.state.turn_mut() {
+                turn.discard_request();
+            }
+            permit = crate::reqbody::reserve_message(&self.st, size).await;
+            if permit.is_none() {
+                self.note_refusal(
+                    ciallopa_upstream::drain::RefusalKind::WsMsg,
+                    self.st
+                        .config
+                        .load()
+                        .max_buffered_body_mb
+                        .saturating_mul(1 << 20),
+                    Some(size as u64),
+                    Some(&self.route.model),
+                );
+                return match self.down.tx.send(busy_frame()).await {
+                    Ok(()) => Flow::Continue,
+                    Err(_) => Flow::Close(Close::ClientGone),
+                };
+            }
+            if self.state.turn().is_none() {
+                let limit = self.st.config.load().max_inflight_requests;
+                let slot = match self.st.upstream.drain.admit(limit) {
+                    Ok(slot) => slot,
+                    Err(ciallopa_upstream::drain::Refused::Busy) => {
+                        self.note_refusal(
+                            ciallopa_upstream::drain::RefusalKind::Inflight,
+                            limit as u64,
+                            None,
+                            head.as_ref()
+                                .and_then(|h| h.model.as_ref())
+                                .and_then(|m| m.as_str()),
+                        );
+                        return match self.down.tx.send(busy_frame()).await {
+                            Ok(()) => Flow::Continue,
+                            Err(_) => Flow::Close(Close::ClientGone),
+                        };
+                    }
+                    Err(ciallopa_upstream::drain::Refused::Draining) => {
+                        return Flow::Close(Close::Shutdown(ShutdownClose::Refused))
+                    }
+                };
+                let request = match &message {
+                    Message::Text(text) if head.as_ref().is_some_and(Head::replayable) => {
+                        Some(Replayable {
+                            text: text.clone(),
+                            _permit: permit.take().expect("reserved message"),
+                        })
+                    }
+                    _ => None,
+                };
+                let tracker = if matches!(&message, Message::Text(text) if text.contains("response.create"))
+                {
+                    if let Some(model) = head
+                        .as_ref()
+                        .and_then(|h| h.model.as_ref())
+                        .and_then(|m| m.as_str())
+                        .filter(|m| !m.is_empty())
+                    {
+                        self.route.model = model.to_owned();
+                    }
+                    endpoint_of(&self.ctx.path)
+                        .and_then(|ep| {
+                            Tracker::start(&self.st, Transport::Ws, ep, self.ctx.key.as_deref())
+                        })
+                        .map(|mut tr| {
+                            let value = head.as_ref().map(Head::to_value);
+                            tr.headers(&self.ctx.headers);
+                            tr.meta(value.as_ref());
+                            if value
+                                .as_ref()
+                                .and_then(|v| v.get("generate"))
+                                .and_then(|g| g.as_bool())
+                                == Some(false)
+                            {
+                                tr.prewarm();
+                            }
+                            tr.accounts(&[], Some(&self.up.account));
+                            tr.quota(&self.up.quota);
+                            tr.status(200);
+                            tr.obs_upstream_request_id(self.up.request_id.as_deref());
+                            tr.obs_ws_negotiation(
+                                self.ctx.ws_ext_down.as_deref(),
+                                self.up.ext.as_deref(),
+                            );
+                            tr
+                        })
+                } else {
+                    None
+                };
+                self.state = Conn::Turn(Turn {
+                    _slot: slot,
+                    tracker,
+                    budget: PreparationBudget::new(self.ctx.preparation_limit),
+                    switches: 0,
+                    overload_waited: false,
+                    progress: StreamObservation::new(),
+                    phase: TurnPhase::Prelude {
+                        request,
+                        held: Held::default(),
+                    },
+                });
+                self.reset_idle();
+                if matches!(&message, Message::Text(text) if text.contains("response.create")) {
+                    if !self.route.model.is_empty()
+                        && self
+                            .st
+                            .router
+                            .model_cooling_until(&self.up.account, &self.route.model)
+                            .is_some()
+                    {
+                        if self.state.turn().and_then(Turn::request).is_none() {
+                            self.fail(
+                                "model_cooldown",
+                                crate::errors::SRC_LOCAL,
+                                "account cooling down for this model; closed for client replay",
+                            );
+                            return Flow::Close(Close::Replay);
+                        }
+                        match self.redial(Redial::ModelCooldown).await {
+                            Ok(()) => {}
+                            Err(RedialFailed::Refused(response)) => {
+                                let tracker =
+                                    self.state.take_turn().and_then(|mut t| t.tracker.take());
+                                return self.send(error_event(response, tracker).await).await;
+                            }
+                            Err(failure) => {
+                                return self.replay_failed(
+                                    failure,
+                                    "model_cooldown",
+                                    "account cooling down for this model",
+                                )
+                            }
+                        }
+                    }
+                    self.st.router.note_attempt(&self.up.account);
+                }
+            }
+        }
+        if let Some(message) = to_up(message) {
+            match write_with_client_close(
+                self.up.tx.send(message),
+                &mut self.down.rx,
+                &mut self.down.queued,
+            )
+            .await
+            {
+                WriteResult::Sent(Ok(())) => {}
+                WriteResult::ClientClosed => return Flow::Close(Close::Interrupted),
+                WriteResult::Sent(Err(error)) => {
+                    if self.st.upstream.drain.phase() != Phase::Force {
+                        self.warn("write_error");
+                        self.fail(
+                            "upstream_ws_send_error",
+                            crate::errors::SRC_NETWORK,
+                            format!("upstream websocket send failed (transport error: {error})"),
+                        );
+                    }
+                    return Flow::Close(Close::Internal("upstream gone"));
+                }
+            }
+        }
+        Flow::Continue
+    }
+
+    async fn on_upstream(&mut self, item: Upstream<Result<Message, tungstenite::Error>>) -> Flow {
+        let item = match item {
+            Upstream::Next(item) => item,
+            Upstream::CutDone => {
+                let _ = self.flush_held(false).await;
+                self.fail(
+                    "shutdown",
+                    crate::errors::SRC_LOCAL,
+                    "closed by server shutdown before the turn finished",
+                );
+                return Flow::Close(Close::Shutdown(ShutdownClose::Cut));
+            }
+        };
+        self.reset_idle();
+        let message = match item {
+            Some(Ok(Message::Close(frame))) => {
+                self.warn("close_frame");
+                let code = frame.as_ref().map(|f| u16::from(f.code)).unwrap_or(1000);
+                if code != 1000 {
+                    self.st
+                        .router
+                        .report(&self.route, &self.up.account, &Outcome::Transport);
+                }
+                let _ = self.flush_held(false).await;
+                let reason = frame.as_ref().map(|f| f.reason.as_str()).unwrap_or("");
+                self.fail(
+                    "upstream_ws_close",
+                    crate::errors::SRC_STREAM,
+                    format!("upstream websocket closed mid-turn (code {code}) {reason}").trim_end(),
+                );
+                return Flow::Close(Close::Upstream(frame));
+            }
+            Some(Ok(message)) => message,
+            other => {
+                let (class, code, message) = upstream_end(&other);
+                self.warn(class);
+                self.fail(code, crate::errors::SRC_NETWORK, message);
+                self.st
+                    .router
+                    .report(&self.route, &self.up.account, &Outcome::Transport);
+                return Flow::Close(Close::Internal("upstream disconnected"));
+            }
+        };
+        if let Some(turn) = self.state.turn_mut() {
+            turn.progress.activity();
+            if let Some(tracker) = turn.tracker.as_mut() {
+                tracker.upstream_activity();
+                match &message {
+                    Message::Text(t) => tracker.obs_up_bytes(t.len()),
+                    Message::Binary(b) => tracker.obs_up_bytes(b.len()),
+                    _ => {}
+                }
+            }
+        }
+        let mut classified = match &message {
+            Message::Text(text) => Some(classify(None, text.as_str()).ws_view(text.as_str())),
+            _ => None,
+        };
+        if let Some(ty) = classified.as_ref().and_then(|c| c.ty.as_deref()) {
+            if let Some(turn) = self.state.turn_mut() {
+                turn.progress.event(ty);
+                if let Some(tracker) = turn.tracker.as_mut() {
+                    tracker.obs_event(ty);
+                }
+            }
+        }
+        let class = classified
+            .as_ref()
+            .map(|c| &c.class)
+            .unwrap_or(&Class::Preamble);
+        let done = classified.as_ref().is_some_and(|c| c.ends_ws_turn());
+        if let Class::RateLimits(Some(quota)) = class {
+            self.st.router.report(
+                &self.route,
+                &self.up.account,
+                &Outcome::Success {
+                    quota: Some(quota.clone()),
+                },
+            );
+            if let Message::Text(text) = &message {
+                if let Some(headers) = parse_quota_event_headers(text.as_bytes()) {
+                    if let Some(tracker) = self.tracker_mut() {
+                        tracker.quota(&headers);
+                    }
+                    self.up.quota = headers;
+                }
+            }
+        }
+        if matches!(
+            class,
+            Class::SoftError | Class::Terminal(Terminal::Quota(_))
+        ) {
+            if let (Some(tracker), Message::Text(text)) = (self.tracker_mut(), &message) {
+                tracker.error_text(text.as_bytes());
+            }
+        }
+        if matches!(class, Class::SoftError) {
+            tracing::warn!(account = %ciallopa_core::a(&self.up.account), record_id = self.tracker().map(Tracker::record_id), "upstream websocket error frame without status; forwarded, turn continues");
+        }
+        if let Class::Terminal(Terminal::Overloaded(code)) = class {
+            let accounts = self.st.accounts.accounts();
+            let others = proxy::others_usable(&self.st, &accounts, &self.route, &self.up.account);
+            self.st.router.report(
+                &self.route,
+                &self.up.account,
+                &proxy::overload_outcome(&self.st, others),
+            );
+            if let Some(request) = self.state.turn().and_then(Turn::request) {
+                let turn = self.state.turn_mut().expect("replayable turn");
+                let plan = Policy::ws_redial().overload_plan(
+                    others,
+                    turn.overload_waited,
+                    &HeaderMap::new(),
+                    self.st.config.load().upstream_opts.overload_retry_wait_secs,
+                    turn.switches,
+                    self.max_switches,
+                );
+                let wait = match plan {
+                    OverloadPlan::WaitRetry(wait) => Some(timing::scale(&self.st, wait)),
+                    _ => None,
+                };
+                if plan != OverloadPlan::PassThrough {
+                    if wait.is_some() {
+                        turn.overload_waited = true;
+                    } else {
+                        turn.switches += 1;
+                        self.route.exclude.push(self.up.account.clone());
+                    }
+                    return match self.replay(request, Redial::Overload { code, wait }).await {
+                        Ok(()) => Flow::Continue,
+                        Err(failure) => self.replay_failed(
+                            failure,
+                            code,
+                            "upstream overloaded; redial failed, closed for client replay",
+                        ),
+                    };
+                }
+            }
+            if let Some(tracker) = self.tracker_mut() {
+                if let Message::Text(text) = &message {
+                    tracker.error_text(text.as_bytes());
+                }
+                tracker.fail_msg(code, "upstream overloaded");
+                tracker.source(crate::errors::SRC_STREAM);
+            }
+        }
+        if let Class::Terminal(Terminal::Quota(outcome)) = class {
+            self.st
+                .router
+                .report(&self.route, &self.up.account, outcome);
+            if let Some(turn) = self.state.turn_mut() {
+                if quota_plan(&mut turn.switches, self.max_switches) == Next::Switch {
+                    if let Some(request) = turn.request() {
+                        self.route.exclude.push(self.up.account.clone());
+                        return match self.replay(request, Redial::Quota(outcome)).await {
+                            Ok(()) => Flow::Continue,
+                            Err(failure) => self.replay_failed(
+                                failure,
+                                crate::errors::quota_outcome_code(outcome),
+                                "usage limit reached mid-turn; closed for client replay",
+                            ),
+                        };
+                    }
+                }
+            }
+            self.fail(
+                crate::errors::quota_outcome_code(outcome),
+                crate::errors::SRC_STREAM,
+                "usage limit reached mid-turn; closed for client replay",
+            );
+            return Flow::Close(Close::Replay);
+        }
+        let preamble = matches!(
+            class,
+            Class::Preamble | Class::Created | Class::RateLimits(_) | Class::SoftError
+        ) && !done;
+        let content = matches!(
+            class,
+            Class::Output
+                | Class::Terminal(
+                    Terminal::Completed | Terminal::Incomplete | Terminal::Failed | Terminal::Error
+                )
+        );
+        let encrypted = matches!(class, Class::Terminal(Terminal::Encrypted(_)));
+        if let (Some(tracker), Some(classified), Message::Text(text)) =
+            (self.tracker_mut(), classified.as_mut(), &message)
+        {
+            if !done && classified.class == Class::Created {
+                if let Some(value) = classified.value(text.as_str()) {
+                    tracker.created_event(value);
+                }
+            }
+        }
+        let rewritten = if encrypted {
+            if let (Some(classified), Message::Text(text)) = (classified.as_mut(), &message) {
+                classified
+                    .value(text.as_str())
+                    .map(crate::encrypted::ws_frame)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if preamble {
+            if let Some(Turn {
+                phase: TurnPhase::Prelude { held, .. },
+                ..
+            }) = self.state.turn_mut()
+            {
+                if let Some(frame) = to_down(message) {
+                    held.push(frame);
+                }
+                if held.bytes > proxy::BOOTSTRAP_MAX {
+                    return self.flush_held(true).await;
+                }
+                return Flow::Continue;
+            }
+        }
+        if content
+            && !done
+            && matches!(
+                self.state.turn().map(|t| &t.phase),
+                Some(TurnPhase::Prelude { .. })
+            )
+        {
+            self.st.router.content_ok(&self.up.account);
+        }
+        if let Flow::Close(reason) = self.flush_held(true).await {
+            return Flow::Close(reason);
+        }
+        if done {
+            if let (Some(tracker), Some(classified), Message::Text(text)) =
+                (self.tracker_mut(), classified.as_mut(), &message)
+            {
+                if let Some(value) = classified.value(text.as_str()) {
+                    tracker.terminal_event(value);
+                }
+            }
+        }
+        let mut finished = if done {
+            self.state.take_turn().and_then(|mut t| t.tracker.take())
+        } else {
+            None
+        };
+        if let Some(tracker) = finished.as_mut() {
+            tracker.freeze_duration();
+        }
+        let message = rewritten.map(Message::text).unwrap_or(message);
+        let sent = match to_down(message) {
+            Some(message) => {
+                let tracker = finished
+                    .as_mut()
+                    .or_else(|| self.state.turn_mut().and_then(|t| t.tracker.as_mut()));
+                send_down(&mut self.down.tx, message, tracker).await.is_ok()
+            }
+            None => true,
+        };
+        if let Some(tracker) = finished {
+            tracker.finish(if sent {
+                End::Completed
+            } else {
+                End::ClientGone
+            });
+        }
+        if !sent {
+            return Flow::Close(Close::ClientGone);
+        }
+        if done {
+            if self.st.upstream.egress_gen() != self.up.gen {
+                return Flow::Close(Close::Egress);
+            }
+            if self.st.upstream.drain.phase() != Phase::Running {
+                return Flow::Close(Close::Shutdown(ShutdownClose::BetweenTurns));
+            }
+        }
+        Flow::Continue
+    }
+
+    fn on_egress(&self, generation: u64) -> Flow {
+        if self.state.turn().is_none() && generation != self.up.gen {
+            Flow::Close(Close::Egress)
+        } else {
+            Flow::Continue
+        }
+    }
+
+    fn on_drain(&mut self, phase: Phase) -> Flow {
+        match (phase, self.state.turn().is_some()) {
+            (Phase::Force, true) => {
+                self.state
+                    .cut(tokio::time::Instant::now() + timing::scale(&self.st, CUT_FLUSH_MAX));
+                Flow::Continue
+            }
+            (Phase::Force | Phase::Draining, false) => {
+                Flow::Close(Close::Shutdown(ShutdownClose::BetweenTurns))
+            }
+            _ => Flow::Continue,
+        }
+    }
+
+    fn on_idle(&mut self) -> Flow {
+        self.warn("idle_timeout");
+        self.fail(
+            "idle_timeout",
+            crate::errors::SRC_NETWORK,
+            format!(
+                "upstream websocket idle for {}s (timeout)",
+                self.idle.as_secs()
+            ),
+        );
+        self.st
+            .router
+            .report(&self.route, &self.up.account, &Outcome::Transport);
+        Flow::Close(Close::Internal("stream idle timeout"))
+    }
 }
 
 /// Downstream send of a turn's message, observed on its tracker (`sink.send` completion:
@@ -742,20 +1101,14 @@ where
 {
     *progress = StreamObservation::new();
     let result = write_with_client_close(write, rx, queued).await;
-    if matches!(&result, WriteResult::Sent(Err(_))) {
-        if drain.phase() == Phase::Force {
-            if let Some(t) = tracker {
-                t.client_gone();
-            }
-        } else {
-            progress.warn(
-                "ws",
-                "write_error",
-                account,
-                upstream_request_id,
-                tracker.as_deref(),
-            );
-        }
+    if matches!(&result, WriteResult::Sent(Err(_))) && drain.phase() != Phase::Force {
+        progress.warn(
+            "ws",
+            "write_error",
+            account,
+            upstream_request_id,
+            tracker.as_deref(),
+        );
     }
     result
 }
@@ -909,16 +1262,6 @@ where
     match tokio::time::timeout_at(deadline, rx.next()).await {
         Ok(item) => Upstream::Next(item),
         Err(_) => Upstream::CutDone,
-    }
-}
-
-fn preparation_timeout(turn: Option<&mut Tracker>) {
-    if let Some(t) = turn {
-        t.fail_msg(
-            "preparation_timeout",
-            "websocket preparation budget exhausted across retries/account switches",
-        );
-        t.source(crate::errors::SRC_LOCAL);
     }
 }
 
