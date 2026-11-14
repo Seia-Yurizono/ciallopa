@@ -3,8 +3,8 @@ use super::pump::{
     stream_body, Observation, UpStream,
 };
 use crate::attempt::{
-    others_usable, overload_outcome, overload_retry_wait, rebuild, send_info, Outbound,
-    Preparation, SendInfo,
+    others_usable, overload_outcome, quota_plan, rebuild, report_cooling, send_info, Action, Next,
+    Outbound, OverloadPlan, Policy, Preparation, SendInfo,
 };
 use crate::classify::{event_kind_observed, EventKind};
 use crate::errors;
@@ -42,7 +42,7 @@ pub(crate) async fn send_streaming(
     // Keep the attempt chain even after each send_info batch has been consumed below.
     let mut chain = errors::Attempts::default();
     loop {
-        let res = send_info(st, ob.clone(), &mut info, &mut budget, trk.as_mut()).await;
+        let res = send_info(st, &ob, &mut info, &mut budget, trk.as_mut()).await;
         for a in info.attempts.list.drain(..) {
             chain.push(a);
         }
@@ -235,7 +235,7 @@ pub(crate) async fn send_streaming(
             a.status = Some(status.as_u16());
             a.code = Some(crate::encrypted::CODE.into());
             a.body = errors::body_snippet(ev.as_bytes());
-            a.action = "stop".into();
+            a.action = Next::Stop.into();
             chain.push(a);
             if let Some(t) = trk.as_mut() {
                 t.attempts(&chain);
@@ -250,29 +250,28 @@ pub(crate) async fn send_streaming(
             // request is replayed on another usable account (each account at most once).
             let accounts = st.accounts.accounts();
             let others = others_usable(st, &accounts, &route, &account);
-            let cooled_before = st.router.cooling_until(&account).is_some();
-            st.router
-                .report(&route, &account, &overload_outcome(st, others));
-            let cooled = !cooled_before && st.router.cooling_until(&account).is_some();
+            let cooled = report_cooling(st, &route, &account, &overload_outcome(st, others));
             let mut a = errors::attempt(&account, "stream");
             a.status = Some(status.as_u16());
             a.code = Some(code.clone());
             a.body = errors::body_snippet(&buf);
-            let tag = if cooled { "cooldown+" } else { "" };
-            let wait = (!others)
-                .then(|| overload_retry_wait(st, info.overload_waited, &up_headers))
-                .flatten();
-            let next = match (others, wait.is_some()) {
-                (true, _) => "switch",
-                (false, true) => "wait+retry",
-                (false, false) => "stop",
+            let plan = Policy::http(&st.config.load().upstream_opts).overload_plan(
+                others,
+                info.overload_waited,
+                &up_headers,
+                st.config.load().upstream_opts.overload_retry_wait_secs,
+                switches,
+                max_switches,
+            );
+            a.action = Action {
+                cooled,
+                next: plan.next(),
             };
-            a.action = format!("{tag}{next}");
             chain.push(a);
             if let Some(t) = trk.as_mut() {
                 t.attempts(&chain);
             }
-            if others {
+            if plan == OverloadPlan::Switch {
                 tracing::info!(account = %ciallopa_core::a(&account), code = %code, "overloaded before first output; switching account");
                 ob.route = route;
                 ob.route.exclude.push(account);
@@ -280,7 +279,7 @@ pub(crate) async fn send_streaming(
                 let _ = budget.run(tokio::time::sleep(switch_jitter())).await;
                 continue;
             }
-            if let Some(w) = wait {
+            if let OverloadPlan::WaitRetry(w) = plan {
                 // Only usable account left: nothing reached the client, so wait once and replay
                 // on the same account (Codex does not retry an in-stream overload itself).
                 tracing::info!(account = %ciallopa_core::a(&account), code = %code, wait_ms = w.as_millis() as u64, "overloaded before first output on last usable account; waiting to retry once");
@@ -315,27 +314,19 @@ pub(crate) async fn send_streaming(
             );
         }
         if let Some(o) = switch {
-            let cooled_before = st.router.cooling_until(&account).is_some();
-            st.router.report(&route, &account, &o);
-            let cooled = !cooled_before && st.router.cooling_until(&account).is_some();
-            switches += 1;
+            let cooled = report_cooling(st, &route, &account, &o);
+            let next = quota_plan(&mut switches, max_switches);
             // Recorded so a request rescued by this switch shows how (attempt chain).
             let mut a = errors::attempt(&account, "stream");
             a.status = Some(status.as_u16());
             a.code = Some(errors::quota_outcome_code(&o).into());
             a.body = errors::body_snippet(&buf);
-            let tag = if cooled { "cooldown+" } else { "" };
-            let next = if switches < max_switches {
-                "switch"
-            } else {
-                "stop"
-            };
-            a.action = format!("{tag}{next}");
+            a.action = Action { cooled, next };
             chain.push(a);
             if let Some(t) = trk.as_mut() {
                 t.attempts(&chain);
             }
-            if switches < max_switches {
+            if next == Next::Switch {
                 tracing::info!(account = %ciallopa_core::a(&account), "quota error before first output; switching account");
                 ob.route = route;
                 ob.route.exclude.push(account);

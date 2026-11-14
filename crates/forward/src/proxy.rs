@@ -1,12 +1,8 @@
 //! HTTP forwarding core: account selection, failover, pre-first-byte retries, idle timeout.
 pub(crate) use crate::attempt::{
-    cools_on_credentials_error, hold, no_more_retry, others_usable, overload_outcome,
-    overload_retry_wait, send, send_tracked, Cooling, Outbound, WS_HOLD_MAX,
+    others_usable, overload_outcome, send, send_tracked, Outbound, WS_HOLD_MAX,
 };
-pub(crate) use crate::classify::{
-    classify_error, event_kind, log_account_error, overload_body, overload_code, quota_event,
-    EventKind,
-};
+pub(crate) use crate::classify::{event_kind, overload_code, quota_event, EventKind};
 pub(crate) use crate::http::exchange::send_streaming;
 pub(crate) use crate::http::pump::{
     async_stream, shutdown_failed_event, stream_back, stream_image_body, SHUTDOWN_RETRY_AFTER_SECS,

@@ -1,6 +1,7 @@
 use super::connect::connect;
 use super::frames::{busy_frame, error_event, replayable, to_down, to_up, Head, Message};
 use super::Ctx;
+use crate::attempt::{quota_plan, Next, OverloadPlan, Policy};
 use crate::budget::PreparationBudget;
 use crate::classify::classify_observed;
 use crate::usage::{endpoint_of, StreamObservation, Tracker};
@@ -250,7 +251,7 @@ pub(super) async fn relay(
                                                 gen = g;
                                                 tracing::info!(from = %account, to = %id, model = %route.model, "ws turn model cooling on this account; redialed");
                                                 if let Some(tr) = turn.as_mut() {
-                                                    if id != account { tr.replay(&account, "model_cooldown", "switch"); tr.switch_to(&id); }
+                                                    if id != account { tr.replay(&account, "model_cooldown", Next::Switch); tr.switch_to(&id); }
                                                     tr.quota(&quota_h);
                                                 }
                                                 account = id;
@@ -405,10 +406,12 @@ pub(super) async fn relay(
                             let fresh = awaiting && !started && pending.is_some();
                             // Only usable account left: wait once and replay on it (Codex does not
                             // retry an in-stream overload itself).
-                            let wait = (fresh && !others)
-                                .then(|| proxy::overload_retry_wait(&st, overload_waited, &HeaderMap::new()))
-                                .flatten();
-                            let can_replay = fresh && ((others && switches + 1 < max_switches.max(2)) || wait.is_some());
+                            let plan = if fresh {
+                                Policy::ws_redial().overload_plan(others, overload_waited, &HeaderMap::new(),
+                                    st.config.load().upstream_opts.overload_retry_wait_secs, switches, max_switches)
+                            } else { OverloadPlan::PassThrough };
+                            let wait = match plan { OverloadPlan::WaitRetry(wait) => Some(wait), _ => None };
+                            let can_replay = plan != OverloadPlan::PassThrough;
                             if let (true, Some(req)) = (can_replay, pending.clone()) {
                                 if let Some(w) = wait {
                                     overload_waited = true;
@@ -431,9 +434,9 @@ pub(super) async fn relay(
                                         tracing::info!(from = %account, to = %id, code = %code, "ws overloaded before output; replayed");
                                         if let Some(t) = turn.as_mut() {
                                             if id == account {
-                                                t.replay(&account, code, "wait+retry");
+                                                t.replay(&account, code, Next::WaitRetry);
                                             } else {
-                                                t.replay(&account, code, "switch");
+                                                t.replay(&account, code, Next::Switch);
                                                 t.switch_to(&id);
                                             }
                                             t.quota(&quota_h);
@@ -479,8 +482,8 @@ pub(super) async fn relay(
                         if let proxy::EventKind::Quota(o) = kind {
                             // Never forward: Codex would end the turn (UsageLimitReached is fatal).
                             st.router.report(&route, &account, &o);
-                            switches += 1;
-                            if awaiting && !started && switches < max_switches {
+                            let next = quota_plan(&mut switches, max_switches);
+                            if awaiting && !started && next == Next::Switch {
                                 if let Some(req) = pending.clone() {
                                     route.exclude.push(account.clone());
                                     match preparation.run(connect(&st, &ctx.path, &ctx.headers, &mut route, Duration::MAX, None)).await {
@@ -491,7 +494,7 @@ pub(super) async fn relay(
                                             quota_h = h;
                                             gen = g;
                                             tracing::info!(from = %account, to = %id, "ws quota error before output; replayed on another account");
-                                            if let Some(t) = turn.as_mut() { t.replay(&account, crate::errors::quota_outcome_code(&o), "switch"); t.switch_to(&id); t.quota(&quota_h); }
+                                            if let Some(t) = turn.as_mut() { t.replay(&account, crate::errors::quota_outcome_code(&o), Next::Switch); t.switch_to(&id); t.quota(&quota_h); }
                                             account = id;
                                             let (t, r) = ws.split();
                                             // Finish the old socket's close handshake in the
