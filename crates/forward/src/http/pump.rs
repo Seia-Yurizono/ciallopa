@@ -559,30 +559,6 @@ pub(crate) fn shutdown_failed_event() -> serde_json::Value {
     })
 }
 
-/// Tiny channel-backed body stream (avoids an async-stream dependency).
-pub(crate) fn async_stream<F, Fut>(drain: Arc<ciallopa_upstream::drain::Drain>, f: F) -> Body
-where
-    F: FnOnce(tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>) -> Fut,
-    Fut: std::future::Future<Output = ()> + Send + 'static,
-{
-    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
-    let closed = tx.clone();
-    let produce = f(tx);
-    let worker = drain.worker();
-    tokio::spawn(async move {
-        let _worker = worker;
-        // A disconnected client must release the upstream and tracker even while the
-        // producer is waiting for a chunk (and has no send on which to notice closure).
-        tokio::select! {
-            biased;
-            _ = drain.forced() => {}
-            _ = closed.closed() => {}
-            _ = produce => {}
-        }
-    });
-    Body::from_stream(futures::stream::poll_fn(move |cx| rx.poll_recv(cx)))
-}
-
 #[cfg(test)]
 mod stream_lifecycle_tests {
     use super::*;
@@ -600,7 +576,7 @@ mod stream_lifecycle_tests {
 
         let (started, ready) = tokio::sync::oneshot::channel();
         let (dropped, cancelled) = tokio::sync::oneshot::channel();
-        let body = async_stream(Arc::default(), move |_tx| async move {
+        let body = crate::downstream::observed(Arc::default(), None, move |_tx| async move {
             let _guard = OnDrop(Some(dropped));
             let _ = started.send(());
             futures::future::pending::<()>().await;

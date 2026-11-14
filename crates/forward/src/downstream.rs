@@ -48,8 +48,7 @@ pub(crate) struct DownLink {
 
 #[derive(Default)]
 struct LinkState {
-    body_done: bool,
-    parked: Option<(Record, Arc<Recorder>)>,
+    phase: LinkPhase,
     first_queue: Option<u32>,
     last_queue: Option<u32>,
     queue_blocked_us: u64,
@@ -61,6 +60,19 @@ struct LinkState {
     yield_chunks: u32,
     yield_bytes: u64,
     incomplete: bool,
+}
+
+// The record stays inline in the existing shared allocation.
+#[allow(clippy::large_enum_variant)]
+#[derive(Default)]
+enum LinkPhase {
+    #[default]
+    Streaming,
+    BodyEnded {
+        eof: bool,
+    },
+    Parked(Record, Arc<Recorder>),
+    Emitted,
 }
 
 impl DownLink {
@@ -105,15 +117,21 @@ impl DownLink {
     fn body_done(&self, eof: bool) {
         let parked = {
             let mut s = self.lock();
-            if s.body_done {
-                return;
+            match std::mem::replace(&mut s.phase, LinkPhase::Emitted) {
+                LinkPhase::Streaming => {
+                    s.phase = LinkPhase::BodyEnded { eof };
+                    None
+                }
+                LinkPhase::Parked(mut r, sink) => {
+                    s.incomplete |= !eof;
+                    merge(&s, &mut r);
+                    Some((r, sink))
+                }
+                phase => {
+                    s.phase = phase;
+                    None
+                }
             }
-            s.body_done = true;
-            s.incomplete |= !eof;
-            s.parked.take().map(|(mut r, sink)| {
-                merge(&s, &mut r);
-                (r, sink)
-            })
         };
         if let Some((r, sink)) = parked {
             sink.record(r);
@@ -125,18 +143,20 @@ impl DownLink {
     /// body unless it already ended or the process is force-draining.
     pub(crate) fn finish(&self, mut rec: Record, sink: Arc<Recorder>, now: bool) {
         let mut s = self.lock();
-        if s.body_done || now {
+        if matches!(s.phase, LinkPhase::Streaming) && !now {
+            s.phase = LinkPhase::Parked(rec, sink);
+        } else if !matches!(s.phase, LinkPhase::Emitted) {
             merge(&s, &mut rec);
+            s.phase = LinkPhase::Emitted;
             drop(s);
             sink.record(rec);
-        } else {
-            s.parked = Some((rec, sink));
         }
     }
 }
 
 fn merge(s: &LinkState, rec: &mut Record) {
-    if s.queue_chunks == 0 && s.yield_chunks == 0 && !s.incomplete {
+    let incomplete = s.incomplete || matches!(s.phase, LinkPhase::BodyEnded { eof: false });
+    if s.queue_chunks == 0 && s.yield_chunks == 0 && !incomplete {
         return;
     }
     let o = rec.obs.get_or_insert_with(Default::default);
@@ -151,7 +171,7 @@ fn merge(s: &LinkState, rec: &mut Record) {
     o.sse_last_yield_ms = s.last_yield;
     o.sse_yield_chunks = n(s.yield_chunks);
     o.sse_yield_bytes = (s.yield_chunks > 0).then_some(s.yield_bytes);
-    o.down_incomplete = Some(s.incomplete);
+    o.down_incomplete = Some(incomplete);
 }
 
 impl Drop for DownLink {
@@ -159,7 +179,8 @@ impl Drop for DownLink {
         // Last reference gone with a record still parked (body never polled to the end
         // and never dropped separately): emit it rather than lose the row.
         let s = self.s.get_mut().unwrap_or_else(|e| e.into_inner());
-        if let Some((mut r, sink)) = s.parked.take() {
+        if let LinkPhase::Parked(mut r, sink) = std::mem::replace(&mut s.phase, LinkPhase::Emitted)
+        {
             merge(s, &mut r);
             sink.record(r);
         }
@@ -198,7 +219,7 @@ impl Drop for BodyEnd {
     }
 }
 
-/// `proxy::async_stream` with downstream observation when `link` is set.
+/// Channel-backed body stream; observe downstream queueing and yields when `link` is set.
 pub(crate) fn observed<F, Fut>(
     drain: Arc<ciallopa_upstream::drain::Drain>,
     link: Option<Arc<DownLink>>,

@@ -1,12 +1,13 @@
 use super::pump::{
-    async_stream, ensure_sse_content_type, is_sse, response_read_failure, stream_back_tracked,
-    stream_body, Observation, UpStream,
+    ensure_sse_content_type, is_sse, response_read_failure, stream_back_tracked, stream_body,
+    Observation, UpStream,
 };
 use crate::attempt::{
     others_usable, overload_outcome, overload_retry_wait, rebuild, send_info, Outbound,
     Preparation, SendInfo,
 };
 use crate::classify::{event_kind_observed, EventKind};
+use crate::downstream::observed;
 use crate::errors;
 use crate::headers::downstream_headers;
 use crate::sse::{sse_events, BOOTSTRAP_MAX};
@@ -179,12 +180,13 @@ pub(crate) async fn send_streaming(
                     if !crate::response_body::is_decode_error(&e) {
                         st.router.report(&route, &account, &Outcome::Transport);
                     }
-                    let err_body = async_stream(st.upstream.drain.clone(), move |tx| async move {
-                        if !buf.is_empty() {
-                            let _ = tx.send(Ok(Bytes::from(buf))).await;
-                        }
-                        let _ = tx.send(Ok(errors::truncated_event())).await;
-                    });
+                    let err_body =
+                        observed(st.upstream.drain.clone(), None, move |tx| async move {
+                            if !buf.is_empty() {
+                                let _ = tx.send(Ok(Bytes::from(buf))).await;
+                            }
+                            let _ = tx.send(Ok(errors::truncated_event())).await;
+                        });
                     let mut r = Response::new(err_body);
                     *r.status_mut() = status;
                     *r.headers_mut() = headers;
@@ -212,12 +214,13 @@ pub(crate) async fn send_streaming(
                         trk.as_ref(),
                     );
                     st.router.report(&route, &account, &Outcome::Transport);
-                    let err_body = async_stream(st.upstream.drain.clone(), move |tx| async move {
-                        if !buf.is_empty() {
-                            let _ = tx.send(Ok(Bytes::from(buf))).await;
-                        }
-                        let _ = tx.send(Ok(errors::truncated_event())).await;
-                    });
+                    let err_body =
+                        observed(st.upstream.drain.clone(), None, move |tx| async move {
+                            if !buf.is_empty() {
+                                let _ = tx.send(Ok(Bytes::from(buf))).await;
+                            }
+                            let _ = tx.send(Ok(errors::truncated_event())).await;
+                        });
                     let mut r = Response::new(err_body);
                     *r.status_mut() = status;
                     *r.headers_mut() = headers;

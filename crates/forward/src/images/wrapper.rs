@@ -3,6 +3,7 @@ use super::request::{
     bad, build_tool, multipart_edit_to_json, out_headers, parse_multipart, responses_request, Kind,
     DEFAULT_TOOL_MODEL, DIRECT_MODELS,
 };
+use crate::downstream::observed;
 use crate::proxy::{self, json_error, Outbound};
 use crate::{errors, usage::Tracker};
 use crate::{session_route, AppState};
@@ -231,7 +232,7 @@ pub(super) async fn run(
             t.status(200);
             t.sse_response();
         }
-        let body = proxy::async_stream(st.upstream.drain.clone(), move |tx| async move {
+        let body = observed(st.upstream.drain.clone(), None, move |tx| async move {
             let mut events = Box::pin(events);
             let mut col = Collector::default();
             while let Some(ev) = events.next().await {
