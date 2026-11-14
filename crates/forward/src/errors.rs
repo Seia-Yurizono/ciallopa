@@ -41,7 +41,7 @@ pub(crate) struct Attempt {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
     /// `ok`, `retry`, `switch`, `cooldown(15s)+switch`, `stop`, …
-    pub action: String,
+    pub action: crate::attempt::Action,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
 }
@@ -71,15 +71,13 @@ impl Attempts {
         }
         self.list.push(a);
     }
-    /// Set the action of the latest attempt (decided after the outcome is known).
-    pub fn act(&mut self, action: impl Into<String>) {
-        if let Some(a) = self.list.last_mut() {
-            a.action = action.into();
-        }
-    }
     /// Anything other than a single clean success.
     pub fn eventful(&self) -> bool {
-        self.list.len() > 1 || self.list.iter().any(|a| a.action != "ok")
+        self.list.len() > 1
+            || self
+                .list
+                .iter()
+                .any(|a| a.action != crate::attempt::Next::Ok.into())
     }
     pub fn to_json(&self) -> serde_json::Value {
         let mut v = serde_json::to_value(&self.list).unwrap_or_default();
@@ -102,7 +100,7 @@ pub(crate) fn attempt(account: &str, kind: &'static str) -> Attempt {
         kind,
         status: None,
         code: None,
-        action: String::new(),
+        action: Default::default(),
         body: None,
     }
 }
@@ -766,7 +764,7 @@ mod tests {
         let mut a = Attempts::default();
         for i in 0..12 {
             let mut x = attempt(&format!("a{i}"), "http");
-            x.action = "retry".into();
+            x.action = crate::attempt::Next::Retry.into();
             a.push(x);
         }
         assert_eq!(a.list.len(), MAX_ATTEMPTS);

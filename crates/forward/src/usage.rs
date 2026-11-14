@@ -315,7 +315,12 @@ impl Tracker {
     /// A WS turn left `account` before any output (`code`; `action` is `switch` or
     /// `wait+retry`) and is replayed. Builds this turn's attempt chain, stored when the turn
     /// ends (see `Drop`); retry / switch counters are kept by the caller as before.
-    pub(crate) fn replay(&mut self, account: &str, code: &str, action: impl Into<String>) {
+    pub(crate) fn replay(
+        &mut self,
+        account: &str,
+        code: &str,
+        action: impl Into<crate::attempt::Action>,
+    ) {
         let action = action.into();
         let chain = self.replays.get_or_insert_with(|| crate::errors::Attempts {
             start: self.start,
@@ -965,7 +970,12 @@ fn into_record(
     if let Some(mut chain) = replays {
         let mut a = crate::errors::attempt(rec.account.as_deref().unwrap_or(""), "stream");
         a.code = rec.error.clone();
-        a.action = if rec.error.is_none() { "ok" } else { "stop" }.into();
+        a.action = if rec.error.is_none() {
+            crate::attempt::Next::Ok
+        } else {
+            crate::attempt::Next::Stop
+        }
+        .into();
         chain.push(a);
         let d = rec.detail.get_or_insert_with(Default::default);
         if d.attempts.is_none() {
@@ -1338,7 +1348,7 @@ mod tests {
             let mut chain = crate::errors::Attempts::default();
             let mut first = crate::errors::attempt("first", "stream");
             first.code = Some("overloaded".into());
-            first.action = "switch".into();
+            first.action = crate::attempt::Next::Switch.into();
             chain.push(first);
             let rec = into_record(
                 rec,
