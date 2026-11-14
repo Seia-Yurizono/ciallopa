@@ -371,6 +371,12 @@ impl Tracker {
         if is_terminal_type(ty) {
             o.up_terminal_ms.get_or_insert(now);
         }
+        if self.rec.transport == Transport::Ws
+            && self.outcome == Outcome::Open
+            && is_output_type(ty)
+        {
+            self.rec.ttft_ms.get_or_insert(now);
+        }
         now
     }
 
@@ -555,6 +561,7 @@ impl Tracker {
     }
 
     /// TTFT is the first event that carries model output (see `is_output_event`).
+    #[allow(dead_code)] // Kept until the phase-2 Tracker API cleanup lands.
     pub(crate) fn output_event(&mut self, ev: &[u8]) {
         if self.rec.ttft_ms.is_none() && is_output_event(ev) {
             self.ttft();

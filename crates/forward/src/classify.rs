@@ -1,4 +1,3 @@
-use crate::proxy;
 use crate::usage::StreamObservation;
 use ciallopa_core::{AccountId, Outcome};
 use ciallopa_routing::{
@@ -36,6 +35,13 @@ pub(crate) struct Classified<'a> {
 }
 
 impl Classified<'_> {
+    pub(crate) fn value(&mut self, text: &str) -> Option<&serde_json::Value> {
+        if self.value.is_none() {
+            self.value = serde_json::from_str(text).ok();
+        }
+        self.value.as_ref()
+    }
+
     pub(crate) fn ws_view(mut self, text: &str) -> Self {
         // Preserve the legacy WS view of unrelated frames. This adjusts protocol
         // semantics after classification; it never selects the JSON-tree parsing path.
@@ -516,10 +522,11 @@ pub(crate) fn is_model_unsupported(body: &[u8]) -> bool {
 }
 
 /// Compatibility view for the existing WS session driver.
+#[cfg(test)]
 pub(crate) fn classify_observed(
     text: &str,
     progress: &mut StreamObservation,
-) -> (proxy::EventKind, bool, Option<Outcome>) {
+) -> (EventKind, bool, Option<Outcome>) {
     let classified = classify(None, text).ws_view(text);
     if let Some(ty) = classified.ty.as_deref() {
         progress.event(ty);
@@ -946,7 +953,7 @@ mod tests {
         );
         assert!(d);
         match k {
-            proxy::EventKind::Quota(Outcome::RateLimited {
+            EventKind::Quota(Outcome::RateLimited {
                 usage_limit,
                 retry_after,
                 quota,
@@ -962,16 +969,16 @@ mod tests {
                 r#"{"type":"response.failed","response":{"error":{"code":"insufficient_quota"}}}"#
             )
             .0,
-            proxy::EventKind::Quota(_)
+            EventKind::Quota(_)
         ));
         assert!(classify(r#"{"type":"response.completed"}"#).1);
         assert_eq!(
             classify(r#"{"type":"response.created"}"#).0,
-            proxy::EventKind::Preamble
+            EventKind::Preamble
         );
         assert_eq!(
             classify(r#"{"type":"response.output_text.delta"}"#).0,
-            proxy::EventKind::Content
+            EventKind::Content
         );
         assert!(replayable(r#"{"type":"response.create","input":[]}"#));
     }
