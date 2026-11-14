@@ -1,13 +1,5 @@
-//! Gateway-side stream observation for one SSE request or WS turn (schema v14).
-//!
-//! Every time is milliseconds (or microseconds for `*_us`) since the record's monotonic
-//! start (the same zero as `ttft_ms` / `duration_ms`). These are **gateway** observations:
-//! `up_*` is when ciallopa parsed an upstream event; `down_*` is when ciallopa handed bytes
-//! to its own downstream layers. None of them is a client receive, parse or render time,
-//! and none is a socket flush or TCP acknowledgement.
-//!
-//! `None` means not observed / not applicable (older rows, other transport, nothing sent);
-//! it is never written as 0.
+//! Gateway observation times use the record's monotonic start; none measure client receipt.
+//! None means unobserved or inapplicable and is never stored as zero.
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 
@@ -30,9 +22,7 @@ pub struct Observation {
     pub up_terminal_ms: Option<u32>,
     /// Complete upstream events (SSE) / text frames (WS) observed.
     pub up_events: Option<u32>,
-    /// Upstream payload bytes: SSE body bytes as delivered by the HTTP client (after any
-    /// content decoding; bootstrap bytes of abandoned attempts excluded); WS
-    /// text/binary message payload bytes (after permessage-deflate decompression).
+    /// Decoded payload bytes from the final attempt; exclude abandoned bootstrap bytes.
     pub up_bytes: Option<u64>,
     /// `response.id` from `response.created` / the terminal event.
     pub response_id: Option<String>,
@@ -55,8 +45,7 @@ pub struct Observation {
     pub sse_yield_bytes: Option<u64>,
 
     // ---- gateway → downstream, WS (tungstenite sink)
-    /// First / last turn message whose `sink.send` completed: frame written to the
-    /// connection and tungstenite's flush returned (bytes accepted by the OS send buffer).
+    /// Completed WS sends have reached the OS send buffer, not necessarily the client.
     pub ws_first_send_ms: Option<u32>,
     pub ws_last_send_ms: Option<u32>,
     /// Total / longest time a `sink.send` stayed Pending (write buffer / socket backpressure).
@@ -65,9 +54,7 @@ pub struct Observation {
     pub ws_send_msgs: Option<u32>,
     /// Message payload bytes (before permessage-deflate) of completed sends.
     pub ws_send_bytes: Option<u64>,
-    /// Downstream ended before the gateway's last write: SSE response body dropped before
-    /// its end (client gone, including a normal close right after the terminal event), or a
-    /// WS turn send returned an error.
+    /// SSE body dropped before EOF or a WS send failed.
     pub down_incomplete: Option<bool>,
 
     // ---- WS permessage-deflate negotiation (handshake result, not per-frame use)
@@ -95,9 +82,7 @@ pub fn clean_id(s: &str) -> Option<String> {
     .then(|| s.to_string())
 }
 
-/// Normalise a `Sec-WebSocket-Extensions` answer: only a single `permessage-deflate`
-/// with its four RFC 7692 parameters (window bits 8..=15) is kept, re-serialised.
-/// Anything else → `Some("unrecognized")`; empty → None.
+/// Keep only bounded RFC 7692 permessage-deflate answers; mark other values unrecognized.
 pub fn clean_ext(s: &str) -> Option<String> {
     let s = s.trim();
     if s.is_empty() {

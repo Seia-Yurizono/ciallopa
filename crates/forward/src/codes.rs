@@ -1,10 +1,5 @@
-//! The error codes that can appear in a usage record's `error`, as one list. The admin UI
-//! labels exactly these (server/tests/it/ui_labels.rs), and `usage::describe` explains only
-//! these, so a new code cannot ship unlabelled and a removed one leaves no dead label.
+//! Usage error codes shared with admin labels and descriptions.
 
-/// Codes the proxy itself records (local decisions, network / stream classification).
-/// Dynamic families are not listed: `http_<status>` (unclassified status) and
-/// `incomplete_<reason>` (see `usage::incomplete_code`).
 pub const LOCAL: &[&str] = &[
     // client / lifecycle
     "client_closed",
@@ -78,7 +73,6 @@ pub const UPSTREAM: &[&str] = &[
     "budget_reached",
 ];
 
-/// No longer produced, still present in older rows.
 pub const LEGACY: &[&str] = &[
     // Split into upstream_ws_close / _eof / _read_error / _send_error.
     "upstream_closed",

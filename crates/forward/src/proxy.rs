@@ -1,29 +1,6 @@
-//! HTTP forwarding core: account selection, failover, pre-first-byte retries, idle timeout.
-pub(crate) use crate::attempt::{
-    others_usable, overload_outcome, send, send_tracked, Outbound, WS_HOLD_MAX,
-};
-pub(crate) use crate::classify::{overload_code, quota_event};
-pub(crate) use crate::http::exchange::send_streaming;
-pub(crate) use crate::http::pump::{
-    shutdown_failed_event, stream_back, stream_image_body, SHUTDOWN_RETRY_AFTER_SECS,
-};
-pub(crate) use crate::sse::BOOTSTRAP_MAX;
-use axum::response::{IntoResponse, Response};
-use http::{HeaderMap, HeaderValue, StatusCode};
+use http::HeaderMap;
 
-pub(crate) fn json_error(status: StatusCode, kind: &str, msg: &str) -> Response {
-    let body = serde_json::json!({"error": {"type": kind, "message": msg}}).to_string();
-    let mut r = (status, body).into_response();
-    r.headers_mut().insert(
-        http::header::CONTENT_TYPE,
-        HeaderValue::from_static("application/json"),
-    );
-    r
-}
-
-/// Decode the request body for *inspection only* (zstd bodies are still forwarded as-is).
-/// zstd bodies are inspected only up to `limit` decoded bytes (`max_body_mb`); a larger one
-/// is forwarded uninspected rather than decoded in full.
+/// Bound zstd inspection; forward oversized decoded bodies uninspected.
 pub(crate) fn inspect_json(
     headers: &HeaderMap,
     body: &[u8],

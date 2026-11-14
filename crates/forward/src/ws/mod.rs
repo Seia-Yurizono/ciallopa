@@ -7,9 +7,9 @@ mod session;
 use self::connect::connect;
 use self::session::{finish_on_shutdown, relay};
 use crate::budget::PreparationBudget;
-use crate::usage::{endpoint_of, End, Tracker};
+use crate::usage::{endpoint_of, Tracker};
 use crate::ws_upgrade::Upgrade;
-use crate::{map_path, pq, proxy, session_route, AppState};
+use crate::{errors, map_path, pq, session_route, AppState};
 use axum::extract::{OriginalUri, State};
 use axum::response::Response;
 use ciallopa_usage::Transport;
@@ -25,7 +25,7 @@ pub(crate) async fn handler(
     ws: Upgrade,
 ) -> Response {
     let Some(path) = map_path(pq(&uri)) else {
-        return proxy::json_error(StatusCode::NOT_FOUND, "not_found", "unknown path");
+        return errors::json_error(StatusCode::NOT_FOUND, "not_found", "unknown path");
     };
     // Each client connection can buffer several copies of its largest message before the
     // relay can count it in the body budget: cap them (`ws_max_connections`) before dialing.
@@ -78,7 +78,7 @@ pub(crate) async fn handler(
             &path,
             &headers,
             &mut route,
-            proxy::WS_HOLD_MAX,
+            crate::attempt::WS_HOLD_MAX,
             handshake.as_mut(),
         ))
         .await
@@ -92,7 +92,6 @@ pub(crate) async fn handler(
                     .await
                     .unwrap_or_default();
                 t.record_response(&parts, &b);
-                t.finish(End::Completed);
                 return Response::from_parts(parts, axum::body::Body::from(b));
             }
             return r;

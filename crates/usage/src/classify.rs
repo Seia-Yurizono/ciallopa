@@ -1,16 +1,6 @@
-//! Per-window reset classification from consecutive quota snapshots.
-//!
-//! A drop in `used_percent` together with a moved `resets_at` is a reset. Card evidence
-//! (a local `reset_consume` success, or a drop in available card count *and* a moved
-//! `resets_at`) distinguishes manual / auto / external cards from a natural rollover or
-//! an official/paid early reset (「提前重置」). `resets_at` moving alone is not a reset.
-//! A percent drop without a `resets_at` change is a limit change, except the delayed
-//! observation of a rollover whose new `resets_at` was already recorded while usage
-//! still showed ~100%.
-//!
-//! A drop in available card count without a moved `resets_at` is not a reset: the card
-//! expired unused (quota is not restored). Card `expires_at` is never a window
-//! `resets_at` (see `usage_to_quota`).
+//! Quota resets require a percent drop and a moved reset time; card evidence identifies their source.
+//! A percent drop without a moved reset is a limit change, except a delayed rollover observation.
+//! Card expiry alone never restores quota.
 use serde::Serialize;
 
 /// Same jitter window as `quota_obs` (`RESET_TOLERANCE_S`).

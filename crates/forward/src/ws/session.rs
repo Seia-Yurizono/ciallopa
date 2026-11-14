@@ -1,5 +1,5 @@
 use super::connect::connect;
-use super::frames::{busy_frame, error_event, to_down, to_up, Head, Message};
+use super::frames::{busy_frame, error_event, to_up, Head, Message};
 use super::Ctx;
 use crate::attempt::{quota_plan, Next, OverloadPlan, Policy};
 use crate::budget::PreparationBudget;
@@ -9,26 +9,18 @@ use crate::classify::{classify, Class, Terminal};
 use crate::timing;
 use crate::usage::{endpoint_of, End, StreamObservation, Tracker};
 use crate::ws_upgrade::DownWs;
-use crate::{proxy, AppState};
+use crate::AppState;
 use ciallopa_core::{AccountId, Outcome, RouteRequest};
 use ciallopa_routing::parse_quota_event_headers;
 use ciallopa_upstream::drain::{Phase, CUT_FLUSH_MAX};
+use ciallopa_upstream::ws_close::{CloseCode, CloseFrame as UpCloseFrame};
 use ciallopa_upstream::{UpstreamWs, WsMessage};
 use ciallopa_usage::Transport;
 use futures::{SinkExt, StreamExt};
 use http::HeaderMap;
 use std::time::Duration;
-use tungstenite_close::{CloseCode, UpCloseFrame};
 
-mod tungstenite_close {
-    pub use ciallopa_upstream::ws_close::{CloseCode, CloseFrame as UpCloseFrame};
-}
-
-/// Close code used when the upstream account hit its limit mid-turn and the turn cannot be
-/// replayed here (incremental `previous_response_id`, or output already sent). Mirrors CPA's
-/// "upstream requires HTTP replay" (1012). Codex treats any Close before `response.completed`
-/// as a retryable stream error, reconnects, and resends the full input (its websocket session
-/// is reset on reconnect, so no `previous_response_id`).
+/// Codex retries 1012 by reconnecting and replaying full input after an unreplayable quota failure.
 const CLOSE_REPLAY: u16 = 1012;
 
 const CLOSE_REPLAY_REASON: &str = "upstream requires HTTP replay";
@@ -432,7 +424,7 @@ impl Session {
             &mut self.route
         };
         let (hold, wait) = match why {
-            Redial::ModelCooldown => (proxy::WS_HOLD_MAX, None),
+            Redial::ModelCooldown => (crate::attempt::WS_HOLD_MAX, None),
             Redial::Overload { wait, .. } => (Duration::MAX, wait),
             Redial::Quota(_) => (Duration::MAX, None),
         };
@@ -644,11 +636,11 @@ impl Session {
                                 .and_then(|g| g.as_bool())
                                 == Some(false)
                             {
-                                tr.prewarm();
+                                tr.rec.endpoint = ciallopa_usage::PREWARM_ENDPOINT;
                             }
                             tr.accounts(&[], Some(&self.up.account));
                             tr.quota(&self.up.quota);
-                            tr.status(200);
+                            tr.rec.status = 200;
                             tr.obs_upstream_request_id(self.up.request_id.as_deref());
                             tr.obs_ws_negotiation(
                                 self.ctx.ws_ext_down.as_deref(),
@@ -835,11 +827,12 @@ impl Session {
         }
         if let Class::Terminal(Terminal::Overloaded(code)) = class {
             let accounts = self.st.accounts.accounts();
-            let others = proxy::others_usable(&self.st, &accounts, &self.route, &self.up.account);
+            let others =
+                crate::attempt::others_usable(&self.st, &accounts, &self.route, &self.up.account);
             self.st.router.report(
                 &self.route,
                 &self.up.account,
-                &proxy::overload_outcome(&self.st, others),
+                &crate::attempt::overload_outcome(&self.st, others),
             );
             if let Some(request) = self.state.turn().and_then(Turn::request) {
                 let turn = self.state.turn_mut().expect("replayable turn");
@@ -944,10 +937,10 @@ impl Session {
                 ..
             }) = self.state.turn_mut()
             {
-                if let Some(frame) = to_down(message) {
+                if let Some(frame) = to_up(message) {
                     held.push(frame);
                 }
-                if held.bytes > proxy::BOOTSTRAP_MAX {
+                if held.bytes > crate::sse::BOOTSTRAP_MAX {
                     return self.flush_held(true).await;
                 }
                 return Flow::Continue;
@@ -983,7 +976,7 @@ impl Session {
             tracker.freeze_duration();
         }
         let message = rewritten.map(Message::text).unwrap_or(message);
-        let sent = match to_down(message) {
+        let sent = match to_up(message) {
             Some(message) => {
                 let tracker = finished
                     .as_mut()
@@ -1190,7 +1183,9 @@ async fn close(reason: Close, tx: DownTx, rx: DownRx, up: UpLink, grace: Duratio
                 Close::Shutdown(ShutdownClose::Cut | ShutdownClose::Refused)
             ) {
                 let _ = down
-                    .send(Message::text(proxy::shutdown_failed_event().to_string()))
+                    .send(Message::text(
+                        crate::http::pump::shutdown_failed_event().to_string(),
+                    ))
                     .await;
             }
             close_downstream(&mut down, frame).await;

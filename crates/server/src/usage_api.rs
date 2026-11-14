@@ -466,7 +466,6 @@ async fn detail(State(St { rec, .. }): State<St>, Path(id): Path<String>) -> Res
     }
 }
 
-/// Gateway stream observation of one SSE request / WS turn (`id` = `request_id`).
 async fn observation(State(St { rec, .. }): State<St>, Path(id): Path<String>) -> Response {
     let Some(rec) = rec else {
         return err(StatusCode::NOT_FOUND, "usage log disabled");

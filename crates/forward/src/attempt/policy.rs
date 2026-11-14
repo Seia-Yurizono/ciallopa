@@ -214,18 +214,9 @@ pub(super) fn classify<C>(dialed: &Dialed<C>, opts: &UpstreamOpts) -> Seen {
             *status, headers, body, opts,
         ))
     } else if is_retryable_status(*status) {
-        let retry_after = headers
-            .get(http::header::RETRY_AFTER)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| {
-                ciallopa_core::retry_after::parse(
-                    v,
-                    SystemTime::now(),
-                    ciallopa_core::retry_after::Format::Http,
-                )
-            })
-            .map(|d| d.min(ciallopa_routing::quota::MAX_HEADER_RETRY_AFTER));
-        Refusal::Server { retry_after }
+        Refusal::Server {
+            retry_after: ciallopa_routing::quota::header_retry_after(headers, SystemTime::now()),
+        }
     } else {
         Refusal::Client
     };

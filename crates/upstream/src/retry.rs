@@ -6,7 +6,6 @@ use std::time::{Duration, SystemTime};
 
 const INITIAL_DELAY_MS: u64 = 200;
 const BACKOFF_FACTOR: f64 = 2.0;
-/// Upper bound for an honored `Retry-After` before the first byte (keeps requests bounded).
 pub const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 
 /// Same formula as codex-rs: 200ms * 2^(attempt-1), jitter 0.9..1.1. `attempt` is 1-based.
@@ -36,7 +35,6 @@ pub fn switch_jitter() -> Duration {
     Duration::from_millis(rand::rng().random_range(20..120))
 }
 
-/// Upper bound for an honored `Retry-After` on the single overload wait-and-retry.
 pub const OVERLOAD_RETRY_AFTER_MAX: Duration = Duration::from_secs(10);
 
 /// Pause before the one same-account retry after an overload: `Retry-After` (capped at

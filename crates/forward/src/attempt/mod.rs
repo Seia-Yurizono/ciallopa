@@ -19,7 +19,6 @@ use ciallopa_core::{AccountId, AuthError, Outcome, RouteError, RouteRequest};
 use http::{HeaderMap, Method, StatusCode};
 use std::time::Duration;
 
-/// An outbound request, independent of the account it ends up on.
 pub(crate) struct Outbound {
     pub method: Method,
     /// Relative to `upstream.base_url`, with query.
@@ -27,16 +26,12 @@ pub(crate) struct Outbound {
     pub headers: HeaderMap,
     pub body: Bytes,
     pub route: RouteRequest,
-    /// The client asked for an SSE stream (`/responses` with `stream:true` or
-    /// `Accept: text/event-stream`). chatgpt.com sends SSE without any `Content-Type`, so this
-    /// hint decides SSE handling when the upstream omits it.
+    /// ChatGPT may omit Content-Type, so retain the client streaming hint.
     pub expect_sse: bool,
-    /// Direct Responses HTTP requests return identity downstream, even if gzip negotiation
-    /// is disabled. Other routes retain their existing passthrough policy.
+    /// Direct Responses always decode; other routes keep passthrough encoding.
     pub decode_response: bool,
 }
 
-/// The upstream response chosen for the client (2xx, or a non-retryable / final error).
 pub(crate) struct Chosen {
     pub resp: reqwest::Response,
     pub account: AccountId,
@@ -53,7 +48,6 @@ pub(crate) fn buffered(status: u16, headers: &HeaderMap, body: Bytes) -> Respons
     r
 }
 
-/// What `send_info` observed (for the usage log).
 #[derive(Default)]
 pub(crate) struct SendInfo {
     pub retries: u32,
@@ -61,15 +55,12 @@ pub(crate) struct SendInfo {
     pub tried: Vec<AccountId>,
     /// Every upstream attempt with ciallopa's reaction (bounded).
     pub attempts: crate::errors::Attempts,
-    /// The single same-account overload wait-and-retry of this client request is spent.
     pub overload_waited: bool,
-    /// Time spent holding the request while every account was cooling down.
     pub held: Duration,
     phase: Phase,
 }
 
-/// Charged only while preparing an HTTP attempt or waiting to retry. Successful SSE
-/// bootstrap/streaming is deliberately outside this budget, even before its first output.
+/// Successful SSE bootstrap/streaming stays outside the cumulative preparation budget.
 pub(crate) struct Preparation {
     budget: crate::budget::PreparationBudget,
     header_timeout: Duration,
@@ -94,7 +85,6 @@ impl Preparation {
     }
 }
 
-/// What to do when every candidate account is cooling down.
 pub(crate) enum Cooling {
     /// Hold the request this long, then select again.
     Hold(Duration),
@@ -110,8 +100,7 @@ pub(crate) enum Cooling {
 pub(crate) const WS_HOLD_MAX: Duration = Duration::from_secs(10);
 
 impl Cooling {
-    /// `recovers_in` = until the first account recovers; `held` = already held for this
-    /// request; `hold_cap` = longest single hold this transport allows.
+    /// Subtract earlier holds and apply the transport's single-hold cap.
     pub(crate) fn decide(
         st: &AppState,
         recovers_in: Duration,
@@ -150,8 +139,7 @@ impl Cooling {
     }
 }
 
-/// Hold for `d` while every account is cooling down, adding the time to `held`. Dropping the
-/// future (client gone) ends the hold.
+/// Cancellation ends the cooldown hold; account for its elapsed time.
 pub(crate) async fn hold(d: Duration, held: &mut Duration) {
     tracing::info!(
         wait_ms = d.as_millis() as u64,
@@ -162,7 +150,6 @@ pub(crate) async fn hold(d: Duration, held: &mut Duration) {
     *held += t.elapsed();
 }
 
-/// Run the selection / retry loop. `Err` is a ready-made downstream response.
 pub(crate) async fn send(st: &AppState, ob: Outbound) -> Result<Chosen, Response> {
     send_info(
         st,
@@ -174,7 +161,6 @@ pub(crate) async fn send(st: &AppState, ob: Outbound) -> Result<Chosen, Response
     .await
 }
 
-/// One preparation sequence for Images calls, retaining the same diagnostics.
 pub(crate) async fn send_tracked(
     st: &AppState,
     ob: Outbound,
@@ -183,7 +169,7 @@ pub(crate) async fn send_tracked(
     let mut info = SendInfo::default();
     let result = send_info(st, &ob, &mut info, &mut Preparation::new(st), trk.as_mut()).await;
     if let Some(t) = trk.as_mut() {
-        t.retries(info.retries);
+        t.rec.retries = info.retries;
         t.attempts(&info.attempts);
         let last = info.attempts.list.last().map(|a| &a.account);
         t.accounts(
@@ -251,7 +237,6 @@ pub(crate) async fn send_info(
     })
 }
 
-/// Another enabled account, outside the exclusion list and cooldown, can take the request.
 pub(crate) fn others_usable(
     st: &AppState,
     accounts: &[ciallopa_core::Account],
@@ -278,7 +263,6 @@ pub(crate) fn report_cooling(
     (!before && st.router.cooling_until(id).is_some()).then_some(Cooled::Plain)
 }
 
-/// An upstream response whose body was already read, rebuilt for the normal handling.
 pub(crate) fn rebuild(status: u16, h: &HeaderMap, b: Bytes) -> reqwest::Response {
     let mut r = http::Response::new(b);
     *r.status_mut() = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
@@ -286,8 +270,7 @@ pub(crate) fn rebuild(status: u16, h: &HeaderMap, b: Bytes) -> reqwest::Response
     reqwest::Response::from(r)
 }
 
-/// Whether a `credentials()` failure should cool the account down (shared by HTTP and WS).
-/// Disk IO and transient refresh failures (network / auth 5xx) are not a bad token.
+/// Disk I/O and transient refresh failures do not invalidate credentials.
 pub(crate) fn cools_on_credentials_error(e: &AuthError) -> bool {
     !matches!(e, AuthError::Io(_) | AuthError::Refresh(_))
 }
@@ -300,8 +283,7 @@ pub(crate) fn no_more_retry(h: &HeaderMap) -> bool {
         .any(|v| v.to_ascii_uppercase().contains("NO_MORE_RETRY"))
 }
 
-/// The router outcome for one overloaded answer on `id` (cooling never hits the last usable
-/// account).
+/// Never cool the last usable account.
 pub(crate) fn overload_outcome(st: &AppState, others: bool) -> Outcome {
     let c = st.config.load();
     let o = &c.upstream_opts;

@@ -1,6 +1,3 @@
-//! Per-request usage log. **Never blocks forwarding**: `Recorder::record` is a non-blocking
-//! `try_send` into a bounded queue (full ⇒ drop + count); one dedicated OS thread batch-writes
-//! to SQLite (WAL). A bounded pool reuses read-only connections. Design: docs/USAGE.md.
 pub(crate) mod classify;
 pub(crate) mod credits;
 pub mod detail;
@@ -51,10 +48,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Bits of the request id below the millisecond timestamp (per-ms sequence).
 pub const SEQ_BITS: u32 = 20;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Transport {
     Sse = 1,
     Ws = 2,
+    #[default]
     Http = 3,
 }
 impl Transport {
@@ -75,7 +73,7 @@ impl Transport {
 }
 
 /// One finished request (HTTP) or turn (WS `response.create` → terminal event).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct Record {
     /// Time-ordered unique id: `start_ms << 20 | seq` (see [`RequestIds`]). Also the SQLite
     /// rowid, so time ranges are rowid range scans and duplicates are ignored on insert.
@@ -128,11 +126,9 @@ pub struct Record {
     pub quota: Option<QuotaObs>,
     /// Only for failed requests (status ≥ 400 or `error`); redacted when written.
     pub detail: Option<Box<ErrorDetail>>,
-    /// Gateway stream observation (SSE requests / WS turns); stored in `request_obs`.
     pub obs: Option<Box<Observation>>,
 }
 
-/// One upstream quota snapshot (`x-codex-{primary,secondary}-*`, `x-codex-plan-type`).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct QuotaObs {
     pub plan: Option<String>,
@@ -180,38 +176,12 @@ impl Record {
     pub fn new(id: i64, transport: Transport, endpoint: &'static str) -> Self {
         Self {
             id,
-            account: None,
-            first_account: None,
-            model: None,
-            effort: None,
             transport,
             endpoint,
-            status: 0,
-            error: None,
-            err_source: None,
-            upstream_status: None,
-            retries: 0,
-            switches: 0,
-            ttft_ms: None,
-            duration_ms: 0,
-            input_tokens: None,
-            output_tokens: None,
-            cached_tokens: None,
-            reasoning_tokens: None,
-            cache_write_tokens: None,
-            service_tier: None,
-            req_tier: None,
-            resp_model: None,
-            resp_effort: None,
-            incomplete: None,
-            thread_id: None,
-            turn_id: None,
-            key: None,
-            quota: None,
-            detail: None,
-            obs: None,
+            ..Default::default()
         }
     }
+
     pub fn ts_ms(&self) -> i64 {
         self.id >> SEQ_BITS
     }
@@ -373,8 +343,7 @@ impl Recorder {
         }
     }
 
-    /// Count a refused request into its per-minute group. Non-blocking (a short mutex); the
-    /// writer upserts the groups every [`refusals::FLUSH_EVERY`] and on shutdown.
+    /// Aggregate refusals in memory; the writer flushes periodically and on shutdown.
     pub fn refuse(&self, mut r: Refusal) {
         if let Some(ref mut a) = r.account {
             *a = self.alias_account(a);
@@ -382,8 +351,7 @@ impl Recorder {
         self.refusals.add(r);
     }
 
-    /// Add one occupancy sample to its minute. Non-blocking (a short mutex); the writer
-    /// stores each minute once it is complete, and everything on shutdown or flush.
+    /// Aggregate occupancy in memory; persist completed minutes or an explicit flush.
     pub fn occupancy(&self, s: occupancy::Sample) {
         self.occupancy.add(s);
     }
@@ -405,9 +373,7 @@ impl Recorder {
         self.read(move |c| Ok(refusals::refusal_rows(c, &q)?)).await
     }
 
-    /// Queue a quota snapshot fetched outside a proxied request (management page). Written
-    /// with the next batch even when unchanged, so its time shows how fresh the data is;
-    /// `by` is stored as the observer. Non-blocking; false if dropped.
+    /// Persist management quota observations even when unchanged so freshness stays visible.
     pub fn observe_quota(&self, account: &str, by: &str, q: QuotaObs) -> bool {
         let id = self.ids.next();
         self.fast

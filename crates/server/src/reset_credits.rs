@@ -190,7 +190,6 @@ impl Switches {
     }
 }
 
-/// Shared cache + per-account consume locks.
 #[derive(Clone)]
 pub struct ResetCredits {
     pub(crate) cache: Arc<Mutex<HashMap<String, Entry>>>,
@@ -1380,7 +1379,7 @@ mod tests {
                 (c.status, c.code, c.http),
                 (ConsumeStatus::Done, Some(code), StatusCode::OK)
             );
-            assert_eq!(c.outcome.status, "done");
+            assert_eq!(c.outcome.status, ConsumeStatus::Done);
             assert_eq!(c.outcome.http_status, Some(201));
             assert_eq!(c.outcome.code.as_deref(), Some(name));
             assert_eq!(c.body, json!({"code": name, "windows_reset": 2}));
@@ -1397,7 +1396,7 @@ mod tests {
             let c = classify(Ok((reply.0, reply.1.into())));
             assert_eq!(c.status, expected, "{reply:?}");
             assert_eq!(c.http, StatusCode::BAD_GATEWAY);
-            assert_eq!(c.outcome.status, expected.as_str());
+            assert_eq!(c.outcome.status, expected);
             assert!(c.code.is_none());
             assert!(c.outcome.error.is_some());
         }

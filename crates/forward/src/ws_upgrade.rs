@@ -1,13 +1,4 @@
-//! Client-side WebSocket upgrade (RFC 6455 over HTTP/1.1) with `permessage-deflate`
-//! (RFC 7692) negotiation.
-//!
-//! Codex always offers `permessage-deflate; client_max_window_bits`. axum's
-//! `WebSocketUpgrade` never answers `Sec-WebSocket-Extensions`, so this extractor performs
-//! the same handshake checks (same rejection statuses and texts), accepts the client's first
-//! acceptable offer when `ws_compression` is on, and builds the tungstenite stream with the
-//! agreed parameters. Without an acceptable offer the connection is plain.
-//!
-//! HTTP/2 extended CONNECT (RFC 8441) is not served: the listener speaks HTTP/1.1 only.
+//! HTTP/1.1 WebSocket upgrade with permessage-deflate; axum does not negotiate extensions.
 use axum::extract::FromRequestParts;
 use axum::response::{IntoResponse, Response};
 use http::{header, request::Parts, HeaderMap, HeaderValue, Method, StatusCode};

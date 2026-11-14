@@ -438,12 +438,15 @@ pub fn parse_codex_retry_after(status: u16, body: &[u8], now: SystemTime) -> Opt
     None
 }
 
+pub fn header_retry_after(headers: &HeaderMap, now: SystemTime) -> Option<Duration> {
+    hget(headers, "retry-after")
+        .and_then(|v| parse(v, now, Format::Http))
+        .map(|d| d.min(MAX_HEADER_RETRY_AFTER))
+}
+
 /// Body reset time first, then `Retry-After` header (CPA `withCodexRetryAfterHeader`).
 pub fn retry_after_for_429(headers: &HeaderMap, body: &[u8], now: SystemTime) -> Option<Duration> {
-    parse_codex_retry_after(429, body, now).or_else(|| {
-        hget(headers, "retry-after")
-            .and_then(|r| parse(r, now, Format::Http).map(|d| d.min(MAX_HEADER_RETRY_AFTER)))
-    })
+    parse_codex_retry_after(429, body, now).or_else(|| header_retry_after(headers, now))
 }
 
 /// CPA `isCloudflareChallengeErrorMessage` (callers: only for status < 500).

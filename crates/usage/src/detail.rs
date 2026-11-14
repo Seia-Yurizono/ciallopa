@@ -1,5 +1,4 @@
-//! Error details for failed requests: redacted upstream body (capped), selected headers and a
-//! descriptive message. Stored in `error_detail` (same retention as `requests`).
+//! Redact and cap error detail; retain it alongside the parent request.
 use rusqlite::OptionalExtension;
 use serde::Serialize;
 
@@ -116,7 +115,6 @@ pub(crate) struct Stored {
     pub attempts: Option<String>,
 }
 
-/// API shape of `GET /usage/v1/records/{id}/detail`.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct DetailRow {
     pub request_id: String,

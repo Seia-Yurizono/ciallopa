@@ -10,18 +10,7 @@ pub(crate) fn err(status: StatusCode, msg: &str) -> Response {
     (status, Json(json!({"error": {"message": msg}}))).into_response()
 }
 
-/// CSRF rules for every state-changing management / usage call. Authentication is by header only
-/// (`Authorization: Bearer` / `x-api-key`, checked by the middleware); cookies never authenticate,
-/// so a cookie added by a front proxy (Cloudflare Access `CF_Authorization`) is simply ignored.
-/// On top of that:
-/// - the body must be JSON: a cross-origin page cannot send that (or the key header) without a
-///   CORS preflight, which this server never answers;
-/// - when the browser says where the call comes from, it must be this origin:
-///   `Sec-Fetch-Site` must be `same-origin` / `none`; without it, an `Origin` header must name
-///   the request's own host (`Host`, or `X-Forwarded-Host` set by a front proxy). Clients that send
-///   neither (curl, scripts) are not affected.
-///
-/// `Some(rejection)` when the request does not follow them.
+/// Require JSON with header authentication; reject browser headers that identify another origin.
 pub(crate) fn csrf(headers: &HeaderMap) -> Option<Response> {
     let hv = |n: &str| headers.get(n).and_then(|v| v.to_str().ok()).map(str::trim);
     let json_ct =

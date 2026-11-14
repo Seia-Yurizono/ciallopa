@@ -1,8 +1,4 @@
-//! Error provenance for logs / the panel, and neutral client-facing error bodies.
-//!
-//! The client only ever sees either the upstream's own error (status, body, key headers) or an
-//! upstream-shaped error with a standard code. Where the error came from (`source`), the short
-//! code and the attempt chain live in the usage log only.
+//! Error provenance and attempt chains stay in the log; client errors keep the upstream shape.
 use axum::response::{IntoResponse, Response};
 use http::{HeaderMap, HeaderValue, StatusCode};
 use serde::Serialize;
@@ -25,7 +21,6 @@ pub(crate) struct ErrMeta {
     pub message: Option<String>,
 }
 
-/// Max attempt entries kept per request.
 pub(crate) const MAX_ATTEMPTS: usize = 8;
 const ATTEMPT_BODY: usize = 512;
 
@@ -133,17 +128,13 @@ pub(crate) fn body_code(b: &[u8]) -> Option<String> {
     pick("code").or_else(|| pick("type"))
 }
 
-/// Code for an in-stream error event (`error`, `response.failed`), bucketed like
-/// [`body_code`]: `response.error`, then `error`, then the event's own `code`; `code`
-/// before `type`. Quota codes log as `usage_limit`; a 429 without a code as
-/// `rate_limit_exceeded`; otherwise the fallback is `upstream_error_event` /
-/// `response_failed`.
+/// Prefer nested error codes over types; normalize quota and code-less 429 failures.
 pub(crate) fn event_code(v: &serde_json::Value) -> String {
-    let (_, quota) = crate::proxy::quota_event(v);
+    let (_, quota) = crate::classify::quota_event(v);
     if quota {
         return "usage_limit".into();
     }
-    if let Some(c) = crate::proxy::overload_code(v) {
+    if let Some(c) = crate::classify::overload_code(v) {
         return c;
     }
     let pick = |o: Option<&serde_json::Value>, k: &str| {
@@ -178,7 +169,6 @@ pub(crate) fn event_code(v: &serde_json::Value) -> String {
 /// Logged for a 429 / rate limit that carries no quota code (cools the model only).
 pub(crate) const RATE_LIMIT_CODE: &str = "rate_limit_exceeded";
 
-/// Code to log for a quota-class router outcome.
 pub(crate) fn quota_outcome_code(o: &ciallopa_core::Outcome) -> &'static str {
     match o {
         ciallopa_core::Outcome::RateLimited {
@@ -188,7 +178,6 @@ pub(crate) fn quota_outcome_code(o: &ciallopa_core::Outcome) -> &'static str {
     }
 }
 
-/// Code for a raw SSE event block (`event: …` / `data: …` lines).
 pub(crate) fn sse_block_code(event: &[u8]) -> Option<String> {
     let text = std::str::from_utf8(event).ok()?;
     let data: String = text
@@ -201,7 +190,6 @@ pub(crate) fn sse_block_code(event: &[u8]) -> Option<String> {
     Some(event_code(&v))
 }
 
-/// Upstream request id for correlating with upstream logs.
 pub(crate) fn request_id(h: &HeaderMap) -> Option<String> {
     ["x-request-id", "x-oai-request-id", "cf-ray"]
         .iter()
@@ -209,7 +197,6 @@ pub(crate) fn request_id(h: &HeaderMap) -> Option<String> {
         .map(|v| v.chars().take(128).collect())
 }
 
-/// Code for an upstream HTTP error (body code if structured, else `http_<status>`).
 pub(crate) fn upstream_code(status: u16, h: &HeaderMap, b: &[u8]) -> String {
     let html = h
         .get(http::header::CONTENT_TYPE)
@@ -231,22 +218,15 @@ pub(crate) fn meta_upstream(status: u16, h: &HeaderMap, b: &[u8]) -> ErrMeta {
     }
 }
 
-fn with_json(status: StatusCode, v: serde_json::Value) -> Response {
-    let mut r = (status, v.to_string()).into_response();
-    r.headers_mut().insert(
-        http::header::CONTENT_TYPE,
-        HeaderValue::from_static("application/json"),
-    );
-    r
+pub(crate) fn with_json(status: StatusCode, v: serde_json::Value) -> Response {
+    (status, axum::Json(v)).into_response()
 }
 
 fn retry_after(r: &mut Response, d: Duration) {
     set_retry_after(r.headers_mut(), d.as_secs().max(1));
 }
 
-/// `retry-after-ms`: the same delay in milliseconds, as OpenAI's API sends it next to
-/// `Retry-After`. Clients that read it (OpenAI SDKs, AI SDK / opencode) prefer it; the
-/// others ignore it, so it never changes what a client does.
+/// OpenAI SDKs prefer retry-after-ms; keep it consistent with Retry-After.
 pub(crate) const RETRY_AFTER_MS: http::HeaderName = http::HeaderName::from_static("retry-after-ms");
 
 /// `Retry-After: secs` plus the matching `retry-after-ms`.
@@ -283,7 +263,7 @@ pub(crate) fn warn_unroutable(code: &str, accounts: usize) {
     }
 }
 
-/// A locally generated error with an upstream-like body. `code` is logged only.
+/// Keep local diagnostic codes out of client-facing error bodies.
 pub(crate) fn local(
     status: StatusCode,
     source: &'static str,
@@ -317,10 +297,7 @@ pub(crate) fn local(
     r
 }
 
-/// Every account is cooling down and the first one to recover is out of usage quota (`all` =
-/// every account is): the Codex `usage_limit_reached` shape with that reset, so the client
-/// shows when service resumes. No `plan_type` (Codex then shows the plain "try again at"
-/// copy) and no Retry-After (Codex stops on this error; see [`MAX_CLIENT_RETRY_AFTER`]).
+/// Quota refusals include reset time; omit Retry-After because Codex stops on quota errors.
 pub(crate) fn quota_exhausted(retry: Duration, all: bool) -> Response {
     let secs = retry.as_secs().max(1);
     let resets_at = SystemTime::now()
@@ -358,9 +335,7 @@ pub(crate) fn quota_exhausted(retry: Duration, all: bool) -> Response {
     r
 }
 
-/// Every account is cooling down for reasons other than usage quota. `retry` = advice for a
-/// recovery the client may wait out (short, see [`MAX_CLIENT_RETRY_AFTER`]); `None` = the first
-/// recovery is too far away, so the client stops at once instead of retrying for hours.
+/// Advise retry only when the first recovery fits the client wait bound.
 pub(crate) fn all_cooling(
     recovers_in: Duration,
     wait_secs: u64,
@@ -384,16 +359,10 @@ pub(crate) fn all_cooling(
     r
 }
 
-/// Longest `Retry-After` forwarded on a 429 / 5xx. This bounds each advertised delay,
-/// not the client's total recovery cost: HTTP retries, stream recovery and transport
-/// fallback have separate budgets. Zero is omitted to avoid immediate retry advice.
+/// Bound advertised delay independently of retry budgets; omit zero.
 pub(crate) const MAX_CLIENT_RETRY_AFTER: u64 = 20;
 
-/// Response filter for every client route: on a 429 / 5xx keep `Retry-After` only when it is a
-/// delay of 1..=[`MAX_CLIENT_RETRY_AFTER`] seconds; drop it otherwise (zero, long, HTTP date).
-/// `retry-after-ms` always states the same delay: derived from the kept `Retry-After`, or,
-/// when the upstream sent only `retry-after-ms`, kept if it is within the same bound (then
-/// `Retry-After` is its rounded-up seconds). Otherwise both are dropped.
+/// On 429/5xx keep bounded positive retry advice; synchronize seconds and milliseconds.
 pub(crate) async fn clamp_retry_after(mut r: Response) -> Response {
     let s = r.status().as_u16();
     if s == 429 || s >= 500 {
@@ -426,10 +395,7 @@ pub(crate) async fn clamp_retry_after(mut r: Response) -> Response {
     r
 }
 
-/// Network-level failure code of a reqwest error.
-/// Transport error → client-facing code. With an egress proxy every connect-phase failure
-/// (proxy unreachable, auth / tunnel refused, proxy-side DNS) is the proxy's: `proxy_timeout`
-/// / `proxy_connect`; only a TLS failure past the tunnel stays `tls`.
+/// Connect failures belong to configured egress; TLS after the tunnel stays tls.
 pub(crate) fn net_code(e: &reqwest::Error, via_proxy: bool) -> &'static str {
     let s = format!("{e:?}").to_ascii_lowercase();
     if via_proxy && e.is_connect() {
@@ -487,8 +453,7 @@ pub(crate) fn network(code: &'static str) -> Response {
     local(st, SRC_NETWORK, code, None)
 }
 
-/// The local preparation budget (`preparation_timeout_secs`) ran out across retries /
-/// account switches. A proxy-side deadline, not a network fault: source `local`.
+/// Preparation expiry is a local deadline, not a network fault.
 pub(crate) fn preparation_timeout() -> Response {
     local(
         StatusCode::GATEWAY_TIMEOUT,
@@ -516,8 +481,7 @@ pub(crate) fn ws_connect_code(e: &ciallopa_upstream::UpstreamError) -> &'static 
     }
 }
 
-/// SSE event that ends a cut-off stream so Codex retries the turn (it treats an unknown
-/// `response.failed` code as a retryable stream error).
+/// Unknown response.failed codes make Codex retry a truncated stream.
 pub(crate) fn truncated_event() -> bytes::Bytes {
     let v = serde_json::json!({
         "type": "response.failed",
@@ -525,6 +489,12 @@ pub(crate) fn truncated_event() -> bytes::Bytes {
             "code": "server_error",
             "message": "stream disconnected before completion"}}});
     bytes::Bytes::from(format!("event: response.failed\ndata: {v}\n\n"))
+}
+pub(crate) fn json_error(status: StatusCode, kind: &str, msg: &str) -> Response {
+    with_json(
+        status,
+        serde_json::json!({"error": {"type": kind, "message": msg}}),
+    )
 }
 
 #[cfg(test)]

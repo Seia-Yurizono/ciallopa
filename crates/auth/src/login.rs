@@ -1,8 +1,4 @@
-//! Login flows; each ends with `file::write_auth_file` and returns the account id.
-//! - device code: `{issuer}/api/accounts/deviceauth/{usercode,token}` (codex-rs device_code_auth.rs)
-//! - paste callback URL: print PKCE auth URL, user pastes `http://localhost:1455/auth/callback?code=..&state=..`
-//! - PKCE 1455: listener on 127.0.0.1 only, 5 min lifetime
-//! - import: `~/.codex/auth.json`
+//! Login and import persist auth files and return their account id.
 use crate::file::{
     account_id_for, blocking, existing_for, merge_tokens, write_auth_file, FileLock,
 };
@@ -370,7 +366,7 @@ pub fn imported_record(v: &Value) -> Result<Value, AuthError> {
 
 /// Import `v` only when no file of its account exists yet. `present` names an already loaded
 /// account that is the same one (matched by the caller on account id / email).
-pub fn import_auth_value_new(
+pub(crate) fn import_auth_value_new(
     v: &Value,
     auth_dir: &Path,
     present: impl Fn(&Value) -> Option<String>,

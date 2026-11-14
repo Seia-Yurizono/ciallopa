@@ -1,10 +1,4 @@
-//! Gateway downstream observation (see `ciallopa_usage::Observation`).
-//!
-//! SSE: `ObsTx` times each chunk entering the bounded body queue (`queue`), and the body
-//! stream records when hyper polls a chunk out of it (`yield`). Hyper's socket writes have
-//! no hook, so a yield is "handed to hyper", not "written" or "received".
-//! WS: `timed` wraps `sink.send` (poll_ready + start_send + flush); completion means the
-//! frame was written and tungstenite's flush returned, i.e. accepted by the OS send buffer.
+//! SSE yield means handed to hyper; WS send completion means accepted by the OS buffer.
 use axum::body::Body;
 use bytes::Bytes;
 use ciallopa_usage::{Record, Recorder};
@@ -14,8 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::task::Poll;
 use std::time::{Duration, Instant};
 
-/// Run `f`; also report how long it stayed Pending (first Pending → Ready), or None when it
-/// completed on its first poll.
+/// Measure first Pending to Ready; None means completion on the first poll.
 pub(crate) async fn timed<F: Future>(f: F) -> (F::Output, Option<Duration>) {
     let mut f = pin!(f);
     let mut blocked: Option<Instant> = None;
@@ -112,8 +105,7 @@ impl DownLink {
         s.yield_bytes = s.yield_bytes.saturating_add(bytes as u64);
     }
 
-    /// The response body ended (`eof`) or was dropped before its end (client gone or
-    /// hyper stopped polling): emit a parked record.
+    /// Emit a parked record when its body ends or is dropped.
     fn body_done(&self, eof: bool) {
         let parked = {
             let mut s = self.lock();
@@ -138,9 +130,7 @@ impl DownLink {
         }
     }
 
-    /// Called from the tracker's Drop with the finished record. `duration_ms` is already
-    /// final; only the downstream fields may still change, so the record waits for the
-    /// body unless it already ended or the process is force-draining.
+    /// Wait for downstream observation after upstream completion, except during force drain.
     pub(crate) fn finish(&self, mut rec: Record, sink: Arc<Recorder>, now: bool) {
         let mut s = self.lock();
         if matches!(s.phase, LinkPhase::Streaming) && !now {

@@ -28,7 +28,7 @@ pub struct OAuthClient {
 
 /// `User-Agent` + `originator` of the latest learned Codex client (codex-rs sends both as
 /// default headers of its HTTP client, including for token refresh).
-pub fn client_headers() -> reqwest::header::HeaderMap {
+pub(crate) fn client_headers() -> reqwest::header::HeaderMap {
     let (ua, orig) = ciallopa_core::fingerprint::headers();
     let mut h = reqwest::header::HeaderMap::new();
     if let Ok(v) = reqwest::header::HeaderValue::from_str(&ua) {
@@ -75,7 +75,7 @@ impl OAuthClient {
             None => Ok(self.http.clone()),
         }
     }
-    pub fn token_url(&self) -> String {
+    pub(crate) fn token_url(&self) -> String {
         format!("{}/oauth/token", self.issuer)
     }
 
@@ -255,7 +255,7 @@ impl Pkce {
         let verifier = b64(&b);
         Self::from_verifier(verifier)
     }
-    pub fn from_verifier(verifier: String) -> Self {
+    pub(crate) fn from_verifier(verifier: String) -> Self {
         let challenge = b64(&sha2::Sha256::digest(verifier.as_bytes()));
         Self {
             verifier,
@@ -263,7 +263,7 @@ impl Pkce {
         }
     }
 }
-pub fn random_state() -> String {
+pub(crate) fn random_state() -> String {
     let mut b = [0u8; 32];
     rand::fill(&mut b);
     b64(&b)

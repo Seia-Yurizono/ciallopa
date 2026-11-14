@@ -1,4 +1,4 @@
-use crate::usage::{End, Tracker};
+use crate::usage::Tracker;
 use axum::response::Response;
 use ciallopa_upstream::WsMessage;
 
@@ -12,14 +12,7 @@ pub(super) fn to_up(m: Message) -> Option<WsMessage> {
     }
 }
 
-pub(super) fn to_down(m: WsMessage) -> Option<Message> {
-    to_up(m)
-}
-
-/// Answer to a client message refused by the buffered-body budget: the same 503
-/// `gateway_busy` wording and `Retry-After` as HTTP ([`crate::admission::BUSY_RETRY_AFTER_SECS`]),
-/// as an upstream-style wrapped error event (Codex maps it to a retryable HTTP 503). The
-/// message is not forwarded and no turn starts; the connection stays open.
+/// Refuse the message with retryable 503; keep WS open without starting a turn.
 pub(super) fn busy_frame() -> Message {
     let secs = crate::admission::BUSY_RETRY_AFTER_SECS;
     Message::text(
@@ -45,7 +38,6 @@ pub(super) async fn error_event(resp: Response, turn: Option<Tracker>) -> Messag
         .unwrap_or_default();
     if let Some(mut t) = turn {
         t.record_response(&parts, &b);
-        t.finish(End::Completed);
     }
     let error = serde_json::from_slice::<serde_json::Value>(&b)
         .ok()
@@ -67,19 +59,23 @@ pub(super) async fn error_event(resp: Response, turn: Option<Tracker>) -> Messag
     Message::text(ev.to_string())
 }
 
-/// A client `response.create` that may be replayed on another account.
-/// Top-level fields of a client message that replay and usage read. `input`, `tools` and
-/// other large fields are skipped while parsing, so a large message is not materialised
-/// again as a JSON tree.
-#[derive(serde::Deserialize)]
+/// Read replay/usage fields without materializing large input/tool payloads.
+#[derive(serde::Deserialize, serde::Serialize)]
 pub(super) struct Head {
     #[serde(rename = "type")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     ty: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     previous_response_id: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     generate: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     service_tier: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     client_metadata: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) model: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<serde_json::Value>,
 }
 
@@ -98,21 +94,7 @@ impl Head {
     }
 
     pub(super) fn to_value(&self) -> serde_json::Value {
-        let mut m = serde_json::Map::new();
-        for (k, v) in [
-            ("type", &self.ty),
-            ("previous_response_id", &self.previous_response_id),
-            ("generate", &self.generate),
-            ("service_tier", &self.service_tier),
-            ("client_metadata", &self.client_metadata),
-            ("model", &self.model),
-            ("reasoning", &self.reasoning),
-        ] {
-            if let Some(v) = v {
-                m.insert(k.to_string(), v.clone());
-            }
-        }
-        serde_json::Value::Object(m)
+        serde_json::to_value(self).expect("JSON envelope fields serialize")
     }
 }
 

@@ -1,11 +1,4 @@
-//! Client-facing proxy routes. **Owner: forwarding worker.**
-//!
-//! Codex CLI with `chatgpt_base_url = "https://<proxy>/backend-api"` hits
-//! `/backend-api/codex/{responses,responses/compact,models}` and `/backend-api/wham/*`;
-//! with a non-`/backend-api` base its backend-client uses `/api/codex/*` (mapped to `/wham/*`).
-//! A custom Responses provider with `base_url = "https://<proxy>/v1"` hits `/v1/responses`,
-//! `/v1/responses/compact`, `/v1/models` (mapped to `/codex/*`). Everything else under
-//! `/backend-api/*` is a sticky passthrough.
+//! Map /v1 to /codex and backend-client paths to /wham; other backend paths pass through.
 mod admission;
 mod attempt;
 mod budget;
@@ -60,7 +53,6 @@ pub struct ClientKey {
     pub admin: bool,
 }
 
-/// Everything handlers need. Built once in `ciallopa` (server) main.
 #[derive(Clone)]
 pub struct AppState {
     /// Live configuration. Retain request-scoped options across awaits; routing/error
@@ -69,13 +61,10 @@ pub struct AppState {
     pub accounts: Arc<dyn AccountStore>,
     pub router: Arc<dyn AccountRouter>,
     pub upstream: Arc<UpstreamClient>,
-    /// Per-request usage log; `None` = disabled.
     pub usage: Option<Arc<ciallopa_usage::Recorder>>,
-    /// Last Cloudflare challenge / block page seen instead of the upstream (in memory).
     pub egress: Arc<EgressStatus>,
 }
 
-/// Routes mounted *behind* the client-key middleware.
 pub fn routes(state: AppState) -> Router {
     let cache = models::ModelsCache::default();
     Router::new()
@@ -171,7 +160,7 @@ async fn forward(
     inspect: bool,
 ) -> Response {
     let Some(path) = map_path(pq(uri)) else {
-        return proxy::json_error(::http::StatusCode::NOT_FOUND, "not_found", "unknown path");
+        return errors::json_error(::http::StatusCode::NOT_FOUND, "not_found", "unknown path");
     };
     let parsed = if inspect {
         let limit = st.config.load().max_body_mb.saturating_mul(1024 * 1024);
@@ -224,7 +213,7 @@ async fn forward(
         );
     }
     drop(req);
-    let ob = proxy::Outbound {
+    let ob = crate::attempt::Outbound {
         method,
         path,
         headers,
@@ -233,7 +222,7 @@ async fn forward(
         expect_sse,
         decode_response,
     };
-    proxy::send_streaming(&st, ob, trk).await
+    crate::http::exchange::send_streaming(&st, ob, trk).await
 }
 
 /// `/responses`-family request that asked for a stream (`"stream": true` or

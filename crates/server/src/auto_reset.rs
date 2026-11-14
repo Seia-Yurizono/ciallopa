@@ -1,7 +1,4 @@
-//! Opt-in automatic reset-card use. Decisions are repeated under the manual consume lock
-//! after a fresh listing; unknown outcomes retry the persisted redeem id. The switch and
-//! live account/config gates are rechecked immediately before sending. See ARCHITECTURE.md
-//! for race handling and the restart boundary.
+//! Recheck live gates under the consume lock after relisting; retry unknown outcomes with the persisted id.
 use crate::reset_credits::{
     consume_locked, refresh_account, ConsumeCode, ConsumeStatus, Credit, ResetCredits, Switches,
 };
@@ -13,7 +10,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// Key label of automatic attempts in the consume log.
 pub const AUTO_LABEL: &str = "(auto)";
 /// POSTs per card at most.
 pub const MAX_TRIES: u32 = 5;

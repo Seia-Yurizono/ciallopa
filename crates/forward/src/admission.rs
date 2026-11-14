@@ -1,6 +1,4 @@
-//! One slot from before body extraction through HTTP EOF/drop. A WebSocket handshake is
-//! admitted outside the inflight cap (`ws_max_connections` bounds connections); each WS turn
-//! takes its own slot in the relay.
+//! Hold admission through body EOF/drop; WS handshakes are exempt and turns take their own slot.
 use crate::{errors, AppState};
 use axum::{
     body::{Body, Bytes},
@@ -27,13 +25,13 @@ pub(crate) fn refused(reason: Refused) -> Response {
         Refused::Busy => ("gateway_busy", "Gateway is busy; retry shortly."),
         Refused::Draining => ("shutdown", "Gateway is shutting down; retry shortly."),
     };
-    let mut r = crate::proxy::json_error(StatusCode::SERVICE_UNAVAILABLE, code, message);
+    let mut r = crate::errors::json_error(StatusCode::SERVICE_UNAVAILABLE, code, message);
     // Outside the Retry-After filter: set both headers here.
     // Busy: 3 s so Codex's fast 5xx retries space out instead of hammering the cap.
     // Draining: the same wait as the shutdown event (about one container restart).
     let ra = match reason {
         Refused::Busy => BUSY_RETRY_AFTER_SECS,
-        Refused::Draining => crate::proxy::SHUTDOWN_RETRY_AFTER_SECS,
+        Refused::Draining => crate::http::pump::SHUTDOWN_RETRY_AFTER_SECS,
     };
     errors::set_retry_after(r.headers_mut(), ra);
     r.extensions_mut().insert(errors::ErrMeta {
