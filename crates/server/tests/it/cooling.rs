@@ -2,7 +2,7 @@
 //! ones are answered at once (503 without Retry-After, or `usage_limit_reached` when the first
 //! account to recover is out of quota), on both the HTTP and the WebSocket path.
 #![allow(clippy::unwrap_used)]
-use async_trait::async_trait;
+use super::support::FixedStore as Store;
 use axum::extract::ws::{Message, WebSocketUpgrade};
 use axum::{body::Body, response::Response, routing::post, Router};
 use ciallopa_core::*;
@@ -14,35 +14,6 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 const KEY: &str = "sk-cpa-0123456789abcdef";
 
-struct Store;
-#[async_trait]
-impl AccountStore for Store {
-    async fn list(&self) -> Vec<Account> {
-        vec![Account {
-            id: "a".into(),
-            email: None,
-            chatgpt_account_id: Some("acct-a".into()),
-            plan_type: None,
-            priority: 0,
-            weight: 1,
-            disabled: false,
-        }]
-    }
-    async fn credentials(&self, id: &AccountId) -> Result<Credentials, AuthError> {
-        Ok(Credentials {
-            account: id.clone(),
-            access_token: "tok-a".into(),
-            chatgpt_account_id: Some("acct-a".into()),
-        })
-    }
-    async fn force_refresh(&self, id: &AccountId) -> Result<Credentials, AuthError> {
-        self.credentials(id).await
-    }
-    async fn reload(&self) -> Result<(), AuthError> {
-        Ok(())
-    }
-}
-
 /// Every account cools until `free_at`; `earliest_quota` = the first to recover is out of quota.
 struct Cool {
     free_at: Mutex<Instant>,
@@ -50,6 +21,15 @@ struct Cool {
     selects: AtomicUsize,
 }
 impl ciallopa_core::Router for Cool {
+    fn cooling_until(&self, _: &AccountId) -> Option<std::time::SystemTime> {
+        None
+    }
+    fn model_cooling_until(&self, _: &AccountId, _: &str) -> Option<std::time::SystemTime> {
+        None
+    }
+    fn note_attempt(&self, _: &AccountId) {}
+    fn content_ok(&self, _: &AccountId) {}
+
     fn select(&self, _: &RouteRequest, _: &[Account]) -> Result<Selection, RouteError> {
         self.selects.fetch_add(1, Ordering::SeqCst);
         let free = *self.free_at.lock().unwrap();
@@ -123,7 +103,7 @@ async fn env(cool_for: Duration, earliest_quota: bool, wait_secs: u64) -> Env {
         selects: AtomicUsize::new(0),
     });
     let state = AppState {
-        accounts: Arc::new(Store),
+        accounts: Arc::new(Store::new(&["a"])),
         router: router.clone(),
         upstream: {
             let up = ciallopa_upstream::UpstreamClient::new(&cfg).unwrap();

@@ -157,15 +157,13 @@ async fn healthz() -> &'static str {
 pub fn oauth_client(
     cfg: &ciallopa_core::Config,
 ) -> Result<ciallopa_auth::OAuthClient, ciallopa_core::AuthError> {
-    let c = ciallopa_auth::OAuthClient::new(&cfg.effective_proxy(), cfg.ipv6)?;
-    Ok(match ciallopa_core::config::env_var("OAUTH_ISSUER") {
-        Some((i, _)) if !i.is_empty() => {
-            let mut o = ciallopa_auth::OAuthClient::with_issuer(&i, c.http.clone());
-            o.pools = c.pools.clone();
-            o
+    let mut c = ciallopa_auth::OAuthClient::new(&cfg.effective_proxy(), cfg.ipv6)?;
+    if let Some((i, _)) = ciallopa_core::config::env_var("OAUTH_ISSUER") {
+        if !i.is_empty() {
+            c.issuer = i.trim_end_matches('/').to_string();
         }
-        _ => c,
-    })
+    }
+    Ok(c)
 }
 
 /// App without a config file (built-in defaults; reload and writes unavailable).

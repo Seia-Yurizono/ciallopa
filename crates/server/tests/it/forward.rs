@@ -1,6 +1,8 @@
 //! Forwarding integration tests against a mock upstream (SSE, retry, 429 failover, 401
 //! refresh, idle timeout, models cache, WebSocket relay + quota replay/close, Images API).
 #![allow(clippy::unwrap_used)]
+use super::support::FixedStore as Store;
+use super::support::RecordingRouter as Rec;
 use async_trait::async_trait;
 use axum::extract::ws::{Message, WebSocketUpgrade};
 use axum::{
@@ -69,65 +71,6 @@ impl tracing::Subscriber for StreamWarnings {
         let mut fields = Fields(serde_json::Map::new());
         event.record(&mut fields);
         self.0.lock().unwrap().push(fields.0.into());
-    }
-}
-
-struct Store {
-    ids: Vec<&'static str>,
-    refreshed: AtomicUsize,
-}
-#[async_trait]
-impl AccountStore for Store {
-    async fn list(&self) -> Vec<Account> {
-        self.ids
-            .iter()
-            .map(|i| Account {
-                id: i.to_string(),
-                email: None,
-                chatgpt_account_id: Some(format!("acct-{i}")),
-                plan_type: None,
-                priority: 0,
-                weight: 1,
-                disabled: false,
-            })
-            .collect()
-    }
-    async fn credentials(&self, id: &AccountId) -> Result<Credentials, AuthError> {
-        let gen = if self.refreshed.load(Ordering::SeqCst) > 0 {
-            "2"
-        } else {
-            "1"
-        };
-        Ok(Credentials {
-            account: id.clone(),
-            access_token: format!("tok-{id}-{gen}"),
-            chatgpt_account_id: Some(format!("acct-{id}")),
-        })
-    }
-    async fn force_refresh(&self, id: &AccountId) -> Result<Credentials, AuthError> {
-        self.refreshed.fetch_add(1, Ordering::SeqCst);
-        self.credentials(id).await
-    }
-    async fn reload(&self) -> Result<(), AuthError> {
-        Ok(())
-    }
-}
-
-#[derive(Default)]
-struct Rec(Mutex<Vec<(String, Outcome)>>);
-impl ciallopa_core::Router for Rec {
-    fn select(&self, req: &RouteRequest, accounts: &[Account]) -> Result<Selection, RouteError> {
-        accounts
-            .iter()
-            .find(|a| !req.exclude.contains(&a.id))
-            .map(|a| Selection {
-                account: a.id.clone(),
-                from_binding: false,
-            })
-            .ok_or(RouteError::NoAccounts)
-    }
-    fn report(&self, _: &RouteRequest, a: &AccountId, o: &Outcome) {
-        self.0.lock().unwrap().push((a.clone(), o.clone()));
     }
 }
 
@@ -1313,10 +1256,7 @@ async fn env_cfg_accounts(
     ))
     .unwrap();
     let rec = Arc::new(Rec::default());
-    let store = Arc::new(Store {
-        ids: vec!["a", "b"],
-        refreshed: AtomicUsize::new(0),
-    });
+    let store = Arc::new(Store::rotating(&["a", "b"]));
     let state = AppState {
         accounts: accounts.unwrap_or_else(|| store.clone()),
         router: rec.clone(),
@@ -1409,7 +1349,7 @@ async fn pending_connect_keeps_its_egress_classification_across_reload() {
         let dir = tempfile::tempdir().unwrap();
         let usage = usage_recorder(dir.path());
         let app = ciallopa::build_app(AppState {
-            accounts: Arc::new(Store { ids: vec!["a", "b"], refreshed: AtomicUsize::new(0) }),
+            accounts: Arc::new(Store::rotating(&["a", "b"])),
             router: rec.clone(),
             upstream: upstream.clone(),
             usage: Some(usage.clone()),
@@ -3186,10 +3126,7 @@ async fn no_account_record_has_no_selected_account() {
     ))
     .unwrap();
     let app = ciallopa::build_app(AppState {
-        accounts: Arc::new(Store {
-            ids: vec![],
-            refreshed: AtomicUsize::new(0),
-        }),
+        accounts: Arc::new(Store::rotating(&[])),
         router: Arc::new(Rec::default()),
         upstream: Arc::new(ciallopa_upstream::UpstreamClient::new(&cfg).unwrap()),
         config: Arc::new(cfg.into()),
@@ -4983,8 +4920,8 @@ async fn response_failed_instructions_mention_is_not_quota() {
 struct RefreshFail;
 #[async_trait]
 impl AccountStore for RefreshFail {
-    async fn list(&self) -> Vec<Account> {
-        vec![Account {
+    fn accounts(&self) -> Arc<[Account]> {
+        Arc::from([Account {
             id: "a".into(),
             email: None,
             chatgpt_account_id: Some("acc-a".into()),
@@ -4992,13 +4929,19 @@ impl AccountStore for RefreshFail {
             priority: 0,
             weight: 1,
             disabled: false,
-        }]
+        }])
+    }
+    fn generation(&self) -> u64 {
+        0
     }
     async fn credentials(&self, _: &AccountId) -> Result<Credentials, AuthError> {
         Err(AuthError::Refresh("timeout".into()))
     }
     async fn force_refresh(&self, id: &AccountId) -> Result<Credentials, AuthError> {
         self.credentials(id).await
+    }
+    async fn manual_refresh(&self, id: &AccountId) -> Result<Credentials, AuthError> {
+        self.force_refresh(id).await
     }
     async fn reload(&self) -> Result<(), AuthError> {
         Ok(())
@@ -5698,8 +5641,11 @@ async fn ws_preparation_timeout_keeps_the_candidate_waiting_for_credentials() {
     }
     #[async_trait]
     impl AccountStore for WaitingCredentials {
-        async fn list(&self) -> Vec<Account> {
-            self.store.list().await
+        fn accounts(&self) -> Arc<[Account]> {
+            self.store.accounts()
+        }
+        fn generation(&self) -> u64 {
+            self.store.generation()
         }
         async fn credentials(&self, id: &AccountId) -> Result<Credentials, AuthError> {
             if id == "b" {
@@ -5712,16 +5658,16 @@ async fn ws_preparation_timeout_keeps_the_candidate_waiting_for_credentials() {
         async fn force_refresh(&self, id: &AccountId) -> Result<Credentials, AuthError> {
             self.credentials(id).await
         }
+        async fn manual_refresh(&self, id: &AccountId) -> Result<Credentials, AuthError> {
+            self.force_refresh(id).await
+        }
         async fn reload(&self) -> Result<(), AuthError> {
             Ok(())
         }
     }
     let d = tempfile::tempdir().unwrap();
     let accounts = Arc::new(WaitingCredentials {
-        store: Store {
-            ids: vec!["a", "b"],
-            refreshed: AtomicUsize::new(0),
-        },
+        store: Store::rotating(&["a", "b"]),
         selected: tokio::sync::Notify::new(),
     });
     let e = env_cfg_accounts(
@@ -5761,10 +5707,7 @@ async fn ws_preparation_budget_is_shared_across_turn_replays() {
     use tokio_tungstenite::tungstenite::Message as M;
     for tag in ["budget_quota", "budget_overload"] {
         let d = tempfile::tempdir().unwrap();
-        let accounts = Arc::new(Store {
-            ids: vec!["a", "b", "c"],
-            refreshed: AtomicUsize::new(0),
-        });
+        let accounts = Arc::new(Store::rotating(&["a", "b", "c"]));
         let e = env_cfg_accounts(
             30,
             Some(usage_recorder(d.path())),
@@ -5816,10 +5759,7 @@ async fn ws_preparation_budget_is_shared_across_turn_replays() {
 async fn ws_preparation_budget_resets_each_turn_and_excludes_generation() {
     use tokio_tungstenite::tungstenite::Message as M;
     let d = tempfile::tempdir().unwrap();
-    let accounts = Arc::new(Store {
-        ids: vec!["a", "b", "c"],
-        refreshed: AtomicUsize::new(0),
-    });
+    let accounts = Arc::new(Store::rotating(&["a", "b", "c"]));
     let e = env_cfg_accounts(
         1,
         Some(usage_recorder(d.path())),
@@ -5957,10 +5897,7 @@ async fn ws_cancelled_handshake_keeps_selected_account() {
 #[tokio::test]
 async fn ws_unroutable_handshake_has_no_candidate_account() {
     let d = tempfile::tempdir().unwrap();
-    let accounts = Arc::new(Store {
-        ids: vec![],
-        refreshed: AtomicUsize::new(0),
-    });
+    let accounts = Arc::new(Store::rotating(&[]));
     let e = env_cfg_accounts(30, Some(usage_recorder(d.path())), "", Some(accounts)).await;
     assert!(tokio_tungstenite::connect_async(ws_req(&e)).await.is_err());
     let rows = wait_rows(&e, 1).await;

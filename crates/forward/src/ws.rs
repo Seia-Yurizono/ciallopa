@@ -209,7 +209,7 @@ async fn connect(
     let mut last: Option<Response> = None;
     let mut held = Duration::ZERO;
     loop {
-        let accounts = st.accounts.list().await;
+        let accounts = st.accounts.accounts();
         let id = match st.router.select(route, &accounts) {
             Ok(s) => s.account,
             Err(RouteError::AllCoolingDown {
@@ -658,7 +658,7 @@ async fn relay(
     let (mut utx, mut urx) = up.split();
     let mut queued_down = None;
     let mut abandon_upstream = false;
-    let max_switches = st.accounts.list().await.len().max(1);
+    let max_switches = st.accounts.len().max(1);
     let mut switches = 0usize;
     let mut awaiting = false;
     // Current turn: the client request (if replayable), upstream preamble frames held back
@@ -796,7 +796,7 @@ async fn relay(
                                             let _ = dtx.send(close(CLOSE_REPLAY, CLOSE_REPLAY_REASON)).await;
                                             break;
                                         }
-                                        let accounts = st.accounts.list().await;
+                                        let accounts = st.accounts.accounts();
                                         let mut r = route.clone();
                                         if accounts.iter().any(|a| a.id != account && !a.disabled && !r.exclude.contains(&a.id) && st.router.model_cooling_until(&a.id, &r.model).is_none()) {
                                             r.exclude.push(account.clone());
@@ -959,7 +959,7 @@ async fn relay(
                             t.error_text(txt.as_str().as_bytes());
                         }
                         if let proxy::EventKind::Overloaded(code) = &kind {
-                            let accounts = st.accounts.list().await;
+                            let accounts = st.accounts.accounts();
                             let others = proxy::others_usable(&st, &accounts, &route, &account);
                             st.router.report(&route, &account, &proxy::overload_outcome(&st, others));
                             let fresh = awaiting && !started && pending.is_some();

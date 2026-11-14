@@ -1,0 +1,120 @@
+use async_trait::async_trait;
+use ciallopa_core::*;
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
+
+/// Fixed credentials and a precomputed snapshot, with explicit mutations for admin tests.
+pub struct FixedStore {
+    accounts: RwLock<Arc<[Account]>>,
+    generation: AtomicU64,
+    rotating_tokens: bool,
+    pub refreshed: AtomicUsize,
+    pub relogin: Mutex<HashSet<AccountId>>,
+}
+impl FixedStore {
+    pub fn new(ids: &[&str]) -> Self {
+        Self::with_accounts(
+            ids.iter()
+                .map(|id| Account {
+                    id: (*id).into(),
+                    email: None,
+                    chatgpt_account_id: Some(format!("acct-{id}")),
+                    plan_type: None,
+                    priority: 0,
+                    weight: 1,
+                    disabled: false,
+                })
+                .collect(),
+        )
+    }
+    pub fn with_accounts(mut accounts: Vec<Account>) -> Self {
+        accounts.sort_by(|a, b| a.id.cmp(&b.id));
+        Self {
+            accounts: RwLock::new(accounts.into()),
+            generation: AtomicU64::new(0),
+            rotating_tokens: false,
+            refreshed: AtomicUsize::new(0),
+            relogin: Mutex::default(),
+        }
+    }
+    pub fn rotating(ids: &[&str]) -> Self {
+        Self {
+            rotating_tokens: true,
+            ..Self::new(ids)
+        }
+    }
+    pub fn update(&self, change: impl FnOnce(&mut Vec<Account>)) {
+        let mut snapshot = self.accounts.write().unwrap();
+        let mut accounts = snapshot.to_vec();
+        change(&mut accounts);
+        accounts.sort_by(|a, b| a.id.cmp(&b.id));
+        *snapshot = accounts.into();
+        self.generation.fetch_add(1, Ordering::Release);
+    }
+}
+#[async_trait]
+impl AccountStore for FixedStore {
+    fn accounts(&self) -> Arc<[Account]> {
+        self.accounts.read().unwrap().clone()
+    }
+    fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+    async fn credentials(&self, id: &AccountId) -> Result<Credentials, AuthError> {
+        let access_token = if self.rotating_tokens {
+            let generation = if self.refreshed.load(Ordering::SeqCst) > 0 {
+                2
+            } else {
+                1
+            };
+            format!("tok-{id}-{generation}")
+        } else {
+            format!("tok-{id}")
+        };
+        Ok(Credentials {
+            account: id.clone(),
+            access_token,
+            chatgpt_account_id: Some(format!("acct-{id}")),
+        })
+    }
+    async fn force_refresh(&self, id: &AccountId) -> Result<Credentials, AuthError> {
+        self.refreshed.fetch_add(1, Ordering::SeqCst);
+        self.credentials(id).await
+    }
+    async fn manual_refresh(&self, id: &AccountId) -> Result<Credentials, AuthError> {
+        self.force_refresh(id).await
+    }
+    async fn reload(&self) -> Result<(), AuthError> {
+        Ok(())
+    }
+    async fn relogin_required(&self) -> Vec<AccountId> {
+        self.relogin.lock().unwrap().iter().cloned().collect()
+    }
+}
+
+#[derive(Default)]
+pub struct RecordingRouter(pub Mutex<Vec<(String, Outcome)>>);
+impl Router for RecordingRouter {
+    fn select(&self, req: &RouteRequest, accounts: &[Account]) -> Result<Selection, RouteError> {
+        accounts
+            .iter()
+            .find(|a| !req.exclude.contains(&a.id))
+            .map(|a| Selection {
+                account: a.id.clone(),
+                from_binding: false,
+            })
+            .ok_or(RouteError::NoAccounts)
+    }
+    fn report(&self, _: &RouteRequest, id: &AccountId, outcome: &Outcome) {
+        self.0.lock().unwrap().push((id.clone(), outcome.clone()));
+    }
+    fn cooling_until(&self, _: &AccountId) -> Option<std::time::SystemTime> {
+        None
+    }
+    fn model_cooling_until(&self, _: &AccountId, _: &str) -> Option<std::time::SystemTime> {
+        None
+    }
+    fn note_attempt(&self, _: &AccountId) {}
+    fn content_ok(&self, _: &AccountId) {}
+}

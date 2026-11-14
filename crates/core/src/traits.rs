@@ -3,20 +3,31 @@ use crate::{
     RouteRequest, Selection, SkippedAuthFile,
 };
 use async_trait::async_trait;
+use std::sync::Arc;
 
 /// Owned by the **auth** worker (crate `ciallopa-auth`).
 #[async_trait]
 pub trait AccountStore: Send + Sync + 'static {
-    /// Snapshot of all known accounts (including disabled; router filters).
-    async fn list(&self) -> Vec<Account>;
+    /// Cheap, sorted snapshot of all known accounts (including disabled; router filters).
+    fn accounts(&self) -> Arc<[Account]>;
+    /// Changes whenever a new account snapshot is published.
+    fn generation(&self) -> u64;
+    fn len(&self) -> usize {
+        self.accounts().len()
+    }
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    /// Owned copy for admin callers.
+    async fn list(&self) -> Vec<Account> {
+        self.accounts().to_vec()
+    }
     /// Valid credentials; refreshes (with per-account lock) if expiring within 5 min.
     async fn credentials(&self, id: &AccountId) -> Result<Credentials, AuthError>;
     /// Called by forwarding after an upstream 401: refresh now, ignoring expiry.
     async fn force_refresh(&self, id: &AccountId) -> Result<Credentials, AuthError>;
     /// Admin-requested refresh (same as `force_refresh`, reported upstream as manual).
-    async fn manual_refresh(&self, id: &AccountId) -> Result<Credentials, AuthError> {
-        self.force_refresh(id).await
-    }
+    async fn manual_refresh(&self, id: &AccountId) -> Result<Credentials, AuthError>;
     /// Re-scan auth_dir (new logins / imports).
     async fn reload(&self) -> Result<(), AuthError>;
     /// Accounts whose refresh token was rejected (`refresh_token_reused`, `invalid_grant`, ...):
@@ -67,14 +78,10 @@ pub trait Router: Send + Sync + 'static {
     /// Forget everything about a removed account (bindings, cooldowns, quota).
     fn forget_account(&self, _id: &AccountId) {}
     /// When the account is usable again for any model (None = not cooling down).
-    fn cooling_until(&self, _id: &AccountId) -> Option<std::time::SystemTime> {
-        None
-    }
+    fn cooling_until(&self, id: &AccountId) -> Option<std::time::SystemTime>;
     /// When the account is usable again for `model` (account- or model-level cooldown;
     /// None = usable now). Lets a connection pinned to an account re-check each request's model.
-    fn model_cooling_until(&self, _id: &AccountId, _model: &str) -> Option<std::time::SystemTime> {
-        None
-    }
+    fn model_cooling_until(&self, id: &AccountId, model: &str) -> Option<std::time::SystemTime>;
     /// Why the account is cooling down (`usage_limit`, `rate_limited`, `auth`, `transient`,
     /// `overloaded`, `challenge`, `model_unsupported`, `not_found`, `payment_required`,
     /// `workspace_deactivated`); None = not cooling.
@@ -82,9 +89,9 @@ pub trait Router: Send + Sync + 'static {
         None
     }
     /// One upstream attempt was made on this account (24 h overload ratio denominator).
-    fn note_attempt(&self, _id: &AccountId) {}
+    fn note_attempt(&self, id: &AccountId);
     /// Real output reached the client from this account: resets its overload streak/backoff.
-    fn content_ok(&self, _id: &AccountId) {}
+    fn content_ok(&self, id: &AccountId);
     /// Upstream attempts and overloaded ones on this account over the last 24 h (in memory).
     fn overload_stats(&self, _id: &AccountId) -> (u64, u64) {
         (0, 0)

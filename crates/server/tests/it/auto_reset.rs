@@ -3,7 +3,7 @@
 //! `src/auto_reset.rs`. The sweep is driven directly with a shifted clock; card expiries are
 //! hours ahead of the real clock, so the background sweep never finds anything due.
 #![allow(clippy::unwrap_used)]
-use async_trait::async_trait;
+use super::support::FixedStore as Store;
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
@@ -16,7 +16,7 @@ use ciallopa::reset_credits::ResetCredits;
 use ciallopa_core::*;
 use ciallopa_forward::AppState;
 use serde_json::{json, Value};
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
@@ -25,49 +25,17 @@ const KEY: &str = "sk-cpa-0123456789abcdef";
 const MIN: i64 = 60_000;
 const HOUR: i64 = 60 * MIN;
 
-#[derive(Default)]
-struct Store {
-    ids: Mutex<Vec<(String, bool)>>,
-    relogin: Mutex<HashSet<String>>,
-}
-#[async_trait]
-impl AccountStore for Store {
-    async fn list(&self) -> Vec<Account> {
-        self.ids
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(i, disabled)| Account {
-                id: i.clone(),
-                email: Some(format!("{i}@example.test")),
-                chatgpt_account_id: Some(format!("acct-{i}")),
-                plan_type: None,
-                priority: 0,
-                weight: 1,
-                disabled: *disabled,
-            })
-            .collect()
-    }
-    async fn credentials(&self, id: &AccountId) -> Result<Credentials, AuthError> {
-        Ok(Credentials {
-            account: id.clone(),
-            access_token: format!("tok-{id}"),
-            chatgpt_account_id: Some(format!("acct-{id}")),
-        })
-    }
-    async fn force_refresh(&self, id: &AccountId) -> Result<Credentials, AuthError> {
-        self.credentials(id).await
-    }
-    async fn reload(&self) -> Result<(), AuthError> {
-        Ok(())
-    }
-    async fn relogin_required(&self) -> Vec<AccountId> {
-        self.relogin.lock().unwrap().iter().cloned().collect()
-    }
-}
-
 struct NoRoute;
 impl ciallopa_core::Router for NoRoute {
+    fn cooling_until(&self, _: &AccountId) -> Option<std::time::SystemTime> {
+        None
+    }
+    fn model_cooling_until(&self, _: &AccountId, _: &str) -> Option<std::time::SystemTime> {
+        None
+    }
+    fn note_attempt(&self, _: &AccountId) {}
+    fn content_ok(&self, _: &AccountId) {}
+
     fn clear_quota_cooldown(&self, _: &AccountId) -> bool {
         true
     }
@@ -223,8 +191,20 @@ async fn env_with(write: bool, dir: Option<tempfile::TempDir>) -> Env {
     let dir = dir.unwrap_or_else(|| tempfile::tempdir().unwrap());
     let cfg = config(&up, &dir.path().join("u.db"), write, 10);
     let usage = Some(ciallopa_usage::Recorder::open_as(&cfg.usage, "inst").unwrap());
-    let store = Arc::new(Store::default());
-    *store.ids.lock().unwrap() = vec![("a".into(), false), ("b".into(), true)];
+    let store = Arc::new(Store::with_accounts(
+        ["a", "b"]
+            .into_iter()
+            .map(|id| Account {
+                id: id.into(),
+                email: Some(format!("{id}@example.test")),
+                chatgpt_account_id: Some(format!("acct-{id}")),
+                plan_type: None,
+                priority: 0,
+                weight: 1,
+                disabled: id == "b",
+            })
+            .collect(),
+    ));
     let st = AppState {
         accounts: store.clone(),
         router: Arc::new(NoRoute),
@@ -666,12 +646,12 @@ async fn checks_after_relist() {
         ),
         (
             "deleted",
-            Box::new(|e: &Env| e.store.ids.lock().unwrap().retain(|(i, _)| i != "a")),
+            Box::new(|e: &Env| e.store.update(|accounts| accounts.retain(|a| a.id != "a"))),
             Event::Skipped("account_gone"),
         ),
         (
             "disabled",
-            Box::new(|e: &Env| e.store.ids.lock().unwrap()[0].1 = true),
+            Box::new(|e: &Env| e.store.update(|accounts| accounts[0].disabled = true)),
             Event::Skipped("disabled"),
         ),
         (

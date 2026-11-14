@@ -11,5 +11,6 @@ mod prices;
 mod reset_credits;
 mod settings;
 mod shutdown;
+mod support;
 mod ui_labels;
 mod ws_model_cooldown;

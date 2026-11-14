@@ -9,6 +9,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -134,18 +135,15 @@ impl AuthFile {
             .and_then(|c| c.exp)
             .and_then(|e| DateTime::from_timestamp(e, 0))
     }
-    fn needs_refresh(&self, now: DateTime<Utc>) -> bool {
-        self.refresh_reason(now).is_some()
-    }
     /// Why a proactive refresh is due, if it is: the expiry window wins over the interval.
     pub fn refresh_reason(&self, now: DateTime<Utc>) -> Option<RefreshReason> {
-        if self.expires_at().is_some_and(|e| e < now + REFRESH_SKEW) {
-            return Some(RefreshReason::ProactiveExpiry);
-        }
-        self.s("last_refresh")
-            .and_then(|t| DateTime::parse_from_rfc3339(&t).ok())
-            .is_some_and(|t| t < now - chrono::Duration::days(TOKEN_REFRESH_INTERVAL_DAYS))
-            .then_some(RefreshReason::Scheduled)
+        refresh_reason(
+            self.expires_at(),
+            self.s("last_refresh")
+                .and_then(|t| DateTime::parse_from_rfc3339(&t).ok())
+                .map(|t| t.with_timezone(&Utc)),
+            now,
+        )
     }
     fn needs_relogin(&self) -> bool {
         self.raw.get("needs_relogin").and_then(Value::as_bool) == Some(true)
@@ -161,6 +159,19 @@ impl AuthFile {
             chatgpt_account_id: self.s("account_id"),
         })
     }
+}
+
+fn refresh_reason(
+    expires_at: Option<DateTime<Utc>>,
+    last_refresh: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+) -> Option<RefreshReason> {
+    if expires_at.is_some_and(|e| e < now + REFRESH_SKEW) {
+        return Some(RefreshReason::ProactiveExpiry);
+    }
+    last_refresh
+        .is_some_and(|t| t < now - chrono::Duration::days(TOKEN_REFRESH_INTERVAL_DAYS))
+        .then_some(RefreshReason::Scheduled)
 }
 
 /// Build/merge a CPA-compatible codex auth JSON from a token response.
@@ -284,7 +295,7 @@ pub(crate) fn existing_for(dir: &Path, v: &Value) -> (String, Option<Value>, Opt
 /// Rename legacy `codex-<email>-<plan>.json` files to the hashed CPA name. Returns renamed count.
 pub fn migrate_legacy_names(dir: &Path) -> Result<usize, AuthError> {
     let mut n = 0;
-    for f in FileAccountStore::scan(dir)? {
+    for f in scan_dir(dir)?.files {
         if f.s("account_id").is_none() || f.id != legacy_account_id_for(&f.raw) {
             continue;
         }
@@ -336,9 +347,7 @@ impl FileLock {
     pub async fn acquire_async(dir: &Path, id: &str) -> Result<Self, AuthError> {
         use std::os::fd::AsRawFd;
         let (dir, id) = (dir.to_path_buf(), id.to_string());
-        let f = tokio::task::spawn_blocking(move || Self::open(&dir, &id))
-            .await
-            .map_err(|e| AuthError::Invalid(format!("lock task: {e}")))??;
+        let f = blocking(move || Self::open(&dir, &id)).await?;
         loop {
             // Nonblocking flock leaves the wait owned by this future. A timed-out request
             // drops its fd instead of stranding a blocking worker behind another process.
@@ -371,11 +380,166 @@ fn read_one(dir: &Path, id: &str) -> Option<Value> {
         .and_then(|b| serde_json::from_slice(&b).ok())
 }
 
-type RefreshLock = Arc<tokio::sync::Mutex<Option<Instant>>>;
+pub(crate) async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, AuthError> + Send + 'static,
+) -> Result<T, AuthError> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|e| AuthError::Invalid(format!("auth filesystem task: {e}")))?
+}
+
+struct CachedAuth {
+    file: AuthFile,
+    account: Account,
+    credentials: Option<Credentials>,
+    expires_at: Option<DateTime<Utc>>,
+    last_refresh: Option<DateTime<Utc>>,
+    needs_relogin: bool,
+}
+impl CachedAuth {
+    fn new(file: AuthFile) -> Self {
+        Self {
+            account: file.to_account(),
+            credentials: file.credentials().ok(),
+            expires_at: file.expires_at(),
+            last_refresh: file
+                .s("last_refresh")
+                .and_then(|t| DateTime::parse_from_rfc3339(&t).ok())
+                .map(|t| t.with_timezone(&Utc)),
+            needs_relogin: file.needs_relogin(),
+            file,
+        }
+    }
+    fn credentials(&self) -> Result<Credentials, AuthError> {
+        self.credentials
+            .clone()
+            .ok_or_else(|| AuthError::Invalid("missing access_token".into()))
+    }
+    fn refresh_reason(&self, now: DateTime<Utc>) -> Option<RefreshReason> {
+        refresh_reason(self.expires_at, self.last_refresh, now)
+    }
+}
+
+#[derive(Default)]
+struct RefreshSlot {
+    last_ok: Option<Instant>,
+}
+type RefreshLock = Arc<tokio::sync::Mutex<RefreshSlot>>;
+
+#[derive(Debug, PartialEq)]
+enum CurrentReason {
+    Fresh,
+    Deduplicated,
+    NewerDisk,
+}
+#[derive(Debug, PartialEq)]
+enum RefreshPlan {
+    UseCurrent(CurrentReason),
+    Refresh(RefreshReason),
+    Relogin,
+}
+fn decide_refresh(
+    disk: &CachedAuth,
+    memory: &CachedAuth,
+    forced: Option<RefreshReason>,
+    deduplicated: bool,
+    now: DateTime<Utc>,
+) -> RefreshPlan {
+    if disk.needs_relogin {
+        return RefreshPlan::Relogin;
+    }
+    let due = disk.refresh_reason(now);
+    if forced.is_none() && due.is_none() {
+        RefreshPlan::UseCurrent(CurrentReason::Fresh)
+    } else if forced.is_some() && deduplicated {
+        RefreshPlan::UseCurrent(CurrentReason::Deduplicated)
+    } else if forced.is_some()
+        && disk.credentials.as_ref().map(|c| &c.access_token)
+            != memory.credentials.as_ref().map(|c| &c.access_token)
+        && due.is_none()
+    {
+        RefreshPlan::UseCurrent(CurrentReason::NewerDisk)
+    } else {
+        RefreshPlan::Refresh(forced.or(due).expect("refresh is forced or due"))
+    }
+}
+
+enum RefreshOutcome {
+    Refreshed(AuthFile),
+    KeptForeign(AuthFile),
+    AdoptedRotated(AuthFile),
+    MarkedRelogin { file: AuthFile, why: String },
+    KeptCurrentAfterTransient(String),
+    FailedTransient(String),
+}
+fn refresh_outcome(
+    result: Result<TokenResponse, RefreshFailure>,
+    disk: Option<Value>,
+    current: &CachedAuth,
+    memory: &CachedAuth,
+    refresh_token: &str,
+    forced: bool,
+    now: DateTime<Utc>,
+) -> RefreshOutcome {
+    let file = &current.file;
+    match result {
+        Ok(tokens) => {
+            let after = merge_tokens(Some(&file.raw), &tokens);
+            if let Some(raw) = disk.as_ref() {
+                let v = version(raw);
+                if v != version(&memory.file.raw) && v != version(&file.raw) && v != version(&after)
+                {
+                    return RefreshOutcome::KeptForeign(AuthFile {
+                        id: file.id.clone(),
+                        raw: raw.clone(),
+                    });
+                }
+            }
+            RefreshOutcome::Refreshed(AuthFile {
+                id: file.id.clone(),
+                raw: merge_tokens(disk.as_ref().or(Some(&file.raw)), &tokens),
+            })
+        }
+        Err(RefreshFailure::Permanent(why)) => {
+            let mut raw = disk.unwrap_or_else(|| file.raw.clone());
+            if raw.get("refresh_token").and_then(Value::as_str) != Some(refresh_token)
+                && raw.get("needs_relogin").and_then(Value::as_bool) != Some(true)
+            {
+                return RefreshOutcome::AdoptedRotated(AuthFile {
+                    id: file.id.clone(),
+                    raw,
+                });
+            }
+            if let Some(o) = raw.as_object_mut() {
+                o.insert("disabled".into(), true.into());
+                o.insert("needs_relogin".into(), true.into());
+                o.insert(
+                    "relogin_reason".into(),
+                    Value::String(why.chars().take(200).collect()),
+                );
+            }
+            RefreshOutcome::MarkedRelogin {
+                file: AuthFile {
+                    id: file.id.clone(),
+                    raw,
+                },
+                why,
+            }
+        }
+        Err(RefreshFailure::Transient(why))
+            if !forced && current.expires_at.is_some_and(|e| e > now) =>
+        {
+            RefreshOutcome::KeptCurrentAfterTransient(why)
+        }
+        Err(RefreshFailure::Transient(why)) => RefreshOutcome::FailedTransient(why),
+    }
+}
 
 pub struct FileAccountStore {
     dir: PathBuf,
-    files: RwLock<Vec<AuthFile>>,
+    files: RwLock<HashMap<AccountId, Arc<CachedAuth>>>,
+    accounts: arc_swap::ArcSwap<Arc<[Account]>>,
+    generation: AtomicU64,
     oauth: Option<OAuthClient>,
     locks: std::sync::Mutex<HashMap<AccountId, RefreshLock>>,
     force_dedup: Duration,
@@ -490,14 +654,17 @@ impl FileAccountStore {
     async fn build(dir: PathBuf, oauth: Option<OAuthClient>) -> Result<Self, AuthError> {
         let s = Self {
             dir,
-            files: RwLock::new(vec![]),
+            files: RwLock::new(HashMap::new()),
+            accounts: arc_swap::ArcSwap::from_pointee(Arc::from([])),
+            generation: AtomicU64::new(0),
             oauth,
             locks: Default::default(),
             force_dedup: FORCE_DEDUP,
             skipped: RwLock::new(vec![]),
             logged: Default::default(),
         };
-        if let Err(e) = migrate_legacy_names(&s.dir) {
+        let dir = s.dir.clone();
+        if let Err(e) = blocking(move || migrate_legacy_names(&dir)).await {
             tracing::warn!(error = %e, "auth file name migration failed");
         }
         s.reload().await?;
@@ -508,22 +675,33 @@ impl FileAccountStore {
         self.force_dedup = d;
         self
     }
-    async fn get(&self, id: &AccountId) -> Result<AuthFile, AuthError> {
+    async fn get(&self, id: &AccountId) -> Result<Arc<CachedAuth>, AuthError> {
         self.files
             .read()
             .await
-            .iter()
-            .find(|f| &f.id == id)
+            .get(id)
             .cloned()
             .ok_or_else(|| AuthError::NotFound(id.clone()))
     }
-    async fn put(&self, f: AuthFile) -> Result<(), AuthError> {
-        write_auth_file(&self.dir, &f.id, &f.raw)?;
-        let mut files = self.files.write().await;
-        match files.iter_mut().find(|x| x.id == f.id) {
-            Some(x) => *x = f,
-            None => files.push(f),
-        }
+    fn publish(&self, files: &HashMap<AccountId, Arc<CachedAuth>>) {
+        let mut accounts: Vec<_> = files.values().map(|f| f.account.clone()).collect();
+        accounts.sort_by(|a, b| a.id.cmp(&b.id));
+        self.accounts.store(Arc::new(accounts.into()));
+        self.generation.fetch_add(1, Ordering::Release);
+    }
+    async fn read(&self, id: &AccountId) -> Result<Option<Value>, AuthError> {
+        let (dir, id) = (self.dir.clone(), id.clone());
+        blocking(move || Ok(read_one(&dir, &id))).await
+    }
+    async fn put(&self, f: AuthFile, flock: FileLock) -> Result<(), AuthError> {
+        let dir = self.dir.clone();
+        // A cancelled caller must not unlock while the worker is still writing/fsyncing.
+        let (f, _flock) = blocking(move || {
+            write_auth_file(&dir, &f.id, &f.raw)?;
+            Ok((f, flock))
+        })
+        .await?;
+        self.cache(f).await;
         Ok(())
     }
     fn lock_for(&self, id: &AccountId) -> RefreshLock {
@@ -539,134 +717,111 @@ impl FileAccountStore {
         id: &AccountId,
         forced: Option<RefreshReason>,
     ) -> Result<Credentials, AuthError> {
-        let force = forced.is_some();
         let lock = self.lock_for(id);
-        let mut last = lock.lock().await;
-        // Cross-process: another ciallopa / CPA may refresh the same file. Re-read under flock.
-        let _flock = FileLock::acquire_async(&self.dir, id).await?;
-        let mem_before = self.get(id).await?;
-        let mut f = mem_before.clone();
-        if let Some(raw) = read_one(&self.dir, id) {
-            if raw != f.raw {
-                f = AuthFile {
-                    id: f.id.clone(),
+        let mut slot = lock.lock().await;
+        let memory = self.get(id).await?;
+        // Waiters reuse the first refresh without another flock/read/parse cycle.
+        if forced.is_none() && !memory.needs_relogin && memory.refresh_reason(Utc::now()).is_none()
+        {
+            return memory.credentials();
+        }
+        let flock = FileLock::acquire_async(&self.dir, id).await?;
+        let current = match self.read(id).await? {
+            Some(raw) if raw != memory.file.raw => {
+                self.cache(AuthFile {
+                    id: id.clone(),
                     raw,
-                };
-                self.cache(&f).await;
+                })
+                .await;
+                self.get(id).await?
             }
-        }
-        if f.needs_relogin() {
-            return Err(AuthError::ReloginRequired);
-        }
+            _ => memory.clone(),
+        };
         let now = Utc::now();
-        if !force && !f.needs_refresh(now) {
-            return f.credentials(); // someone else refreshed while we waited
-        }
-        if force && last.is_some_and(|t| t.elapsed() < self.force_dedup) {
-            return f.credentials();
-        }
-        // Another process (CPA, second ciallopa) already wrote a newer, still-valid token:
-        // the 401 was against our stale copy, so use theirs instead of refreshing again.
-        if force && f.s("access_token") != mem_before.s("access_token") && !f.needs_refresh(now) {
-            tracing::info!(account = %ciallopa_core::a(id), "newer token on disk; adopted instead of refreshing");
-            return f.credentials();
-        }
+        let reason = match decide_refresh(
+            &current,
+            &memory,
+            forced,
+            slot.last_ok.is_some_and(|t| t.elapsed() < self.force_dedup),
+            now,
+        ) {
+            RefreshPlan::Relogin => return Err(AuthError::ReloginRequired),
+            RefreshPlan::UseCurrent(reason) => {
+                tracing::debug!(account = %ciallopa_core::a(id), ?reason, "using current token");
+                return current.credentials();
+            }
+            RefreshPlan::Refresh(reason) => reason,
+        };
         let oauth = self
             .oauth
             .as_ref()
             .ok_or_else(|| AuthError::Refresh("refresh not configured".into()))?;
-        let rt = f
+        let rt = current
+            .file
             .s("refresh_token")
             .filter(|r| !r.is_empty())
             .ok_or(AuthError::ReloginRequired)?;
-        let reason = forced
-            .or_else(|| f.refresh_reason(now))
-            .unwrap_or(RefreshReason::ProactiveExpiry);
-        let res = oauth.refresh_as(Some(id.as_ref()), &rt, reason).await;
-        // Re-read: writers that ignore our flock may have refreshed during the round-trip.
-        let disk = read_one(&self.dir, id);
-        match res {
-            Ok(t) => {
-                let after = merge_tokens(Some(&f.raw), &t);
-                let dv = disk.as_ref().map(version);
-                let ok = match &dv {
-                    None => true,
-                    Some(d) => {
-                        *d == version(&mem_before.raw)
-                            || *d == version(&f.raw)
-                            || *d == version(&after)
-                    }
-                };
-                if !ok {
-                    // CPA refresh_patch: disk moved to a foreign version; don't clobber it.
-                    let df = AuthFile {
-                        id: f.id.clone(),
-                        raw: disk.unwrap_or_default(),
-                    };
-                    tracing::warn!(account = %ciallopa_core::a(id), "auth file changed during refresh; keeping disk version");
-                    self.cache(&df).await;
-                    *last = Some(Instant::now());
-                    return df.credentials();
-                }
-                // Patch only the refreshed keys onto the current disk content.
-                let raw = merge_tokens(disk.as_ref().or(Some(&f.raw)), &t);
-                let nf = AuthFile {
-                    id: f.id.clone(),
-                    raw,
-                };
-                self.put(nf.clone()).await?;
-                *last = Some(Instant::now());
+        let result = oauth.refresh_as(Some(id.as_ref()), &rt, reason).await;
+        // Writers that ignore our flock may rotate credentials during the round-trip.
+        let outcome = refresh_outcome(
+            result,
+            self.read(id).await?,
+            &current,
+            &memory,
+            &rt,
+            forced.is_some(),
+            now,
+        );
+        self.apply_refresh(id, &current, &mut slot, flock, outcome)
+            .await
+    }
+
+    async fn apply_refresh(
+        &self,
+        id: &AccountId,
+        current: &CachedAuth,
+        slot: &mut RefreshSlot,
+        flock: FileLock,
+        outcome: RefreshOutcome,
+    ) -> Result<Credentials, AuthError> {
+        match outcome {
+            RefreshOutcome::Refreshed(file) => {
+                let credentials = file.credentials();
+                self.put(file, flock).await?;
+                slot.last_ok = Some(Instant::now());
                 tracing::info!(account = %ciallopa_core::a(id), "token refreshed");
-                nf.credentials()
+                credentials
             }
-            Err(RefreshFailure::Permanent(why)) => {
-                let base = disk.unwrap_or_else(|| f.raw.clone());
-                // Rejected because someone else rotated it? Then their token is the live one.
-                if base.get("refresh_token").and_then(Value::as_str) != Some(rt.as_str()) {
-                    let df = AuthFile {
-                        id: f.id.clone(),
-                        raw: base.clone(),
-                    };
-                    if !df.needs_relogin() {
-                        tracing::info!(account = %ciallopa_core::a(id), "refresh token rotated by another process; adopted");
-                        self.cache(&df).await;
-                        return df.credentials();
-                    }
-                }
+            RefreshOutcome::KeptForeign(file) => {
+                let credentials = file.credentials();
+                self.cache(file).await;
+                slot.last_ok = Some(Instant::now());
+                tracing::warn!(account = %ciallopa_core::a(id), "auth file changed during refresh; keeping disk version");
+                credentials
+            }
+            RefreshOutcome::AdoptedRotated(file) => {
+                let credentials = file.credentials();
+                self.cache(file).await;
+                tracing::info!(account = %ciallopa_core::a(id), "refresh token rotated by another process; adopted");
+                credentials
+            }
+            RefreshOutcome::MarkedRelogin { file, why } => {
+                self.put(file, flock).await?;
                 tracing::warn!(account = %ciallopa_core::a(id), %why, "refresh token rejected; account needs_relogin (excluded from routing, no retry)");
-                let mut raw = base;
-                if let Some(o) = raw.as_object_mut() {
-                    o.insert("disabled".into(), true.into());
-                    o.insert("needs_relogin".into(), true.into());
-                    o.insert(
-                        "relogin_reason".into(),
-                        Value::String(why.chars().take(200).collect()),
-                    );
-                }
-                self.put(AuthFile { id: f.id, raw }).await?;
                 Err(AuthError::ReloginRequired)
             }
-            Err(RefreshFailure::Transient(why)) => {
-                let still_valid = f.expires_at().is_some_and(|e| e > now);
-                if !force && still_valid {
-                    tracing::warn!(account = %ciallopa_core::a(id), %why, "proactive refresh failed; using current token");
-                    f.credentials()
-                } else {
-                    Err(AuthError::Refresh(why))
-                }
+            RefreshOutcome::KeptCurrentAfterTransient(why) => {
+                tracing::warn!(account = %ciallopa_core::a(id), %why, "proactive refresh failed; using current token");
+                current.credentials()
             }
+            RefreshOutcome::FailedTransient(why) => Err(AuthError::Refresh(why)),
         }
     }
 
-    async fn cache(&self, f: &AuthFile) {
+    async fn cache(&self, file: AuthFile) {
         let mut files = self.files.write().await;
-        if let Some(x) = files.iter_mut().find(|x| x.id == f.id) {
-            *x = f.clone();
-        }
-    }
-
-    fn scan(dir: &Path) -> Result<Vec<AuthFile>, AuthError> {
-        Ok(scan_dir(dir)?.files)
+        files.insert(file.id.clone(), Arc::new(CachedAuth::new(file)));
+        self.publish(&files);
     }
 
     /// Log skipped files that are new or changed since the last scan (not on every rescan).
@@ -711,20 +866,21 @@ fn opt(v: Option<u32>) -> String {
 
 #[async_trait]
 impl AccountStore for FileAccountStore {
-    async fn list(&self) -> Vec<Account> {
-        self.files
-            .read()
-            .await
-            .iter()
-            .map(AuthFile::to_account)
-            .collect()
+    fn accounts(&self) -> Arc<[Account]> {
+        Arc::clone(&self.accounts.load())
+    }
+    fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+    fn len(&self) -> usize {
+        self.accounts.load().len()
     }
     async fn credentials(&self, id: &AccountId) -> Result<Credentials, AuthError> {
         let f = self.get(id).await?;
-        if f.needs_relogin() {
+        if f.needs_relogin {
             return Err(AuthError::ReloginRequired);
         }
-        if f.needs_refresh(Utc::now()) && self.oauth.is_some() {
+        if f.refresh_reason(Utc::now()).is_some() && self.oauth.is_some() {
             return self.refresh(id, None).await;
         }
         f.credentials()
@@ -737,16 +893,20 @@ impl AccountStore for FileAccountStore {
         self.refresh(id, Some(RefreshReason::Forced)).await
     }
     async fn relogin_required(&self) -> Vec<AccountId> {
-        self.files
+        let mut ids: Vec<_> = self
+            .files
             .read()
             .await
-            .iter()
-            .filter(|f| f.needs_relogin())
-            .map(|f| f.id.clone())
-            .collect()
+            .values()
+            .filter(|f| f.needs_relogin)
+            .map(|f| f.file.id.clone())
+            .collect();
+        ids.sort();
+        ids
     }
     async fn reload(&self) -> Result<(), AuthError> {
-        let mut sc = scan_dir(&self.dir)?;
+        let dir = self.dir.clone();
+        let mut sc = blocking(move || scan_dir(&dir)).await?;
         let mut files = self.files.write().await;
         // Only a file that is gone removes its account. One that exists but cannot be read or
         // parsed (permissions, a half-written copy) keeps the loaded record, so the runtime
@@ -757,15 +917,24 @@ impl AccountStore for FileAccountStore {
                 continue;
             }
             let id = s.file.strip_suffix(".json").unwrap_or(&s.file);
-            if let Some(f) = files.iter().find(|f| f.id == id) {
+            if let Some(f) = files.get(id) {
                 s.kept = true;
-                kept.push(f.clone());
+                kept.push(f.file.clone());
             }
         }
         sc.files.extend(kept);
         sc.files.sort_by(|a, b| a.id.cmp(&b.id));
         self.log_skipped(&sc.skipped);
-        *files = sc.files;
+        *files = sc
+            .files
+            .into_iter()
+            .map(|f| (f.id.clone(), Arc::new(CachedAuth::new(f))))
+            .collect();
+        self.publish(&files);
+        self.locks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|id, slot| files.contains_key(id) || Arc::strong_count(slot) > 1);
         drop(files);
         *self.skipped.write().await = sc.skipped.into_iter().map(|k| k.0).collect();
         Ok(())
@@ -781,8 +950,11 @@ impl AccountStore for FileAccountStore {
         }
         let lock = self.lock_for(id);
         let _g = lock.lock().await;
-        let _flock = FileLock::acquire_async(&self.dir, id).await?;
-        let mut raw = read_one(&self.dir, id).unwrap_or(self.get(id).await?.raw);
+        let flock = FileLock::acquire_async(&self.dir, id).await?;
+        let mut raw = self
+            .read(id)
+            .await?
+            .unwrap_or(self.get(id).await?.file.raw.clone());
         let o = raw
             .as_object_mut()
             .ok_or_else(|| AuthError::Invalid("auth file is not an object".into()))?;
@@ -808,7 +980,7 @@ impl AccountStore for FileAccountStore {
             raw,
         };
         let acct = f.to_account();
-        self.put(f).await?;
+        self.put(f, flock).await?;
         Ok(acct)
     }
     async fn remove_account(&self, id: &AccountId) -> Result<(), AuthError> {
@@ -816,15 +988,29 @@ impl AccountStore for FileAccountStore {
         let lock = self.lock_for(id);
         let _g = lock.lock().await;
         {
-            let _flock = FileLock::acquire_async(&self.dir, id).await?;
-            match std::fs::remove_file(self.dir.join(format!("{id}.json"))) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e.into()),
-            }
+            let flock = FileLock::acquire_async(&self.dir, id).await?;
+            let (dir, id) = (self.dir.clone(), id.clone());
+            blocking(move || {
+                let _flock = flock;
+                match std::fs::remove_file(dir.join(format!("{id}.json"))) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e.into()),
+                }
+                Ok(())
+            })
+            .await?;
         }
-        let _ = std::fs::remove_file(self.dir.join(format!(".{id}.json.lock")));
-        self.files.write().await.retain(|f| &f.id != id);
+        let (dir, removed) = (self.dir.clone(), id.clone());
+        blocking(move || {
+            let _ = std::fs::remove_file(dir.join(format!(".{removed}.json.lock")));
+            Ok(())
+        })
+        .await?;
+        let mut files = self.files.write().await;
+        files.remove(id);
+        self.publish(&files);
+        drop(files);
         self.locks
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -844,11 +1030,9 @@ impl AccountStore for FileAccountStore {
     }
     async fn import_new_account(&self, doc: &Value) -> Result<ImportOutcome, AuthError> {
         let known: Vec<(AccountId, Option<String>, Option<String>)> = self
-            .files
-            .read()
-            .await
+            .accounts()
             .iter()
-            .map(|f| (f.id.clone(), f.s("account_id"), f.s("email")))
+            .map(|a| (a.id.clone(), a.chatgpt_account_id.clone(), a.email.clone()))
             .collect();
         let (doc, dir) = (doc.clone(), self.dir.clone());
         tokio::task::spawn_blocking(move || {
@@ -951,12 +1135,32 @@ mod tests {
             0o700
         );
         let s = FileAccountStore::open(dir).await.unwrap();
-        let l = s.list().await;
+        let l = s.accounts();
         assert_eq!(l.len(), 1);
+        assert_eq!(s.len(), 1);
+        assert!(Arc::ptr_eq(&l, &s.accounts()));
+        let generation = s.generation();
         assert_eq!((l[0].priority, l[0].weight), (2, 3));
         let c = s.credentials(&"a@x-plus".into()).await.unwrap();
         assert_eq!(c.chatgpt_account_id.as_deref(), Some("acc"));
         assert!(!format!("{c:?}").contains("\"t\""));
+        assert_eq!(
+            s.generation(),
+            generation,
+            "credential reads keep the snapshot"
+        );
+        s.update_account(
+            &l[0].id,
+            &AccountPatch {
+                weight: Some(7),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(s.accounts()[0].weight, 7);
+        assert_eq!(l[0].weight, 3, "published snapshots remain immutable");
+        assert!(s.generation() > generation);
         assert!(write_auth_file(d.path(), "../x", &serde_json::json!({})).is_err());
     }
 
@@ -1067,7 +1271,7 @@ mod tests {
         s.reload().await.unwrap();
         assert_eq!(ids(s.list().await), both);
         let b = s.get(&ib).await.unwrap();
-        assert_eq!(b.raw, jb);
+        assert_eq!(b.file.raw, jb);
         assert_eq!(
             skipped(s.skipped().await),
             [(format!("{ib}.json"), SkipReason::InvalidJson, true)]
@@ -1078,8 +1282,13 @@ mod tests {
         assert_eq!(ids(s.list().await), both);
         assert!(s.skipped().await.is_empty());
         // Gone: removed.
+        drop(s.lock_for(&ib));
         std::fs::remove_file(&fb).unwrap();
         s.reload().await.unwrap();
+        assert!(
+            !s.locks.lock().unwrap().contains_key(&ib),
+            "reload prunes removed account locks"
+        );
         assert_eq!(ids(s.list().await), vec![ia.clone()]);
         assert!(s.skipped().await.is_empty());
         // A broken file never loaded before is reported but creates no account.

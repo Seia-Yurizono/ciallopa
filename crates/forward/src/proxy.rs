@@ -331,10 +331,7 @@ async fn send_inner(
     loop {
         info.retries = transient as u32;
         info.tried.clone_from(&route.exclude);
-        let accounts = st.accounts.list().await;
-        st.upstream
-            .pools
-            .retain(|k| accounts.iter().any(|a| a.id == k));
+        let accounts = st.accounts.accounts();
         let sel = match st.router.select(&route, &accounts) {
             Ok(s) => s,
             Err(RouteError::AllCoolingDown {
@@ -1669,7 +1666,7 @@ pub(crate) async fn send_streaming(
 ) -> Response {
     let mut budget = Preparation::new(st);
     let idle = budget.idle;
-    let max_switches = st.accounts.list().await.len().max(1);
+    let max_switches = st.accounts.len().max(1);
     let mut switches = 0usize;
     let mut info = SendInfo::default();
     // Keep the attempt chain even after each send_info batch has been consumed below.
@@ -1883,7 +1880,7 @@ pub(crate) async fn send_streaming(
         if let Some(code) = overload {
             // In-stream overload before any output: nothing reached the client yet, so the same
             // request is replayed on another usable account (each account at most once).
-            let accounts = st.accounts.list().await;
+            let accounts = st.accounts.accounts();
             let others = others_usable(st, &accounts, &route, &account);
             let cooled_before = st.router.cooling_until(&account).is_some();
             st.router
