@@ -26,7 +26,7 @@ struct Store {
 
 #[async_trait]
 impl AccountStore for Store {
-    async fn list(&self) -> Vec<Account> {
+    fn accounts(&self) -> Arc<[Account]> {
         IDS[..self.count.load(Ordering::SeqCst)]
             .iter()
             .map(|id| Account {
@@ -41,6 +41,10 @@ impl AccountStore for Store {
             .collect()
     }
 
+    fn generation(&self) -> u64 {
+        self.count.load(Ordering::SeqCst) as u64
+    }
+
     async fn credentials(&self, id: &AccountId) -> Result<Credentials, AuthError> {
         if self.fail_credentials && id == "a" {
             return Err(AuthError::Refresh("temporary credential failure".into()));
@@ -53,6 +57,10 @@ impl AccountStore for Store {
     }
 
     async fn force_refresh(&self, id: &AccountId) -> Result<Credentials, AuthError> {
+        self.credentials(id).await
+    }
+
+    async fn manual_refresh(&self, id: &AccountId) -> Result<Credentials, AuthError> {
         self.credentials(id).await
     }
 
@@ -82,6 +90,14 @@ impl ciallopa_core::Router for Rec {
             .unwrap()
             .push((account.clone(), outcome.clone()));
     }
+    fn cooling_until(&self, _: &AccountId) -> Option<std::time::SystemTime> {
+        None
+    }
+    fn model_cooling_until(&self, _: &AccountId, _: &str) -> Option<std::time::SystemTime> {
+        None
+    }
+    fn note_attempt(&self, _: &AccountId) {}
+    fn content_ok(&self, _: &AccountId) {}
 }
 
 #[derive(Clone, Copy)]
