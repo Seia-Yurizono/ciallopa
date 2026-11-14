@@ -4,8 +4,7 @@ pub(crate) use crate::attempt::{
     overload_retry_wait, send, send_tracked, Cooling, Outbound, WS_HOLD_MAX,
 };
 pub(crate) use crate::classify::{
-    classify_error, event_kind, log_account_error, overload_body, overload_code, quota_event,
-    EventKind,
+    classify_error, log_account_error, overload_body, overload_code, quota_event, EventKind,
 };
 pub(crate) use crate::http::exchange::send_streaming;
 pub(crate) use crate::http::pump::{
