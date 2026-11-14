@@ -47,9 +47,13 @@ The source is authoritative; avoid maintaining a second copy of Rust signatures 
   This is not a transaction spanning all components; see [SETTINGS.md](SETTINGS.md).
 - [`forward/src/lib.rs`](../crates/forward/src/lib.rs): `AppState` holds config, account store,
   router, upstream and optional usage recorder. `ClientKey` carries only a label and admin bit.
+  Internal callers import attempts, HTTP pumps and classifiers from their owning modules.
+  HTTP and WS consume `classify::Class` directly; the old `EventKind` view is test-only.
 - [`usage/src/lib.rs`](../crates/usage/src/lib.rs): `Record` is a completed HTTP request or WS
   turn; `Recorder::record` uses non-blocking `try_send`. This is operational telemetry, not
   a durable billing transaction.
+- [`usage/src/reset.rs`](../crates/usage/src/reset.rs): `ConsumeOutcome` and `reset_finish`
+  require `ConsumeStatus`; persisted status strings and management JSON remain unchanged.
 - [`usage/src/problem.rs`](../crates/usage/src/problem.rs): the single classification of a
   stored request into the list's problem buckets (`error` / `upstream` / `unfinished`), its cause,
   `rescued` and suggested `next` steps, in Rust per row and as SQL predicates for filters and
