@@ -5,7 +5,10 @@ use super::request::{
 };
 use crate::downstream::observed;
 use crate::proxy::{self, json_error, Outbound};
-use crate::{errors, usage::Tracker};
+use crate::{
+    errors,
+    usage::{End, Tracker},
+};
 use crate::{session_route, AppState};
 use axum::body::Body;
 use axum::response::Response;
@@ -219,213 +222,316 @@ pub(super) async fn run(
         Ok(c) => return proxy::stream_image_body(&st, c, trk.take()),
         Err(r) => return r,
     };
+    let events = sse_events(c.resp, c.idle);
+    if stream {
+        stream_images(&st, events, kind, response_format, trk.take())
+    } else {
+        buffered_images(events, response_format, trk).await
+    }
+}
+
+enum ImageStep {
+    Partial {
+        index: i64,
+        format: String,
+        b64: String,
+    },
+    Done {
+        results: Vec<ImageResult>,
+        created: i64,
+        usage: Option<Value>,
+        incomplete: Option<Value>,
+    },
+    NoImage {
+        ty: &'static str,
+        event: Value,
+    },
+    Failed {
+        code: String,
+        message: Value,
+    },
+    ReadError(ImageReadError),
+    Truncated,
+}
+
+#[derive(Default)]
+struct ImageReducer {
+    col: Collector,
+}
+
+impl ImageReducer {
+    fn step(&mut self, event: Result<Value, ImageReadError>) -> Option<ImageStep> {
+        let event = match event {
+            Ok(event) => event,
+            Err(error) => return Some(ImageStep::ReadError(error)),
+        };
+        match event.get("type").and_then(Value::as_str).unwrap_or("") {
+            "response.image_generation_call.partial_image" => {
+                let b64 = event
+                    .get("partial_image_b64")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                (!b64.is_empty()).then(|| ImageStep::Partial {
+                    index: event
+                        .get("partial_image_index")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(0),
+                    format: event
+                        .get("output_format")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .into(),
+                    b64: b64.into(),
+                })
+            }
+            "response.output_item.done" => {
+                self.col.item_done(&event);
+                None
+            }
+            ty @ ("response.completed" | "response.incomplete") => {
+                let (results, created, usage) = self.col.extract(&event);
+                if results.is_empty() {
+                    return Some(ImageStep::NoImage {
+                        ty: if ty == "response.incomplete" {
+                            "response.incomplete"
+                        } else {
+                            "response.completed"
+                        },
+                        event,
+                    });
+                }
+                let incomplete = (ty == "response.incomplete").then_some(event);
+                Some(ImageStep::Done {
+                    results,
+                    created,
+                    usage,
+                    incomplete,
+                })
+            }
+            "response.failed" | "error" => Some(ImageStep::Failed {
+                code: errors::event_code(&event),
+                message: event
+                    .pointer("/response/error/message")
+                    .or_else(|| event.pointer("/error/message"))
+                    .cloned()
+                    .unwrap_or(json!("upstream failed")),
+            }),
+            _ => None,
+        }
+    }
+
+    fn eof(&self) -> ImageStep {
+        ImageStep::Truncated
+    }
+
+    async fn next<S>(&mut self, events: &mut S) -> ImageStep
+    where
+        S: futures::Stream<Item = Result<Value, ImageReadError>> + Unpin,
+    {
+        while let Some(event) = events.next().await {
+            if let Some(step) = self.step(event) {
+                return step;
+            }
+        }
+        self.eof()
+    }
+}
+
+impl ImageStep {
+    fn record(&self, trk: &mut Option<Tracker>) {
+        match self {
+            Self::Done {
+                incomplete: Some(event),
+                ..
+            } => {
+                if let Some(t) = trk.as_mut() {
+                    t.incomplete(event);
+                }
+            }
+            Self::NoImage { ty, event } => fail_no_image(trk, ty, event),
+            Self::Failed { code, message } => fail(
+                trk,
+                code,
+                errors::SRC_STREAM,
+                message.as_str().unwrap_or("upstream failed"),
+            ),
+            Self::ReadError(error) => fail(trk, error.code, error.source, &error.message),
+            Self::Truncated => fail(
+                trk,
+                "stream_truncated",
+                errors::SRC_STREAM,
+                "upstream image stream ended before completion",
+            ),
+            _ => {}
+        }
+    }
+
+    fn error_message(&self) -> Value {
+        match self {
+            Self::NoImage { .. } => json!("upstream did not return image output"),
+            Self::Failed { message, .. } => message.clone(),
+            Self::ReadError(error) => json!(error.message),
+            Self::Truncated => json!("upstream image stream ended before completion"),
+            _ => unreachable!("only failed image steps have an error message"),
+        }
+    }
+}
+
+fn stream_images(
+    st: &AppState,
+    events: impl futures::Stream<Item = Result<Value, ImageReadError>> + Send + 'static,
+    kind: Kind,
+    response_format: &'static str,
+    mut trk: Option<Tracker>,
+) -> Response {
     let prefix = if kind == Kind::Edit {
         "image_edit"
     } else {
         "image_generation"
     };
-    let events = sse_events(c.resp, c.idle);
-    if stream {
-        let rf = response_format;
-        let mut trk = trk.take();
-        if let Some(t) = trk.as_mut() {
-            t.status(200);
-            t.sse_response();
-        }
-        let body = observed(st.upstream.drain.clone(), None, move |tx| async move {
-            let mut events = Box::pin(events);
-            let mut col = Collector::default();
-            while let Some(ev) = events.next().await {
-                let ev = match ev {
-                    Ok(v) => v,
-                    Err(e) => {
-                        fail(&mut trk, e.code, e.source, &e.message);
-                        let _ = tx
-                            .send(Ok(sse("error", &json!({"error": {"message": e.message}}))))
-                            .await;
-                        return;
-                    }
-                };
-                match ev.get("type").and_then(|t| t.as_str()).unwrap_or("") {
-                    "response.image_generation_call.partial_image" => {
-                        let b64 = ev
-                            .get("partial_image_b64")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        if b64.is_empty() {
-                            continue;
-                        }
-                        let name = format!("{prefix}.partial_image");
-                        let mut d = json!({"type": name, "partial_image_index": ev.get("partial_image_index").and_then(|v| v.as_i64()).unwrap_or(0)});
-                        let fmt = ev
-                            .get("output_format")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        set_image(&mut d, rf, fmt, b64);
-                        if tx.send(Ok(sse(&name, &d))).await.is_err() {
-                            return;
-                        }
-                    }
-                    "response.output_item.done" => col.item_done(&ev),
-                    ty @ ("response.completed" | "response.incomplete") => {
-                        let (results, _, usage) = col.extract(&ev);
-                        if results.is_empty() {
-                            fail_no_image(&mut trk, ty, &ev);
-                            let _ = tx.send(Ok(sse("error", &json!({"error": {"message": "upstream did not return image output"}})))).await;
-                            return;
-                        }
-                        let name = format!("{prefix}.completed");
-                        for img in results {
-                            let mut d = json!({"type": name});
-                            if let Some(u) = &usage {
-                                d["usage"] = u.clone();
-                            }
-                            set_image(&mut d, rf, &img.fmt, &img.result);
-                            if tx.send(Ok(sse(&name, &d))).await.is_err() {
-                                return;
-                            }
-                        }
-                        if let Some(t) = trk.as_mut() {
-                            if ty == "response.incomplete" {
-                                t.incomplete(&ev);
-                            }
-                            t.finish_response();
-                        }
-                        return;
-                    }
-                    "response.failed" | "error" => {
-                        let msg = ev
-                            .pointer("/response/error/message")
-                            .or_else(|| ev.pointer("/error/message"))
-                            .cloned()
-                            .unwrap_or(json!("upstream failed"));
-                        fail(
-                            &mut trk,
-                            &errors::event_code(&ev),
-                            errors::SRC_STREAM,
-                            msg.as_str().unwrap_or("upstream failed"),
-                        );
-                        let _ = tx
-                            .send(Ok(sse("error", &json!({"error": {"message": msg}}))))
-                            .await;
-                        return;
-                    }
-                    _ => {}
-                }
-            }
-            fail(
-                &mut trk,
-                "stream_truncated",
-                errors::SRC_STREAM,
-                "upstream image stream ended before completion",
-            );
-            let _ = tx
-                .send(Ok(sse(
-                    "error",
-                    &json!({"error": {"message": "upstream image stream ended before completion"}}),
-                )))
-                .await;
-        });
-        let mut r = Response::new(body);
-        r.headers_mut().insert(
-            http::header::CONTENT_TYPE,
-            HeaderValue::from_static("text/event-stream"),
-        );
-        r.headers_mut().insert(
-            http::header::CACHE_CONTROL,
-            HeaderValue::from_static("no-cache"),
-        );
-        return r;
+    if let Some(t) = trk.as_mut() {
+        t.status(200);
+        t.sse_response();
     }
-
-    let mut events = Box::pin(events);
-    let mut col = Collector::default();
-    while let Some(ev) = events.next().await {
-        let ev = match ev {
-            Ok(v) => v,
-            Err(e) => {
-                fail(trk, e.code, e.source, &e.message);
-                let status = if e.code == "idle_timeout" {
-                    StatusCode::GATEWAY_TIMEOUT
-                } else {
-                    StatusCode::BAD_GATEWAY
-                };
-                return json_error(status, "upstream_error", &e.message);
+    let body = observed(st.upstream.drain.clone(), None, move |tx| async move {
+        let mut events = Box::pin(events);
+        let mut reducer = ImageReducer::default();
+        loop {
+            let step = reducer.next(&mut events).await;
+            match &step {
+                ImageStep::Partial { index, format, b64 } => {
+                    let name = format!("{prefix}.partial_image");
+                    let mut data = json!({"type": name, "partial_image_index": index});
+                    set_image(&mut data, response_format, format, b64);
+                    if tx.send(Ok(sse(&name, &data))).await.is_err() {
+                        if let Some(t) = trk.take() {
+                            t.finish(End::ClientGone);
+                        }
+                        return;
+                    }
+                }
+                ImageStep::Done { results, usage, .. } => {
+                    let name = format!("{prefix}.completed");
+                    for image in results {
+                        let mut data = json!({"type": name});
+                        if let Some(usage) = usage {
+                            data["usage"] = usage.clone();
+                        }
+                        set_image(&mut data, response_format, &image.fmt, &image.result);
+                        if tx.send(Ok(sse(&name, &data))).await.is_err() {
+                            if let Some(t) = trk.take() {
+                                t.finish(End::ClientGone);
+                            }
+                            return;
+                        }
+                    }
+                    step.record(&mut trk);
+                    if let Some(t) = trk.take() {
+                        t.finish(End::Completed);
+                    }
+                    return;
+                }
+                _ => {
+                    step.record(&mut trk);
+                    let _ = tx
+                        .send(Ok(sse(
+                            "error",
+                            &json!({"error": {"message": step.error_message()}}),
+                        )))
+                        .await;
+                    if let Some(t) = trk.take() {
+                        t.finish(End::Completed);
+                    }
+                    return;
+                }
             }
-        };
-        match ev.get("type").and_then(|t| t.as_str()).unwrap_or("") {
-            "response.output_item.done" => col.item_done(&ev),
-            ty @ ("response.completed" | "response.incomplete") => {
-                let (results, created, usage) = col.extract(&ev);
-                if results.is_empty() {
-                    fail_no_image(trk, ty, &ev);
-                    return json_error(
-                        StatusCode::BAD_GATEWAY,
-                        "upstream_error",
-                        "upstream did not return image output",
-                    );
-                }
-                if let Some(t) = trk.as_mut().filter(|_| ty == "response.incomplete") {
-                    t.incomplete(&ev);
-                }
+        }
+    });
+    let mut response = Response::new(body);
+    response.headers_mut().insert(
+        http::header::CONTENT_TYPE,
+        HeaderValue::from_static("text/event-stream"),
+    );
+    response.headers_mut().insert(
+        http::header::CACHE_CONTROL,
+        HeaderValue::from_static("no-cache"),
+    );
+    response
+}
+
+async fn buffered_images(
+    events: impl futures::Stream<Item = Result<Value, ImageReadError>>,
+    response_format: &'static str,
+    trk: &mut Option<Tracker>,
+) -> Response {
+    let mut events = Box::pin(events);
+    let mut reducer = ImageReducer::default();
+    loop {
+        let step = reducer.next(&mut events).await;
+        step.record(trk);
+        match step {
+            ImageStep::Partial { .. } => {}
+            ImageStep::Done {
+                results,
+                created,
+                usage,
+                ..
+            } => {
                 let first = &results[0];
                 let mut out = json!({"created": created, "data": []});
-                for (k, v) in [
+                for (key, value) in [
                     ("background", &first.background),
                     ("output_format", &first.fmt),
                     ("quality", &first.quality),
                     ("size", &first.size),
                 ] {
-                    if !v.is_empty() {
-                        out[k] = json!(v);
+                    if !value.is_empty() {
+                        out[key] = json!(value);
                     }
                 }
-                if let Some(u) = usage {
-                    out["usage"] = u;
+                if let Some(usage) = usage {
+                    out["usage"] = usage;
                 }
-                let data: Vec<Value> = results
-                    .iter()
-                    .map(|img| {
-                        let mut d = json!({});
-                        if !img.revised_prompt.is_empty() {
-                            d["revised_prompt"] = json!(img.revised_prompt);
-                        }
-                        set_image(&mut d, response_format, &img.fmt, &img.result);
-                        d
-                    })
-                    .collect();
-                out["data"] = Value::Array(data);
-                let mut r = Response::new(Body::from(out.to_string()));
-                r.headers_mut().insert(
+                out["data"] = Value::Array(
+                    results
+                        .iter()
+                        .map(|image| {
+                            let mut data = json!({});
+                            if !image.revised_prompt.is_empty() {
+                                data["revised_prompt"] = json!(image.revised_prompt);
+                            }
+                            set_image(&mut data, response_format, &image.fmt, &image.result);
+                            data
+                        })
+                        .collect(),
+                );
+                let mut response = Response::new(Body::from(out.to_string()));
+                response.headers_mut().insert(
                     http::header::CONTENT_TYPE,
                     HeaderValue::from_static("application/json"),
                 );
-                return r;
+                return response;
             }
-            "response.failed" | "error" => {
-                let msg = ev
-                    .pointer("/response/error/message")
-                    .or_else(|| ev.pointer("/error/message"))
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("upstream failed")
-                    .to_string();
-                fail(trk, &errors::event_code(&ev), errors::SRC_STREAM, &msg);
-                return json_error(StatusCode::BAD_GATEWAY, "upstream_error", &msg);
+            step => {
+                let status = if matches!(&step, ImageStep::ReadError(error) if error.code == "idle_timeout")
+                {
+                    StatusCode::GATEWAY_TIMEOUT
+                } else {
+                    StatusCode::BAD_GATEWAY
+                };
+                let message = if matches!(step, ImageStep::Truncated) {
+                    json!("stream error: stream disconnected before completion")
+                } else {
+                    step.error_message()
+                };
+                return json_error(
+                    status,
+                    "upstream_error",
+                    message.as_str().unwrap_or("upstream failed"),
+                );
             }
-            _ => {}
         }
     }
-    fail(
-        trk,
-        "stream_truncated",
-        errors::SRC_STREAM,
-        "upstream image stream ended before completion",
-    );
-    json_error(
-        StatusCode::BAD_GATEWAY,
-        "upstream_error",
-        "stream error: stream disconnected before completion",
-    )
 }
 
 fn set_image(d: &mut Value, rf: &str, fmt: &str, b64: &str) {
@@ -598,6 +704,60 @@ fn sse_events(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reducer_keeps_partial_completion_failure_and_eof_distinct() {
+        let mut reducer = ImageReducer::default();
+        for event in [
+            json!({"type":"response.created"}),
+            json!({"type":"response.image_generation_call.partial_image", "partial_image_b64":""}),
+            json!({"type":"response.output_item.done", "output_index":0, "item":{"type":"image_generation_call", "result":"final", "output_format":"webp"}}),
+        ] {
+            assert!(reducer.step(Ok(event)).is_none());
+        }
+        assert!(matches!(reducer.step(Ok(json!({
+            "type":"response.image_generation_call.partial_image", "partial_image_b64":"partial",
+            "partial_image_index":2, "output_format":"png"
+        }))), Some(ImageStep::Partial { index:2, format, b64 }) if format == "png" && b64 == "partial"));
+        let incomplete = json!({"type":"response.incomplete", "response":{
+            "created_at":123, "output":[], "incomplete_details":{"reason":"max_output_tokens"},
+            "tool_usage":{"image_gen":{"count":1}}
+        }});
+        let Some(ImageStep::Done {
+            results,
+            created,
+            usage,
+            incomplete: reason,
+        }) = reducer.step(Ok(incomplete.clone()))
+        else {
+            panic!("collected image completes an incomplete response");
+        };
+        assert_eq!(results[0].result, "final");
+        assert_eq!(results[0].fmt, "webp");
+        assert_eq!(created, 123);
+        assert_eq!(usage, Some(json!({"count":1})));
+        assert_eq!(reason, Some(incomplete));
+        for ty in ["response.completed", "response.incomplete"] {
+            assert!(
+                matches!(ImageReducer::default().step(Ok(json!({"type":ty}))), Some(ImageStep::NoImage { ty: actual, .. }) if actual == ty)
+            );
+        }
+        assert!(
+            matches!(reducer.step(Ok(json!({"type":"error", "error":{"code":"bad_image", "message":{"reason":"failed"}}}))), Some(ImageStep::Failed { code, message }) if code == "bad_image" && message == json!({"reason":"failed"}))
+        );
+        assert!(matches!(
+            reducer.step(Err(ImageReadError {
+                code: "idle_timeout",
+                source: errors::SRC_NETWORK,
+                message: "stream idle timeout".into()
+            })),
+            Some(ImageStep::ReadError(ImageReadError {
+                code: "idle_timeout",
+                ..
+            }))
+        ));
+        assert!(matches!(reducer.eof(), ImageStep::Truncated));
+    }
 
     #[tokio::test]
     async fn sse_events_join_data_across_chunks_and_keep_newline_terminated_eof() {

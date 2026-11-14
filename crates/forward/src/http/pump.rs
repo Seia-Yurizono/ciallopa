@@ -2,8 +2,8 @@ use crate::attempt::{overload_outcome, Chosen};
 use crate::classify::{event_kind, EventKind};
 use crate::errors;
 use crate::headers::downstream_headers;
-use crate::sse::{sse_events_after, Aligner};
-use crate::usage::Tracker;
+use crate::sse::{Frame, Framer};
+use crate::usage::{End, StreamObservation, Tracker};
 use crate::AppState;
 use axum::body::Body;
 use axum::response::Response;
@@ -44,7 +44,7 @@ pub(crate) fn stream_image_body(st: &AppState, c: Chosen, mut trk: Option<Tracke
         c.route,
         c.account,
         Bytes::new(),
-        c.resp.bytes_stream().boxed(),
+        Up::Live(c.resp.bytes_stream().boxed()),
         trk,
         if image_sse {
             Observation::Images
@@ -86,7 +86,7 @@ pub(crate) fn stream_back_tracked(
         c.route,
         c.account,
         Bytes::new(),
-        up,
+        Up::Live(up),
         trk,
         if sse {
             Observation::Responses(crate::usage::StreamObservation::new())
@@ -115,6 +115,466 @@ pub(crate) enum Observation {
     Images,
 }
 
+/// The upstream is never replaced by a fabricated empty stream after EOF.
+pub(crate) enum Up {
+    Live(UpStream),
+    Ended,
+}
+
+impl Up {
+    pub(crate) async fn next(&mut self) -> Option<reqwest::Result<Bytes>> {
+        match self {
+            Self::Live(stream) => {
+                let next = stream.next().await;
+                if next.is_none() {
+                    *self = Self::Ended;
+                }
+                next
+            }
+            Self::Ended => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Window {
+    Tracking,
+    Limited,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Seen {
+    Open,
+    Terminal,
+}
+
+struct ResponsesObserver {
+    framer: Framer,
+    // Only events larger than the forwarding window need a separate observation copy.
+    large: bytes::BytesMut,
+    window: Window,
+    seen: Seen,
+    account_reported: bool,
+    progress: StreamObservation,
+}
+
+impl ResponsesObserver {
+    fn new(progress: StreamObservation, account_reported: bool) -> Self {
+        Self {
+            framer: Framer::new(crate::sse::BOOTSTRAP_MAX),
+            large: bytes::BytesMut::new(),
+            window: Window::Tracking,
+            seen: Seen::Open,
+            account_reported,
+            progress,
+        }
+    }
+
+    fn on_event(
+        &mut self,
+        event: &[u8],
+        trk: &mut Option<Tracker>,
+        observed: &mut u64,
+        late_overload: &Outcome,
+    ) -> Option<Outcome> {
+        let text = String::from_utf8_lossy(event);
+        let data = crate::encrypted::sse_data(text.as_bytes()).unwrap_or_default();
+        let ty = crate::usage::event_type(&data);
+        if let Some(ty) = ty.as_deref() {
+            if *observed > 0 {
+                *observed -= 1;
+            } else {
+                self.progress.event(ty);
+            }
+            if crate::usage::is_terminal_type(ty) {
+                self.seen = Seen::Terminal;
+            }
+        }
+        if let Some(t) = trk.as_mut() {
+            t.sse_event(&data, ty.as_deref());
+        }
+        if !self.account_reported
+            && matches!(
+                ty.as_deref(),
+                None | Some("error" | "response.failed" | "service_unavailable_error")
+            )
+        {
+            match event_kind(&data) {
+                EventKind::Quota(outcome) => {
+                    self.account_reported = true;
+                    if let Some(t) = trk.as_mut() {
+                        t.fail(errors::quota_outcome_code(&outcome));
+                    }
+                    return Some(outcome);
+                }
+                EventKind::Overloaded(_) => {
+                    self.account_reported = true;
+                    return Some(late_overload.clone());
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn on_chunk(
+        &mut self,
+        chunk: Bytes,
+        trk: &mut Option<Tracker>,
+        observed: &mut u64,
+        late_overload: &Outcome,
+    ) -> (Bytes, Option<Outcome>) {
+        let pending = self.large.len().max(self.framer.buffered_len());
+        let skip = pending.saturating_add(chunk.len()) > OBSERVATION_MAX;
+        if skip {
+            self.large.clear();
+            self.window = Window::Limited;
+            self.progress.limit_reached();
+        }
+        let original = (self.framer.buffered_len() == 0).then(|| chunk.clone());
+        let frames: Vec<_> = self.framer.push_parts(chunk).collect();
+        let mut parts = Vec::with_capacity(frames.len());
+        let mut rewritten = false;
+        let mut ready = 0;
+        let mut report = None;
+        for (frame, boundary) in frames {
+            let bytes = match frame {
+                Frame::Event(event) => {
+                    if !skip {
+                        let outcome = self.on_event(&event, trk, observed, late_overload);
+                        report = report.or(outcome);
+                    }
+                    let replacement = crate::sse::rewrite_rejection(&event);
+                    rewritten |= replacement.is_some();
+                    replacement.unwrap_or(event)
+                }
+                Frame::Oversize(bytes) => {
+                    if !skip && self.large.len().saturating_add(bytes.len()) <= OBSERVATION_MAX {
+                        self.large.extend_from_slice(&bytes);
+                        if boundary {
+                            let event = self.large.split().freeze();
+                            let outcome = self.on_event(&event, trk, observed, late_overload);
+                            report = report.or(outcome);
+                        }
+                    } else {
+                        self.large.clear();
+                    }
+                    bytes
+                }
+            };
+            ready += bytes.len();
+            parts.push(bytes);
+        }
+        // Preserve upstream chunk grouping (and downstream observation fields) whenever possible.
+        let out = if !rewritten && original.is_some() {
+            original.unwrap_or_default().slice(..ready)
+        } else if parts.len() == 1 {
+            parts.pop().unwrap_or_default()
+        } else {
+            let mut out = bytes::BytesMut::with_capacity(ready);
+            for part in parts {
+                out.extend_from_slice(&part);
+            }
+            out.freeze()
+        };
+        (out, report)
+    }
+}
+
+enum Observer {
+    Passthrough,
+    Responses(ResponsesObserver),
+    Images(crate::image_events::ImageErrors, HeaderMap),
+}
+
+impl Observer {
+    fn progress(&self) -> Option<&StreamObservation> {
+        match self {
+            Self::Responses(observer) => Some(&observer.progress),
+            _ => None,
+        }
+    }
+
+    fn tail(&mut self) -> Option<Bytes> {
+        let Self::Responses(observer) = self else {
+            return None;
+        };
+        let tail = observer.framer.finish()?;
+        Some(crate::sse::rewrite_rejection(&tail).unwrap_or(tail))
+    }
+}
+
+enum BodyEnd {
+    Eof,
+    Idle,
+    ReadError(reqwest::Error),
+    ClientGone,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Tail {
+    None,
+    Truncated,
+    Io(std::io::ErrorKind),
+}
+
+struct Finish {
+    record: End,
+    router: Option<Outcome>,
+    warn: Option<&'static str>,
+    tail: Tail,
+}
+
+/// The end-of-body contract is independent of sockets, timers and the recorder.
+fn finish(observer: &Observer, end: &BodyEnd) -> Finish {
+    let responses = matches!(observer, Observer::Responses(_));
+    let mut result = Finish {
+        record: End::Completed,
+        router: None,
+        warn: None,
+        tail: Tail::None,
+    };
+    if matches!(
+        observer,
+        Observer::Responses(ResponsesObserver {
+            seen: Seen::Terminal,
+            ..
+        })
+    ) {
+        return result;
+    }
+    let failed = |code: &'static str, source| End::Failed {
+        code: code.into(),
+        source,
+        message: None,
+    };
+    match end {
+        BodyEnd::ClientGone => result.record = End::ClientGone,
+        BodyEnd::Eof if responses => {
+            if matches!(
+                observer,
+                Observer::Responses(ResponsesObserver {
+                    window: Window::Limited,
+                    ..
+                })
+            ) {
+                result.record = End::ObservationIncomplete;
+                result.warn = Some("observation_limit");
+            } else {
+                result.record = End::Failed {
+                    code: "stream_truncated".into(),
+                    source: errors::SRC_STREAM,
+                    message: Some("upstream stream ended without a terminal event".into()),
+                };
+                result.warn = Some("eof");
+                result.tail = Tail::Truncated;
+            }
+        }
+        BodyEnd::Eof => {}
+        BodyEnd::Idle => {
+            result.record = failed("idle_timeout", errors::SRC_NETWORK);
+            result.router = Some(Outcome::Transport);
+            result.warn = Some("idle_timeout");
+            result.tail = if responses {
+                Tail::Truncated
+            } else {
+                Tail::Io(std::io::ErrorKind::TimedOut)
+            };
+        }
+        BodyEnd::ReadError(error) => {
+            let (code, source) = response_read_failure(error);
+            result.record = End::Failed {
+                code: code.into(),
+                source,
+                message: Some(format!("upstream stream error: {error}")),
+            };
+            if !crate::response_body::is_decode_error(error) {
+                result.router = Some(Outcome::Transport);
+            }
+            result.warn = responses.then_some("read_error");
+            result.tail = if responses {
+                Tail::Truncated
+            } else {
+                Tail::Io(std::io::ErrorKind::Other)
+            };
+        }
+    }
+    result
+}
+
+struct BodyPump {
+    up: Up,
+    observer: Observer,
+    trk: Option<Tracker>,
+    router: Arc<dyn ciallopa_core::Router>,
+    route: RouteRequest,
+    account: AccountId,
+    late_overload: Outcome,
+    upstream_request_id: Option<String>,
+    status: StatusCode,
+    idle: Duration,
+}
+
+impl BodyPump {
+    async fn send_chunk(
+        &mut self,
+        tx: &crate::downstream::ObsTx,
+        chunk: Bytes,
+        prefix: bool,
+    ) -> bool {
+        if chunk.is_empty() {
+            return true;
+        }
+        if !prefix {
+            if let Some(t) = self.trk.as_mut() {
+                t.upstream_activity();
+                if matches!(self.observer, Observer::Responses(_)) {
+                    t.obs_up_bytes(chunk.len());
+                }
+            }
+        }
+        let (out, report) = match &mut self.observer {
+            Observer::Passthrough => (chunk, None),
+            Observer::Images(events, headers) => {
+                if let (Some(error), Some(t)) = (events.feed(&chunk), self.trk.as_mut()) {
+                    t.meta_err(&errors::ErrMeta {
+                        source: errors::SRC_STREAM,
+                        code: errors::sse_block_code(&error.event)
+                            .unwrap_or_else(|| "upstream_error_event".into()),
+                        upstream_status: Some(self.status.as_u16()),
+                        upstream_request_id: self.upstream_request_id.clone(),
+                        message: Some(error.message),
+                    });
+                    t.error_headers(headers);
+                    t.error_text(&error.event);
+                }
+                (chunk, None)
+            }
+            Observer::Responses(observer) => {
+                let mut observed = if prefix { observer.progress.events } else { 0 };
+                if !prefix {
+                    observer.progress.activity();
+                }
+                observer.on_chunk(chunk, &mut self.trk, &mut observed, &self.late_overload)
+            }
+        };
+        if let Some(outcome) = report {
+            self.router.report(&self.route, &self.account, &outcome);
+        }
+        if self.status.as_u16() >= 400 {
+            if let Some(t) = self.trk.as_mut() {
+                t.error_body(&out);
+            }
+        }
+        out.is_empty() || tx.send(Ok(out)).await.is_ok()
+    }
+
+    fn observe_end(&mut self, result: &Finish) {
+        // Keep failures visible if the producer is cancelled while flushing its tail.
+        if let (
+            Some(t),
+            End::Failed {
+                code,
+                source,
+                message,
+            },
+        ) = (self.trk.as_mut(), &result.record)
+        {
+            if let Some(message) = message {
+                t.fail_msg(code, message);
+            } else {
+                t.fail(code);
+            }
+            t.source(source);
+        }
+        if let Some(reason) = result.warn {
+            if let Some(progress) = self.observer.progress() {
+                progress.warn(
+                    "sse",
+                    reason,
+                    &self.account,
+                    self.upstream_request_id.as_deref(),
+                    self.trk.as_ref(),
+                );
+            } else {
+                tracing::warn!(account = %ciallopa_core::a(&self.account), record_id = self.trk.as_ref().map(Tracker::record_id), upstream_request_id = self.upstream_request_id.as_deref(), "upstream stream idle timeout");
+            }
+        }
+        if let Some(outcome) = &result.router {
+            self.router.report(&self.route, &self.account, outcome);
+        }
+    }
+
+    async fn end(mut self, tx: &crate::downstream::ObsTx, end: BodyEnd) {
+        let eof = matches!(end, BodyEnd::Eof);
+        let mut result = finish(&self.observer, &end);
+        if let End::Failed { message, .. } = &mut result.record {
+            if matches!(end, BodyEnd::Idle) {
+                *message = Some(format!(
+                    "upstream response body produced no data for {}s (idle timeout)",
+                    self.idle.as_secs()
+                ));
+            }
+        }
+        if !eof {
+            self.observe_end(&result);
+        }
+        // On EOF, failed tail delivery is cancellation. On read/idle failure it must
+        // preserve the upstream error that was already observed before flushing.
+        if !matches!(end, BodyEnd::ClientGone) {
+            if let Some(tail) = self.observer.tail() {
+                if tx.send(Ok(tail)).await.is_err() && eof {
+                    self.record(finish(&self.observer, &BodyEnd::ClientGone).record);
+                    return;
+                }
+            }
+        }
+        if eof {
+            self.observe_end(&result);
+        }
+        match result.tail {
+            Tail::None => {}
+            Tail::Truncated => {
+                let _ = tx.send(Ok(errors::truncated_event())).await;
+            }
+            Tail::Io(kind) => {
+                let error = match end {
+                    BodyEnd::ReadError(error) => std::io::Error::other(error),
+                    _ => std::io::Error::new(kind, "stream idle timeout"),
+                };
+                let _ = tx.send(Err(error)).await;
+            }
+        }
+        self.record(result.record);
+    }
+
+    fn record(&mut self, end: End) {
+        if let Some(t) = self.trk.take() {
+            t.finish(end);
+        }
+    }
+
+    async fn run(mut self, tx: crate::downstream::ObsTx, prefix: Bytes) {
+        if !self.send_chunk(&tx, prefix, true).await {
+            self.end(&tx, BodyEnd::ClientGone).await;
+            return;
+        }
+        let end = loop {
+            match tokio::time::timeout(self.idle, self.up.next()).await {
+                Err(_) => break BodyEnd::Idle,
+                Ok(None) => break BodyEnd::Eof,
+                Ok(Some(Err(error))) => break BodyEnd::ReadError(error),
+                Ok(Some(Ok(chunk))) => {
+                    if !self.send_chunk(&tx, chunk, false).await {
+                        break BodyEnd::ClientGone;
+                    }
+                }
+            }
+        };
+        self.end(&tx, end).await;
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn stream_body(
     st: &AppState,
@@ -123,21 +583,14 @@ pub(crate) fn stream_body(
     route: RouteRequest,
     account: AccountId,
     prefix: Bytes,
-    mut up: UpStream,
+    up: Up,
     mut trk: Option<Tracker>,
     observation: Observation,
     idle: Duration,
-    // The account outcome of an in-stream error was already reported (bootstrap passthrough).
-    mut reported: bool,
+    account_reported: bool,
 ) -> Response {
     let sse = matches!(observation, Observation::Responses(_));
-    let mut progress = match observation {
-        Observation::Responses(progress) => progress,
-        _ => crate::usage::StreamObservation::new(),
-    };
-    // Hyper may never poll a 204 / Content-Length: 0 body. Its HTTP framing already
-    // proves EOF; finish before handing it over so a dropped receiver is not cancellation.
-    // Responses SSE still requires a terminal event, even when its body is empty.
+    // Hyper need not poll bodies whose HTTP framing already proves EOF.
     let empty = status == StatusCode::NO_CONTENT
         || status == StatusCode::NOT_MODIFIED
         || headers
@@ -146,358 +599,61 @@ pub(crate) fn stream_body(
             .and_then(|v| v.parse::<u64>().ok())
             == Some(0);
     if !sse && prefix.is_empty() && empty {
-        if let Some(t) = trk.as_mut() {
-            t.finish_response();
+        if let Some(t) = trk.take() {
+            t.finish(End::Completed);
         }
-        let mut r = Response::new(Body::empty());
-        *r.status_mut() = status;
-        *r.headers_mut() = headers;
-        return r;
+        let mut response = Response::new(Body::empty());
+        *response.status_mut() = status;
+        *response.headers_mut() = headers;
+        return response;
     }
-    let router = Arc::clone(&st.router);
-    let late_overload = overload_outcome(st, false);
     let upstream_request_id = errors::request_id(&headers);
-    let image_headers =
-        (matches!(observation, Observation::Images) && trk.is_some()).then(|| headers.clone());
-    // Responses SSE: gateway downstream observation (queue / body yield); the record waits
-    // for the body to end so its yield fields are complete.
-    let link = match (sse, trk.as_mut()) {
-        (true, Some(t)) => {
-            t.obs_upstream_request_id(upstream_request_id.as_deref());
-            t.obs_up_bytes(prefix.len());
-            let l = crate::downstream::DownLink::new(t.start_instant());
-            t.defer_to(l.clone());
-            Some(l)
-        }
-        _ => None,
+    let link = if let (true, Some(t)) = (sse, trk.as_mut()) {
+        t.obs_upstream_request_id(upstream_request_id.as_deref());
+        t.obs_up_bytes(prefix.len());
+        let link = crate::downstream::DownLink::new(t.start_instant());
+        t.defer_to(link.clone());
+        Some(link)
+    } else {
+        None
     };
-    let drain = st.upstream.drain.clone();
-    // A Responses SSE cut by shutdown ends with a retryable response.failed (see ws.rs).
-    let on_force = sse.then(|| {
-        Bytes::from(format!(
-            "\n\nevent: response.failed\ndata: {}\n\n",
-            shutdown_failed_event()
-        ))
-    });
-    let body = crate::downstream::observed(drain, link, move |tx| async move {
-        let mut image_events = image_headers
-            .as_ref()
-            .map(|_| crate::image_events::ImageErrors::default());
-        // Detect usage_limit only from complete SSE events (`error` / `response.failed`),
-        // never by searching raw bytes (user text containing the string is fine).
-        let mut pending: Vec<u8> = Vec::new();
-        let mut parsed = 0usize;
-        // Complete events are authoritative. Beyond the observation bound, bytes still
-        // pass through, but an unobserved terminal event leaves the result unknown.
-        let mut terminal_seen = false;
-        let mut observation_limited = false;
-        // Bytes held back until their SSE event is complete (see `Aligner`).
-        let mut align = Aligner::new(sse);
-        let report_quota = |o: &Outcome| {
-            router.report(&route, &account, o);
-        };
-        // An overload after output reached the client cannot be replayed; it still counts
-        // against the account (streak only, no mid-stream cooldown) instead of the 200's success.
-        let late_overload = late_overload.clone();
-        let fail = |trk: &mut Option<Tracker>, k: &str| {
-            if let Some(t) = trk.as_mut() {
-                t.fail(k);
-            }
-        };
-        let check = |buf: &[u8],
-                     from: usize,
-                     search_from: usize,
-                     trk: &mut Option<Tracker>,
-                     reported: &mut bool,
-                     terminal: &mut bool,
-                     progress: &mut crate::usage::StreamObservation,
-                     observed: &mut u64| {
-            let (evs, np) = sse_events_after(buf, from, search_from);
-            for e in &evs {
-                let ty = crate::usage::event_type(e);
-                if let Some(ty) = ty.as_deref() {
-                    if *observed > 0 {
-                        *observed -= 1;
-                    } else {
-                        progress.event(ty);
-                    }
-                }
-                *terminal |= ty.as_deref().is_some_and(crate::usage::is_terminal_type);
-                if let Some(t) = trk.as_mut() {
-                    t.sse_event(e, ty.as_deref());
-                }
-                // Only these types can produce Quota; do not allocate a full Value for
-                // every output delta just to discard its Content classification. Keep
-                // the old classifier fallback when the typed envelope was inconclusive.
-                if !*reported
-                    && matches!(
-                        ty.as_deref(),
-                        None | Some("error" | "response.failed" | "service_unavailable_error")
-                    )
-                {
-                    match event_kind(e) {
-                        EventKind::Quota(o) => {
-                            *reported = true;
-                            report_quota(&o);
-                            fail(trk, errors::quota_outcome_code(&o));
-                        }
-                        EventKind::Overloaded(_) if sse => {
-                            *reported = true;
-                            report_quota(&late_overload);
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            np
-        };
-        if !prefix.is_empty() {
-            // Bootstrap already observed these complete envelopes at their arrival.
-            // Reusing buffered bytes must not count them twice or refresh their clocks.
-            let mut observed = progress.events;
-            if prefix.len() <= OBSERVATION_MAX {
-                pending.extend_from_slice(&prefix);
-                parsed = check(
-                    &pending,
-                    parsed,
-                    0,
-                    &mut trk,
-                    &mut reported,
-                    &mut terminal_seen,
-                    &mut progress,
-                    &mut observed,
-                );
-            } else {
-                observation_limited = true;
-                progress.limit_reached();
-            }
-            let out = align.push(prefix);
-            if !out.is_empty() && tx.send(Ok(out)).await.is_err() {
-                if let Some(t) = trk.as_mut() {
-                    t.client_gone();
-                }
-                return;
-            }
-            // Drop consumed bytes so the buffer stays bounded under long streams.
-            if parsed > 0 {
-                pending.drain(..parsed);
-                parsed = 0;
-            }
+    let observer = match observation {
+        Observation::Responses(progress) => {
+            Observer::Responses(ResponsesObserver::new(progress, account_reported))
         }
-        loop {
-            match tokio::time::timeout(idle, up.next()).await {
-                // After a terminal event the answer is complete: a later idle or read error is
-                // a normal end of the stream, not an account or request failure.
-                Err(_) | Ok(Some(Err(_))) if sse && terminal_seen => {
-                    if let Some(rest) = align.finish() {
-                        let _ = tx.send(Ok(rest)).await;
-                    }
-                    return;
-                }
-                Err(_) => {
-                    if let Some(t) = trk.as_mut() {
-                        t.fail_msg(
-                            "idle_timeout",
-                            format!(
-                                "upstream response body produced no data for {}s (idle timeout)",
-                                idle.as_secs()
-                            ),
-                        );
-                    }
-                    if sse {
-                        progress.warn(
-                            "sse",
-                            "idle_timeout",
-                            &account,
-                            upstream_request_id.as_deref(),
-                            trk.as_ref(),
-                        );
-                    } else {
-                        tracing::warn!(account = %ciallopa_core::a(&account), record_id = trk.as_ref().map(Tracker::record_id), upstream_request_id = upstream_request_id.as_deref(), "upstream stream idle timeout");
-                    }
-                    router.report(&route, &account, &Outcome::Transport);
-                    if let Some(t) = trk.as_mut() {
-                        t.source(errors::SRC_NETWORK);
-                    }
-                    if let Some(rest) = align.finish() {
-                        let _ = tx.send(Ok(rest)).await;
-                    }
-                    if sse && !terminal_seen {
-                        let _ = tx.send(Ok(errors::truncated_event())).await;
-                        return;
-                    }
-                    let _ = tx
-                        .send(Err(std::io::Error::new(
-                            std::io::ErrorKind::TimedOut,
-                            "stream idle timeout",
-                        )))
-                        .await;
-                    return;
-                }
-                Ok(None) => {
-                    if let Some(rest) = align.finish() {
-                        if tx.send(Ok(rest)).await.is_err() {
-                            if let Some(t) = trk.as_mut() {
-                                t.client_gone();
-                            }
-                            return;
-                        }
-                    }
-                    if sse && !terminal_seen && observation_limited {
-                        progress.warn(
-                            "sse",
-                            "observation_limit",
-                            &account,
-                            upstream_request_id.as_deref(),
-                            trk.as_ref(),
-                        );
-                        if let Some(t) = trk.as_mut() {
-                            t.observation_incomplete();
-                        }
-                    } else if sse && !terminal_seen {
-                        if let Some(t) = trk.as_mut() {
-                            t.fail_msg(
-                                "stream_truncated",
-                                "upstream stream ended without a terminal event",
-                            );
-                            t.source(errors::SRC_STREAM);
-                        }
-                        progress.warn(
-                            "sse",
-                            "eof",
-                            &account,
-                            upstream_request_id.as_deref(),
-                            trk.as_ref(),
-                        );
-                        let _ = tx.send(Ok(errors::truncated_event())).await;
-                    }
-                    if !sse {
-                        if let Some(t) = trk.as_mut() {
-                            t.finish_response();
-                        }
-                    }
-                    return;
-                }
-                Ok(Some(Err(e))) => {
-                    if sse {
-                        progress.warn(
-                            "sse",
-                            "read_error",
-                            &account,
-                            upstream_request_id.as_deref(),
-                            trk.as_ref(),
-                        );
-                    }
-                    if let Some(t) = trk.as_mut() {
-                        let (code, source) = response_read_failure(&e);
-                        t.fail_msg(code, format!("upstream stream error: {e}"));
-                        t.source(source);
-                    }
-                    if !crate::response_body::is_decode_error(&e) {
-                        router.report(&route, &account, &Outcome::Transport);
-                    }
-                    if let Some(rest) = align.finish() {
-                        let _ = tx.send(Ok(rest)).await;
-                    }
-                    if sse && !terminal_seen {
-                        let _ = tx.send(Ok(errors::truncated_event())).await;
-                        return;
-                    }
-                    let _ = tx.send(Err(std::io::Error::other(e))).await;
-                    return;
-                }
-                Ok(Some(Ok(chunk))) => {
-                    if let (Some(observer), Some(t), Some(h)) =
-                        (image_events.as_mut(), trk.as_mut(), image_headers.as_ref())
-                    {
-                        if let Some(error) = observer.feed(&chunk) {
-                            t.meta_err(&errors::ErrMeta {
-                                source: errors::SRC_STREAM,
-                                code: errors::sse_block_code(&error.event)
-                                    .unwrap_or_else(|| "upstream_error_event".into()),
-                                upstream_status: Some(status.as_u16()),
-                                upstream_request_id: upstream_request_id.clone(),
-                                message: Some(error.message),
-                            });
-                            t.error_headers(h);
-                            t.error_text(&error.event);
-                        }
-                    }
-                    if !chunk.is_empty() {
-                        if let Some(t) = trk.as_mut() {
-                            t.upstream_activity();
-                            if sse {
-                                t.obs_up_bytes(chunk.len());
-                            }
-                        }
-                    }
-                    if sse {
-                        if !chunk.is_empty() {
-                            progress.activity();
-                        }
-                        // One shared observation buffer replaces the Tracker's separate
-                        // 8 MiB buffer. Oversized payloads still pass through untouched.
-                        if pending.len().saturating_add(chunk.len()) > OBSERVATION_MAX {
-                            pending.clear();
-                            parsed = 0;
-                            observation_limited = true;
-                            progress.limit_reached();
-                        } else {
-                            // The old tail had no complete delimiter. Only its last three
-                            // bytes can join the new chunk's LF / CRLF event boundary.
-                            let search_from = pending.len().saturating_sub(3);
-                            pending.extend_from_slice(&chunk);
-                            parsed = check(
-                                &pending,
-                                parsed,
-                                search_from,
-                                &mut trk,
-                                &mut reported,
-                                &mut terminal_seen,
-                                &mut progress,
-                                &mut 0,
-                            );
-                            if parsed > 0 {
-                                pending.drain(..parsed);
-                                parsed = 0;
-                            }
-                        }
-                    }
-                    if let Some(t) = trk.as_mut() {
-                        if status.as_u16() >= 400 {
-                            t.error_body(&chunk);
-                        }
-                    }
-                    // The response decoder yields an empty chunk at end of body; forwarding it
-                    // after the client hung up would look like a disconnect.
-                    if chunk.is_empty() {
-                        continue;
-                    }
-                    let out = align.push(chunk);
-                    if out.is_empty() {
-                        continue;
-                    }
-                    if tx.send(Ok(out)).await.is_err() {
-                        if let Some(t) = trk.as_mut() {
-                            t.client_gone();
-                        }
-                        return;
-                    }
-                }
-            }
+        Observation::Images if trk.is_some() => {
+            Observer::Images(crate::image_events::ImageErrors::default(), headers.clone())
         }
+        _ => Observer::Passthrough,
+    };
+    let pump = BodyPump {
+        up,
+        observer,
+        trk,
+        router: st.router.clone(),
+        route,
+        account,
+        late_overload: overload_outcome(st, false),
+        upstream_request_id,
+        status,
+        idle,
+    };
+    let body = crate::downstream::observed(st.upstream.drain.clone(), link, move |tx| {
+        pump.run(tx, prefix)
     });
-    let mut r = Response::new(body);
-    *r.status_mut() = status;
-    *r.headers_mut() = headers;
-    // The SSE body may differ from the upstream's (rewritten or appended terminal events).
+    let mut response = Response::new(body);
+    *response.status_mut() = status;
+    *response.headers_mut() = headers;
     if sse {
-        r.headers_mut().remove(http::header::CONTENT_LENGTH);
+        response.headers_mut().remove(http::header::CONTENT_LENGTH);
+        response
+            .extensions_mut()
+            .insert(crate::admission::OnForce(Bytes::from(format!(
+                "\n\nevent: response.failed\ndata: {}\n\n",
+                shutdown_failed_event()
+            ))));
     }
-    if let Some(b) = on_force {
-        r.extensions_mut().insert(crate::admission::OnForce(b));
-    }
-    r
+    response
 }
 
 const OBSERVATION_MAX: usize = 8 << 20;
@@ -590,5 +746,251 @@ mod stream_lifecycle_tests {
             .await
             .expect("body drop releases an idle upstream without waiting for its timeout")
             .expect("producer dropped");
+    }
+}
+
+#[cfg(test)]
+mod finish_tests {
+    use super::*;
+
+    async fn read_error(decode: bool) -> reqwest::Error {
+        let body = if decode {
+            reqwest::Body::from("invalid gzip")
+        } else {
+            reqwest::Body::wrap_stream(futures::stream::iter([Err::<Bytes, _>(
+                std::io::Error::other("read failed"),
+            )]))
+        };
+        let mut response = http::Response::new(body);
+        if decode {
+            response.headers_mut().insert(
+                http::header::CONTENT_ENCODING,
+                HeaderValue::from_static("gzip"),
+            );
+        }
+        crate::response_body::prepare(response.into())
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap_err()
+    }
+
+    fn record(end: &End) -> (&str, Option<&str>) {
+        match end {
+            End::Completed => ("completed", None),
+            End::ClientGone => ("client_closed", Some(errors::SRC_CLIENT)),
+            End::ObservationIncomplete => ("observation_incomplete", Some(errors::SRC_LOCAL)),
+            End::Failed { code, source, .. } => (code, Some(source)),
+            End::Forced => ("forced", None),
+        }
+    }
+
+    #[tokio::test]
+    async fn finish_covers_every_observer_and_body_end() {
+        let ends = [
+            BodyEnd::Eof,
+            BodyEnd::Idle,
+            BodyEnd::ReadError(read_error(false).await),
+            BodyEnd::ReadError(read_error(true).await),
+            BodyEnd::ClientGone,
+        ];
+        for window in [Window::Tracking, Window::Limited] {
+            for seen in [Seen::Open, Seen::Terminal] {
+                let mut responses = ResponsesObserver::new(StreamObservation::new(), false);
+                responses.window = window;
+                responses.seen = seen;
+                let observers = [
+                    Observer::Responses(responses),
+                    Observer::Passthrough,
+                    Observer::Images(
+                        crate::image_events::ImageErrors::default(),
+                        HeaderMap::new(),
+                    ),
+                ];
+                for observer in observers {
+                    let sse = matches!(observer, Observer::Responses(_));
+                    for (index, end) in ends.iter().enumerate() {
+                        let normal = sse && seen == Seen::Terminal;
+                        let expected = if normal {
+                            ("completed", None, false, None, Tail::None)
+                        } else {
+                            match index {
+                                0 if !sse => ("completed", None, false, None, Tail::None),
+                                0 if window == Window::Limited => (
+                                    "observation_incomplete",
+                                    Some(errors::SRC_LOCAL),
+                                    false,
+                                    Some("observation_limit"),
+                                    Tail::None,
+                                ),
+                                0 => (
+                                    "stream_truncated",
+                                    Some(errors::SRC_STREAM),
+                                    false,
+                                    Some("eof"),
+                                    Tail::Truncated,
+                                ),
+                                1 => (
+                                    "idle_timeout",
+                                    Some(errors::SRC_NETWORK),
+                                    true,
+                                    Some("idle_timeout"),
+                                    if sse {
+                                        Tail::Truncated
+                                    } else {
+                                        Tail::Io(std::io::ErrorKind::TimedOut)
+                                    },
+                                ),
+                                2 => (
+                                    "stream_read_error",
+                                    Some(errors::SRC_NETWORK),
+                                    true,
+                                    sse.then_some("read_error"),
+                                    if sse {
+                                        Tail::Truncated
+                                    } else {
+                                        Tail::Io(std::io::ErrorKind::Other)
+                                    },
+                                ),
+                                3 => (
+                                    "response_decode_error",
+                                    Some(errors::SRC_STREAM),
+                                    false,
+                                    sse.then_some("read_error"),
+                                    if sse {
+                                        Tail::Truncated
+                                    } else {
+                                        Tail::Io(std::io::ErrorKind::Other)
+                                    },
+                                ),
+                                _ => (
+                                    "client_closed",
+                                    Some(errors::SRC_CLIENT),
+                                    false,
+                                    None,
+                                    Tail::None,
+                                ),
+                            }
+                        };
+                        let actual = finish(&observer, end);
+                        let (code, source) = record(&actual.record);
+                        assert_eq!(
+                            (
+                                code,
+                                source,
+                                actual.router.is_some(),
+                                actual.warn,
+                                actual.tail
+                            ),
+                            expected,
+                            "sse={sse}, {window:?}, {seen:?}, end={index}"
+                        );
+                        if let Some(router) = actual.router {
+                            assert_eq!(router, Outcome::Transport);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    fn push(observer: &mut ResponsesObserver, bytes: Bytes) -> Bytes {
+        observer
+            .on_chunk(bytes, &mut None, &mut 0, &Outcome::Transport)
+            .0
+    }
+
+    #[test]
+    fn observer_preserves_chunk_grouping_and_borrows_complete_chunks() {
+        let first = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n";
+        let second = "data: {\"type\":\"response.completed\"}\n\n";
+        let bytes = Bytes::from(format!("{first}{second}data: tail"));
+        let mut observer = ResponsesObserver::new(StreamObservation::new(), false);
+        let out = push(&mut observer, bytes.clone());
+        assert_eq!(out, bytes.slice(..first.len() + second.len()));
+        assert_eq!(out.as_ptr(), bytes.as_ptr());
+        assert_eq!(observer.progress.events, 2);
+        assert_eq!(observer.seen, Seen::Terminal);
+        assert_eq!(
+            observer.framer.finish().as_deref(),
+            Some(&b"data: tail"[..])
+        );
+
+        let mut observer = ResponsesObserver::new(StreamObservation::new(), false);
+        assert!(push(&mut observer, bytes.slice(..3)).is_empty());
+        let out = push(&mut observer, bytes.slice(3..));
+        assert_eq!(out, bytes.slice(..first.len() + second.len()));
+        assert_eq!(observer.progress.events, 2);
+    }
+
+    #[test]
+    fn forwarding_window_does_not_shrink_the_observation_window() {
+        let wire = Bytes::from(format!(
+            "data: {{\"type\":\"response.completed\",\"padding\":\"{}\"}}\n\n",
+            "x".repeat(crate::sse::BOOTSTRAP_MAX + 100)
+        ));
+        for cut in [
+            0,
+            1,
+            crate::sse::BOOTSTRAP_MAX - 1,
+            crate::sse::BOOTSTRAP_MAX + 1,
+            wire.len(),
+        ] {
+            let mut observer = ResponsesObserver::new(StreamObservation::new(), false);
+            let mut out = push(&mut observer, wire.slice(..cut)).to_vec();
+            out.extend_from_slice(&push(&mut observer, wire.slice(cut..)));
+            assert_eq!(out, wire);
+            assert_eq!(observer.seen, Seen::Terminal);
+            assert_eq!(observer.window, Window::Tracking);
+            assert_eq!(observer.progress.events, 1);
+        }
+    }
+
+    #[test]
+    fn observer_rewrites_split_rejection_only() {
+        let ev = concat!(
+            "event: error\ndata: {\"type\":\"error\",\"error\":{\"message\":\"The encrypted content for item rs_1 could not be verified.\",",
+            "\"type\":\"invalid_request_error\",\"param\":\"input\",\"code\":\"invalid_encrypted_content\"}}\n\n"
+        );
+        let head = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"invalid_encrypted_content\"}\r\n\r\n";
+        let all = format!("{head}{ev}");
+        for cut in 0..=all.len() {
+            let mut a = ResponsesObserver::new(StreamObservation::new(), false);
+            let mut out = push(&mut a, Bytes::copy_from_slice(&all.as_bytes()[..cut])).to_vec();
+            out.extend_from_slice(&push(
+                &mut a,
+                Bytes::copy_from_slice(&all.as_bytes()[cut..]),
+            ));
+            if let Some(r) = a
+                .framer
+                .finish()
+                .map(|tail| crate::sse::rewrite_rejection(&tail).unwrap_or(tail))
+            {
+                out.extend_from_slice(&r);
+            }
+            let out = String::from_utf8(out).unwrap();
+            assert!(out.starts_with(head), "{cut}: {out}");
+            assert!(
+                !out.contains("could not be verified") && !out.contains("event: error"),
+                "{out}"
+            );
+            assert!(
+                out.contains("event: response.failed")
+                    && out.contains(crate::encrypted::MESSAGE.split(' ').next().unwrap())
+            );
+        }
+        // Partial events are held; whole ones flow unchanged; non-SSE is untouched.
+        let mut a = ResponsesObserver::new(StreamObservation::new(), false);
+        assert!(push(&mut a, Bytes::from_static(b"data: {\"a\":1}")).is_empty());
+        assert_eq!(
+            &push(&mut a, Bytes::from_static(b"\n\ndata: x"))[..],
+            b"data: {\"a\":1}\n\n"
+        );
+        assert_eq!(
+            &a.framer
+                .finish()
+                .map(|tail| crate::sse::rewrite_rejection(&tail).unwrap_or(tail))
+                .unwrap()[..],
+            b"data: x"
+        );
     }
 }

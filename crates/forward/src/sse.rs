@@ -74,7 +74,20 @@ impl Framer {
 
     /// Complete events contained in one chunk borrow its allocation. Only fragmented
     /// events need an append; oversized events stay unclassifiable until their delimiter.
-    pub(crate) fn push(&mut self, mut chunk: Bytes) -> impl Iterator<Item = Frame> + '_ {
+    pub(crate) fn push(&mut self, chunk: Bytes) -> impl Iterator<Item = Frame> + '_ {
+        self.push_parts(chunk).map(|(frame, _)| frame)
+    }
+
+    pub(crate) fn buffered_len(&self) -> usize {
+        self.tail.len()
+    }
+
+    /// The boundary flag lets observers collect a larger event while forwarding its
+    /// oversized fragments, without running another delimiter scanner.
+    pub(crate) fn push_parts(
+        &mut self,
+        mut chunk: Bytes,
+    ) -> impl Iterator<Item = (Frame, bool)> + '_ {
         std::iter::from_fn(move || {
             while !chunk.is_empty() {
                 let take = if self.oversized {
@@ -96,11 +109,14 @@ impl Framer {
                         self.tail.split().freeze()
                     };
                     self.oversized = oversized && boundary.is_none();
-                    return Some(if oversized {
-                        Frame::Oversize(bytes)
-                    } else {
-                        Frame::Event(bytes)
-                    });
+                    return Some((
+                        if oversized {
+                            Frame::Oversize(bytes)
+                        } else {
+                            Frame::Event(bytes)
+                        },
+                        boundary.is_some(),
+                    ));
                 }
                 self.tail.extend_from_slice(&part);
             }
@@ -131,60 +147,7 @@ impl Framer {
     }
 }
 
-/// Forward complete SSE events, replacing only encrypted-content rejections.
-pub(crate) struct Aligner {
-    framer: Option<Framer>,
-}
-
-impl Aligner {
-    pub(crate) fn new(sse: bool) -> Self {
-        Self {
-            framer: sse.then(|| Framer::new(BOOTSTRAP_MAX)),
-        }
-    }
-
-    pub(crate) fn push(&mut self, chunk: Bytes) -> Bytes {
-        let Some(framer) = self.framer.as_mut() else {
-            return chunk;
-        };
-        let original = framer.tail.is_empty().then(|| chunk.clone());
-        let mut parts = Vec::new();
-        let mut ready = 0;
-        let mut rewritten = false;
-        for frame in framer.push(chunk) {
-            let bytes = match frame {
-                Frame::Event(event) => {
-                    let replacement = rewrite_rejection(&event);
-                    rewritten |= replacement.is_some();
-                    replacement.unwrap_or(event)
-                }
-                Frame::Oversize(bytes) => bytes,
-            };
-            ready += bytes.len();
-            parts.push(bytes);
-        }
-        if !rewritten {
-            if let Some(original) = original {
-                return original.slice(..ready);
-            }
-        }
-        if parts.len() == 1 {
-            return parts.pop().unwrap_or_default();
-        }
-        let mut out = BytesMut::with_capacity(ready);
-        for part in parts {
-            out.extend_from_slice(&part);
-        }
-        out.freeze()
-    }
-
-    pub(crate) fn finish(&mut self) -> Option<Bytes> {
-        let tail = self.framer.as_mut()?.finish()?;
-        Some(rewrite_rejection(&tail).unwrap_or(tail))
-    }
-}
-
-fn rewrite_rejection(event: &[u8]) -> Option<Bytes> {
+pub(crate) fn rewrite_rejection(event: &[u8]) -> Option<Bytes> {
     let data = data(event)?;
     if !crate::encrypted::maybe_rejection(&data) {
         return None;
@@ -202,6 +165,7 @@ fn rewrite_rejection(event: &[u8]) -> Option<Bytes> {
 /// Max bytes held while waiting for the first meaningful SSE event.
 pub(crate) const BOOTSTRAP_MAX: usize = 1 << 20;
 
+#[cfg(test)]
 pub(crate) fn sse_events(buf: &[u8], from: usize) -> (Vec<Cow<'_, str>>, usize) {
     sse_events_after(buf, from, from)
 }
@@ -375,46 +339,5 @@ mod quota_tests {
             matches!(events[0], Cow::Borrowed(_)),
             "single data lines borrow the event buffer"
         );
-    }
-
-    #[test]
-    fn aligner_rewrites_split_rejection_only() {
-        let ev = concat!(
-            "event: error\ndata: {\"type\":\"error\",\"error\":{\"message\":\"The encrypted content for item rs_1 could not be verified.\",",
-            "\"type\":\"invalid_request_error\",\"param\":\"input\",\"code\":\"invalid_encrypted_content\"}}\n\n"
-        );
-        let head = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"invalid_encrypted_content\"}\r\n\r\n";
-        let all = format!("{head}{ev}");
-        for cut in 0..=all.len() {
-            let mut a = Aligner::new(true);
-            let mut out = a
-                .push(Bytes::copy_from_slice(&all.as_bytes()[..cut]))
-                .to_vec();
-            out.extend_from_slice(&a.push(Bytes::copy_from_slice(&all.as_bytes()[cut..])));
-            if let Some(r) = a.finish() {
-                out.extend_from_slice(&r);
-            }
-            let out = String::from_utf8(out).unwrap();
-            assert!(out.starts_with(head), "{cut}: {out}");
-            assert!(
-                !out.contains("could not be verified") && !out.contains("event: error"),
-                "{out}"
-            );
-            assert!(
-                out.contains("event: response.failed")
-                    && out.contains(crate::encrypted::MESSAGE.split(' ').next().unwrap())
-            );
-        }
-        // Partial events are held; whole ones flow unchanged; non-SSE is untouched.
-        let mut a = Aligner::new(true);
-        assert!(a.push(Bytes::from_static(b"data: {\"a\":1}")).is_empty());
-        assert_eq!(
-            &a.push(Bytes::from_static(b"\n\ndata: x"))[..],
-            b"data: {\"a\":1}\n\n"
-        );
-        assert_eq!(&a.finish().unwrap()[..], b"data: x");
-        let mut a = Aligner::new(false);
-        assert_eq!(&a.push(Bytes::from_static(b"partial"))[..], b"partial");
-        assert!(a.finish().is_none());
     }
 }

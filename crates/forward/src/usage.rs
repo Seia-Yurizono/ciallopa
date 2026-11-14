@@ -460,6 +460,7 @@ impl Tracker {
 
     /// Transport ended, but an oversized event prevented reliable terminal observation.
     /// Never turn missing observation into a client cancellation or overwrite a known error.
+    #[allow(dead_code)] // Compatibility method until all forwarding callers migrate.
     pub(crate) fn observation_incomplete(&mut self) {
         self.conclude(End::ObservationIncomplete);
     }
