@@ -78,13 +78,11 @@ pub(crate) struct Preparation {
 
 impl Preparation {
     pub(crate) fn new(st: &AppState) -> Self {
-        let cfg = st.config.load();
+        let timing = crate::timing::Timing::capture(&st.config.load());
         Self {
-            budget: crate::budget::PreparationBudget::new(Duration::from_secs(
-                cfg.upstream_opts.preparation_timeout_secs,
-            )),
-            header_timeout: Duration::from_secs(cfg.upstream_opts.response_header_timeout_secs),
-            idle: Duration::from_secs(cfg.upstream_opts.stream_idle_timeout_secs.max(1)),
+            budget: crate::budget::PreparationBudget::new(timing.preparation),
+            header_timeout: timing.header,
+            idle: timing.idle,
         }
     }
 
@@ -121,7 +119,7 @@ impl Cooling {
         held: Duration,
         hold_cap: Duration,
     ) -> Self {
-        let budget = Duration::from_secs(st.config.load().routing.cooldown_wait_secs);
+        let budget = crate::timing::Timing::capture(&st.config.load()).cooldown_wait;
         let remaining = budget.saturating_sub(held);
         if !budget.is_zero() && recovers_in <= remaining.min(hold_cap) {
             // A little past the recovery instant so the next selection finds the account free.

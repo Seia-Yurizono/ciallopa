@@ -11,13 +11,13 @@ use crate::downstream::observed;
 use crate::errors;
 use crate::headers::downstream_headers;
 use crate::sse::{sse_events, BOOTSTRAP_MAX};
+use crate::timing::switch_jitter;
 use crate::usage::Tracker;
 use crate::AppState;
 use axum::body::Body;
 use axum::response::Response;
 use bytes::Bytes;
 use ciallopa_core::Outcome;
-use ciallopa_upstream::retry::switch_jitter;
 use futures::StreamExt;
 use http::{HeaderMap, StatusCode};
 
@@ -279,7 +279,7 @@ pub(crate) async fn send_streaming(
                 ob.route = route;
                 ob.route.exclude.push(account);
                 // Exhaustion is handled at the next send_info before it polls an attempt.
-                let _ = budget.run(tokio::time::sleep(switch_jitter())).await;
+                let _ = budget.run(tokio::time::sleep(switch_jitter(st))).await;
                 continue;
             }
             if let OverloadPlan::WaitRetry(w) = plan {
@@ -289,7 +289,9 @@ pub(crate) async fn send_streaming(
                 info.overload_waited = true;
                 drop(up);
                 ob.route = route;
-                let _ = budget.run(tokio::time::sleep(w)).await;
+                let _ = budget
+                    .run(tokio::time::sleep(crate::timing::scale(st, w)))
+                    .await;
                 continue;
             }
             // Last usable account: the upstream error goes to the client verbatim (rest of the

@@ -240,7 +240,15 @@ async fn list_refresh_and_headers() {
     // both accounts, including the disabled "b"
     assert_eq!(lists.len(), 2);
     assert_eq!(r["accounts"][1]["reset_credits"]["available_count"], 2);
-    let h = &lists[0];
+    // Refreshes run concurrently; arrival order does not identify the account.
+    let h = lists
+        .iter()
+        .find(|headers| {
+            headers
+                .iter()
+                .any(|(n, v)| n == "chatgpt-account-id" && v == "acct-a")
+        })
+        .expect("account a was refreshed");
     let get = |k: &str| h.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
     assert_eq!(get("authorization").as_deref(), Some("Bearer tok-a"));
     assert_eq!(get("chatgpt-account-id").as_deref(), Some("acct-a"));

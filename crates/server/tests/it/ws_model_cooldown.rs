@@ -1,12 +1,11 @@
 //! WebSocket turns honour per-model cooldowns: the handshake has no model, so each
 //! `response.create` re-checks its model on the pinned account (review item 16).
 #![allow(clippy::unwrap_used)]
-use super::support::FixedStore as Store;
+use super::support::{millis, proxy_state, serve, units, FixedStore as Store};
 use axum::extract::ws::{Message, WebSocketUpgrade};
 use axum::{body::Body, response::Response, routing::post, Router};
 use ciallopa_core::Router as _;
 use ciallopa_core::*;
-use ciallopa_forward::AppState;
 use futures::{SinkExt, StreamExt};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -16,13 +15,6 @@ const KEY: &str = "sk-cpa-0123456789abcdef";
 const MODEL: &str = "gpt-5.5";
 
 type Log = Arc<Mutex<Vec<(String, &'static str, Duration)>>>;
-
-async fn serve(app: Router) -> String {
-    let ln = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = ln.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(ln, app).await.unwrap() });
-    format!("127.0.0.1:{}", addr.port())
-}
 
 fn acct(h: &axum::http::HeaderMap) -> String {
     h.get("chatgpt-account-id")
@@ -75,18 +67,7 @@ async fn env(ids: Vec<&'static str>) -> (String, Arc<ciallopa_routing::CpaRouter
     ))
     .unwrap();
     let router = Arc::new(ciallopa_routing::CpaRouter::new(cfg.routing.clone()));
-    let state = AppState {
-        accounts: Arc::new(Store::new(&ids)),
-        router: router.clone(),
-        upstream: {
-            let up = ciallopa_upstream::UpstreamClient::new(&cfg).unwrap();
-            up.pools.allow_any_cookie_host_for_tests();
-            Arc::new(up)
-        },
-        usage: None,
-        config: Arc::new(cfg.into()),
-        egress: Default::default(),
-    };
+    let state = proxy_state(cfg, Arc::new(Store::new(&ids)), router.clone(), None);
     (serve(ciallopa::build_app(state)).await, router, log, t0)
 }
 
@@ -109,7 +90,7 @@ fn cool_model(r: &ciallopa_routing::CpaRouter, id: &str, d: Duration) {
 }
 
 async fn http(proxy: &str) -> u16 {
-    reqwest::Client::new()
+    super::support::http_client()
         .post(format!("http://{proxy}/v1/responses"))
         .bearer_auth(KEY)
         .body(format!(r#"{{"model":"{MODEL}","stream":true,"input":[]}}"#))
@@ -162,7 +143,7 @@ fn turns(log: &Log, from: usize) -> Vec<String> {
 async fn ws_turn_moves_off_an_account_cooling_for_its_model() {
     let (proxy, router, log, _) = env(vec!["a", "b"]).await;
     for _ in 0..4 {
-        cool_model(&router, "a", Duration::from_secs(60));
+        cool_model(&router, "a", units(60));
         let n = log.lock().unwrap().len();
         let (st, first) = ws_turn(&proxy).await;
         assert_eq!(st, 101);
@@ -183,24 +164,20 @@ async fn ws_turn_moves_off_an_account_cooling_for_its_model() {
 #[tokio::test]
 async fn ws_turn_waits_out_a_short_model_cooldown_on_the_only_account() {
     let (proxy, router, log, _) = env(vec!["a"]).await;
-    cool_model(&router, "a", Duration::from_secs(2));
+    cool_model(&router, "a", units(2));
     let t = Instant::now();
     let (st, first) = ws_turn(&proxy).await;
     assert_eq!(st, 101);
     assert!(first.contains("response.completed"), "{first}");
     // Like HTTP: held until the cooldown ends, then sent on the (re-dialled) account.
-    assert!(
-        t.elapsed() >= Duration::from_millis(1500),
-        "{:?}",
-        t.elapsed()
-    );
+    assert!(t.elapsed() >= millis(1500), "{:?}", t.elapsed());
     assert_eq!(turns(&log, 0), ["acct-a"]);
 }
 
 #[tokio::test]
 async fn ws_turn_reports_a_long_model_cooldown_like_http_without_sending() {
     let (proxy, router, log, _) = env(vec!["a"]).await;
-    cool_model(&router, "a", Duration::from_secs(60));
+    cool_model(&router, "a", units(60));
     let code = http(&proxy).await;
     let (st, first) = ws_turn(&proxy).await;
     assert_eq!(st, 101);
@@ -218,8 +195,8 @@ async fn ws_incremental_turn_on_a_cooling_account_closes_for_replay() {
     let (proxy, router, log, _) = env(vec!["a", "b"]).await;
     // Pin the next handshake to `a` and cool it for the model afterwards: the turn's
     // previous_response_id lives on this connection only, so the client must replay.
-    cool_model(&router, "b", Duration::from_secs(60));
-    cool_model(&router, "a", Duration::from_secs(60));
+    cool_model(&router, "b", units(60));
+    cool_model(&router, "a", units(60));
     let (st, first) = ws_turn_with(&proxy, r#","previous_response_id":"resp_1""#).await;
     assert_eq!(st, 101);
     assert_eq!(first, "close 1012");

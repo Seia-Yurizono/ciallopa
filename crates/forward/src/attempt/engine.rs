@@ -1,8 +1,8 @@
 use super::policy::{classify, decide, Ctx, Final, RetryWait, Seen, Verdict};
 use super::*;
 use crate::classify::log_account_error;
+use crate::timing::{delay_for, switch_jitter};
 use ciallopa_core::Credentials;
-use ciallopa_upstream::retry::{delay_for, switch_jitter};
 use std::future::Future;
 use std::time::SystemTime;
 
@@ -264,7 +264,7 @@ impl<T: Transport> Loop<'_, T> {
                         Dialed::Refused { headers, .. } => Some(headers),
                         _ => None,
                     };
-                    delay_for(u64::from(self.info.retries) + 1, headers)
+                    delay_for(self.st, u64::from(self.info.retries) + 1, headers)
                 } else {
                     Duration::ZERO
                 };
@@ -396,7 +396,7 @@ impl<T: Transport> Loop<'_, T> {
                         }
                         self.route.exclude.push(id.clone());
                         if jitter {
-                            tokio::time::sleep(switch_jitter()).await;
+                            tokio::time::sleep(switch_jitter(self.st)).await;
                         }
                         continue 'select;
                     }
@@ -415,7 +415,7 @@ impl<T: Transport> Loop<'_, T> {
                             failed.remember(&mut best, self.policy.final_error);
                         }
                         self.info.overload_waited = true;
-                        tokio::time::sleep(wait).await;
+                        tokio::time::sleep(crate::timing::scale(self.st, wait)).await;
                     }
                     Verdict::Accept | Verdict::RefreshRetry => {
                         unreachable!("accepted/refreshed above")

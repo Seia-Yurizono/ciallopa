@@ -118,3 +118,53 @@ impl Router for RecordingRouter {
     fn note_attempt(&self, _: &AccountId) {}
     fn content_ok(&self, _: &AccountId) {}
 }
+
+pub async fn serve(app: axum::Router) -> String {
+    let ln = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = ln.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(
+            ln,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap()
+    });
+    format!("127.0.0.1:{}", addr.port())
+}
+
+/// Socket I/O stays on the real clock; one configured second is 100 ms in these fixtures.
+pub const TIME_UNIT: std::time::Duration = std::time::Duration::from_millis(100);
+
+pub fn units(seconds: u32) -> std::time::Duration {
+    TIME_UNIT * seconds
+}
+
+pub fn millis(milliseconds: u64) -> std::time::Duration {
+    TIME_UNIT.mul_f64(milliseconds as f64 / 1000.0)
+}
+
+pub fn proxy_state(
+    mut config: Config,
+    accounts: Arc<dyn AccountStore>,
+    router: Arc<dyn Router>,
+    usage: Option<Arc<ciallopa_usage::Recorder>>,
+) -> ciallopa_forward::AppState {
+    config.upstream_opts.time_unit = TIME_UNIT;
+    let upstream = ciallopa_upstream::UpstreamClient::new(&config).unwrap();
+    upstream.pools.allow_any_cookie_host_for_tests();
+    ciallopa_forward::AppState {
+        accounts,
+        router,
+        upstream: Arc::new(upstream),
+        usage,
+        config: Arc::new(config.into()),
+        egress: Default::default(),
+    }
+}
+
+/// Each fixture has its own loopback port; share the client's expensive trust setup.
+pub fn http_client() -> reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new).clone()
+}

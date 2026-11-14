@@ -83,6 +83,7 @@ pub(crate) async fn admit(
             lease,
             forced: Box::pin(async move { drain.forced().await }),
             on_force,
+            cut_flush: crate::timing::scale(&st, CUT_FLUSH_MAX),
         })),
     )
 }
@@ -142,6 +143,8 @@ enum Leased {
         lease: Lease,
         forced: Pin<Box<dyn Future<Output = ()> + Send>>,
         on_force: Option<Bytes>,
+        /// How long a cut body keeps passing on queued chunks (captured at admission).
+        cut_flush: std::time::Duration,
     },
     Flushing {
         body: Body,
@@ -171,13 +174,14 @@ impl HttpBody for LeasedBody {
                     lease,
                     mut forced,
                     on_force,
+                    cut_flush,
                 } => {
                     if forced.as_mut().poll(cx).is_ready() {
                         if let Some(event) = on_force {
                             self.0 = Leased::Flushing {
                                 body,
                                 lease,
-                                deadline: Box::pin(tokio::time::sleep(CUT_FLUSH_MAX)),
+                                deadline: Box::pin(tokio::time::sleep(cut_flush)),
                                 event,
                             };
                             continue;
@@ -196,6 +200,7 @@ impl HttpBody for LeasedBody {
                             lease,
                             forced,
                             on_force,
+                            cut_flush,
                         };
                     } else {
                         drop(body);
@@ -264,6 +269,7 @@ mod tests {
             lease,
             forced: Box::pin(async move { drain.forced().await }),
             on_force,
+            cut_flush: CUT_FLUSH_MAX,
         })
     }
 

@@ -4,6 +4,7 @@ use super::Ctx;
 use crate::attempt::{quota_plan, Next, OverloadPlan, Policy};
 use crate::budget::PreparationBudget;
 use crate::classify::classify_observed;
+use crate::timing;
 use crate::usage::{endpoint_of, StreamObservation, Tracker};
 use crate::ws_upgrade::DownWs;
 use crate::{proxy, AppState};
@@ -410,7 +411,7 @@ pub(super) async fn relay(
                                 Policy::ws_redial().overload_plan(others, overload_waited, &HeaderMap::new(),
                                     st.config.load().upstream_opts.overload_retry_wait_secs, switches, max_switches)
                             } else { OverloadPlan::PassThrough };
-                            let wait = match plan { OverloadPlan::WaitRetry(wait) => Some(wait), _ => None };
+                            let wait = match plan { OverloadPlan::WaitRetry(wait) => Some(timing::scale(&st, wait)), _ => None };
                             let can_replay = plan != OverloadPlan::PassThrough;
                             if let (true, Some(req)) = (can_replay, pending.clone()) {
                                 if let Some(w) = wait {
@@ -654,7 +655,7 @@ pub(super) async fn relay(
                     drain_live = false;
                 } else if phase == Phase::Force && awaiting {
                     tracing::warn!(account = %ciallopa_core::a(&account), "shutting down; drain bound reached, cutting the running websocket turn");
-                    cut = Some(tokio::time::Instant::now() + CUT_FLUSH_MAX);
+                    cut = Some(tokio::time::Instant::now() + timing::scale(&st, CUT_FLUSH_MAX));
                 } else if phase == Phase::Force || (phase == Phase::Draining && !awaiting) {
                     close_for_shutdown(&account, ShutdownClose::BetweenTurns, &mut dtx, &mut utx).await;
                     break;

@@ -27,6 +27,7 @@ mod refusal;
 mod reqbody;
 mod response_body;
 mod sse;
+mod timing;
 mod turn_state;
 mod usage;
 mod ws;
