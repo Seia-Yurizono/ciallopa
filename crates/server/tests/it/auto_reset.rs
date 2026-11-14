@@ -11,7 +11,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use ciallopa::auto_reset::{sweep_once, Event, AUTO_LABEL, MAX_TRIES, RETRY_MS};
+use ciallopa::auto_reset::{sweep_once, Event, SkipReason, AUTO_LABEL, MAX_TRIES, RETRY_MS};
 use ciallopa::reset_credits::ResetCredits;
 use ciallopa_core::*;
 use ciallopa_forward::AppState;
@@ -339,7 +339,7 @@ async fn switch_api_is_gated_and_persisted() {
         None,
         "not written immediately"
     );
-    tokio::time::sleep(std::time::Duration::from_millis(2600)).await;
+    e.rc.flush(e.st.usage.as_ref().unwrap());
     assert_eq!(
         rec.kv_get("reset_credits_auto_accounts")
             .unwrap()
@@ -359,8 +359,8 @@ async fn due_card_is_used_once_and_skips_disabled() {
     // before the window: nothing sent; the next time is shown
     e.at(e.e1 - 11 * MIN);
     let evs = e.sweep().await;
-    assert_eq!(Env::ev(&evs, "a"), Event::Skipped("not_due"));
-    assert_eq!(Env::ev(&evs, "b"), Event::Skipped("disabled"));
+    assert_eq!(Env::ev(&evs, "a"), Event::Skipped(SkipReason::NotDue));
+    assert_eq!(Env::ev(&evs, "b"), Event::Skipped(SkipReason::Disabled));
     let v = e.get("/usage/v1/reset-credits").await;
     assert_eq!(v["accounts"][0]["auto_next_ms"], e.e1 - 10 * MIN);
     assert!(e.consumes().is_empty());
@@ -378,7 +378,7 @@ async fn due_card_is_used_once_and_skips_disabled() {
     // next sweep: `soon` is redeemed, `later` is a day away
     e.at(e.e1 - 8 * MIN);
     let evs = e.sweep().await;
-    assert_eq!(Env::ev(&evs, "a"), Event::Skipped("not_due"));
+    assert_eq!(Env::ev(&evs, "a"), Event::Skipped(SkipReason::NotDue));
     assert_eq!(e.consumes().len(), 1);
     // the manual button stays off
     let (s, _) = e
@@ -408,7 +408,7 @@ async fn nothing_to_reset_gives_up_silently() {
     for k in 1..4 {
         e.at(e.e1 - 5 * MIN + k * (RETRY_MS + 1000));
         let evs = e.sweep().await;
-        assert_eq!(Env::ev(&evs, "a"), Event::Skipped("not_due"));
+        assert_eq!(Env::ev(&evs, "a"), Event::Skipped(SkipReason::NotDue));
     }
     assert_eq!(e.consumes().len(), 1);
     let v = e.get("/usage/v1/reset-credits").await;
@@ -438,7 +438,10 @@ async fn retries_are_capped_spaced_and_end_at_expiry() {
     );
     // too soon for a retry
     e.at(t0 + RETRY_MS / 2);
-    assert_eq!(Env::ev(&e.sweep().await, "a"), Event::Skipped("not_due"));
+    assert_eq!(
+        Env::ev(&e.sweep().await, "a"),
+        Event::Skipped(SkipReason::NotDue)
+    );
     for k in 1..8 {
         e.at(t0 + k * (RETRY_MS + 2000));
         e.sweep().await;
@@ -488,7 +491,7 @@ async fn pending_is_retried_with_the_same_id_after_restart() {
     );
     let rid = e.consumes()[0]["redeem_request_id"].clone();
     // restart: fresh process state on the same usage DB (switches come back from it)
-    tokio::time::sleep(std::time::Duration::from_millis(2600)).await;
+    e.rc.flush(e.st.usage.as_ref().unwrap());
     let cfg = config("127.0.0.1:1", &path.join("u.db"), true, 10);
     let rec = ciallopa_usage::Recorder::open_as(&cfg.usage, "inst").unwrap();
     assert_eq!(
@@ -554,7 +557,10 @@ async fn manual_and_auto_share_the_lock() {
     assert_eq!(manual.await.unwrap(), 200);
     let evs = auto.await.unwrap();
     // the sweep saw the manual attempt in flight and left the account alone
-    assert_eq!(Env::ev(&evs, "a"), Event::Skipped("manual_pending"));
+    assert_eq!(
+        Env::ev(&evs, "a"),
+        Event::Skipped(SkipReason::ManualPending)
+    );
     assert_eq!(e.consumes().len(), 1);
 
     // the other order: an automatic use holds the lock (re-listing) when the button is pressed
@@ -612,7 +618,7 @@ async fn manual_and_auto_share_the_lock() {
     e.at(e.e1 - 9 * MIN);
     assert_eq!(
         Env::ev(&e.sweep().await, "a"),
-        Event::Skipped("manual_pending")
+        Event::Skipped(SkipReason::ManualPending)
     );
     assert_eq!(e.consumes().len(), 1);
 }
@@ -628,7 +634,7 @@ async fn relist_under_lock_decides() {
     e.at(e.e1 - 9 * MIN);
     let n = e.lists();
     let evs = e.sweep().await;
-    assert_eq!(Env::ev(&evs, "a"), Event::Skipped("not_due"));
+    assert_eq!(Env::ev(&evs, "a"), Event::Skipped(SkipReason::NotDue));
     assert_eq!(e.lists(), n + 1, "re-listed under the lock");
     assert!(e.consumes().is_empty());
 }
@@ -642,24 +648,24 @@ async fn checks_after_relist() {
             Box::new(|e: &Env| {
                 e.rc.auto().set("a", false);
             }),
-            Event::Skipped("switched_off"),
+            Event::Skipped(SkipReason::SwitchedOff),
         ),
         (
             "deleted",
             Box::new(|e: &Env| e.store.update(|accounts| accounts.retain(|a| a.id != "a"))),
-            Event::Skipped("account_gone"),
+            Event::Skipped(SkipReason::AccountGone),
         ),
         (
             "disabled",
             Box::new(|e: &Env| e.store.update(|accounts| accounts[0].disabled = true)),
-            Event::Skipped("disabled"),
+            Event::Skipped(SkipReason::Disabled),
         ),
         (
             "relogin",
             Box::new(|e: &Env| {
                 e.store.relogin.lock().unwrap().insert("a".into());
             }),
-            Event::Skipped("relogin"),
+            Event::Skipped(SkipReason::Relogin),
         ),
         (
             "lead shortened (hot reload)",
@@ -668,7 +674,7 @@ async fn checks_after_relist() {
                 cfg.ui.reset_credits_auto_lead_mins = 5;
                 e.st.config.store(cfg);
             }),
-            Event::Skipped("not_due"),
+            Event::Skipped(SkipReason::NotDue),
         ),
     ];
     for (name, change, want) in cases {

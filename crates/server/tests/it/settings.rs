@@ -35,6 +35,24 @@ async fn serve(app: Router) -> String {
     addr.to_string()
 }
 
+async fn wait_until<F, Fut>(mut ready: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if ready().await {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "state did not converge before deadline"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 struct Env {
     proxy: String,
     path: PathBuf,
@@ -421,7 +439,7 @@ async fn rejected_reload_leaves_running_config_unchanged() {
     // broken TOML too
     std::fs::write(&e.path, "listen = ").unwrap();
     assert_eq!(e.reload().await.status(), 422);
-    assert!(!e.settings.st_config_write_enabled());
+    assert!(!e.settings.running().ui.allow_config_write);
 }
 
 #[tokio::test]
@@ -880,19 +898,13 @@ async fn account_management_and_removal_cleanup() {
 async fn file_watch_applies_and_external_auth_removal_cleans_up() {
     let e = env("").await;
     let _w = ciallopa::settings::spawn_watcher(e.settings.clone());
-    tokio::time::sleep(Duration::from_millis(100)).await;
     e.write("[upstream_opts]\nmax_attempts = 2\n");
     e.upstream.pools.get("a").unwrap();
     std::fs::remove_file(e.auth.join("a.json")).unwrap();
-    let mut ok = false;
-    for _ in 0..50 {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        if e.settings.running().upstream_opts.max_attempts == 2 && e.upstream.pools.is_empty() {
-            ok = true;
-            break;
-        }
-    }
-    assert!(ok, "watcher did not apply the change");
+    wait_until(|| async {
+        e.settings.running().upstream_opts.max_attempts == 2 && e.upstream.pools.is_empty()
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -1025,7 +1037,6 @@ async fn rescan_and_watcher_keep_accounts_whose_file_exists_but_cannot_load() {
     use std::os::unix::fs::PermissionsExt;
     let e = env("").await;
     let _w = ciallopa::settings::spawn_watcher(e.settings.clone());
-    tokio::time::sleep(Duration::from_millis(100)).await;
     let a = "a".to_string();
     e.upstream.pools.get("a").unwrap();
     ciallopa_core::Router::report(
@@ -1050,6 +1061,20 @@ async fn rescan_and_watcher_keep_accounts_whose_file_exists_but_cannot_load() {
             .await
             .unwrap()
     };
+    let watched_reason = |reason: &'static str| {
+        let e = &e;
+        async move {
+            let r: Value = e
+                .req(reqwest::Method::GET, "/admin/v1/accounts")
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            r["auth_files"]["skipped"][0]["reason"] == reason
+        }
+    };
     let check = |r: &Value, reason: &str| {
         assert_eq!(r["removed"], json!([]), "{r}");
         assert_eq!(r["accounts"], 2, "{r}");
@@ -1063,13 +1088,13 @@ async fn rescan_and_watcher_keep_accounts_whose_file_exists_but_cannot_load() {
     };
     // Half-written in place (non-atomic writer): the watcher fires on the partial write.
     std::fs::write(&fa, &full[..full.len() / 2]).unwrap();
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    wait_until(|| watched_reason("invalid_json")).await;
     check(&rescan().await, "invalid_json");
     // Unreadable.
     std::fs::write(&fa, &full).unwrap();
     std::fs::set_permissions(&fa, std::fs::Permissions::from_mode(0o000)).unwrap();
     if std::fs::read(&fa).is_err() {
-        tokio::time::sleep(Duration::from_millis(1500)).await;
+        wait_until(|| watched_reason("permission_denied")).await;
         check(&rescan().await, "permission_denied");
     }
     std::fs::set_permissions(&fa, std::fs::Permissions::from_mode(0o600)).unwrap();
@@ -1166,4 +1191,20 @@ async fn refresh_range_old_value_and_write() {
     let text = std::fs::read_to_string(&e.path).unwrap();
     assert!(text.contains("quota_refresh_max_mins = 10"), "{text}");
     assert!(text.contains("reset_credits_refresh_mins = 30"), "{text}");
+}
+
+#[tokio::test]
+async fn audit_tail_seeks_past_large_older_entries() {
+    let e = env("").await;
+    let audit_path = PathBuf::from(format!("{}.audit.jsonl", e.path.display()));
+    let older = json!({"padding": "卡".repeat(100_000)});
+    std::fs::write(
+        &audit_path,
+        format!("{older}\n{{\"event\":1}}\n{{\"event\":2}}\n"),
+    )
+    .unwrap();
+    assert_eq!(
+        e.settings.audit_tail(2),
+        vec![json!({"event": 2}), json!({"event": 1})]
+    );
 }

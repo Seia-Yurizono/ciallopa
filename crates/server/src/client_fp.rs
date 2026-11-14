@@ -56,7 +56,7 @@ fn save(b: &Backend, fp: &Fingerprint) {
 
 /// Restore the persisted fingerprint and persist future changes through one background
 /// writer (coalesced, at most once per `fingerprint::MIN_SAVE_INTERVAL`).
-pub fn install(cfg: &Config, usage: Option<Arc<Recorder>>) {
+pub fn install(cfg: &Config, usage: Option<Arc<Recorder>>) -> Persistence {
     let b = backend(cfg, usage);
     if let Some(fp) = load(&b) {
         if fingerprint::restore(fp) {
@@ -64,17 +64,16 @@ pub fn install(cfg: &Config, usage: Option<Arc<Recorder>>) {
             tracing::info!(user_agent = %f.user_agent, "restored learned client fingerprint");
         }
     }
-    *BACKEND.lock().unwrap_or_else(|e| e.into_inner()) = Some(b.clone());
-    fingerprint::set_saver(Box::new(move |fp| save(&b, fp)));
+    let writer = b.clone();
+    fingerprint::set_saver(Box::new(move |fp| save(&writer, fp)));
+    Persistence(b)
 }
 
-static BACKEND: std::sync::Mutex<Option<Backend>> = std::sync::Mutex::new(None);
-
-/// Graceful shutdown / tests: write a still-pending change (before the usage DB closes).
-pub fn flush() {
-    let b = BACKEND.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    if let Some(b) = b {
-        fingerprint::flush_with(|fp| save(&b, fp));
+/// The backend belongs to the application that installed the fingerprint writer.
+pub struct Persistence(Backend);
+impl Persistence {
+    pub fn flush(&self) {
+        fingerprint::flush_with(|fp| save(&self.0, fp));
     }
 }
 

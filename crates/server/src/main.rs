@@ -171,7 +171,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(1);
             }
             println!("Accounts are saved to {}", ciallopa::host::shown(&dir));
-            let oauth = oauth_client(&cfg)?;
+            let oauth = ciallopa::oauth_client(&cfg)?;
             let id = match method.as_str() {
                 "paste" => login::paste_callback(&oauth, &dir).await,
                 "pkce" => login::pkce_localhost(&oauth, &dir).await,
@@ -272,8 +272,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         None => ciallopa_core::Aliaser::ephemeral(),
     };
     ciallopa_core::set_current(aliaser.clone());
-    ciallopa::client_fp::install(&cfg, usage.clone());
-    let oauth = oauth_client(&cfg)?;
+    let fingerprint = ciallopa::client_fp::install(&cfg, usage.clone());
+    let oauth = ciallopa::oauth_client(&cfg)?;
     let oauth_pools = oauth.pools.clone();
     let router = Arc::new(ciallopa_routing::CpaRouter::new(cfg.routing.clone()));
     let affinity = ciallopa::affinity_store::Store::new(
@@ -299,9 +299,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .into_iter()
         .map(|a| a.id)
         .collect();
-    aliaser.register_many(&known);
-    affinity.load(&|id| known.contains(id));
-    let _affinity_writer = affinity.spawn();
     if known.is_empty() {
         tracing::warn!(auth_dir = %state.config.load().auth_dir.display(), "no accounts yet: proxied requests fail until one is added with `ciallopa login` or on /ui/accounts");
     }
@@ -312,10 +309,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let settings = ciallopa::settings::Settings::new(state, Some(config_path), oauth_pools);
     // Historical audit rows may still say account:<raw-id>; rewrite once (no-op if clean).
     settings.rewrite_audit_aliases();
-    settings.init_known_accounts().await;
+    let background = ciallopa::spawn_background(settings.clone()).await;
+    affinity.load(&|id| known.contains(id));
+    let _affinity_writer = affinity.spawn();
     let _watcher = ciallopa::settings::spawn_watcher(settings.clone());
     ciallopa::settings::spawn_sighup(settings.clone());
-    let app = ciallopa::build_app_with(settings);
+    let app = ciallopa::build_router(settings);
     // Streamed responses are many small writes; Nagle would hold each behind the
     // client's delayed ACK (about 40 ms per chunk on a kept-alive connection).
     use axum::serve::ListenerExt;
@@ -418,11 +417,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ = &mut shutdown => Ok(()),
     };
+    background.stop();
     let flush = tokio::task::spawn_blocking(move || {
         affinity.flush();
-        ciallopa::client_fp::flush();
-        ciallopa::auto_reset::flush();
-        ciallopa::reset_credits::quota_auto_flush();
+        fingerprint.flush();
+        background.flush();
         if let Some(u) = usage {
             u.shutdown();
         }
@@ -458,7 +457,3 @@ fn absolute(p: &std::path::Path) -> PathBuf {
 const HEALTHCHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 /// Time for the forced 1001 closes to be written.
 const CLOSE_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
-
-fn oauth_client(cfg: &Config) -> Result<ciallopa_auth::OAuthClient, Box<dyn std::error::Error>> {
-    Ok(ciallopa::oauth_client(cfg)?)
-}

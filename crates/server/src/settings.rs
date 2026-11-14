@@ -6,6 +6,7 @@
 //! read → parse + validate → semantic checks → diff → build → atomic swap; any failure leaves
 //! the running process unchanged. Keys that only take effect at startup keep their running
 //! value and are reported as `pending_restart`.
+use crate::http::{csrf, err};
 use crate::reset_credits::ResetCredits;
 use axum::{
     extract::{Path as AxPath, Query, State},
@@ -36,6 +37,8 @@ pub struct LastReload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     pub applied: Vec<Change>,
+    #[serde(skip)]
+    version: String,
 }
 
 #[derive(Default)]
@@ -89,15 +92,15 @@ pub struct Settings {
     /// Startup config: running values of restart-only keys.
     boot: Arc<Config>,
     pub(crate) rc: ResetCredits,
+    pub(crate) memory: crate::memory::Memory,
     oauth_pools: Option<Arc<ciallopa_upstream::ClientPool>>,
-    apply: tokio::sync::Mutex<()>,
+    apply: Arc<tokio::sync::Mutex<()>>,
     status: Mutex<Status>,
     known_accounts: Mutex<HashSet<String>>,
     audit_path: Option<PathBuf>,
     /// Last price check (「检查更新」) waiting for 「应用」.
     price_check: Mutex<Option<PriceCheck>>,
-    /// Last price-table write from a model edit (throttle, see [`PRICE_EDIT_GAP`]).
-    price_edit_at: Mutex<Option<std::time::Instant>>,
+    pub(crate) logins: crate::accounts_api::Logins,
 }
 
 struct PriceCheck {
@@ -110,9 +113,6 @@ struct PriceCheck {
 
 /// A price check older than this must be repeated before applying.
 const PRICE_CHECK_TTL: Duration = Duration::from_secs(15 * 60);
-/// Minimum spacing of price-table writes from model edits (ignore / custom price): a burst
-/// of clicks waits instead of rewriting the file many times a second.
-const PRICE_EDIT_GAP: Duration = Duration::from_millis(1000);
 /// Models of the usage log looked at for the "unpriced" hint.
 const UNPRICED_WINDOW_MS: i64 = 30 * 86_400_000;
 
@@ -153,11 +153,16 @@ impl Settings {
             .as_ref()
             .map(|p| hash(&std::fs::read(p).unwrap_or_default()));
         let prices_hash = Some(hash(&std::fs::read(&boot.usage.prices).unwrap_or_default()));
+        let rc = ResetCredits::default();
+        if let Some(rec) = &st.usage {
+            rc.load(rec);
+        }
         Arc::new(Self {
             path,
             st,
             boot,
-            rc: ResetCredits::default(),
+            rc,
+            memory: Default::default(),
             oauth_pools,
             apply: Default::default(),
             status: Mutex::new(Status {
@@ -168,18 +173,13 @@ impl Settings {
             known_accounts: Default::default(),
             audit_path,
             price_check: Default::default(),
-            price_edit_at: Default::default(),
+            logins: Default::default(),
         })
     }
 
     /// The running configuration snapshot.
     pub fn running(&self) -> Arc<Config> {
         self.st.config.load()
-    }
-
-    #[doc(hidden)]
-    pub fn st_config_write_enabled(&self) -> bool {
-        self.st.config.load().ui.allow_config_write
     }
 
     pub fn path(&self) -> Option<&Path> {
@@ -227,14 +227,33 @@ impl Settings {
         Ok((c, prices))
     }
 
-    /// Re-read the config file and apply it. `Err` = nothing changed.
+    /// Keep the apply lock inside the blocking job, including if its caller is cancelled.
+    async fn blocking<T: Send + 'static>(
+        self: &Arc<Self>,
+        f: impl FnOnce(&Self) -> T + Send + 'static,
+    ) -> Result<T, ApplyError> {
+        let guard = self.apply.clone().lock_owned().await;
+        let s = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let _guard = guard;
+            f(&s)
+        })
+        .await
+        .map_err(|e| ApplyError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+    }
+
     pub async fn reload(
-        &self,
+        self: &Arc<Self>,
         source: &str,
         actor: Option<&str>,
     ) -> Result<LastReload, ApplyError> {
-        let _g = self.apply.lock().await;
-        let r = self.reload_locked(source, actor);
+        let (source, actor) = (source.to_string(), actor.map(str::to_string));
+        self.blocking(move |s| s.reload_blocking(&source, actor.as_deref()))
+            .await?
+    }
+
+    fn reload_blocking(&self, source: &str, actor: Option<&str>) -> Result<LastReload, ApplyError> {
+        let r = self.reload_locked(source, actor, None);
         if let Err(e) = &r {
             tracing::warn!(source, error = %e.message(), "config reload rejected; running config unchanged");
             lock(&self.status).last = Some(LastReload {
@@ -243,20 +262,32 @@ impl Settings {
                 ok: false,
                 error: Some(e.message()),
                 applied: vec![],
+                version: String::new(),
             });
         }
         r
     }
 
-    fn reload_locked(&self, source: &str, actor: Option<&str>) -> Result<LastReload, ApplyError> {
+    fn reload_locked(
+        &self,
+        source: &str,
+        actor: Option<&str>,
+        checked: Option<(String, Config, Option<ciallopa_usage::PriceTable>)>,
+    ) -> Result<LastReload, ApplyError> {
         if self.path.is_none() {
             return Err(ApplyError::new(
                 StatusCode::CONFLICT,
                 "no config file (started with built-in defaults)",
             ));
         }
-        let text = self.read_file()?;
-        let (new, prices) = self.check(&text)?;
+        let (text, new, prices) = match checked {
+            Some(checked) => checked,
+            None => {
+                let text = self.read_file()?;
+                let (new, prices) = self.check(&text)?;
+                (text, new, prices)
+            }
+        };
         let cur = self.st.config.load();
         let eff = cs::effective(&self.boot, &new);
         let applied = cs::diff(&cur, &eff);
@@ -294,6 +325,7 @@ impl Settings {
             ok: true,
             error: None,
             applied: applied.clone(),
+            version: hash(text.as_bytes()),
         };
         {
             let mut s = lock(&self.status);
@@ -309,18 +341,22 @@ impl Settings {
             }
             self.audit(actor, "reload", source, &applied);
         }
+        self.rc.wake();
         Ok(rep)
     }
 
     /// Whether the file (or price table) differs from what is applied (watcher filter).
     fn changed_on_disk(&self) -> bool {
-        let s = lock(&self.status);
+        let (applied_hash, prices_hash) = {
+            let s = lock(&self.status);
+            (s.applied_hash.clone(), s.prices_hash.clone())
+        };
         let cfg = self
             .path
             .as_ref()
             .map(|p| hash(&std::fs::read(p).unwrap_or_default()));
         let prices = hash(&std::fs::read(&self.st.config.load().usage.prices).unwrap_or_default());
-        cfg != s.applied_hash || Some(prices) != s.prices_hash
+        cfg != applied_hash || Some(prices) != prices_hash
     }
 
     pub fn pending(&self) -> Vec<Change> {
@@ -432,7 +468,30 @@ impl Settings {
         let Some(p) = &self.audit_path else {
             return vec![];
         };
-        let s = std::fs::read_to_string(p).unwrap_or_default();
+        use std::io::{Read, Seek, SeekFrom};
+        let Ok(mut file) = std::fs::File::open(p) else {
+            return vec![];
+        };
+        let Ok(len) = file.metadata().map(|m| m.len()) else {
+            return vec![];
+        };
+        let start = len.saturating_sub(256 * 1024);
+        if file.seek(SeekFrom::Start(start)).is_err() {
+            return vec![];
+        }
+        let mut bytes = Vec::new();
+        if file.take(len - start).read_to_end(&mut bytes).is_err() {
+            return vec![];
+        }
+        let bytes = if start > 0 {
+            match bytes.iter().position(|b| *b == b'\n') {
+                Some(i) => &bytes[i + 1..],
+                None => return vec![],
+            }
+        } else {
+            &bytes[..]
+        };
+        let s = String::from_utf8_lossy(bytes);
         let mut v: Vec<Value> = s
             .lines()
             .rev()
@@ -444,7 +503,6 @@ impl Settings {
     }
 
     /// Reset-credit state shared with the routes (tests drive the automatic sweep with it).
-    #[doc(hidden)]
     pub fn reset_credits(&self) -> ResetCredits {
         self.rc.clone()
     }
@@ -519,42 +577,38 @@ impl Settings {
     /// Write `text` atomically (tmp + fsync + rename, permissions kept, previous content in
     /// `<file>.bak`), then reload. A rejected reload restores the previous content.
     async fn write_and_apply(
-        &self,
-        text: &str,
+        self: &Arc<Self>,
         expected_version: &str,
         actor: Option<&str>,
         action: &str,
+        edit: impl FnOnce(&str) -> Result<String, ApplyError> + Send + 'static,
     ) -> Result<LastReload, ApplyError> {
-        let path = self
-            .path
-            .clone()
-            .ok_or_else(|| ApplyError::new(StatusCode::CONFLICT, "no config file"))?;
-        let _g = self.apply.lock().await;
-        let (old, ver) = self.file_version()?;
-        if ver != expected_version {
-            return Err(ApplyError::new(
-                StatusCode::PRECONDITION_FAILED,
-                "config file changed since it was read; reload and try again",
-            ));
-        }
-        self.check(text)?;
-        let existed = path.exists();
-        atomic_write(&path, text.as_bytes(), existed.then_some(old.as_bytes()))
-            .map_err(|e| ApplyError::new(StatusCode::INTERNAL_SERVER_ERROR, write_error(&e)))?;
-        match self.reload_locked(action, actor) {
-            Ok(r) => Ok(r),
-            Err(e) => {
-                let restore = if existed {
-                    atomic_write(&path, old.as_bytes(), None)
-                } else {
-                    std::fs::remove_file(&path)
-                };
-                if let Err(re) = restore {
-                    tracing::error!(error = %re, "could not restore config after rejected write");
-                }
-                Err(e)
+        let (expected_version, actor, action) = (
+            expected_version.to_string(),
+            actor.map(str::to_string),
+            action.to_string(),
+        );
+        self.blocking(move |s| {
+            let path = s.path.clone().ok_or_else(|| ApplyError::new(StatusCode::CONFLICT, "no config file"))?;
+            let (old, ver) = s.file_version()?;
+            if ver != expected_version {
+                return Err(ApplyError::new(StatusCode::PRECONDITION_FAILED,
+                    "config file changed since it was read; reload and try again"));
             }
-        }
+            let text = edit(&old)?;
+            let (config, prices) = s.check(&text)?;
+            let existed = path.exists();
+            atomic_write(&path, text.as_bytes(), existed.then_some(old.as_bytes()))
+                .map_err(|e| ApplyError::new(StatusCode::INTERNAL_SERVER_ERROR, write_error(&e)))?;
+            match s.reload_locked(&action, actor.as_deref(), Some((text, config, prices))) {
+                Ok(r) => Ok(r),
+                Err(e) => {
+                    let restore = if existed { atomic_write(&path, old.as_bytes(), None) } else { std::fs::remove_file(&path) };
+                    if let Err(re) = restore { tracing::error!(error = %re, "could not restore config after rejected write"); }
+                    Err(e)
+                }
+            }
+        }).await?
     }
 }
 
@@ -860,8 +914,16 @@ pub fn spawn_watcher(s: Arc<Settings>) -> Option<notify::RecommendedWatcher> {
                         .file_name()
                         .is_some_and(|n| n.to_string_lossy().starts_with('.'))
             });
-            if cfg_hit && s.changed_on_disk() {
-                let _ = s.reload("file", None).await;
+            if cfg_hit {
+                let _ = s
+                    .blocking(|s| {
+                        if s.changed_on_disk() {
+                            s.reload_blocking("file", None).map(Some)
+                        } else {
+                            Ok(None)
+                        }
+                    })
+                    .await;
             }
             if auth_hit {
                 if let Err(e) = s.sync_accounts().await {
@@ -890,86 +952,9 @@ pub fn spawn_sighup(s: Arc<Settings>) {
 
 // ---------------- HTTP API ----------------
 
-pub(crate) fn err(status: StatusCode, msg: &str) -> Response {
-    (status, Json(json!({"error": {"message": msg}}))).into_response()
-}
-
-/// CSRF rules for every state-changing management / usage call. Authentication is by header only
-/// (`Authorization: Bearer` / `x-api-key`, checked by the middleware); cookies never authenticate,
-/// so a cookie added by a front proxy (Cloudflare Access `CF_Authorization`) is simply ignored.
-/// On top of that:
-/// - the body must be JSON: a cross-origin page cannot send that (or the key header) without a
-///   CORS preflight, which this server never answers;
-/// - when the browser says where the call comes from, it must be this origin:
-///   `Sec-Fetch-Site` must be `same-origin` / `none`; without it, an `Origin` header must name
-///   the request's own host (`Host`, or `X-Forwarded-Host` set by a front proxy). Clients that send
-///   neither (curl, scripts) are not affected.
-///
-/// `Some(rejection)` when the request does not follow them.
-pub(crate) fn csrf(headers: &HeaderMap) -> Option<Response> {
-    let hv = |n: &str| headers.get(n).and_then(|v| v.to_str().ok()).map(str::trim);
-    let json_ct =
-        hv("content-type").is_some_and(|v| v.to_ascii_lowercase().starts_with("application/json"));
-    if !json_ct {
-        return Some(err(
-            StatusCode::BAD_REQUEST,
-            "send JSON (Content-Type: application/json) with the key in Authorization: Bearer",
-        ));
-    }
-    if !same_origin(headers) {
-        return Some(err(
-            StatusCode::FORBIDDEN,
-            "cross-origin request rejected; use the management page on this host",
-        ));
-    }
-    None
-}
-
-/// Browser provenance check of [`csrf`]; true when the headers do not say otherwise.
-fn same_origin(headers: &HeaderMap) -> bool {
-    let hv = |n: &str| headers.get(n).and_then(|v| v.to_str().ok()).map(str::trim);
-    if let Some(site) = hv("sec-fetch-site") {
-        return site.eq_ignore_ascii_case("same-origin") || site.eq_ignore_ascii_case("none");
-    }
-    let Some(origin) = hv("origin") else {
-        return true;
-    };
-    // "null" (sandboxed / opaque origins) or anything unparsable is not this page.
-    let Some(o) = origin
-        .split_once("://")
-        .map(|(_, rest)| rest.trim_end_matches('/').to_ascii_lowercase())
-        .filter(|h| !h.is_empty() && !h.contains('/'))
-    else {
-        return false;
-    };
-    let ohost = strip_default_port(&o, origin.starts_with("https://"));
-    let hosts = headers
-        .get_all("x-forwarded-host")
-        .iter()
-        .chain(headers.get_all(http::header::HOST).iter())
-        .filter_map(|v| v.to_str().ok())
-        .flat_map(|v| v.split(','))
-        .map(|h| h.trim().to_ascii_lowercase());
-    hosts.into_iter().any(|h| {
-        h == o || strip_default_port(&h, true) == ohost || strip_default_port(&h, false) == ohost
-    })
-}
-
-fn strip_default_port(host: &str, https: bool) -> &str {
-    host.strip_suffix(if https { ":443" } else { ":80" })
-        .unwrap_or(host)
-}
-
 impl Settings {
-    /// Write actions need `[ui] allow_config_write = true` (file only) + the CSRF rules.
     pub(crate) fn write_guard(&self, headers: &HeaderMap) -> Option<Response> {
-        if !self.st.config.load().ui.allow_config_write {
-            return Some(err(
-                StatusCode::FORBIDDEN,
-                "changes from the management page are disabled; set [ui] allow_config_write = true in the config file",
-            ));
-        }
-        csrf(headers)
+        crate::http::write_guard(&self.running(), headers)
     }
 }
 
@@ -1075,7 +1060,7 @@ impl Settings {
 }
 
 fn price_error(status: StatusCode, msg: impl Into<String>) -> Response {
-    (status, Json(json!({"error": {"message": msg.into()}}))).into_response()
+    err(status, &msg.into())
 }
 
 async fn prices_status(State(s): State<S>) -> Response {
@@ -1083,7 +1068,10 @@ async fn prices_status(State(s): State<S>) -> Response {
 }
 
 /// 「检查更新」: download the dataset and diff it against the table. Writes nothing.
-async fn prices_check(State(s): State<S>) -> Response {
+async fn prices_check(State(s): State<S>, headers: HeaderMap) -> Response {
+    if let Some(r) = csrf(&headers) {
+        return r;
+    }
     if s.st.usage.is_none() {
         return price_error(
             StatusCode::CONFLICT,
@@ -1143,66 +1131,74 @@ struct ApplyPrices {
 async fn prices_apply(
     State(s): State<S>,
     key: Option<axum::Extension<ClientKey>>,
+    headers: HeaderMap,
     Json(req): Json<ApplyPrices>,
 ) -> Response {
-    let _g = s.apply.lock().await;
-    let Some(chk) = lock(&s.price_check).take() else {
-        return price_error(
-            StatusCode::CONFLICT,
-            "no pending price check: run 检查更新 again",
-        );
-    };
-    if chk.token != req.token || chk.at.elapsed() > PRICE_CHECK_TTL {
-        return price_error(
-            StatusCode::CONFLICT,
-            "the price check expired: run 检查更新 again",
-        );
+    if let Some(r) = csrf(&headers) {
+        return r;
     }
-    let path = s.st.config.load().usage.prices.clone();
-    if crate::prices::file_hash(&path) != chk.local_hash {
-        return price_error(
-            StatusCode::CONFLICT,
-            "the price table changed after the check: run 检查更新 again",
-        );
-    }
-    let local = match ciallopa_usage::PriceTable::load(&path) {
-        Ok(t) => t,
-        Err(e) => {
+    s.blocking(move |s| {
+        let Some(chk) = lock(&s.price_check).take() else {
             return price_error(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                format!("usage.prices: {e}"),
-            )
-        }
-    };
-    let (table, bak) = match crate::prices::write_table(&path, &local, &chk.changes, &chk.source) {
-        Ok(x) => x,
-        Err(e) => {
+                StatusCode::CONFLICT,
+                "no pending price check: run 检查更新 again",
+            );
+        };
+        if chk.token != req.token || chk.at.elapsed() > PRICE_CHECK_TTL {
             return price_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("write {}: {e}", path.display()),
-            )
+                StatusCode::CONFLICT,
+                "the price check expired: run 检查更新 again",
+            );
         }
-    };
-    let applied = chk.changes.iter().filter(|c| c.actionable()).count();
-    let models = table.models.len();
-    if let Some(u) = &s.st.usage {
-        u.set_prices(table);
-    }
-    // Own write: the file watcher must not reload it again.
-    lock(&s.status).prices_hash = Some(crate::prices::file_hash(&path));
-    tracing::info!(
-        actor = key.as_ref().map(|k| k.0.label.to_string()).unwrap_or_default(),
-        applied,
-        models,
-        path = %path.display(),
-        "price table updated"
-    );
-    Json(json!({
-        "applied": applied,
-        "models": models,
-        "backup": bak.map(|b| b.display().to_string()),
-    }))
-    .into_response()
+        let path = s.st.config.load().usage.prices.clone();
+        if crate::prices::file_hash(&path) != chk.local_hash {
+            return price_error(
+                StatusCode::CONFLICT,
+                "the price table changed after the check: run 检查更新 again",
+            );
+        }
+        let local = match ciallopa_usage::PriceTable::load(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                return price_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    format!("usage.prices: {e}"),
+                )
+            }
+        };
+        let (table, bak) =
+            match crate::prices::write_table(&path, &local, &chk.changes, &chk.source) {
+                Ok(x) => x,
+                Err(e) => {
+                    return price_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("write {}: {e}", path.display()),
+                    )
+                }
+            };
+        let applied = chk.changes.iter().filter(|c| c.actionable()).count();
+        let models = table.models.len();
+        if let Some(u) = &s.st.usage {
+            u.set_prices(table);
+        }
+        // Own write: the file watcher must not reload it again.
+        lock(&s.status).prices_hash = Some(crate::prices::file_hash(&path));
+        tracing::info!(
+            actor = key.as_ref().map(|k| k.0.label.to_string()).unwrap_or_default(),
+            applied,
+            models,
+            path = %path.display(),
+            "price table updated"
+        );
+        Json(json!({
+            "applied": applied,
+            "models": models,
+            "backup": bak.map(|b| b.display().to_string()),
+        }))
+        .into_response()
+    })
+    .await
+    .unwrap_or_else(IntoResponse::into_response)
 }
 
 #[derive(Deserialize)]
@@ -1221,7 +1217,7 @@ struct PriceModelReq {
 
 /// Ignore / un-ignore a model, or set / remove its hand-set price. Read-modify-write of the
 /// price table under the apply lock, used at once (costs are computed at query time, so
-/// history follows); writes are spaced by [`PRICE_EDIT_GAP`].
+/// history follows).
 async fn prices_model(
     State(s): State<S>,
     headers: HeaderMap,
@@ -1261,73 +1257,65 @@ async fn prices_model(
             )
         }
     };
-    let _g = s.apply.lock().await;
-    let path = s.st.config.load().usage.prices.clone();
-    let mut table = match ciallopa_usage::PriceTable::load(&path) {
-        Ok(t) => t,
-        Err(e) => {
-            return price_error(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                format!("usage.prices: {e}"),
-            )
+    let who = actor(&key);
+    s.blocking(move |s| {
+        let path = s.st.config.load().usage.prices.clone();
+        let mut table = match ciallopa_usage::PriceTable::load(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                return price_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    format!("usage.prices: {e}"),
+                )
+            }
+        };
+        let changed = match table.edit(&req.model, &edit) {
+            Ok(c) => c,
+            Err(e) => return price_error(StatusCode::BAD_REQUEST, e),
+        };
+        let model = req.model.trim().to_ascii_lowercase();
+        if !changed {
+            return Json(json!({"ok": true, "changed": false, "model": model})).into_response();
         }
-    };
-    let changed = match table.edit(&req.model, &edit) {
-        Ok(c) => c,
-        Err(e) => return price_error(StatusCode::BAD_REQUEST, e),
-    };
-    let model = req.model.trim().to_ascii_lowercase();
-    if !changed {
-        return Json(json!({"ok": true, "changed": false, "model": model})).into_response();
-    }
-    let wait = lock(&s.price_edit_at)
-        .and_then(|t| PRICE_EDIT_GAP.checked_sub(t.elapsed()))
-        .unwrap_or_default();
-    if !wait.is_zero() {
-        tokio::time::sleep(wait).await;
-    }
-    let written = {
-        let path = path.clone();
-        tokio::task::spawn_blocking(move || crate::prices::write_edited(&path, &table)).await
-    };
-    let (table, bak) = match written {
-        Ok(Ok(x)) => x,
-        Ok(Err(e)) => {
-            return price_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("write {}: {e}", path.display()),
-            )
-        }
-        Err(e) => return price_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    };
-    *lock(&s.price_edit_at) = Some(std::time::Instant::now());
-    let now = match &edit {
-        Edit::Ignore => json!("ignored"),
-        Edit::Set { .. } => table
-            .models
-            .iter()
-            .find(|e| e.custom && e.model == model && e.tier == ciallopa_usage::Tier::Standard)
-            .map(|e| json!(ciallopa_usage::prices::fmt_entry(e)))
-            .unwrap_or(Value::Null),
-        Edit::Unignore | Edit::Unset => Value::Null,
-    };
-    u.set_prices(table);
-    // Own write: the file watcher must not reload it again.
-    lock(&s.status).prices_hash = Some(crate::prices::file_hash(&path));
-    s.audit(
-        actor(&key).as_deref(),
-        &format!("price {}", req.action),
-        "admin",
-        &[Change {
-            key: format!("price:{model}"),
-            old: Value::Null,
-            new: now,
-            effect: Effect::Hot,
-        }],
-    );
-    Json(json!({"ok": true, "changed": true, "model": model,
+        let (table, bak) = match crate::prices::write_edited(&path, &table) {
+            Ok(x) => x,
+            Err(e) => {
+                return price_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("write {}: {e}", path.display()),
+                )
+            }
+        };
+        let now = match &edit {
+            Edit::Ignore => json!("ignored"),
+            Edit::Set { .. } => table
+                .models
+                .iter()
+                .find(|e| e.custom && e.model == model && e.tier == ciallopa_usage::Tier::Standard)
+                .map(|e| json!(ciallopa_usage::prices::fmt_entry(e)))
+                .unwrap_or(Value::Null),
+            Edit::Unignore | Edit::Unset => Value::Null,
+        };
+        u.set_prices(table);
+        // Own write: the file watcher must not reload it again.
+        lock(&s.status).prices_hash = Some(crate::prices::file_hash(&path));
+        s.audit(
+            who.as_deref(),
+            &format!("price {}", req.action),
+            "admin",
+            &[Change {
+                key: format!("price:{model}"),
+                old: Value::Null,
+                new: now,
+                effect: Effect::Hot,
+            }],
+        );
+        Json(json!({"ok": true, "changed": true, "model": model,
         "backup": bak.map(|b| b.display().to_string())}))
-    .into_response()
+        .into_response()
+    })
+    .await
+    .unwrap_or_else(IntoResponse::into_response)
 }
 
 async fn get_config(State(s): State<S>) -> Response {
@@ -1566,17 +1554,11 @@ async fn put_config(
     if req.changes.is_empty() {
         return err(StatusCode::BAD_REQUEST, "no changes");
     }
-    let (text, _) = match s.file_version() {
-        Ok(x) => x,
-        Err(e) => return e.into_response(),
-    };
-    let new_text = match patch_document(&text, &req.changes) {
-        Ok(t) => t,
-        Err(e) => return e.into_response(),
-    };
     let actor = actor(&key);
     match s
-        .write_and_apply(&new_text, &expected, actor.as_deref(), "admin")
+        .write_and_apply(&expected, actor.as_deref(), "admin", move |text| {
+            patch_document(text, &req.changes)
+        })
         .await
     {
         Ok(r) => after_write(&s, r),
@@ -1585,7 +1567,7 @@ async fn put_config(
 }
 
 fn after_write(s: &Settings, r: LastReload) -> Response {
-    let version = s.file_version().map(|x| x.1).unwrap_or_default();
+    let version = r.version;
     with_etag(
         Json(json!({"ok": true, "version": version, "applied": r.applied, "pending_restart": s.pending()}))
             .into_response(),
@@ -1658,22 +1640,17 @@ async fn new_key(
     if s.st.config.keys().iter().any(|k| k.label == label) {
         return err(StatusCode::CONFLICT, "label already exists");
     }
-    let (text, _) = match s.file_version() {
-        Ok(x) => x,
-        Err(e) => return e.into_response(),
-    };
     let new = gen_key();
-    let new_text = match add_key(&text, &label, &new) {
-        Ok(t) => t,
-        Err(e) => return e.into_response(),
-    };
+    let (write_label, write_key) = (label.clone(), new.clone());
     let actor = actor(&key);
     match s
-        .write_and_apply(&new_text, &expected, actor.as_deref(), "admin:key-add")
+        .write_and_apply(&expected, actor.as_deref(), "admin:key-add", move |text| {
+            add_key(text, &write_label, &write_key)
+        })
         .await
     {
-        Ok(_) => {
-            let version = s.file_version().map(|x| x.1).unwrap_or_default();
+        Ok(r) => {
+            let version = r.version;
             with_etag(
                 Json(json!({"ok": true, "label": label, "key": new, "version": version}))
                     .into_response(),
@@ -1706,16 +1683,13 @@ async fn delete_key(
             "cannot delete the key used for this session",
         );
     }
-    let (text, _) = match s.file_version() {
-        Ok(x) => x,
-        Err(e) => return e.into_response(),
-    };
-    let new_text = match remove_key(&text, &label) {
-        Ok(t) => t,
-        Err(e) => return e.into_response(),
-    };
     match s
-        .write_and_apply(&new_text, &expected, actor.as_deref(), "admin:key-delete")
+        .write_and_apply(
+            &expected,
+            actor.as_deref(),
+            "admin:key-delete",
+            move |text| remove_key(text, &label),
+        )
         .await
     {
         Ok(r) => after_write(&s, r),

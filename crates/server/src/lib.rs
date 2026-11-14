@@ -15,9 +15,10 @@ use subtle::ConstantTimeEq;
 
 pub mod accounts_api;
 pub mod affinity_store;
-pub mod auto_reset;
+pub use reset_credits::auto_reset;
 pub mod client_fp;
 pub mod host;
+mod http;
 pub mod init;
 pub mod memory;
 pub mod prices;
@@ -34,7 +35,7 @@ fn presented_key(h: &HeaderMap) -> Option<&str> {
     if let Some(v) = h.get("x-api-key").and_then(|v| v.to_str().ok()) {
         return Some(v.trim());
     }
-    let v = h.get(http::header::AUTHORIZATION)?.to_str().ok()?;
+    let v = h.get(::http::header::AUTHORIZATION)?.to_str().ok()?;
     let (scheme, rest) = v.split_once(' ')?;
     scheme.eq_ignore_ascii_case("bearer").then(|| rest.trim())
 }
@@ -167,6 +168,11 @@ pub fn build_app(state: AppState) -> Router {
 
 /// App with live settings (config file, reload pipeline, admin config / account API).
 pub fn build_app_with(s: Arc<settings::Settings>) -> Router {
+    build_router(s)
+}
+
+/// Construct routes without starting timers, writers or detached tasks.
+pub fn build_router(s: Arc<settings::Settings>) -> Router {
     let state = s.st.clone();
     let cfg = state.config.load();
     let keys = Keys(state.config.clone());
@@ -178,20 +184,12 @@ pub fn build_app_with(s: Arc<settings::Settings>) -> Router {
     );
     let ui_on = cfg.ui.enabled;
     let rc = s.rc.clone();
-    if tokio::runtime::Handle::try_current().is_ok() {
-        let s2 = s.clone();
-        tokio::spawn(async move { s2.init_known_accounts().await });
-    }
-    reset_credits::spawn_poller(state.clone(), rc.clone());
-    reset_credits::spawn_quota_poller(state.clone(), rc.clone());
-    auto_reset::spawn(state.clone(), rc.clone());
-    memory::spawn_sampler(state.clone());
     let resets = reset_credits::routes(state.clone(), rc);
     let live_cfg = state.config.clone();
     let admin = usage
         .merge(resets)
         .merge(client_fp::routes())
-        .merge(memory::routes(state.clone()))
+        .merge(memory::routes(state.clone(), s.memory.clone()))
         .merge(settings::routes(s.clone()))
         .merge(accounts_api::routes(s))
         .layer(middleware::from_fn_with_state(live_cfg, live_body_limit))
@@ -206,4 +204,47 @@ pub fn build_app_with(s: Arc<settings::Settings>) -> Router {
     }
     app.merge(protected)
         .fallback(|| async { StatusCode::NOT_FOUND })
+}
+
+/// Owned background work. Dropping it cancels every timer and persister.
+pub struct Background {
+    settings: Arc<settings::Settings>,
+    handles: Vec<tokio::task::JoinHandle<()>>,
+}
+impl Background {
+    /// Call before closing the usage recorder, after requests have drained.
+    pub fn flush(&self) {
+        if let Some(rec) = &self.settings.st.usage {
+            self.settings.rc.flush(rec);
+        }
+    }
+    pub fn stop(&self) {
+        for handle in &self.handles {
+            handle.abort();
+        }
+    }
+}
+impl Drop for Background {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// Explicit runtime startup; initial account registration completes before any sweep.
+pub async fn spawn_background(settings: Arc<settings::Settings>) -> Background {
+    settings.init_known_accounts().await;
+    let (st, rc) = (settings.st.clone(), settings.rc.clone());
+    let mut handles = vec![
+        reset_credits::spawn_poller(st.clone(), rc.clone()),
+        settings.memory.spawn_sampler(st.clone()),
+    ];
+    if let Some(rec) = &st.usage {
+        handles.extend([
+            rc.auto.switches.spawn_persist(rec.clone()),
+            rc.quota_auto.spawn_persist(rec.clone()),
+            reset_credits::spawn_quota_poller(st.clone(), rc.clone()),
+            auto_reset::spawn(st, rc),
+        ]);
+    }
+    Background { settings, handles }
 }

@@ -53,6 +53,7 @@ struct Env {
     proxy: String,
     router: Arc<Cool>,
     hits: Arc<AtomicUsize>,
+    drain: Arc<ciallopa_upstream::drain::Drain>,
 }
 
 async fn serve(app: Router) -> String {
@@ -114,11 +115,13 @@ async fn env(cool_for: Duration, earliest_quota: bool, wait_secs: u64) -> Env {
         config: Arc::new(cfg.into()),
         egress: Default::default(),
     };
+    let drain = state.upstream.drain.clone();
     let proxy = serve(ciallopa::build_app(state)).await;
     Env {
         proxy,
         router,
         hits,
+        drain,
     }
 }
 
@@ -249,8 +252,16 @@ async fn client_disconnect_ends_the_hold() {
         .send()
         .await;
     assert!(r.is_err());
-    tokio::time::sleep(Duration::from_secs(3)).await;
-    // One selection (cooling) and no second one after the cooldown ended.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while e.drain.inflight() != 0 {
+        assert_eq!(e.router.selects.load(Ordering::SeqCst), 1);
+        assert!(
+            Instant::now() < deadline,
+            "client disconnect did not release the held request"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // The disconnected request released its lease without selecting again.
     assert_eq!(e.router.selects.load(Ordering::SeqCst), 1);
     assert_eq!(e.hits.load(Ordering::SeqCst), 0);
 }

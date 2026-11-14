@@ -277,18 +277,14 @@ pub fn diff(old: &Config, new: &Config) -> Vec<Change> {
 
 /// `new` with every restart-only key taken from `running`: what a reload can apply now.
 pub fn effective(running: &Config, new: &Config) -> Config {
-    let mut c = new.clone();
-    c.listen = running.listen;
-    c.instance_id = running.instance_id.clone();
-    c.upstream = running.upstream.clone();
-    c.auth_dir = running.auth_dir.clone();
-    c.usage.enabled = running.usage.enabled;
-    c.usage.path = running.usage.path.clone();
-    c.usage.queue_size = running.usage.queue_size;
-    c.usage.batch_size = running.usage.batch_size;
-    c.usage.flush_ms = running.usage.flush_ms;
-    c.ui.enabled = running.ui.enabled;
-    c
+    let old = serde_json::to_value(running).expect("config serializes");
+    let mut value = serde_json::to_value(new).expect("config serializes");
+    for f in SCHEMA.iter().filter(|f| f.effect == Effect::Restart) {
+        let pointer = format!("/{}", f.key.replace('.', "/"));
+        *value.pointer_mut(&pointer).expect("schema path exists") =
+            old.pointer(&pointer).expect("schema path exists").clone();
+    }
+    serde_json::from_value(value).expect("copying typed config fields preserves their types")
 }
 
 #[cfg(test)]
@@ -370,6 +366,38 @@ mod tests {
             "socks5h://127.0.0.1:1080"
         );
         assert_eq!(mask_proxy(""), "");
+    }
+
+    #[test]
+    fn effective_preserves_exactly_the_schema_restart_keys() {
+        let running = Config::default();
+        let mut new = serde_json::to_value(&running).unwrap();
+        for field in SCHEMA {
+            let pointer = format!("/{}", field.key.replace('.', "/"));
+            if field.effect != Effect::Restart {
+                continue;
+            }
+            let v = new.pointer_mut(&pointer).unwrap();
+            *v = match &*v {
+                Value::Bool(b) => Value::Bool(!b),
+                Value::Number(n) => Value::from(n.as_u64().unwrap() + 1),
+                Value::String(_) if field.key == "listen" => Value::from("127.0.0.1:2345"),
+                Value::String(s) => Value::from(format!("{s}-changed")),
+                _ => panic!(
+                    "new restart field needs a non-default test value: {}",
+                    field.key
+                ),
+            };
+        }
+        let new: Config = serde_json::from_value(new).unwrap();
+        let copied = diff(&new, &effective(&running, &new));
+        let actual: Vec<_> = copied.iter().map(|c| c.key.as_str()).collect();
+        let expected: Vec<_> = SCHEMA
+            .iter()
+            .filter(|f| f.effect == Effect::Restart)
+            .map(|f| f.key)
+            .collect();
+        assert_eq!(actual, expected);
     }
 
     #[test]
