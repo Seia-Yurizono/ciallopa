@@ -131,6 +131,16 @@ WS握手时还不知道模型，因此选号不带模型；每一轮 `response.c
 图像结果不计入这一预算，SSE通道的16个槽按chunk计数。
 Images wrapper的SSE事件与结果收集尚无显式总字节上限，不能把整个进程描述为已具有严格内存界限。
 
+### WS 消息大小上限
+
+chatgpt.com 的 Responses WS 按整条消息限大小：解压、拼完分片后最多 16 MiB（16,777,216 字节），多一个字节就回 close 1009。分帧和压缩都绕不过去。
+
+- 握手的 101 里，ciallopa 会带上 `x-codex-websocket-max-message-bytes`，值取 min（上游 101 给的值，`ws_max_message_mb` × 1 MiB）。上游没给就用本地上限；上游给了也只留这一份，不会重复。Codex 0.170 起读这个头，消息超过就直接走 HTTP，不用先上传一遍再被拒；0.169 及更早的客户端不读，不受影响。
+- 上游嫌消息太大时，往往不等读完就断开，ciallopa 这边先看到写入失败。这时会再读最多 200 ms 等上游的关闭帧，是 1009 就也给客户端回 1009（以前回 1011），记为 `upstream_ws_too_big`。这是请求本身的问题：不冷却账号，不换号，也不计入上游出错。
+- 发往上游的单条消息超过 1 MiB 时按 1 MiB 分帧，和 Codex 0.169.0 一样：第一帧 Text，后面是 Continue，只有最后一帧带 FIN；开了 permessage-deflate 时只有第一帧置 RSV1。
+
+所以 `ws_max_message_mb` 调到 16 以上没有意义：超出 16 MiB 的消息上游照样拒，只会让客户端多传一遍、网关多占内存，还会让 0.170+ 客户端收到偏大的广告值。要调就往小调，比如内存紧张时。反过来，广告值也不该比真实上限小：Codex 一旦回退 HTTP，整个会话都会留在 HTTP 上，所以 ciallopa 不会主动压低这个值。
+
 ### 停机与取消
 
 SIGTERM/SIGINT停止监听并进入Draining：已有HTTP/SSE最多等待60秒自然结束；

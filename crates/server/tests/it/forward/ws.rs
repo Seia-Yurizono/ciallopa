@@ -1080,3 +1080,280 @@ async fn ws_downstream_observation_per_turn() {
         "{w}"
     );
 }
+
+/// Wait for a close frame from the proxy and return its code (None: no close frame).
+async fn ws_close_code<S>(ws: &mut tokio_tungstenite::WebSocketStream<S>, secs: u64) -> Option<u16>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use tokio_tungstenite::tungstenite::Message as M;
+    loop {
+        match tokio::time::timeout(Duration::from_secs(secs), ws.next())
+            .await
+            .expect("close within the bound")
+        {
+            Some(Ok(M::Close(f))) => return f.map(|f| u16::from(f.code)),
+            Some(Ok(_)) => continue,
+            _ => return None,
+        }
+    }
+}
+
+/// A `response.create` turn of exactly `len` bytes.
+fn sized_turn(len: usize) -> String {
+    let head = r#"{"type":"response.create","model":"gpt-5.5","pad":""#;
+    format!("{head}{}\"}}", "x".repeat(len - head.len() - 2))
+}
+
+/// The 101 advertises the smaller of the upstream's limit and `ws_max_message_mb`
+/// (parsing edge cases are unit tests in `ws/mod.rs`).
+#[tokio::test]
+async fn ws_handshake_advertises_max_message_bytes_min_of_upstream_and_local() {
+    const MIB: u64 = 1 << 20;
+    let e = env(300).await;
+    // (upstream 101 values, local ws_max_message_mb, advertised to the client)
+    for (up, local, want) in [
+        (None, 16, 16 * MIB),
+        (Some("1048576"), 16, MIB),
+        (Some("33554432"), 16, 16 * MIB),
+        (Some("bogus"), 4, 4 * MIB),
+        (Some("2097152|8388608"), 16, 2 * MIB),
+    ] {
+        let mut cfg = (*e.config.load()).clone();
+        cfg.ws_max_message_mb = local;
+        e.config.store(cfg);
+        let mut req = ws_req(&e);
+        if let Some(v) = up {
+            req.headers_mut()
+                .insert("x-test-mode", format!("ws_maxmsg:{v}").parse().unwrap());
+        }
+        let (mut ws, r) = tokio_tungstenite::connect_async(req).await.unwrap();
+        assert_eq!(r.status(), 101);
+        let got: Vec<_> = r
+            .headers()
+            .get_all("x-codex-websocket-max-message-bytes")
+            .iter()
+            .map(|v| v.to_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            got,
+            vec![want.to_string()],
+            "upstream {up:?}, local {local} MiB"
+        );
+        let _ = ws.close(None).await;
+    }
+}
+
+/// An upstream 1009 is about the message, not the account: forwarded as 1009, recorded as
+/// `upstream_ws_too_big`, no cooldown and no switch, whether the upstream closes after
+/// reading the message or while ciallopa is still writing it.
+#[tokio::test]
+async fn ws_upstream_1009_closes_1009_without_cooling() {
+    for (mode, len, local_mb, detail) in [
+        ("ws_close_1009", 4096, None, "upstream closed with 1009"),
+        // Above the upstream limit (1 MiB in this fixture, 16 MiB for real) and far more than
+        // the socket buffers hold: the upstream stops reading, so the write fails first.
+        ("ws_up_limit", 24 << 20, Some(32), "after a failed send"),
+    ] {
+        let d = tempfile::tempdir().unwrap();
+        let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+        if let Some(mb) = local_mb {
+            let mut cfg = (*e.config.load()).clone();
+            cfg.ws_max_message_mb = mb;
+            e.config.store(cfg);
+        }
+        let mut req = ws_req(&e);
+        req.headers_mut()
+            .insert("x-test-mode", mode.parse().unwrap());
+        let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+        let hits = e.mock.hits.load(Ordering::SeqCst);
+        ws.send(tokio_tungstenite::tungstenite::Message::text(sized_turn(
+            len,
+        )))
+        .await
+        .unwrap();
+        assert_eq!(ws_close_code(&mut ws, 30).await, Some(1009), "{mode}");
+        assert_eq!(
+            e.mock.hits.load(Ordering::SeqCst),
+            hits,
+            "{mode}: no redial"
+        );
+        let outcomes = e.outcomes();
+        assert!(
+            outcomes
+                .iter()
+                .all(|(_, o)| matches!(o, Outcome::Success { .. })),
+            "{mode}: {outcomes:?}"
+        );
+        let rows = wait_rows(&e, 1).await;
+        assert_eq!(rows[0]["error"], "upstream_ws_too_big", "{mode}: {rows:?}");
+        assert_eq!(rows[0]["account"], "a", "{mode}: {rows:?}");
+        assert_eq!(rows[0]["switches"], 0, "{mode}: {rows:?}");
+        let v: serde_json::Value = detail_of(&e, rows[0]["request_id"].as_str().unwrap(), true)
+            .await
+            .json()
+            .await
+            .unwrap();
+        assert!(v.to_string().contains(detail), "{mode}: {v}");
+    }
+}
+
+/// Client-to-server frames after the HTTP handshake: (fin, rsv1, opcode, unmasked payload).
+fn wire_frames(raw: &[u8]) -> Vec<(bool, bool, u8, Vec<u8>)> {
+    let start = raw.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+    let mut b = &raw[start..];
+    let mut out = Vec::new();
+    while b.len() >= 2 {
+        let (fin, rsv1, op) = (b[0] & 0x80 != 0, b[0] & 0x40 != 0, b[0] & 0x0f);
+        let masked = b[1] & 0x80 != 0;
+        let (mut len, mut i) = ((b[1] & 0x7f) as usize, 2);
+        if len == 126 {
+            len = u16::from_be_bytes([b[2], b[3]]) as usize;
+            i = 4;
+        } else if len == 127 {
+            len = u64::from_be_bytes(b[2..10].try_into().unwrap()) as usize;
+            i = 10;
+        }
+        let mask = masked.then(|| {
+            let m = [b[i], b[i + 1], b[i + 2], b[i + 3]];
+            i += 4;
+            m
+        });
+        if b.len() < i + len {
+            break;
+        }
+        let mut p = b[i..i + len].to_vec();
+        if let Some(m) = mask {
+            for (j, x) in p.iter_mut().enumerate() {
+                *x ^= m[j % 4];
+            }
+        }
+        out.push((fin, rsv1, op, p));
+        b = &b[i + len..];
+    }
+    out
+}
+
+#[tokio::test]
+async fn ws_upstream_turn_is_fragmented_at_1_mib_like_codex_0_169() {
+    use tokio_tungstenite::tungstenite::Message as M;
+    const MIB: usize = 1 << 20;
+    let mut tap = None;
+    let e = env_inner(300, None, "", None, Some(&mut tap)).await;
+    let tap = tap.unwrap();
+    // A 4-byte character straddles the first 1 MiB boundary, so the first two fragments
+    // are not valid UTF-8 on their own.
+    let head = r#"{"type":"response.create","model":"gpt-5.5","pad":""#;
+    let mut big = String::from(head);
+    big.push_str(&"a".repeat(MIB - head.len() - 2));
+    big.push('🌱');
+    while big.len() < 3 * MIB + 5 {
+        big.push('b');
+    }
+    big.push_str("\"}");
+    assert_eq!(big.len(), 3 * MIB + 7);
+    let exact = sized_turn(MIB);
+    let small = sized_turn(300);
+    let (mut ws, _) = tokio_tungstenite::connect_async(ws_req(&e)).await.unwrap();
+    for msg in [&small, &exact, &big] {
+        ws.send(M::text(msg.as_str())).await.unwrap();
+        let got = ws.next().await.unwrap().unwrap();
+        let v: serde_json::Value = serde_json::from_str(got.to_text().unwrap()).unwrap();
+        let sent: serde_json::Value = serde_json::from_str(msg).unwrap();
+        assert!(v["echo"] == sent, "upstream got the message intact");
+    }
+    let _ = ws.close(None).await;
+    let conns = tap.lock().unwrap().clone();
+    let raw = conns
+        .iter()
+        .map(|c| c.lock().unwrap().clone())
+        .find(|b| {
+            b.starts_with(b"GET ")
+                && String::from_utf8_lossy(&b[..b.len().min(4096)])
+                    .to_ascii_lowercase()
+                    .contains("upgrade: websocket")
+        })
+        .expect("websocket connection through the tap");
+    let data: Vec<_> = wire_frames(&raw).into_iter().filter(|f| f.2 <= 2).collect();
+    let shape: Vec<_> = data
+        .iter()
+        .map(|(fin, rsv1, op, p)| (*fin, *rsv1, *op, p.len()))
+        .collect();
+    assert_eq!(
+        shape,
+        vec![
+            (true, false, 1, small.len()),
+            // exactly 1 MiB is still one frame (Codex: `text.len() <= FRAGMENT_SIZE`)
+            (true, false, 1, MIB),
+            (false, false, 1, MIB),
+            (false, false, 0, MIB),
+            (false, false, 0, MIB),
+            (true, false, 0, 7),
+        ]
+    );
+    let joined: Vec<u8> = data[2..].iter().flat_map(|f| f.3.clone()).collect();
+    assert_eq!(joined, big.as_bytes());
+    assert!(std::str::from_utf8(&data[2].3).is_err() && std::str::from_utf8(&data[3].3).is_err());
+}
+
+/// Codex 0.169.0 ends the turn on status-less terminal error codes
+/// (`parse_terminal_provider_error`; the full list is a unit test in `classify.rs`): the relay
+/// settles the turn on the frame instead of holding it until the idle timeout, and the next
+/// turn on the same socket goes through.
+#[tokio::test]
+async fn ws_codex_terminal_error_codes_end_the_turn() {
+    use tokio_tungstenite::tungstenite::Message as M;
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(ws_req(&e)).await.unwrap();
+    let codes = [
+        "model_not_found",
+        "audio_too_large",
+        "inference_hook_denied",
+    ];
+    for (i, code) in codes.iter().enumerate() {
+        ws.send(M::text(format!(
+            r#"{{"type":"response.create","tag":"terminal_code:{code}"}}"#
+        )))
+        .await
+        .unwrap();
+        // Before any output a non-terminal error frame is held with the preamble, so the
+        // client would not see it until the idle timeout.
+        loop {
+            match tokio::time::timeout(Duration::from_secs(3), ws.next())
+                .await
+                .unwrap_or_else(|_| panic!("{code}: turn held until the idle timeout"))
+            {
+                Some(Ok(M::Text(t))) if t.as_str().contains("\"type\":\"error\"") => {
+                    assert!(t.as_str().contains(code), "{t}");
+                    break;
+                }
+                Some(Ok(_)) => {}
+                other => panic!("{code}: {other:?}"),
+            }
+        }
+        // Settled on the error frame: the row is written while the socket stays open.
+        let rows = wait_rows(&e, i + 1).await;
+        assert_eq!(rows.len(), i + 1, "{code}: turn still open: {rows:?}");
+        assert!(rows.iter().any(|r| r["error"] == *code), "{code}: {rows:?}");
+    }
+    ws.send(M::text(r#"{"type":"response.create","tag":"soft_error"}"#))
+        .await
+        .unwrap();
+    loop {
+        match tokio::time::timeout(Duration::from_secs(3), ws.next())
+            .await
+            .unwrap()
+        {
+            Some(Ok(M::Text(t))) if t.as_str().contains("response.completed") => break,
+            Some(Ok(_)) => {}
+            other => panic!("next turn: {other:?}"),
+        }
+    }
+    ws.close(None).await.unwrap();
+    assert_eq!(wait_rows(&e, codes.len() + 1).await.len(), codes.len() + 1);
+    assert!(e
+        .outcomes()
+        .iter()
+        .all(|(_, o)| !matches!(o, Outcome::Transport)));
+}

@@ -500,26 +500,50 @@ pub(crate) fn classify_observed(
     (classified.class.into(), done, snapshot)
 }
 
-/// Whether Codex ends the turn on this `error` frame (codex-api
-/// `map_wrapped_websocket_error_event` + `flex_unavailable`): a non-2xx `status` /
-/// `status_code`, or a code it maps itself. Frames the proxy classifies (quota, overload,
-/// encrypted-content rejection) also end it, as before. Anything else Codex ignores and
-/// keeps reading, so the proxy forwards it and the turn goes on.
+/// Whether Codex ends the turn on this `error` frame. Mirrors codex-api 0.169.0's WS reader:
+/// `map_wrapped_websocket_error_event` first (the two lifecycle codes, then a `status` /
+/// `status_code` that is a valid non-2xx `http::StatusCode`, 100..=999), then
+/// `process_responses_event`, which calls `parse_terminal_provider_error` with status None, so
+/// its codes end the turn whatever the frame's own `status` says. Exact names only. Frames the
+/// proxy classifies (quota, overload, encrypted-content rejection) also end it, as before.
+/// Anything else Codex ignores and keeps reading, so the proxy forwards it and the turn goes on.
 fn error_frame_ends_turn(v: &serde_json::Value) -> bool {
+    let code = v.pointer("/error/code").and_then(|c| c.as_str());
+    if matches!(
+        code,
+        Some("websocket_connection_limit_reached" | "previous_response_not_found")
+    ) {
+        return true;
+    }
     let status = ["status", "status_code"]
         .iter()
         .find_map(|k| v.get(*k).and_then(|s| s.as_u64()));
-    if status.is_some_and(|s| !(200..300).contains(&s)) {
+    if status.is_some_and(|s| (100..=999).contains(&s) && !(200..300).contains(&s)) {
         return true;
     }
-    let code = v.pointer("/error/code").and_then(|c| c.as_str());
+    code.is_some_and(codex_terminal_code)
+}
+
+/// codex-api 0.169.0 `parse_terminal_provider_error` codes (error.rs), checked there with
+/// status None on the WS path.
+fn codex_terminal_code(code: &str) -> bool {
     matches!(
         code,
-        Some(
-            "websocket_connection_limit_reached"
-                | "previous_response_not_found"
-                | "flex_unavailable"
-        )
+        "inference_hook_denied"
+            | "context_length_exceeded"
+            | "invalid_access_program"
+            | "unsupported_access_program"
+            | "content_policy_violation"
+            | "access_program_not_enabled"
+            | "budget_reached"
+            | "audio_too_large"
+            | "audio_too_short"
+            | "invalid_audio"
+            | "invalid_audio_data"
+            | "invalid_audio_format"
+            | "missing_audio_sample_rate"
+            | "flex_unavailable"
+            | "model_not_found"
     )
 }
 
@@ -854,6 +878,13 @@ mod quota_tests {
             "invalid_workspace_selected",
             "codex_workspace_access_denied",
             "budget_reached",
+            "audio_too_large",
+            "audio_too_short",
+            "invalid_audio",
+            "invalid_audio_data",
+            "invalid_audio_format",
+            "missing_audio_sample_rate",
+            "model_not_found",
         ];
         for code in CODES {
             for ev in [
@@ -998,6 +1029,78 @@ mod tests {
         assert_eq!(soft.class, Class::SoftError);
     }
 
+    /// Codex 0.169.0 `parse_terminal_provider_error`, which the WS reader calls for every
+    /// `error` frame with `status` = None (after `map_wrapped_websocket_error_event`): these
+    /// exact codes end the turn whatever the frame's own `status` says. Exact names, no
+    /// prefix matching (`audio_*` is a fixed list of six).
+    const CODEX_0_169_TERMINAL_CODES: &[&str] = &[
+        "inference_hook_denied",
+        "context_length_exceeded",
+        "invalid_access_program",
+        "unsupported_access_program",
+        "content_policy_violation",
+        "access_program_not_enabled",
+        "budget_reached",
+        "audio_too_large",
+        "audio_too_short",
+        "invalid_audio",
+        "invalid_audio_data",
+        "invalid_audio_format",
+        "missing_audio_sample_rate",
+        "flex_unavailable",
+        "model_not_found",
+    ];
+
+    #[test]
+    fn error_frame_ends_turn_on_codex_0_169_terminal_codes() {
+        let done = |t: &str| classify(t).1;
+        let mut wrong = Vec::new();
+        for code in CODEX_0_169_TERMINAL_CODES {
+            for frame in [
+                format!(r#"{{"type":"error","error":{{"code":"{code}","message":"x"}}}}"#),
+                // A 2xx status is not mapped by the wrapped-error path, so Codex still
+                // reaches parse_terminal_provider_error(status = None).
+                format!(r#"{{"type":"error","status":200,"error":{{"code":"{code}"}}}}"#),
+            ] {
+                if !done(&frame) {
+                    wrong.push(format!("not terminal: {frame}"));
+                }
+            }
+        }
+        // Not prefixes: near names stay non-terminal, like any unknown code.
+        for code in [
+            "audio_too_long",
+            "audio_x",
+            "model_not_found_x",
+            "invalid_audio_rate",
+        ] {
+            let frame = format!(r#"{{"type":"error","error":{{"code":"{code}"}}}}"#);
+            if done(&frame) {
+                wrong.push(format!("terminal: {frame}"));
+            }
+        }
+        // `status` outside http::StatusCode's 100..=999 is not mapped by Codex either.
+        for (frame, want) in [
+            (
+                r#"{"type":"error","status":1000,"error":{"code":"x"}}"#,
+                false,
+            ),
+            (
+                r#"{"type":"error","status":100,"error":{"code":"x"}}"#,
+                true,
+            ),
+            (
+                r#"{"type":"error","status_code":999,"error":{"code":"x"}}"#,
+                true,
+            ),
+        ] {
+            if done(frame) != want {
+                wrong.push(format!("want terminal={want}: {frame}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
     #[test]
     fn error_frame_ends_turn_like_codex() {
         let done = |t: &str| classify(t).1;
@@ -1017,6 +1120,7 @@ mod tests {
             "websocket_connection_limit_reached",
             "previous_response_not_found",
             "flex_unavailable",
+            "budget_reached",
         ] {
             assert!(
                 done(&format!(

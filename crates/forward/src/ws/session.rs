@@ -13,6 +13,7 @@ use crate::AppState;
 use ciallopa_core::{AccountId, Outcome, RouteRequest};
 use ciallopa_routing::parse_quota_event_headers;
 use ciallopa_upstream::drain::{Phase, CUT_FLUSH_MAX};
+use ciallopa_upstream::ws::send_message;
 use ciallopa_upstream::ws_close::{CloseCode, CloseFrame as UpCloseFrame};
 use ciallopa_upstream::{UpstreamWs, WsMessage};
 use ciallopa_usage::Transport;
@@ -28,6 +29,11 @@ const CLOSE_REPLAY_REASON: &str = "upstream requires HTTP replay";
 const CLOSE_INTERNAL: u16 = 1011;
 
 const CLOSE_TOO_BIG: u16 = 1009;
+
+/// How long a failed upstream write waits for the upstream's close frame. An upstream over
+/// its message limit (16 MiB for chatgpt.com) often closes before reading the rest, so the
+/// send fails first and the 1009 is still unread.
+const TOO_BIG_PEEK: Duration = Duration::from_millis(200);
 
 struct UpLink {
     tx: futures::stream::SplitSink<UpstreamWs, WsMessage>,
@@ -495,7 +501,7 @@ impl Session {
         let turn = self.state.turn_mut().expect("replay needs a running turn");
         turn.held();
         match write_replay(
-            self.up.tx.send(WsMessage::Text(request)),
+            send_message(&mut self.up.tx, WsMessage::Text(request)),
             &mut self.down.rx,
             &mut self.down.queued,
             &self.st.upstream.drain,
@@ -702,7 +708,7 @@ impl Session {
         }
         if let Some(message) = to_up(message) {
             match write_with_client_close(
-                self.up.tx.send(message),
+                send_message(&mut self.up.tx, message),
                 &mut self.down.rx,
                 &mut self.down.queued,
             )
@@ -711,7 +717,26 @@ impl Session {
                 WriteResult::Sent(Ok(())) => {}
                 WriteResult::ClientClosed => return Flow::Close(Close::Interrupted),
                 WriteResult::Sent(Err(error)) => {
-                    if self.st.upstream.drain.phase() != Phase::Force {
+                    let forced = self.st.upstream.drain.phase() == Phase::Force;
+                    if !forced
+                        && upstream_close_code(&mut self.up.rx, TOO_BIG_PEEK).await
+                            == Some(CLOSE_TOO_BIG)
+                    {
+                        // The upstream refused the message as too big: a property of the
+                        // request, not of this account. No cooldown, no switch; 1009 lets
+                        // Codex 0.170+ send the turn over HTTP at once.
+                        tracing::warn!(account = %ciallopa_core::a(&self.up.account), %error, "upstream closed 1009 (message too big) after a failed send; closing 1009");
+                        self.fail(
+                            "upstream_ws_too_big",
+                            crate::errors::SRC_UPSTREAM,
+                            format!("upstream closed with 1009 (message too big) after a failed send (transport error: {error})"),
+                        );
+                        return Flow::Close(Close::Upstream(Some(UpCloseFrame {
+                            code: CloseCode::from(CLOSE_TOO_BIG),
+                            reason: "message too big".into(),
+                        })));
+                    }
+                    if !forced {
                         self.warn("write_error");
                         self.fail(
                             "upstream_ws_send_error",
@@ -744,18 +769,28 @@ impl Session {
             Some(Ok(Message::Close(frame))) => {
                 self.warn("close_frame");
                 let code = frame.as_ref().map(|f| u16::from(f.code)).unwrap_or(1000);
-                if code != 1000 {
+                // 1009 is about the message, not the account (forwarded as is).
+                if code != 1000 && code != CLOSE_TOO_BIG {
                     self.st
                         .router
                         .report(&self.route, &self.up.account, &Outcome::Transport);
                 }
                 let _ = self.flush_held(false).await;
                 let reason = frame.as_ref().map(|f| f.reason.as_str()).unwrap_or("");
-                self.fail(
-                    "upstream_ws_close",
-                    crate::errors::SRC_STREAM,
-                    format!("upstream websocket closed mid-turn (code {code}) {reason}").trim_end(),
-                );
+                if code == CLOSE_TOO_BIG {
+                    self.fail(
+                        "upstream_ws_too_big",
+                        crate::errors::SRC_UPSTREAM,
+                        format!("upstream closed with 1009 (message too big) {reason}").trim_end(),
+                    );
+                } else {
+                    self.fail(
+                        "upstream_ws_close",
+                        crate::errors::SRC_STREAM,
+                        format!("upstream websocket closed mid-turn (code {code}) {reason}")
+                            .trim_end(),
+                    );
+                }
                 return Flow::Close(Close::Upstream(frame));
             }
             Some(Ok(message)) => message,
@@ -1268,6 +1303,25 @@ where
     }
 }
 
+/// After a failed upstream write: the code of an upstream close frame read within `window`
+/// (frames before it are dropped; the turn is over either way), or `None`.
+async fn upstream_close_code<R, E>(rx: &mut R, window: Duration) -> Option<u16>
+where
+    R: futures::Stream<Item = Result<WsMessage, E>> + Unpin,
+{
+    tokio::time::timeout(window, async {
+        while let Some(Ok(m)) = rx.next().await {
+            if let WsMessage::Close(f) = m {
+                return f.map(|f| u16::from(f.code));
+            }
+        }
+        None
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 /// Send Close and wait for its reply within one bound, then drop both halves.
 async fn drain_close<T, R, E>(mut tx: T, mut rx: R, grace: Duration)
 where
@@ -1327,6 +1381,48 @@ fn upstream_end(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn upstream_close_code_after_a_failed_write() {
+        use tokio_tungstenite::tungstenite::Error as E;
+        type Item = Result<WsMessage, E>;
+        let close = |code: u16| {
+            WsMessage::Close(Some(UpCloseFrame {
+                code: CloseCode::from(code),
+                reason: "message too big".into(),
+            }))
+        };
+        let peek = |items: Vec<Item>| async move {
+            let mut rx = futures::stream::iter(items);
+            upstream_close_code(&mut rx, TOO_BIG_PEEK).await
+        };
+        assert_eq!(peek(vec![Ok(close(1009))]).await, Some(1009));
+        // Frames before the close are skipped.
+        assert_eq!(
+            peek(vec![
+                Ok(WsMessage::text("{}")),
+                Ok(WsMessage::Ping(Vec::new().into())),
+                Ok(close(1009))
+            ])
+            .await,
+            Some(1009)
+        );
+        assert_eq!(peek(vec![Ok(close(1011))]).await, Some(1011));
+        assert_eq!(peek(vec![Ok(WsMessage::Close(None))]).await, None);
+        assert_eq!(
+            peek(vec![Err(E::ConnectionClosed), Ok(close(1009))]).await,
+            None
+        );
+        assert_eq!(peek(vec![]).await, None);
+        // Nothing within the window: bounded.
+        let mut pending = futures::stream::pending::<Item>();
+        let t = tokio::time::Instant::now();
+        assert_eq!(
+            upstream_close_code(&mut pending, Duration::from_millis(50)).await,
+            None
+        );
+        assert!(t.elapsed() < Duration::from_secs(2));
+    }
 
     #[tokio::test]
     async fn close_drains_inflight_data_even_after_capacity_fuses_the_stream() {

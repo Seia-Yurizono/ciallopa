@@ -116,6 +116,7 @@ pub(crate) async fn handler(
     };
     let drain = st.upstream.drain.clone();
     let close_grace = timing::scale(&st, Duration::from_secs(2));
+    let advertised = advertised_max_message(&resp_headers, max_message);
     let mut resp = ws.on_upgrade(compression, max_message, move |socket| async move {
         let _slot = slot;
         let handoff = lease.map(|axum::Extension(l)| l);
@@ -141,12 +142,34 @@ pub(crate) async fn handler(
                     | "set-cookie"
                     | "set-cookie2"
             )
+            // replaced by the capped value below
+            || n == MAX_MESSAGE_BYTES_HEADER
         {
             continue;
         }
         resp.headers_mut().append(k.clone(), v.clone());
     }
+    resp.headers_mut().insert(
+        MAX_MESSAGE_BYTES_HEADER,
+        http::HeaderValue::from(advertised),
+    );
     resp
+}
+
+/// Handshake response header with the largest request message the server accepts, in bytes
+/// (serialized text before compression). Codex 0.170+ reads it from the 101 and sends a
+/// larger turn over HTTP instead of uploading it to be refused.
+const MAX_MESSAGE_BYTES_HEADER: &str = "x-codex-websocket-max-message-bytes";
+
+/// Value of [`MAX_MESSAGE_BYTES_HEADER`] for the client: the upstream's own (first value,
+/// parsed like Codex: a decimal `usize`, anything else ignored), never above the local
+/// `ws_max_message_mb` limit, which a larger message cannot pass anyway.
+fn advertised_max_message(upstream: &HeaderMap, local: usize) -> usize {
+    upstream
+        .get(MAX_MESSAGE_BYTES_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<usize>().ok())
+        .map_or(local, |u| u.min(local))
 }
 
 /// What the relay needs to redial upstream on another account.
@@ -158,4 +181,58 @@ struct Ctx {
     preparation_limit: Duration,
     /// permessage-deflate answer sent to the client (None = not agreed).
     ws_ext_down: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn advertised_max_message_is_min_of_upstream_and_local() {
+        const MIB: usize = 1 << 20;
+        let h = |vals: &[&str]| {
+            let mut h = HeaderMap::new();
+            for v in vals {
+                h.append(MAX_MESSAGE_BYTES_HEADER, v.parse().unwrap());
+            }
+            h
+        };
+        assert_eq!(advertised_max_message(&h(&[]), 16 * MIB), 16 * MIB);
+        assert_eq!(advertised_max_message(&h(&["1048576"]), 16 * MIB), MIB);
+        assert_eq!(
+            advertised_max_message(&h(&["33554432"]), 16 * MIB),
+            16 * MIB
+        );
+        assert_eq!(
+            advertised_max_message(&h(&["16777216"]), 16 * MIB),
+            16 * MIB
+        );
+        assert_eq!(
+            advertised_max_message(&h(&["16777216"]), 4096 * MIB),
+            16 * MIB
+        );
+        // Parsed like Codex (`str::parse::<usize>`): invalid values are ignored.
+        for bad in [
+            "",
+            "abc",
+            "-1",
+            " 1024",
+            "1024 ",
+            "1e6",
+            "99999999999999999999999",
+        ] {
+            assert_eq!(
+                advertised_max_message(&h(&[bad]), 2 * MIB),
+                2 * MIB,
+                "{bad:?}"
+            );
+        }
+        // The first value counts, as with `HeaderMap::get`.
+        assert_eq!(
+            advertised_max_message(&h(&["2097152", "1024"]), 16 * MIB),
+            2 * MIB
+        );
+        // An upstream that says 0 is passed on: it is the upstream's real limit.
+        assert_eq!(advertised_max_message(&h(&["0"]), 16 * MIB), 0);
+    }
 }

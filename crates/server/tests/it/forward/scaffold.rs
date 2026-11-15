@@ -841,7 +841,40 @@ pub(super) async fn up_ws(State(m): State<Mock>, h: HeaderMap, ws: WebSocketUpgr
     }
     let drop_replay = mode == "ws_replay_drop" && !auth.contains("tok-a");
     let burst_sync = (m.ready.clone(), m.release.clone());
+    // Upstream size limit fixtures: `ws_up_limit` reads with a 1 MiB limit (like the real
+    // 16 MiB one) and answers an oversized message with Close 1009, then drops the connection
+    // with the rest unread; `ws_close_1009` reads the message and answers Close 1009.
+    let up_limit = mode == "ws_up_limit";
+    let close_1009 = mode == "ws_close_1009";
+    let ws = if up_limit {
+        ws.max_message_size(1 << 20).max_frame_size(1 << 20)
+    } else {
+        ws
+    };
+    // `ws_maxmsg:<v>[|<v>...]`: the 101 carries x-codex-websocket-max-message-bytes values.
+    let max_hdr: Vec<String> = mode
+        .strip_prefix("ws_maxmsg:")
+        .map(|v| v.split('|').map(str::to_string).collect())
+        .unwrap_or_default();
     let mut r = ws.on_upgrade(move |mut s| async move {
+        if up_limit || close_1009 {
+            let first = s.recv().await;
+            if up_limit && !matches!(first, Some(Err(_))) {
+                return;
+            }
+            let _ = s
+                .send(Message::Close(Some(axum::extract::ws::CloseFrame {
+                    code: 1009,
+                    reason: "message too big".into(),
+                })))
+                .await;
+            if up_limit {
+                // Dropping a socket with unread input sends RST and discards unsent output:
+                // give the close frame time to leave first, or the relay never sees the 1009.
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+            return;
+        }
         while let Some(Ok(msg)) = s.recv().await {
             if let Message::Text(t) = msg {
                 if drop_replay {
@@ -959,6 +992,18 @@ pub(super) async fn up_ws(State(m): State<Mock>, h: HeaderMap, ws: WebSocketUpgr
                     let _ = s.send(Message::Text(r#"{"type":"response.created","response":{"id":"r-d"}}"#.into())).await;
                     return;
                 }
+                if t.as_str().contains("\"tag\":\"terminal_code:") {
+                    // A status-less error frame Codex treats as terminal; the upstream then keeps
+                    // the socket open without a terminal response event (the relay must settle the
+                    // turn on the error frame itself, as Codex does).
+                    let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap_or_default();
+                    let code = v["tag"].as_str().unwrap_or("").trim_start_matches("terminal_code:").to_string();
+                    let created = r#"{"type":"response.created","response":{"id":"r-t"}}"#;
+                    let _ = s.send(Message::Text(created.into())).await;
+                    let err = format!(r#"{{"type":"error","error":{{"code":"{code}","message":"fixture {code}"}}}}"#);
+                    let _ = s.send(Message::Text(err.into())).await;
+                    continue;
+                }
                 if t.as_str().contains("\"soft_error\"") {
                     // An error frame Codex ignores (no status, unknown code), then the turn goes on.
                     for f in [
@@ -1037,6 +1082,10 @@ pub(super) async fn up_ws(State(m): State<Mock>, h: HeaderMap, ws: WebSocketUpgr
         .insert("set-cookie", "__cf_bm=secret".parse().unwrap());
     r.headers_mut()
         .insert("set-cookie2", "__oailb=secret".parse().unwrap());
+    for v in &max_hdr {
+        r.headers_mut()
+            .append("x-codex-websocket-max-message-bytes", v.parse().unwrap());
+    }
     r
 }
 
@@ -1074,6 +1123,63 @@ pub(super) async fn env_cfg_accounts(
     extra: &str,
     accounts: Option<Arc<dyn AccountStore>>,
 ) -> Env {
+    env_inner(idle, usage, extra, accounts, None).await
+}
+
+/// Bytes ciallopa wrote to the upstream, one entry per TCP connection (handshake included).
+pub(super) type Tap = Arc<Mutex<Vec<Arc<Mutex<Vec<u8>>>>>>;
+
+/// Plain TCP relay in front of `target` that records what the proxy writes upstream.
+async fn tap_to(target: String) -> (String, Tap) {
+    let ln = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = ln.local_addr().unwrap();
+    let tap: Tap = Default::default();
+    let t = tap.clone();
+    tokio::spawn(async move {
+        while let Ok((mut down, _)) = ln.accept().await {
+            let buf = Arc::new(Mutex::new(Vec::new()));
+            t.lock().unwrap().push(buf.clone());
+            let target = target.clone();
+            tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let Ok(mut up) = tokio::net::TcpStream::connect(&target).await else {
+                    return;
+                };
+                let (mut dr, mut dw) = down.split();
+                let (mut ur, mut uw) = up.split();
+                let to_up = async {
+                    let mut b = vec![0u8; 64 * 1024];
+                    loop {
+                        match dr.read(&mut b).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                buf.lock().unwrap().extend_from_slice(&b[..n]);
+                                if uw.write_all(&b[..n]).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    let _ = uw.shutdown().await;
+                };
+                let to_down = async {
+                    let _ = tokio::io::copy(&mut ur, &mut dw).await;
+                    let _ = dw.shutdown().await;
+                };
+                tokio::join!(to_up, to_down);
+            });
+        }
+    });
+    (format!("127.0.0.1:{}", addr.port()), tap)
+}
+
+pub(super) async fn env_inner(
+    idle: u64,
+    usage: Option<Arc<ciallopa_usage::Recorder>>,
+    extra: &str,
+    accounts: Option<Arc<dyn AccountStore>>,
+    tap: Option<&mut Option<Tap>>,
+) -> Env {
     let mock = Mock::default();
     let up = Router::new()
         .route(
@@ -1086,7 +1192,12 @@ pub(super) async fn env_cfg_accounts(
         .route("/backend-api/codex/images/edits", post(up_images))
         .route("/backend-api/wham/usage", get(up_models))
         .with_state(mock.clone());
-    let up_addr = serve(up).await;
+    let mut up_addr = serve(up).await;
+    if let Some(slot) = tap {
+        let (addr, t) = tap_to(up_addr).await;
+        up_addr = addr;
+        *slot = Some(t);
+    }
     let cfg = Config::parse(&format!(
         "api_keys = [\"{KEY}\"]\nupstream = \"http://{up_addr}/backend-api\"\n[upstream_opts]\nstream_idle_timeout_secs = {idle}\n{extra}"
     ))

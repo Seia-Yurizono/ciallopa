@@ -166,7 +166,7 @@ pub struct ImagesConfig {
     pub default_user_agent: String,
 }
 /// Codex CLI version the network stack is pinned to (see Cargo.toml / scripts/fp-check.sh).
-pub const PINNED_CODEX_VERSION: &str = "0.167.1";
+pub const PINNED_CODEX_VERSION: &str = "0.169.0";
 impl Default for ImagesConfig {
     fn default() -> Self {
         Self {
