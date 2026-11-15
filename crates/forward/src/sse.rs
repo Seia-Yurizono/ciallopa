@@ -148,7 +148,13 @@ impl Framer {
 }
 
 pub(crate) fn rewrite_rejection(event: &[u8]) -> Option<Bytes> {
-    let data = data(event)?;
+    // The data lines are part of the event: a cheap substring test on the whole event comes
+    // before joining them, which nearly every event skips.
+    let text = std::str::from_utf8(event).ok()?;
+    if !crate::encrypted::maybe_rejection(text) {
+        return None;
+    }
+    let data = data_text(text)?;
     if !crate::encrypted::maybe_rejection(&data) {
         return None;
     }

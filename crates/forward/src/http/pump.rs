@@ -197,21 +197,26 @@ impl ResponsesObserver {
             self.progress.limit_reached();
         }
         let original = (self.framer.buffered_len() == 0).then(|| chunk.clone());
-        let frames: Vec<_> = self.framer.push_parts(chunk).collect();
-        let mut parts = Vec::with_capacity(frames.len());
-        let mut rewritten = false;
+        // The framer is moved out so its frames can be handled as they are split, without
+        // collecting them first; `Framer::new` does not allocate.
+        let mut framer = std::mem::replace(&mut self.framer, Framer::new(0));
+        // Until an event is rewritten, a chunk that started on an event boundary is forwarded
+        // as a slice of itself; `out` is only built when that is not possible.
+        let mut out: Option<bytes::BytesMut> = None;
+        let mut single: Option<Bytes> = None;
         let mut ready = 0;
         let mut report = None;
-        for (frame, boundary) in frames {
-            let bytes = match frame {
+        for (frame, boundary) in framer.push_parts(chunk) {
+            let (bytes, rewritten) = match frame {
                 Frame::Event(event) => {
                     if !skip {
                         let outcome = self.on_event(&event, trk, observed, late_overload);
                         report = report.or(outcome);
                     }
-                    let replacement = crate::sse::rewrite_rejection(&event);
-                    rewritten |= replacement.is_some();
-                    replacement.unwrap_or(event)
+                    match crate::sse::rewrite_rejection(&event) {
+                        Some(replacement) => (replacement, true),
+                        None => (event, false),
+                    }
                 }
                 Frame::Oversize(bytes) => {
                     if !skip && self.large.len().saturating_add(bytes.len()) <= OBSERVATION_MAX {
@@ -224,23 +229,44 @@ impl ResponsesObserver {
                     } else {
                         self.large.clear();
                     }
-                    bytes
+                    (bytes, false)
                 }
             };
-            ready += bytes.len();
-            parts.push(bytes);
-        }
-        // Preserve upstream chunk grouping (and downstream observation fields) whenever possible.
-        let out = if !rewritten && original.is_some() {
-            original.unwrap_or_default().slice(..ready)
-        } else if parts.len() == 1 {
-            parts.pop().unwrap_or_default()
-        } else {
-            let mut out = bytes::BytesMut::with_capacity(ready);
-            for part in parts {
-                out.extend_from_slice(&part);
+            if out.is_none() && (rewritten || original.is_none()) {
+                // Preserve upstream chunk grouping (and downstream observation fields) whenever
+                // possible: only a rewrite, or a chunk continuing a held event, is copied.
+                match (&original, single.take()) {
+                    (Some(original), _) if ready > 0 => {
+                        let mut buf = bytes::BytesMut::with_capacity(ready + bytes.len());
+                        buf.extend_from_slice(&original[..ready]);
+                        out = Some(buf);
+                    }
+                    (Some(_), _) => out = Some(bytes::BytesMut::new()),
+                    (None, None) if !rewritten => {
+                        single = Some(bytes);
+                        ready += single.as_ref().map_or(0, Bytes::len);
+                        continue;
+                    }
+                    (None, first) => {
+                        let mut buf = bytes::BytesMut::new();
+                        if let Some(first) = first {
+                            buf.extend_from_slice(&first);
+                        }
+                        out = Some(buf);
+                    }
+                }
             }
-            out.freeze()
+            ready += bytes.len();
+            if let Some(buf) = out.as_mut() {
+                buf.extend_from_slice(&bytes);
+            }
+        }
+        self.framer = framer;
+        let out = match (out, single, original) {
+            (Some(buf), _, _) => buf.freeze(),
+            (None, Some(single), _) => single,
+            (None, None, Some(original)) => original.slice(..ready),
+            (None, None, None) => Bytes::new(),
         };
         (out, report)
     }
