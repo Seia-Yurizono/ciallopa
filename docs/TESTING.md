@@ -327,3 +327,53 @@ Save commit, machine, build profile, workload, concurrency, usage on/off and rep
 with results. Compare direct mock access with proxy access when measuring gateway overhead.
 Establish a baseline before choosing latency or memory thresholds; one machine's RPS is
 not a project-wide capacity promise.
+
+### Optional bounded usage migration check
+
+Build the example once and use synthetic v15+ fixtures only. `gen` requires a new database
+path; `ablate` requires a new directory and never deletes existing files. Existing writer
+and query `--account-index` arguments remain supported.
+
+```sh
+cargo build --release --locked -p ciallopa-usage --example usage_bench
+target/release/examples/usage_bench gen /scratch/generated.db 1000000 30 10000 8 --threads 100000
+# Use the target schema version of the binary under test, including after integration.
+uv run --no-project python scripts/migration-memory-check.py \
+  --binary "$PWD/target/release/examples/usage_bench" --fixture /scratch/generated.db \
+  --memory-mib 128 256 --expected-version 17 --output /scratch/new-migration-evidence
+uv run --no-project python scripts/migration-memory-check-test.py
+```
+
+To measure an actual upgrade, generate the fixture with the pre-migration binary; a fixture
+already at the target version measures open/checkpoint only. The runner uses SQLite backup
+(including committed WAL), then one independent copy/process/user-systemd scope per limit.
+Copying and verification are outside the child timing. Linux cgroup v2 and permission to
+create user scopes with `MemoryMax` and `MemorySwapMax=0` are required. Exit 77 means unavailable,
+exit 1 failed, exit 0 passed; an unavailable backend never falls back to an unlimited run.
+It changes no global settings and stops only its own randomly named scope on timeout.
+The output directory must be new; snapshots, failed copies, raw stdout/stderr and JSON remain.
+Run million-row checks serially after other performance work has finished.
+
+Evidence includes binary/snapshot hashes, Python and binary SQLite versions, page size,
+filesystem type, enforced controls, cgroup peak/events, child exit/wall time and Linux child
+maximum RSS from `getrusage` (KiB, including the Python fork before exec); the binary
+also reports its own `/proc/self/status` VmHWM in stdout. Scope memory includes the small
+Python wrapper. Success requires integrity, the explicit target version and preserved
+non-dictionary rows/values. Label references and session names are compared by resolved name;
+v16's dictionary pruning/move and lowercase reset codes are allowed. Dictionary counts are
+reported without requiring equality. Failure copies are reopened and compared with the
+snapshot to report rollback evidence. This fixed invariant set supports the current v15+
+upgrade, not arbitrary historical schema transformations.
+
+For index comparisons, use separate new directories with the same ablate parameters and
+variants `account_id`, `account`, `partial`, `none`; `plan DB` reads plans without migrating.
+Writer timing includes fake-record generation; ablate pregenerates records outside timing.
+Compare variants within the same mode. JSON separates enqueue-to-flush from shutdown plus
+final checkpoint, checks checkpoint busy and independently counts persisted requests.
+`bytes_per_row` remains an alias for `stored_bytes_per_row`: DB+WAL file occupancy after the
+final checkpoint, with separate `database_bytes`/`wal_bytes`. Optional Linux `/proc/self/io`
+phase deltas (`write_bytes`, `wchar`, `cancelled_write_bytes`) are process counters, not SSD
+physical write amplification; unsupported access is `unavailable`. RSS, cgroup memory and
+file occupancy are different measurements. In particular `/tmp` on tmpfs can charge SQLite
+spill files to cgroup memory even when RSS falls; this tool neither changes `temp_store`
+nor assumes the shipped read-only Compose service has a writable temporary mount.

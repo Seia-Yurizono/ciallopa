@@ -1,10 +1,13 @@
 //! Usage-log benchmarks with fake data.
-//!   writer   <rows> <batch...>        — writer throughput per batch size
+//!   writer   <rows> <batch...> [--account-index]        — writer throughput per batch size
 //!   enqueue  <rows> <queue> <batch>   — producer try_send latency + drops under overload
 //!   gen      <db> <rows> <days> <accounts> <models> [--threads N] [--quota-every K]
 //!   query    <db> [--account-index]   — summary/records/quota/history/session timings
 //!   purge    <db> <days_to_drop> <chunk> — purge oldest days (chunked)
 //!   crashw   <db>                     — write forever (for kill -9 tests)
+//!   open     <db>                     — migrate/open/shutdown/checkpoint
+//!   plan     <db>                     — read-only account query plans
+//!   ablate   <new-dir> <rows> <accounts> <batch> <account_id|account|partial|none>
 //!   check    <db>                     — integrity_check + count
 #![allow(clippy::unwrap_used)]
 use ciallopa_core::config::UsageConfig;
@@ -102,38 +105,134 @@ fn measure<T>(name: &str, mut query: impl FnMut() -> T) {
     println!("{}", serde_json::json!({"bench": name, "ms_runs": times}));
 }
 
+fn set_req_index(p: &str, v: &str) {
+    let c = rusqlite::Connection::open(p).unwrap();
+    c.execute_batch("DROP INDEX IF EXISTS requests_account; DROP INDEX IF EXISTS account")
+        .unwrap();
+    let sql = match v {
+        "account_id" => "CREATE INDEX requests_account ON requests(account,id)",
+        "account" => "CREATE INDEX requests_account ON requests(account)",
+        "partial" => "CREATE INDEX requests_account ON requests(account) WHERE account IS NOT NULL",
+        "none" => "",
+        _ => panic!("index variant"),
+    };
+    c.execute_batch(sql).unwrap();
+    checkpoint(&c);
+}
+
+fn checkpoint(c: &rusqlite::Connection) {
+    let (busy, _, _): (i64, i64, i64) = c
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .unwrap();
+    assert_eq!(busy, 0, "final checkpoint busy");
+}
+
+// Process-level Linux counters, not SSD physical writes. Missing /proc is allowed.
+fn proc_io() -> Option<[u64; 3]> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let s = std::fs::read_to_string("/proc/self/io").ok()?;
+    let get = |key: &str| {
+        s.lines()
+            .find_map(|l| l.strip_prefix(key))?
+            .trim()
+            .parse()
+            .ok()
+    };
+    Some([
+        get("write_bytes:")?,
+        get("wchar:")?,
+        get("cancelled_write_bytes:")?,
+    ])
+}
+
+fn io_delta(a: Option<[u64; 3]>, b: Option<[u64; 3]>) -> serde_json::Value {
+    match a.zip(b) {
+        Some((a, b)) => {
+            serde_json::json!({"status":"available", "write_bytes":b[0].saturating_sub(a[0]), "wchar":b[1].saturating_sub(a[1]), "cancelled_write_bytes":b[2].saturating_sub(a[2])})
+        }
+        None => serde_json::json!({"status":"unavailable"}),
+    }
+}
+
+fn finish_writer(
+    r: std::sync::Arc<Recorder>,
+    p: &std::path::Path,
+    rows: usize,
+    elapsed: Duration,
+    io0: Option<[u64; 3]>,
+    io1: Option<[u64; 3]>,
+) -> serde_json::Value {
+    let t = Instant::now();
+    r.shutdown();
+    let stats = r.stats();
+    drop(r);
+    let c = rusqlite::Connection::open(p).unwrap();
+    checkpoint(&c);
+    let shutdown_secs = t.elapsed().as_secs_f64();
+    let io2 = proc_io();
+    let persisted: i64 = c
+        .query_row("SELECT count(*) FROM requests", [], |r| r.get(0))
+        .unwrap();
+    let database = std::fs::metadata(p).unwrap().len();
+    let wal = std::fs::metadata(format!("{}-wal", p.display()))
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let stored = (database + wal) as f64 / rows.max(1) as f64;
+    assert_eq!(persisted, rows as i64);
+    assert_eq!(stats.write_errors, 0);
+    assert_eq!(stats.dropped, 0);
+    serde_json::json!({"rows":rows, "secs":elapsed.as_secs_f64(), "enqueue_to_flush_secs":elapsed.as_secs_f64(), "shutdown_final_checkpoint_secs":shutdown_secs,
+        "rows_per_s":rows as f64 / elapsed.as_secs_f64(), "written":stats.written, "dropped":stats.dropped, "write_errors":stats.write_errors,
+        "persisted_rows":persisted, "database_bytes":database, "wal_bytes":wal, "bytes_per_row":stored, "stored_bytes_per_row":stored,
+        "bytes_per_row_basis":"database_plus_wal_after_final_checkpoint", "io_enqueue_to_flush":io_delta(io0,io1), "io_shutdown_final_checkpoint":io_delta(io1,io2),
+        "sqlite_version":rusqlite::version(), "seed":42})
+}
+
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     let rt = tokio::runtime::Runtime::new().unwrap();
     match a[1].as_str() {
         "writer" => {
             let rows: usize = a[2].parse().unwrap();
-            for b in &a[3..] {
+            let account_index = a.iter().any(|s| s == "--account-index");
+            for b in a[3..].iter().filter(|s| *s != "--account-index") {
                 let batch: usize = b.parse().unwrap();
                 let d = tempfile::tempdir().unwrap();
                 let p = d.path().join("w.db");
                 let r = Recorder::open(&cfg(p.to_str().unwrap(), 65_536, batch, 50)).unwrap();
+                if account_index {
+                    rusqlite::Connection::open(&p)
+                        .unwrap()
+                        .execute_batch(
+                            "CREATE INDEX IF NOT EXISTS requests_account ON requests(account,id)",
+                        )
+                        .unwrap();
+                }
                 let mut rng = Rng(42);
                 let t0 = now_ms();
+                let io0 = proc_io();
                 let t = Instant::now();
                 for i in 0..rows {
                     r.record_blocking(fake(&r, &mut rng, t0 + (i / 10) as i64, 8, 4));
                 }
                 r.flush_blocking().unwrap();
-                let el = t.elapsed();
-                let s = r.stats();
-                r.shutdown();
-                let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0)
-                    + std::fs::metadata(p.with_extension("db-wal"))
-                        .map(|m| m.len())
-                        .unwrap_or(0);
-                println!(
-                    "{{\"bench\":\"writer\",\"batch\":{batch},\"rows\":{rows},\"secs\":{:.3},\"rows_per_s\":{:.0},\"written\":{},\"bytes_per_row\":{:.1}}}",
-                    el.as_secs_f64(),
-                    rows as f64 / el.as_secs_f64(),
-                    s.written,
-                    size as f64 / rows as f64
-                );
+                let elapsed = t.elapsed();
+                let io1 = proc_io();
+                let mut result = finish_writer(r, &p, rows, elapsed, io0, io1);
+                result["bench"] = "writer".into();
+                result["batch"] = batch.into();
+                result["queue"] = 65_536.into();
+                result["flush_ms"] = 50.into();
+                result["accounts"] = 8.into();
+                result["models"] = 4.into();
+                result["start_ms"] = t0.into();
+                result["account_index"] = account_index.into();
+                result["timing_boundary"] = "fake_generation_plus_enqueue_to_flush".into();
+                println!("{result}");
             }
         }
         "enqueue" => {
@@ -179,11 +278,22 @@ fn main() {
             let models: u64 = a[6].parse().unwrap();
             let threads = option(&a, "--threads", 0);
             let quota_every = option(&a, "--quota-every", 0);
+            assert!(
+                !std::path::Path::new(&format!("{p}-wal")).exists()
+                    && !std::path::Path::new(&format!("{p}-shm")).exists(),
+                "gen refuses existing sidecars"
+            );
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(p)
+                .expect("gen requires a new database path");
             let r = Recorder::open(&cfg(p, 65_536, 4096, 50)).unwrap();
             r.set_prices(prices());
             let mut rng = Rng(99);
             let span = days * 86_400_000;
             let start = now_ms() - span;
+            let io0 = proc_io();
             let t = Instant::now();
             for i in 0..rows {
                 let ms = start + (i as i128 * span as i128 / rows as i128) as i64;
@@ -206,15 +316,21 @@ fn main() {
                 r.record_blocking(row);
             }
             r.flush_blocking().unwrap();
-            r.shutdown();
-            assert_eq!(r.stats().written, rows);
-            assert_eq!(r.stats().write_errors, 0);
-            let size = std::fs::metadata(p).unwrap().len();
-            println!(
-                "{{\"bench\":\"gen\",\"rows\":{rows},\"days\":{days},\"secs\":{:.1},\"db_bytes\":{size},\"bytes_per_row\":{:.1}}}",
-                t.elapsed().as_secs_f64(),
-                size as f64 / rows as f64
-            );
+            let elapsed = t.elapsed();
+            let io1 = proc_io();
+            let mut result =
+                finish_writer(r, std::path::Path::new(p), rows as usize, elapsed, io0, io1);
+            result["bench"] = "gen".into();
+            result["seed"] = 99.into();
+            result["days"] = days.into();
+            result["accounts"] = accounts.into();
+            result["models"] = models.into();
+            result["threads"] = threads.into();
+            result["quota_every"] = quota_every.into();
+            result["start_ms"] = start.into();
+            result["db_bytes"] = result["database_bytes"].clone();
+            result["timing_boundary"] = "fake_generation_plus_enqueue_to_flush".into();
+            println!("{result}");
         }
         "query" => {
             let p = &a[2];
@@ -344,6 +460,113 @@ fn main() {
                 }
                 std::thread::sleep(Duration::from_micros(200));
             }
+        }
+        "ablate" => {
+            let dir = PathBuf::from(&a[2]);
+            let rows: usize = a[3].parse().unwrap();
+            let accounts: u64 = a[4].parse().unwrap();
+            let batch: usize = a[5].parse().unwrap();
+            let variant = &a[6];
+            let p = dir.join(format!("ablate-{variant}.db"));
+            // Exclusive directory creation rejects all existing paths, including symlinks.
+            std::fs::create_dir(&dir).expect("ablate requires a new directory");
+            let ps = p.to_str().unwrap();
+            Recorder::open(&cfg(ps, 65_536, batch, 50))
+                .unwrap()
+                .shutdown();
+            set_req_index(ps, variant);
+            let r = Recorder::open(&cfg(ps, 65_536, batch, 50)).unwrap();
+            let mut rng = Rng(42);
+            let t0 = now_ms() - 7 * 86_400_000;
+            let recs: Vec<Record> = (0..rows)
+                .map(|i| {
+                    let mut x = fake(&r, &mut rng, t0 + i as i64 * 3, accounts, 8);
+                    x.thread_id = Some(format!("session-{:016x}", i % 5000));
+                    x
+                })
+                .collect();
+            let io0 = proc_io();
+            let t = Instant::now();
+            for x in recs {
+                r.record_blocking(x);
+            }
+            r.flush_blocking().unwrap();
+            let el = t.elapsed();
+            let io1 = proc_io();
+            let mut result = finish_writer(r, &p, rows, el, io0, io1);
+            result["bench"] = "ablate".into();
+            result["variant"] = variant.clone().into();
+            result["accounts"] = accounts.into();
+            result["models"] = 8.into();
+            result["batch"] = batch.into();
+            result["queue"] = 65_536.into();
+            result["flush_ms"] = 50.into();
+            result["start_ms"] = t0.into();
+            result["threads"] = 5000.into();
+            result["timing_boundary"] = "pregenerated_records_enqueue_to_flush".into();
+            println!("{result}");
+        }
+        "plan" => {
+            let c = rusqlite::Connection::open_with_flags(
+                &a[2],
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .unwrap();
+            let v: String = c
+                .query_row("SELECT sqlite_version()", [], |r| r.get(0))
+                .unwrap();
+            println!("sqlite {v}");
+            for (name, sql) in [
+                ("load_cycle", "SELECT r.id, r.in_tok FROM requests r WHERE r.account=?1 AND r.id>=?2 AND r.id<?3 ORDER BY r.id"),
+                ("recent_account", "SELECT id FROM requests WHERE id < ?2 AND account = ?1 AND ?3 > 0 ORDER BY id DESC LIMIT 100"),
+                ("summary_account", "SELECT count(*) FROM requests WHERE id >= ?2 AND id < ?3 AND account = ?1"),
+            ] {
+                let mut st = c.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+                let rows: Vec<String> = st
+                    .query_map(rusqlite::params![1, 0, i64::MAX], |r| r.get::<_, String>(3))
+                    .unwrap()
+                    .map(|r| r.unwrap())
+                    .collect();
+                println!("{name}: {rows:?}");
+            }
+            for index in ["requests_account", "account"] {
+                let mut st = c
+                    .prepare("SELECT name FROM pragma_index_xinfo(?1)")
+                    .unwrap();
+                let cols: Vec<Option<String>> = st
+                    .query_map([index], |r| r.get(0))
+                    .unwrap()
+                    .map(|r| r.unwrap())
+                    .collect();
+                println!("index_xinfo {index}: {cols:?}");
+            }
+        }
+        "open" => {
+            let t = Instant::now();
+            let r = Recorder::open(&cfg(&a[2], 1024, 256, 50)).unwrap();
+            let open_secs = t.elapsed().as_secs_f64();
+            r.shutdown();
+            drop(r);
+            let c = rusqlite::Connection::open(&a[2]).unwrap();
+            checkpoint(&c);
+            let version: i64 = c
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap();
+            let hwm = std::fs::read_to_string("/proc/self/status")
+                .ok()
+                .and_then(|s| {
+                    s.lines().find_map(|l| {
+                        l.strip_prefix("VmHWM:")?
+                            .split_whitespace()
+                            .next()?
+                            .parse::<u64>()
+                            .ok()
+                    })
+                });
+            println!(
+                "{}",
+                serde_json::json!({"bench":"open", "open_secs":open_secs, "secs":t.elapsed().as_secs_f64(), "user_version":version, "sqlite_version":rusqlite::version(), "vm_hwm_kib":hwm})
+            );
         }
         "check" => {
             let (s, n) = integrity_check(&PathBuf::from(&a[2])).unwrap();
