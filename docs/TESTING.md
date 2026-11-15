@@ -332,11 +332,13 @@ not a project-wide capacity promise.
 
 Build the example once and use synthetic v15+ fixtures only. `gen` requires a new database
 path; `ablate` requires a new directory and never deletes existing files. Existing writer
-and query `--account-index` arguments remain supported.
+arguments and the query `--account-index` option remain supported.
 
 ```sh
 cargo build --release --locked -p ciallopa-usage --example usage_bench
-target/release/examples/usage_bench gen /scratch/generated.db 1000000 30 10000 8 --threads 100000
+# Generate the old schema with a separately built v15/v16 baseline executable.
+BASE_USAGE_BENCH=/path/to/pre-migration/usage_bench
+"$BASE_USAGE_BENCH" gen /scratch/generated.db 1000000 30 10000 8 --threads 100000
 # Use the target schema version of the binary under test, including after integration.
 uv run --no-project python scripts/migration-memory-check.py \
   --binary "$PWD/target/release/examples/usage_bench" --fixture /scratch/generated.db \

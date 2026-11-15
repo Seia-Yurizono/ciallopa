@@ -1,5 +1,5 @@
 //! Usage-log benchmarks with fake data.
-//!   writer   <rows> <batch...> [--account-index]        — writer throughput per batch size
+//!   writer   <rows> <batch...>        — writer throughput per batch size
 //!   enqueue  <rows> <queue> <batch>   — producer try_send latency + drops under overload
 //!   gen      <db> <rows> <days> <accounts> <models> [--threads N] [--quota-every K]
 //!   query    <db> [--account-index]   — summary/records/quota/history/session timings
@@ -107,7 +107,7 @@ fn measure<T>(name: &str, mut query: impl FnMut() -> T) {
 
 fn set_req_index(p: &str, v: &str) {
     let c = rusqlite::Connection::open(p).unwrap();
-    c.execute_batch("DROP INDEX IF EXISTS requests_account; DROP INDEX IF EXISTS account")
+    c.execute_batch("DROP INDEX IF EXISTS requests_account")
         .unwrap();
     let sql = match v {
         "account_id" => "CREATE INDEX requests_account ON requests(account,id)",
@@ -198,20 +198,11 @@ fn main() {
     match a[1].as_str() {
         "writer" => {
             let rows: usize = a[2].parse().unwrap();
-            let account_index = a.iter().any(|s| s == "--account-index");
-            for b in a[3..].iter().filter(|s| *s != "--account-index") {
+            for b in &a[3..] {
                 let batch: usize = b.parse().unwrap();
                 let d = tempfile::tempdir().unwrap();
                 let p = d.path().join("w.db");
                 let r = Recorder::open(&cfg(p.to_str().unwrap(), 65_536, batch, 50)).unwrap();
-                if account_index {
-                    rusqlite::Connection::open(&p)
-                        .unwrap()
-                        .execute_batch(
-                            "CREATE INDEX IF NOT EXISTS requests_account ON requests(account,id)",
-                        )
-                        .unwrap();
-                }
                 let mut rng = Rng(42);
                 let t0 = now_ms();
                 let io0 = proc_io();
@@ -230,7 +221,6 @@ fn main() {
                 result["accounts"] = 8.into();
                 result["models"] = 4.into();
                 result["start_ms"] = t0.into();
-                result["account_index"] = account_index.into();
                 result["timing_boundary"] = "fake_generation_plus_enqueue_to_flush".into();
                 println!("{result}");
             }
