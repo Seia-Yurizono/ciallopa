@@ -301,6 +301,16 @@ fn create_fixture(c: &mut rusqlite::Connection, version: i64) {
     if version >= 12 {
         crate::migrate_v12::load_or_create_aliaser(c).unwrap();
     }
+    if version == 16 {
+        // Freeze the v16 additions on top of v15, independently of LATEST.
+        c.execute_batch(
+            "CREATE INDEX requests_account ON requests(account,id);
+             CREATE TABLE threads(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);
+             INSERT INTO threads SELECT DISTINCT l.id,l.name FROM labels l JOIN requests r ON r.thread=l.id;
+             UPDATE reset_consume SET code=lower(code);",
+        )
+        .unwrap();
+    }
     c.pragma_update(None, "user_version", version).unwrap();
 }
 
@@ -314,7 +324,7 @@ fn fixture(version: i64) -> rusqlite::Connection {
 
 #[test]
 fn historical_schemas_upgrade_and_roundtrip() {
-    for version in [1, 4, 11, 12, 13, 14, 15] {
+    for version in [1, 4, 11, 12, 13, 14, 15, 16] {
         let mut c = fixture(version);
         crate::schema::migrate(&mut c).unwrap();
         assert_eq!(
@@ -462,4 +472,240 @@ fn v15_threads_preserve_ids_shared_labels_and_all_persisted_data() {
     assert_eq!(rows[0].thread_id.as_deref(), Some("session-shared"));
     assert_eq!(rows[0].model.as_deref(), Some("session-shared"));
     assert_eq!(rows[1].thread_id.as_deref(), Some("session-unique"));
+}
+
+fn assert_account_index(c: &rusqlite::Connection) {
+    let properties: (String, i64, i64) = c
+        .query_row(
+            "SELECT origin,\"unique\",partial FROM pragma_index_list('requests') WHERE name='requests_account'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(properties, ("c".into(), 0, 0));
+    let keys: Vec<(String, i64, String)> = c
+        .prepare("SELECT name,desc,coll FROM pragma_index_xinfo('requests_account') WHERE key=1")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(keys, vec![("account".into(), 0, "BINARY".into())]);
+}
+
+#[test]
+fn v17_fresh_and_historical_files_reopen_without_rebuilding() {
+    for version in [0, 15, 16] {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("u.db");
+        if version != 0 {
+            let mut c = rusqlite::Connection::open(&path).unwrap();
+            create_fixture(&mut c, version);
+            c.execute_batch(
+                "INSERT INTO labels VALUES(1,'acct_01234567');
+                 INSERT INTO requests(id,account,thread,transport,status,retries,switches,duration_ms)
+                 VALUES(1048576,1,10,1,200,0,0,5),(1048577,NULL,NULL,1,200,0,0,6);
+                 INSERT INTO quota_obs(id,account,cards) VALUES(1048576,1,3);
+                 INSERT INTO quota_reset_events(account,window,kind,at_ms,obs_id)
+                 VALUES(1,'primary','natural',1,1048576);
+                 INSERT INTO quota_cycle_estimates(account,window,started_ms,ended_ms,ended_obs_id,close_kind,capacity_credits,confidence)
+                 VALUES(1,'primary',0,1,1048576,'natural',123.5,'high');",
+            ).unwrap();
+            if version == 15 {
+                c.execute_batch("INSERT INTO labels VALUES(10,'session-kept')")
+                    .unwrap();
+            } else {
+                c.execute_batch("INSERT INTO threads VALUES(10,'session-kept')")
+                    .unwrap();
+            }
+            if version == 16 {
+                assert_eq!(
+                    c.query_row(
+                        "SELECT count(*) FROM pragma_index_info('requests_account')",
+                        [],
+                        |r| r.get::<_, i64>(0)
+                    )
+                    .unwrap(),
+                    2
+                );
+            }
+        }
+        let cookie = {
+            let c = crate::schema::open_rw(&path).unwrap();
+            assert_account_index(&c);
+            c.pragma_query_value::<i64, _>(None, "schema_version", |r| r.get(0))
+                .unwrap()
+        };
+        for _ in 0..2 {
+            let c = crate::schema::open_rw(&path).unwrap();
+            assert_account_index(&c);
+            assert_eq!(
+                c.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
+                    .unwrap(),
+                17
+            );
+            assert_eq!(
+                c.pragma_query_value::<i64, _>(None, "schema_version", |r| r.get(0))
+                    .unwrap(),
+                cookie
+            );
+            if version != 0 {
+                for (sql, expected) in [
+                    ("SELECT count(*) FROM requests", 2),
+                    (
+                        "SELECT count(*) FROM requests WHERE account IS NULL AND id=1048577",
+                        1,
+                    ),
+                    ("SELECT thread FROM requests WHERE id=1048576", 10),
+                    ("SELECT cards FROM quota_obs", 3),
+                    ("SELECT obs_id FROM quota_reset_events", 1048576),
+                ] {
+                    assert_eq!(
+                        c.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap(),
+                        expected
+                    );
+                }
+                assert_eq!(
+                    c.query_row("SELECT name FROM threads WHERE id=10", [], |r| r
+                        .get::<_, String>(0))
+                        .unwrap(),
+                    "session-kept"
+                );
+                assert_eq!(
+                    c.query_row(
+                        "SELECT capacity_credits FROM quota_cycle_estimates",
+                        [],
+                        |r| r.get::<_, f64>(0)
+                    )
+                    .unwrap(),
+                    123.5
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn v17_does_not_rebuild_an_existing_target_index() {
+    let mut c = fixture(16);
+    c.execute_batch(
+        "DROP INDEX requests_account; CREATE INDEX requests_account ON requests(account)",
+    )
+    .unwrap();
+    let before: i64 = c
+        .pragma_query_value(None, "schema_version", |r| r.get(0))
+        .unwrap();
+    crate::schema::migrate(&mut c).unwrap();
+    assert_eq!(
+        c.pragma_query_value::<i64, _>(None, "schema_version", |r| r.get(0))
+            .unwrap(),
+        before
+    );
+    assert_account_index(&c);
+
+    // In v15, v16's LATEST creates a missing index. The following v17 step
+    // must not drop and create it again: that would add two schema changes.
+    let mut missing = fixture(15);
+    let mut prebuilt = fixture(15);
+    prebuilt
+        .execute_batch("CREATE INDEX requests_account ON requests(account)")
+        .unwrap();
+    let cookie = |c: &rusqlite::Connection| {
+        c.pragma_query_value::<i64, _>(None, "schema_version", |r| r.get(0))
+            .unwrap()
+    };
+    let (m, w) = (cookie(&missing), cookie(&prebuilt));
+    crate::schema::migrate(&mut missing).unwrap();
+    crate::schema::migrate(&mut prebuilt).unwrap();
+    assert_eq!(cookie(&missing) - m, cookie(&prebuilt) - w + 1);
+    assert_account_index(&missing);
+}
+
+#[test]
+fn v17_failed_replacement_rolls_back_index_and_version() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("u.db");
+    let mut c = rusqlite::Connection::open(&path).unwrap();
+    create_fixture(&mut c, 16);
+    c.busy_timeout(std::time::Duration::ZERO).unwrap();
+    // A real read transaction in rollback-journal mode prevents the migration
+    // commit. The replacement index and version must roll back together.
+    let reader = rusqlite::Connection::open(&path).unwrap();
+    reader
+        .execute_batch("BEGIN; SELECT * FROM requests;")
+        .unwrap();
+    let cookie: i64 = c
+        .pragma_query_value(None, "schema_version", |r| r.get(0))
+        .unwrap();
+    let error = crate::schema::migrate(&mut c).unwrap_err();
+    assert_eq!(
+        error.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DatabaseBusy)
+    );
+    reader.execute_batch("ROLLBACK").unwrap();
+    assert_eq!(
+        c.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
+            .unwrap(),
+        16
+    );
+    assert_eq!(
+        c.pragma_query_value::<i64, _>(None, "schema_version", |r| r.get(0))
+            .unwrap(),
+        cookie
+    );
+    assert_eq!(
+        c.query_row(
+            "SELECT count(*) FROM pragma_index_info('requests_account')",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        2
+    );
+    crate::schema::migrate(&mut c).unwrap();
+    assert_account_index(&c);
+}
+
+#[test]
+fn v17_account_range_and_same_millisecond_pagination() {
+    let mut c = fixture(16);
+    c.execute_batch(
+        "INSERT INTO requests(id,account,transport,status,retries,switches,duration_ms)
+        VALUES(1048577,1,1,200,0,0,1),(1048578,NULL,1,200,0,0,1),
+              (1048579,1,1,200,0,0,1),(2097152,1,1,200,0,0,1)",
+    )
+    .unwrap();
+    crate::schema::migrate(&mut c).unwrap();
+    let mut q = RecentQuery {
+        limit: 1,
+        since_ms: Some(1),
+        before_ms: Some(2),
+        filters: Filters {
+            account: Some("acct_01234567".into()),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    for id in [1048579, 1048577, 1048576] {
+        let page = crate::records::recent(&c, &q, &PriceTable::default()).unwrap();
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].request_id, format!("{id:016x}"));
+        q.before_id = Some(id);
+    }
+    assert!(crate::records::recent(&c, &q, &PriceTable::default())
+        .unwrap()
+        .is_empty());
+    let sum = crate::summary::summary(
+        &c,
+        &SummaryQuery {
+            from_ms: 1,
+            to_ms: 1,
+            filters: q.filters,
+            total_only: true,
+            ..Default::default()
+        },
+        &PriceTable::default(),
+    )
+    .unwrap();
+    assert_eq!(sum.total.count, 3);
 }

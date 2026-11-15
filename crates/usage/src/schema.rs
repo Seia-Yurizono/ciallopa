@@ -2,7 +2,7 @@ use crate::UsageError;
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 
-pub(crate) const SCHEMA_VERSION: i64 = 16;
+pub(crate) const SCHEMA_VERSION: i64 = 17;
 
 pub(crate) const LATEST: &str = r#"
 CREATE TABLE IF NOT EXISTS labels(
@@ -52,7 +52,8 @@ CREATE TABLE IF NOT EXISTS requests(
 );
 -- v13: session view (`thread` filter); partial, so rows without a thread cost nothing.
 CREATE INDEX IF NOT EXISTS requests_thread ON requests(thread) WHERE thread IS NOT NULL;
-CREATE INDEX IF NOT EXISTS requests_account ON requests(account,id);
+-- id is the rowid alias, already carried by this index (including NULL accounts).
+CREATE INDEX IF NOT EXISTS requests_account ON requests(account);
 -- Quota snapshots, one row only when an account's values change. id = observing request id.
 CREATE TABLE IF NOT EXISTS quota_obs(
   id       INTEGER PRIMARY KEY,
@@ -299,7 +300,29 @@ const STEPS: &[(i64, Migration)] = &[
         tx.execute_batch("ALTER TABLE quota_obs ADD COLUMN cards INTEGER")
     }),
     (16, migrate_v16),
+    (17, migrate_v17),
 ];
+
+fn migrate_v17(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
+    // v16 executes LATEST too: do not rebuild an index it just created. Inspect
+    // only this fixed index, excluding SQLite's auxiliary rowid from its keys.
+    let target: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_index_list('requests')
+         WHERE name='requests_account' AND origin='c' AND \"unique\"=0 AND partial=0)
+         AND (SELECT count(*) FROM pragma_index_xinfo('requests_account') WHERE key=1)=1
+         AND EXISTS(SELECT 1 FROM pragma_index_xinfo('requests_account')
+                    WHERE key=1 AND name='account' AND desc=0 AND coll='BINARY')",
+        [],
+        |r| r.get(0),
+    )?;
+    if target {
+        return Ok(());
+    }
+    tx.execute_batch(
+        "DROP INDEX IF EXISTS requests_account;
+         CREATE INDEX requests_account ON requests(account);",
+    )
+}
 
 // Every label reference except requests.thread, whose ids now belong to the independent
 // threads dictionary. Used once by the v16 migration to drop the moved session names from
