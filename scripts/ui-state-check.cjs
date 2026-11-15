@@ -220,7 +220,7 @@ async function queryAndPaging() {
   // The Token card carries the input cache rate (with its formula); the note below no longer repeats it.
   {
     const flat = n => n === null || n === undefined ? '' : typeof n !== 'object' ? String(n) : Array.isArray(n) ? n.map(flat).join('') : (n.children || []).map(flat).join('');
-    const tile = name => input('strip').children.find(k => flat(k.children[0]) === name);
+    const tile = name => input('strip').children.flatMap(g => g.children).find(k => flat(k.children[0]) === name);
     const cache = () => tile('Token').children[1].children.flat().find(e => e && e.attrs && e.attrs.class === 'cr');
     assert.equal(flat(cache()), '缓存 –', 'no cache samples shows a dash, not 0%');
     assert.match(cache().attrs.title, /缓存命中的输入 Token \/ 输入 Token/);
@@ -265,7 +265,7 @@ async function queryAndPaging() {
     input('fcompare').checked = true;
     c.SUM_PREV = {total: {count: 10, failures: 1, failure_rate: 0.1, stream_ttft_p50_ms: 1200}};
     vm.runInContext('renderKpis()', c);
-    const label = name => input('strip').children.find(k => flat(k.children[0]).startsWith(name));
+    const label = name => input('strip').children.flatMap(g => g.children).find(k => flat(k.children[0]).startsWith(name));
     const fr = label('失败率');
     assert.ok(fr, 'failure tile is labelled 失败率 with its delta beside it');
     const all = n => n && typeof n === 'object' ? [n, ...(Array.isArray(n) ? n : n.children || []).flatMap(all)] : [];
@@ -853,7 +853,7 @@ async function observationErrorDetails() {
   const c = createContext({
     $: control, key: () => 'demo', clear() {}, field() {}, threadField() {}, detailStats() {}, renderDetailNav() {}, saveF() {},
     tierName: () => '', normTier: () => '', fmtTime: String,
-    lookupSeq: 0, detailSeq: 0, activeRecord: null, authEpoch: 0, hideDetailRetry() {},
+    lookupSeq: 0, detailSeq: 0, activeRecord: null, authEpoch: 0, hideDetailRetry() {}, document: {activeElement: null},
   });
   vm.runInContext(section('ui-PROB-41') + section('ui-SRC-42') + '\n' + section('ui-openDetail-43'), c);
   for (const [status, source, outcome] of [[200, 'local', 'unknown'], [400, 'upstream', 'failed'], [500, 'local', 'failed']]) {
@@ -1060,7 +1060,12 @@ async function filterChipScopeAndFocus() {
 }
 
 async function inspectorRetryAndNavigation() {
-  const dom = interactionDom(), control = dom.$, calls = [];
+  const dom = interactionDom(), originalControl = dom.$, calls = [];
+  // Detail actions are created dynamically. Resolve their actual nodes, including
+  // replacement on record changes, instead of manufacturing unrelated placeholders.
+  const find = (node, id) => node?.getAttribute?.('id') === id ? node :
+    node?.children?.map(child => find(child, id)).find(Boolean);
+  const control = dom.$ = id => find(originalControl('dconcl'), id) || originalControl(id);
   let auth = 'demo', reply = async () => response({error: {message: 'temporary'}}, 503);
   const response = (body, status = 200) => ({status, ok: status < 400, json: async () => body});
   const records = [1, 2].map(n => ({request_id: String(n).padStart(16, '0'), status: 500, has_detail: true}));
@@ -1089,6 +1094,18 @@ async function inspectorRetryAndNavigation() {
   retry.resolve(response({body: 'recovered', headers: {}, body_len: 9}));await tick();
   assert.equal(control('dbody').textContent, 'recovered');assert.equal(control('dcopy').disabled, false);
   assert.equal(control('dretry').classList.contains('hide'), true);assert.equal(dom.document.activeElement, control('dclose'));
+  records[0].problem = 'error';records[0].next = ['attempts'];
+  reply = async () => response({body: '', headers: {}, body_len: 0, attempts: []});await open(0);
+  assert.equal(control('dbody').classList.contains('no-content'), true);
+  assert.equal(control('dhdr').classList.contains('no-content'), true);
+  assert.equal(control('dattempts').classList.contains('hide'), true, 'no attempt records: no dead jump action');
+  reply = async () => response({body: 'detail', headers: {trace: 'test'}, body_len: 6,
+    attempts: [{t_ms: 1, account: 'a', action: 'ok', status: 200}]});await open(0);
+  assert.equal(control('dbody').classList.contains('no-content'), false);
+  assert.equal(control('dhdr').classList.contains('no-content'), false);
+  assert.equal(control('dattempts').classList.contains('hide'), false);
+  control('dtll').focus();await open(1);
+  assert.equal(dom.document.activeElement, control('dclose'), 'changing records moves focus off the old attempt timeline');
   reply = async () => response({}, 404);await open(0);
   assert.match(control('dstatus').textContent, /详情已过保留期.*概要仍可查看/);
   assert.equal(control('dretry').classList.contains('hide'), true, 'expired details do not offer a misleading retry');
@@ -1399,7 +1416,7 @@ async function problemChipsAndNextSteps() {
   });
   c.window = c;
   for (const id of ['fprewarm', 'fretry', 'ferr', 'rprewarm']) control(id).type = 'checkbox';
-  control('dtll').scrollIntoView = () => {c.scrolled = 'dtll';};
+  control('dtll').scrollIntoView = options => {c.scrolled = 'dtll'; c.attemptScroll = options.block;};
   dom.document.querySelectorAll = () => [];
   c.document = dom.document;
   vm.runInContext([
@@ -1462,14 +1479,16 @@ async function problemChipsAndNextSteps() {
   const base = {request_id: '0000000000000001', ts_ms: 0, account: 'bob', endpoint: 'responses', transport: 'sse'};
   const rescued = vm.runInContext('recRow', c)({...base, status: 200, retries: 0, switches: 1, first_account: 'alice', rescued: true, upstream_fault: true, problem: 'all', next: ['attempts']});
   const ec = rescued.children.find(td => td.getAttribute('class') === 'err');
-  assert.match(flat(ec), /^已恢复 换账号 alice → bob 后成功尝试过程 ›$/);
+  assert.match(flat(ec), /^已恢复 换账号 alice → bob 后成功排查详情 ›$/);
   const nx = ec.children.filter(e => e.tagName === 'BUTTON');
   assert.equal(nx[0].getAttribute('class'), 'nx p');
   const click = {stopPropagation() {this.stopped = true;}};
   await nx[0].events.click(click);
   assert.ok(click.stopped, 'a next-step button does not also trigger the row');
-  assert.deepEqual(c.opened, ['0000000000000001'], '尝试过程 opens the detail');
+  assert.deepEqual(c.opened, ['0000000000000001'], '排查详情 opens the detail');
   assert.equal(c.scrolled, 'dtll', '… and scrolls to the attempt chain');
+  assert.equal(c.attemptScroll, 'start', 'the timeline starts in view instead of leaving its entries below the dialog');
+  assert.equal(dom.document.activeElement, control('dtll'), 'keyboard reading continues at the attempt timeline');
   const quota = vm.runInContext('recRow', c)({...base, status: 429, error: 'usage_limit_reached', err_source: 'upstream', problem: 'error', cause: 'quota', next: ['refresh_quota', 'account']});
   const qbtn = quota.children.find(td => td.getAttribute('class') === 'err').children.filter(e => e.tagName === 'BUTTON');
   assert.deepEqual(qbtn.map(flat), ['刷新额度 ›', '查看账号 ›']);

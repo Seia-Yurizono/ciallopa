@@ -97,7 +97,7 @@ main[data-tab=sys] #mem{margin-top:var(--s4)}
 .kpi .s a.tag{height:auto;padding:0 6px;text-decoration:none;white-space:normal}
 .kpi .s a.tag:hover{text-decoration:underline;text-underline-offset:3px}
 .strip>.kpi,#chart{transition:opacity .2s}
-.strip.stale>.kpi:not(.live),#chart.stale{opacity:.5}
+.strip.stale>.kpi:not(.live),.strip.stale>.kpi-group,#chart.stale{opacity:.5}
 .strip .kpi.live{grid-column:1/-1;display:flex;align-items:center;gap:var(--s3);padding:var(--s2) var(--s4)}
 .kpi.live .k{flex:none}
 #live{font-variant-numeric:tabular-nums}
@@ -235,6 +235,7 @@ button.pc.sm{height:24px;padding:0 8px;font-size:var(--fs-xs)}
 /* detail dialog */
 #dp .mbox>*{flex-shrink:0}
 #dp pre{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r1);padding:var(--s2) var(--s3);font:var(--fs-s)/1.55 var(--mono);white-space:pre-wrap;word-break:break-all;margin:0;max-height:40vh;overflow:auto}
+#dp pre.no-content{padding:0;border:0;background:transparent;color:var(--mut)}
 #dp h3{display:flex;gap:var(--s2);align-items:center}#dp h3 span{flex:1;min-width:0}
 #dmeta{font-family:var(--mono);font-size:var(--fs-xs)}
 #dmsg{font-size:var(--fs-s);white-space:pre-wrap;word-break:break-all}
@@ -356,6 +357,24 @@ button.pc.sm{height:24px;padding:0 8px;font-size:var(--fs-xs)}
 .dt .t .statlink{position:relative}.dt .t .statlink:after{content:"";position:absolute;left:50%;top:50%;width:max(calc(100% + 4px),44px);height:44px;transform:translate(-50%,-50%)}
 main select,main .nx,main .pc,main button.xs,main button.p,#rmore,main summary,main input:not([type=checkbox]):not([type=radio]){min-height:44px}
 }
+/* Pair related metrics without hiding their populations or drill-down actions. */
+#strip{grid-template-columns:repeat(3,minmax(0,1fr))}
+.kpi-group{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));min-width:0;border:1px solid var(--line);border-radius:var(--r2);background:transparent}
+.kpi-group.primary{background:var(--surface)}
+.kpi-group>.kpi{border:0;border-radius:0;background:transparent;box-shadow:none}
+.kpi-group>.kpi+.kpi{border-left:1px solid var(--line)}
+.kpi-group:not(.primary) .v{font-size:22px}
+#strip>.live{box-shadow:none}
+@media (min-width:481px) and (max-width:1180px){
+  /* Keep the existing three-column density when a pair would be too narrow. */
+  .kpi-group{display:contents}
+  .kpi-group>.kpi{border:1px solid var(--line);border-radius:var(--r2);background:transparent}
+  .kpi-group.primary>.kpi{background:var(--surface)}
+  .strip.stale>.kpi-group{opacity:1}
+  .strip.stale>.kpi-group>.kpi{opacity:.5}
+}
+@media (max-width:760px){.kpi-group:not(.primary) .v{font-size:20px}}
+@media (max-width:480px){#strip{grid-template-columns:minmax(0,1fr)}}
 </style>
 </head>
 <body>
@@ -455,7 +474,7 @@ main select,main .nx,main .pc,main button.xs,main button.p,#rmore,main summary,m
   <div class="lab hide" id="dolab">网关下游观测</div><p class="mut xs hide" id="donote">在网关侧测量 · 从请求开始计时 · 不代表客户端收到时间</p><div class="otl hide" id="dotl"></div><dl class="kv detail-meta hide" id="dobs"></dl>
   <details class="dmetad" id="dmetad"><summary>标识与元数据 <span class="mut xs" id="dmetasum"></span></summary><dl class="kv detail-meta" id="dfields"></dl></details>
   <div class="detail-load hide" id="dload"><span id="dstatus" role="status" aria-atomic="true"></span><button id="dretry" class="ghost xs hide" type="button">重试详情</button></div>
-  <div class="lab" id="dtll">尝试过程</div><ol class="tl" id="dtl"></ol>
+  <div class="lab" id="dtll" tabindex="-1">尝试过程</div><ol class="tl" id="dtl"></ol>
   <div class="lab" id="dhlab">响应头</div><pre id="dhdr"></pre>
   <div class="lab" id="dblab">响应体</div><pre id="dbody"></pre>
 </div></div>
@@ -579,7 +598,9 @@ function renderKpis(){const t=SUM&&SUM.total,span=SUM?Math.max(1,SUM.to_ms-SUM.f
     [["Token",P&&P.usage_samples?delta((t.input_tokens||0)+(t.output_tokens||0),(P.input_tokens||0)+(P.output_tokens||0),"rel",null,exact):null],t?[tokenValue(t),h("small",{class:"cr",title:cacheTip(t)},"缓存 "+cacheRate(t))]:"–",t?joinSep([reported?"入 "+fmtN(t.input_tokens):null,reported?"出 "+fmtN(t.output_tokens):null,nu?h("span",{class:"w",title:exact(nu)+" 个已完成的业务请求上游没有报告用量，Token 和费用未计入这些请求"},exact(nu)+" 未报告"):null]):"","仅累计上游报告的用量（"+exact(t&&t.usage_samples||0)+" 条），"+pwText()+"；输入含缓存命中，推理 Token 已包含在输出中"],
     [["估算费用",P&&!t.unknown_price&&!P.unknown_price?dl("cost_usd","rel",null,fmtUsd):null],costV,"","按模型、档位和报告用量以 API 标价估算，"+pwText()+"；不是账单，订阅实际费用不同"+(u?"；"+exact(u)+" 条请求缺少价格，未计入":"")]];
   const st=$("strip");clear(st);st.classList.toggle("stale",!!SUM&&!summaryCurrent());
-  for(const [k,v,sub,tip,red] of cells)st.appendChild(h("div",{class:"kpi",title:tip},h("div","k",k),h("div",red?"v bad":"v",v),h("div","s",sub)));
+  ["请求与结果","响应性能","用量与费用"].forEach((label,i)=>{
+    const tiles=cells.slice(i*2,i*2+2).map(([k,v,sub,tip,red])=>h("div",{class:"kpi",title:tip},h("div","k",k),h("div",red?"v bad":"v",v),h("div","s",sub)));
+    st.appendChild(h("div",{class:"kpi-group"+(i===0?" primary":""),role:"group","aria-label":label},...tiles))});
   renderRuntime();
   const g=$("gapban"),R=RECORDER,gap=!!R&&!!(R.dropped||R.write_errors);clear(g);g.classList.toggle("hide",!gap);
   if(gap)g.append(h("b",null,"用量记录有缺口"),h("span",null,"丢弃 "+exact(R.dropped)+" · 写入失败 "+exact(R.write_errors)));if(typeof renderSys==="function")renderSys()}
@@ -815,7 +836,7 @@ function statusKind(outcome,s){if(!s)return null;
 /*@end ui-requestOutcome-23*/function streamRecord(r){return r.transport==="sse"||r.transport==="ws"}
 // ---- request problems. Buckets, causes and next steps come from the backend (usage::problem); the UI only names them.
 // Next steps only open existing pages or panels; 刷新额度 points at the normal button and never refreshes or redeems by itself.
-const NEXT={refresh_quota:["刷新额度","到额度面板手动刷新"],account:["查看账号","打开账号页"],cooldown:["查看冷却","在账号页看冷却"],attempts:["尝试过程","查看每次尝试"],
+const NEXT={refresh_quota:["刷新额度","到额度面板手动刷新"],account:["查看账号","打开账号页"],cooldown:["查看冷却","在账号页看冷却"],attempts:["排查详情","查看错误详情；有尝试记录时定位到尝试过程"],
   egress:["检查出口","打开网络与出口设置"],accounts:["账号状态","打开账号页"],new_session:["新开会话","为何需要新开会话"],detail:["详情","查看请求详情"]};
 function causeName(p,c){const x=(CAUSES[p]||[]).find(([k])=>k===c);return x?x[1]:""}
 function rescueText(r){return (r.switches&&r.first_account?"换账号 "+r.first_account+" → "+(r.account||""):"重试 "+exact(r.retries)+" 次")+" 后成功"}
@@ -830,7 +851,8 @@ async function nextAct(r,k,from){
   if(k==="accounts")return go("/ui/accounts");
   if(k==="egress")return go("/ui/settings#network");
   if(detailRecord!==r||$("dp").classList.contains("hide"))await openDetail(r,from);
-  if(k==="attempts"&&!$("dtll").classList.contains("hide"))$("dtll").scrollIntoView({block:"nearest"})}
+  if(k==="attempts"&&detailRecord===r&&!$("dp").classList.contains("hide")&&!$("dtll").classList.contains("hide")){
+    $("dtll").focus({preventScroll:true});$("dtll").scrollIntoView({block:"start"})}}
 function conclusion(r){const p=r.problem,c=r.cause,n=causeName(p,c);
   if(r.rescued)return ["已恢复 · "+rescueText(r),"上游中途出错，但客户端最终收到正常结果；计入上游出错，不计入失败率"];
   if(p==="error")return ["报错"+(n?" · "+n:""),({quota:"账号额度用尽，客户端收到错误",rate_limit:"上游限流，该模型会短暂冷却",request:"上游拒绝了请求内容，换账号无效，不计入上游出错",upstream:"上游返回错误",network:"无法连接上游或出口代理",gateway:"ciallopa 未能转发，通常是没有可用账号",stream:"流内出错或连接中断"}[c]||"请求失败")+(r.upstream_fault?"，也计入上游出错":"")+(r.next&&r.next.includes("new_session")?"\n加密推理内容来自其他账号，换账号无效，需在客户端新开会话":"")];
@@ -838,7 +860,9 @@ function conclusion(r){const p=r.problem,c=r.cause,n=causeName(p,c);
   return null}
 function renderConclusion(r){const box=$("dconcl"),c=conclusion(r);clear(box);box.classList.toggle("hide",!c);if(!c)return;
   box.append(h("div","t",c[0]),h("div","sm",c[1]));const acts=(r.next||[]).filter(k=>NEXT[k]&&k!=="detail"&&k!=="new_session");
-  if(acts.length){const row=h("div","acts");acts.forEach((k,i)=>{const b=h("button",{type:"button",class:i?"":"p","data-next":k,title:NEXT[k][1]},NEXT[k][0]+" ›");b.addEventListener("click",()=>nextAct(r,k,b).catch(fail));row.appendChild(b)});box.appendChild(row)}}
+  if(acts.length){const row=h("div",{id:"dnextacts",class:"acts"+(acts.every(k=>k==="attempts")?" hide":"")});acts.forEach((k,i)=>{
+    const attempt=k==="attempts",b=h("button",{type:"button",id:attempt?"dattempts":null,class:(i?"":"p")+(attempt?" hide":""),"data-next":k,title:attempt?"定位到本条请求已记录的尝试过程":NEXT[k][1]},(attempt?"查看尝试":NEXT[k][0])+" ›");
+    b.addEventListener("click",()=>nextAct(r,k,b).catch(fail));row.appendChild(b)});box.appendChild(row)}}
 /*@end ui-SRC-42*/function recRow(r){const outcome=requestOutcome(r),isErr=outcome==="failed",es=srcOf(r),s=r.status,pw=outcome==="prewarm",error=errorInfo(r);
   const tr=h("tr",{class:(isErr?"e":"")+(es==="proxy"?" px":"")+(s===429?" rl":"")+(pw?" dim":"")+" dt","data-ak":r.request_id?"rec|"+r.request_id:null});
   const hint="\n点击或按 Enter 查看详情";
@@ -943,6 +967,7 @@ function renderDetailNav(){const index=recState.rows.findIndex(x=>x.request_id==
   if((focused===prev||focused===next)&&focused.disabled)(!prev.disabled?prev:!next.disabled?next:$("dclose")).focus({preventScroll:true})}
 function hideDetailRetry(){if(document.activeElement===$("dretry"))$("dclose").focus({preventScroll:true});$("dretry").classList.add("hide")}
 /*@unit ui-openDetail-43*/async function openDetail(r,from,retry=false){if(!/^[0-9a-f]{16}$/.test(r.request_id||""))return;
+  if(document.activeElement===$("dtll")||document.activeElement===$("dattempts"))$("dclose").focus({preventScroll:true});
   lookupSeq++;const seq=++detailSeq,auth=key(),epoch=authEpoch,current=()=>detailSeq===seq&&key()===auth&&epoch===authEpoch&&activeRecord===r.request_id;activeRecord=r.request_id;detailRecord=r;
   const outcome=requestOutcome(r),es=srcOf(r),error=errorInfo(r);$("dtitle").textContent=OUTCOME[outcome]+" · "+(r.model||"请求");
   $("dmeta").textContent=fmtTime(r.ts_ms,true)+" · "+(r.status?"HTTP "+r.status:"未记录 HTTP 状态")+" · "+(r.transport||"–").toUpperCase();renderConclusion(r);detailStats(r);clear($("dfields"));
@@ -963,9 +988,9 @@ function hideDetailRetry(){if(document.activeElement===$("dretry"))$("dclose").f
   try{const d=await usageGet("/usage/v1/records/"+r.request_id+"/detail",current);if(!current())return;
     for(const id of ["dhlab","dhdr","dblab","dbody"])$(id).classList.remove("hide");
     $("dmsg").textContent=[message,d.message].filter(Boolean).join("\n");if(d.upstream_request_id)field("上游请求 ID",d.upstream_request_id);renderAttempts(d.attempts);
-    $("dhdr").textContent=d.headers&&Object.keys(d.headers).length?JSON.stringify(d.headers,null,2):"（无）";
+    const hasHeaders=!!(d.headers&&Object.keys(d.headers).length);$("dhdr").textContent=hasHeaders?JSON.stringify(d.headers,null,2):"（无）";$("dhdr").classList.toggle("no-content",!hasHeaders);
     $("dblab").textContent="响应体 · 原始 "+d.body_len+" 字节"+(d.truncated?" · 已截断":"")+" · 已脱敏";
-    $("dbody").textContent=d.body?pretty(d.body):"（无）";dtext=JSON.stringify({record:r,detail:d},null,2);$("dstatus").textContent="详情已加载";hideDetailRetry()}
+    $("dbody").textContent=d.body?pretty(d.body):"（无）";$("dbody").classList.toggle("no-content",!d.body);dtext=JSON.stringify({record:r,detail:d},null,2);$("dstatus").textContent="详情已加载";hideDetailRetry()}
   catch(err){if(!current()||err.message==="401")return;$("dstatus").textContent=err.status===404?"详情已过保留期。请求概要仍可查看。":"详情加载失败："+why(err);if(err.status===404)hideDetailRetry();else $("dretry").classList.remove("hide");dtext=JSON.stringify({record:r,detail_error:err.message},null,2)}
   finally{if(current()){$("dcopy").disabled=false;$("dbody").setAttribute("aria-busy","false");$("dretry").setAttribute("aria-disabled","false");$("dretry").textContent="重试详情"}}}
 // Two parallel tracks on one axis (upstream receive, downstream hand-off). They overlap in time and are
@@ -1030,6 +1055,7 @@ const ACT={ok:"成功",switch:"换账号",stop:"停止，返回给客户端","re
 function actText(a){if(!a)return"";if(ACT[a])return ACT[a];let m=a.match(/^retry\((\d+)ms\)$/);if(m)return"退避 "+(m[1]/1000).toFixed(1)+" 秒后重试同一账号";
   m=a.match(/^cooldown\((\d+)s\)\+(\w+)$/);if(m)return"冷却 "+m[1]+"s，"+actText(m[2]);return a}
 function renderAttempts(at){const ol=$("dtl");clear(ol);if(!Array.isArray(at)||!at.length)return;$("dtll").classList.remove("hide");
+  const jump=$("dattempts");if(jump){jump.classList.remove("hide");$("dnextacts").classList.remove("hide")}
   for(const a of at){if(a.dropped){ol.appendChild(h("li","mut","…省略 "+a.dropped+" 次"));continue}
     const li=h("li",a.action==="ok"?"ok":"bad",h("span","mut","+"+(a.t_ms/1000).toFixed(2)+" s "),h("b",null,a.account+" "),(a.status?"HTTP "+a.status:a.kind==="transport"?"网络错误":a.kind==="refresh"?"获取令牌失败":a.kind==="preparation"?"准备等待":a.kind)+(a.code?" ":""),a.code?h("code",null,a.code):null," → "+actText(a.action));
     if(a.body)li.title=a.body;ol.appendChild(li)}}
