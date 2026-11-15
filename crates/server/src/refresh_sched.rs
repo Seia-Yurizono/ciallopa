@@ -260,4 +260,48 @@ mod tests {
         let due = s.due(2 * M, Some((1, 2)), &keys, &mut rng);
         assert_eq!(due.len(), keys.len());
     }
+
+    #[test]
+    fn frequent_wakeups_do_not_accelerate_configured_refresh_intervals() {
+        for interval in [1, 5, 10, 60] {
+            let mut rng = StdRng::seed_from_u64(interval);
+            let mut s = Schedule::default();
+            let keys = ids(2);
+            let gap = interval * M;
+            assert!(s
+                .due(0, Some((interval, interval)), &keys, &mut rng)
+                .is_empty());
+            for round in 1..=3 {
+                let deadline = round * gap;
+                for now in [deadline - gap + 1, deadline - gap / 2, deadline - 1] {
+                    assert!(s
+                        .due(now, Some((interval, interval)), &keys, &mut rng)
+                        .is_empty());
+                    assert_eq!(s.earliest(), Some(deadline));
+                }
+                assert_eq!(
+                    s.due(deadline, Some((interval, interval)), &keys, &mut rng),
+                    keys
+                );
+                assert!(s
+                    .due(deadline, Some((interval, interval)), &keys, &mut rng)
+                    .is_empty());
+                assert_eq!(s.earliest(), Some(deadline + gap));
+            }
+        }
+    }
+
+    #[test]
+    fn delayed_refresh_runs_once_without_catching_up_missed_rounds() {
+        let mut rng = StdRng::seed_from_u64(9);
+        let mut s = Schedule::default();
+        let keys = ids(3);
+        s.due(0, Some((5, 5)), &keys, &mut rng);
+        let resumed = 60 * M;
+        assert_eq!(s.due(resumed, Some((5, 5)), &keys, &mut rng), keys);
+        for now in [resumed, resumed + 1, resumed + 5 * M - 1] {
+            assert!(s.due(now, Some((5, 5)), &keys, &mut rng).is_empty());
+        }
+        assert_eq!(s.earliest(), Some(resumed + 5 * M));
+    }
 }

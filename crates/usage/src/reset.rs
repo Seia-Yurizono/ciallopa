@@ -15,6 +15,7 @@ pub enum ConsumeStatus {
     Done,
     Failed,
     Superseded,
+    Expired,
 }
 impl ConsumeStatus {
     pub const fn as_str(self) -> &'static str {
@@ -23,6 +24,7 @@ impl ConsumeStatus {
             Self::Done => "done",
             Self::Failed => "failed",
             Self::Superseded => "superseded",
+            Self::Expired => "expired",
         }
     }
 }
@@ -34,6 +36,7 @@ impl TryFrom<&str> for ConsumeStatus {
             "done" => Ok(Self::Done),
             "failed" => Ok(Self::Failed),
             "superseded" => Ok(Self::Superseded),
+            "expired" => Ok(Self::Expired),
             _ => Err(rusqlite::types::FromSqlError::InvalidType),
         }
     }
@@ -49,17 +52,25 @@ impl rusqlite::ToSql for ConsumeStatus {
     }
 }
 
+/// Card selected for a consume attempt, with expiry known before sending.
+#[derive(Clone, Copy)]
+pub struct CreditRef<'a> {
+    pub id: &'a str,
+    pub expires_ms: Option<i64>,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ConsumeAttempt {
     pub id: i64,
     pub account: String,
     pub credit_id: Option<String>,
+    pub credit_expires_ms: Option<i64>,
     pub redeem_request_id: String,
     pub key: Option<String>,
     pub instance: Option<String>,
     pub started_ms: i64,
     pub finished_ms: Option<i64>,
-    /// `pending` (outcome unknown: retry reuses the id), `done`, `failed`.
+    /// Expired automatic attempts retain an unknown upstream outcome.
     pub status: ConsumeStatus,
     pub http_status: Option<i64>,
     pub code: Option<String>,
@@ -82,6 +93,7 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ConsumeAttempt> {
         id: r.get(0)?,
         account: r.get(1)?,
         credit_id: r.get(2)?,
+        credit_expires_ms: r.get(13)?,
         redeem_request_id: r.get(3)?,
         key: r.get(4)?,
         instance: r.get(5)?,
@@ -95,7 +107,7 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ConsumeAttempt> {
     })
 }
 const COLS: &str = "id, account, credit_id, redeem_request_id, key, instance, started_ms, \
-                    finished_ms, status, http_status, code, windows_reset, error";
+                    finished_ms, status, http_status, code, windows_reset, error, credit_expires_ms";
 
 impl Recorder {
     /// Startup/shutdown reuse one non-migrating KV connection.
@@ -134,29 +146,31 @@ impl Recorder {
         ))?.query_row(params![account, now_ms() - PENDING_REUSE_MS], row).optional()?)).await
     }
 
-    /// Insert a `pending` attempt; returns its row id.
+    /// Insert a `pending` attempt on the caller's clock; returns its row id.
     pub async fn reset_begin(
         &self,
         account: &str,
-        credit_id: Option<&str>,
+        credit: Option<CreditRef<'_>>,
         redeem_request_id: &str,
         key: Option<&str>,
         instance: &str,
+        started_ms: i64,
     ) -> Result<i64, UsageError> {
         let p = self.path.clone();
         let v = (
             self.alias_account(account),
-            credit_id.map(str::to_string),
+            credit.map(|c| c.id.to_string()),
             redeem_request_id.to_string(),
             key.map(str::to_string),
             instance.to_string(),
+            credit.and_then(|c| c.expires_ms),
         );
         tokio::task::spawn_blocking(move || {
             let conn = schema::open_write(&p)?;
             conn.execute(
                 "INSERT INTO reset_consume(account, credit_id, redeem_request_id, key, instance, \
-                 started_ms, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending')",
-                params![v.0, v.1, v.2, v.3, v.4, now_ms()],
+                 started_ms, status, credit_expires_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7)",
+                params![v.0, v.1, v.2, v.3, v.4, started_ms, v.5],
             )?;
             Ok(conn.last_insert_rowid())
         })
@@ -185,6 +199,25 @@ impl Recorder {
         .await?
     }
 
+    /// Account-scoped recovery history, newest first. Automatic use starts at most 24 h
+    /// before expiry, so older rows cannot affect an unexpired card's retry budget.
+    /// This is independent of the global page's display limit and keeps stored aliases.
+    pub async fn reset_recent_attempts(
+        &self,
+        account: &str,
+    ) -> Result<Vec<ConsumeAttempt>, UsageError> {
+        let a = self.alias_account(account);
+        self.read(move |conn| {
+            let mut st = conn.prepare_cached(&format!(
+                "SELECT {COLS} FROM reset_consume WHERE account=?1 AND started_ms>=?2 ORDER BY id DESC"
+            ))?;
+            let rows = st.query_map(params![a, now_ms() - PENDING_REUSE_MS], row)?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        }).await
+    }
+
+    /// Newest first (display only; use `reset_recent_attempts` for recovery).
     pub async fn reset_attempts(&self, limit: usize) -> Result<Vec<ConsumeAttempt>, UsageError> {
         self.read(move |conn| {
             let mut st = conn.prepare_cached(&format!(
@@ -204,6 +237,40 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn known_expiry_survives_reopening_the_recorder() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = ciallopa_core::config::UsageConfig {
+            path: dir.path().join("u.db"),
+            ..Default::default()
+        };
+        let expires = now_ms() + 600_000;
+        let rec = Recorder::open_as(&cfg, "i1").unwrap();
+        rec.load_or_create_aliaser().unwrap();
+        rec.reset_begin(
+            "a",
+            Some(CreditRef {
+                id: "card",
+                expires_ms: Some(expires),
+            }),
+            "rid",
+            Some("(auto)"),
+            "i1",
+            now_ms(),
+        )
+        .await
+        .unwrap();
+        rec.shutdown();
+        drop(rec);
+        let rec = Recorder::open_as(&cfg, "i1").unwrap();
+        rec.load_or_create_aliaser().unwrap();
+        let pending = rec.reset_pending("a").await.unwrap().unwrap();
+        assert_eq!(pending.redeem_request_id, "rid");
+        assert_eq!(pending.credit_expires_ms, Some(expires));
+        assert_eq!(rec.reset_recent_attempts("a").await.unwrap()[0], pending);
+        rec.shutdown();
+    }
+
+    #[tokio::test]
     async fn pending_roundtrip() {
         let d = tempfile::tempdir().unwrap();
         let cfg = ciallopa_core::config::UsageConfig {
@@ -211,13 +278,15 @@ mod tests {
             ..Default::default()
         };
         let r = Recorder::open_as(&cfg, "i1").unwrap();
+        r.load_or_create_aliaser().unwrap();
         assert!(r.reset_pending("a").await.unwrap().is_none());
         let id = r
-            .reset_begin("a", None, "rid-1", Some("k"), "i1")
+            .reset_begin("a", None, "rid-1", Some("k"), "i1", now_ms())
             .await
             .unwrap();
         let p = r.reset_pending("a").await.unwrap().unwrap();
         assert_eq!(p.redeem_request_id, "rid-1");
+        assert_eq!(p.account, r.alias_account("a"));
         // Account-wide: a card-level attempt must see the account-level pending one.
         assert!(r.reset_pending("a").await.unwrap().is_some());
         assert!(r.reset_pending("b").await.unwrap().is_none());
@@ -238,6 +307,8 @@ mod tests {
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].code.as_deref(), Some("reset"));
         assert_eq!(all[0].windows_reset, Some(2));
+        assert_eq!(r.reset_recent_attempts("a").await.unwrap(), all);
+        assert!(r.reset_recent_attempts("b").await.unwrap().is_empty());
         r.shutdown();
     }
 }

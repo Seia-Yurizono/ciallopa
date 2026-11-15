@@ -464,11 +464,11 @@ CREATE TABLE occupancy(minute INTEGER NOT NULL, instance INTEGER NOT NULL, sampl
   lim_inflight INTEGER NOT NULL, lim_ws INTEGER NOT NULL, lim_buffered INTEGER NOT NULL,
   PRIMARY KEY(minute, instance));
 ```
-- Schema is at `user_version = 17` (v13 adds the `requests_thread` index; v14 adds the
+- Schema is at `user_version = 18` (v13 adds the `requests_thread` index; v14 adds the
   `request_obs` table, see *Gateway downstream observation*; v15 adds `quota_obs.cards` and the
   `quota_reset_events` / `quota_cycle_estimates` tables; v16 moves sessions into `threads`,
   preserving ids, adds `requests_account`, and normalizes reset-result codes; v17 narrows
-  that index to `account`, since SQLite already stores the request id as its rowid).
+  that index to `account`, since SQLite already stores the request id as its rowid); v18 persists reset-card expiry in `reset_consume.credit_expires_ms`.
   Opening an older file upgrades it in place (`ALTER TABLE` /
   new tables); columns that did not exist yet stay NULL on old rows.
 - `quota_obs` gets a row only when used % / plan changes or a reset time moves by > 120 s
@@ -1001,9 +1001,10 @@ Page behavior:
   the account's max used percent is over 50%, and red when over 80%.
 
 ## Reset credits (重置卡)
-Manual, plus an opt-in per-account automatic use. Nothing else consumes a credit (no failover /
-quota path calls it; a test asserts the consume helper has a single caller, `consume_locked`,
-reached only from the admin handler and the automatic use).
+Manual, plus an opt-in per-account automatic use. Nothing else consumes a credit. Integration
+tests verify that card-list and quota refreshes never spend a card, including when manual
+consumption is enabled. The shared consume path is reached from the admin handler and the
+opt-in automatic use.
 
 **快到期时自动使用** (账号 page, per account, default off; needs `allow_config_write`): when on,
 the account's earliest-expiring available card is used once it is within
@@ -1016,7 +1017,24 @@ that card silently; other failures are retried at most 5 times per card, ≥ 60 
 the card expires; an unresolved attempt is retried with the same `redeem_request_id` (also after a
 restart, from the consume log). Switches are stored in the usage DB (debounced 2 s, flushed on
 shutdown); the row shows 「下次自动使用 HH:MM」. Several instances sharing one account are not
-coordinated. Race list: module doc of `crates/server/src/auto_reset.rs`.
+coordinated. Recovery and race tests: `crates/server/tests/it/auto_reset.rs`.
+
+Recovery reads each account's recent history using its persisted account alias, independently
+of the page's last-20 / global-500 display limits. Automatic attempts persist the known card
+expiry before sending, and retain it across retries and restarts. If upstream removes the
+card, that saved expiry still schedules cleanup. An automatic pending card whose expiry is
+confirmed by the current listing or saved expiry is recorded as `expired` (its upstream
+outcome remains unknown) and stops blocking other cards, even before the next card enters
+its automatic window.
+Expiry itself schedules this locked cleanup; cleanup never spends a card. A pending card
+that is still live or has no known expiry remains protected, including after the retry cap.
+Schema v18 adds the nullable `credit_expires_ms` field; old records with no known expiry
+retain the existing protection rather than inventing a date.
+Failed discovery without any known cards retries after 60 s; successful discovery keeps its
+15-minute cache lifetime. The configured quota and reset-credit refresh intervals are unchanged.
+
+Retry spacing uses the persisted attempt time, so switching automatic use off/on or
+restarting keeps the 60-second interval, the request id and the five-attempt budget.
 
 Upstream (mirrors codex-rs `backend-client/src/client/rate_limit_resets.rs`), per account with
 `Authorization: Bearer <access token>`, `ChatGPT-Account-Id`, `User-Agent: codex_cli_rs/<pinned>`,
@@ -1073,11 +1091,16 @@ API (client key):
   JSON) `{"enabled": bool}` → `{account, auto, changed}`.
 
 Idempotency: every attempt is a row in `reset_consume` (schema v6) with status `pending` →
-`done` (any of the 4 codes) / `failed` (definitive 4xx) / `superseded`. Unknown outcome (timeout,
+`done` (any of the 4 codes) / `failed` (definitive 4xx) / `superseded` / `expired` (automatic card
+expiry confirmed, upstream outcome still unknown). Unknown outcome (timeout,
 transport error, 5xx, 408/429, unparseable 2xx) stays `pending`; the next consume for the same
 account + `credit_id` within 24 h reuses that `redeem_request_id` (upstream answers
 `already_redeemed` if the first one went through). A new id is minted only after a definitive
 answer.
+
+After `already_redeemed`, one read-only usage query checks whether quota has recovered. Only
+an explicit `allowed: true` and `limit_reached: false` clears the old quota cooldown; the
+receipt itself never triggers another reset.
 
 ## Client fingerprint for internal requests
 ciallopa's own upstream calls (token refresh / code exchange / device login, `/wham/usage`,

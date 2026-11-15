@@ -1,13 +1,13 @@
 //! Recheck live gates under the consume lock after relisting; retry unknown outcomes with the persisted id.
 use crate::reset_credits::{
-    consume_locked, refresh_account, ConsumeCode, ConsumeStatus, Credit, ResetCredits, Switches,
+    consume_locked, refresh_account, ConsumeCode, ConsumeStatus, Credit, Entry, ResetCredits,
+    Switches,
 };
 use ciallopa_core::Config;
 use ciallopa_forward::AppState;
-use ciallopa_usage::reset::ConsumeAttempt;
+use ciallopa_usage::reset::{ConsumeAttempt, CreditRef};
 use ciallopa_usage::{now_ms, Recorder};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub const AUTO_LABEL: &str = "(auto)";
@@ -21,23 +21,24 @@ const SWEEP_MIN: Duration = Duration::from_secs(1);
 const START_DELAY: Duration = Duration::from_secs(20);
 /// Listings of switched-on accounts older than this are re-read by the sweep (read-only).
 const LIST_MAX_AGE_MS: i64 = 15 * 60_000;
-/// A failed listing is not asked again sooner than this.
+/// Failed discovery with previously known cards keeps its existing backoff.
 const LIST_RETRY_MS: i64 = 5 * 60_000;
-/// Consume-log rows read back for retry counts.
+/// With no known cards, a short retry delay avoids missing cards close to expiry after
+/// startup. Successful discovery still uses the normal 15 min cache lifetime.
+const COLD_LIST_RETRY_MS: i64 = RETRY_MS;
+/// Consume-log rows shown by the API (recovery uses account-scoped history instead).
 pub(crate) const HISTORY_ROWS: usize = 500;
 const KV_KEY: &str = "reset_credits_auto_accounts";
 
-/// Switches plus the sweep-clock spacing of automatic attempts (retry counts live in DB).
+/// Automatic switches; retry budgets and spacing live in the consume log.
 #[derive(Clone)]
 pub struct AutoState {
     pub(crate) switches: Switches,
-    last: Arc<Mutex<HashMap<(String, String), i64>>>,
 }
 impl Default for AutoState {
     fn default() -> Self {
         Self {
             switches: Switches::new(KV_KEY),
-            last: Default::default(),
         }
     }
 }
@@ -49,33 +50,7 @@ impl AutoState {
         self.switches.ids()
     }
     pub fn set(&self, id: &str, on: bool) -> bool {
-        // Keep the retry map and switch transition ordered against concurrent toggles.
-        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
-        if !on {
-            last.retain(|(a, _), _| a != id);
-        }
         self.switches.set(id, on)
-    }
-    fn tried(&self, id: &str, credit: &str, at: i64) {
-        self.last
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert((id.into(), credit.into()), at);
-    }
-    pub(crate) fn history<'a>(
-        &self,
-        rows: impl IntoIterator<Item = &'a ConsumeAttempt>,
-        id: &str,
-    ) -> HashMap<String, Hist> {
-        let mut h = history(rows, id);
-        let last = self.last.lock().unwrap_or_else(|e| e.into_inner());
-        for (c, e) in h.iter_mut() {
-            e.last_ms = last
-                .get(&(id.to_string(), c.clone()))
-                .copied()
-                .unwrap_or(i64::MIN / 2);
-        }
-        h
     }
 }
 
@@ -105,8 +80,7 @@ fn expiry(c: &Credit) -> Option<i64> {
 #[derive(Debug, Default, Clone, PartialEq)]
 pub(crate) struct Hist {
     pub tries: u32,
-    /// A definitive answer was recorded (`reset`, `nothing_to_reset`, `no_credit`,
-    /// `already_redeemed`): never again.
+    /// A definitive answer or confirmed expiry was recorded: never again.
     pub stop: bool,
     pub last_ms: i64,
 }
@@ -124,9 +98,8 @@ pub(crate) fn history<'a>(
         let e = h.entry(c.clone()).or_default();
         // every row is one POST (a superseded row was a real send whose answer was lost)
         e.tries += 1;
-        e.stop |= r.status == ConsumeStatus::Done;
+        e.stop |= matches!(r.status, ConsumeStatus::Done | ConsumeStatus::Expired);
         e.last_ms = e.last_ms.max(r.started_ms);
-        // (`AutoState::history` replaces `last_ms` with the sweep-clock time)
     }
     h
 }
@@ -163,6 +136,32 @@ pub(crate) fn next_due(
             earliest(e, hist.get(&c.id), lead).map(|t| t.max(now))
         })
         .min()
+}
+
+/// Account-level schedule shared by the background sweep and the page. A live pending
+/// protects its own retry gap/budget; a known expiry schedules its own locked cleanup.
+pub(crate) fn next_account_due(
+    credits: &[Credit],
+    hist: &HashMap<String, Hist>,
+    pending: Option<&ConsumeAttempt>,
+    lead: i64,
+    now: i64,
+) -> Option<i64> {
+    match decide(now, lead, credits, hist, pending) {
+        Decision::Retry { .. } | Decision::Fresh { .. } | Decision::Expire => Some(now),
+        Decision::Wait(at) => Some(at),
+        Decision::Skip(_) => None,
+    }
+}
+
+/// Prefer the current listing; retain the saved fact when upstream no longer lists the card.
+fn pending_expiry(credits: &[Credit], pending: &ConsumeAttempt) -> Option<i64> {
+    pending
+        .credit_id
+        .as_ref()
+        .and_then(|id| credits.iter().find(|c| &c.id == id))
+        .and_then(|c| c.expires_at.as_deref().and_then(parse_ms))
+        .or(pending.credit_expires_ms)
 }
 
 /// The card to use now: the one expiring first among those inside their window.
@@ -216,6 +215,7 @@ impl SkipReason {
 
 #[derive(Debug, PartialEq)]
 enum Decision<'a> {
+    Expire,
     Retry { credit: &'a str, rid: &'a str },
     Fresh { credit: &'a str },
     Wait(i64),
@@ -238,6 +238,9 @@ fn decide<'a>(
         else {
             return Decision::Skip(SkipReason::ManualPending);
         };
+        if pending_expiry(credits, p).is_some_and(|e| now >= e) {
+            return Decision::Expire;
+        }
         let h = hist.get(c).cloned().unwrap_or_default();
         if h.stop || h.tries >= MAX_TRIES {
             return Decision::Skip(SkipReason::GivenUp);
@@ -245,13 +248,6 @@ fn decide<'a>(
         let at = h.last_ms.saturating_add(RETRY_MS);
         if now < at {
             return Decision::Wait(at);
-        }
-        let exp = credits
-            .iter()
-            .find(|x| x.id == c)
-            .and_then(|x| x.expires_at.as_deref().and_then(parse_ms));
-        if exp.is_some_and(|e| now >= e) {
-            return Decision::Skip(SkipReason::Expired);
         }
         return Decision::Retry {
             credit: c,
@@ -267,7 +263,20 @@ fn decide<'a>(
     }
 }
 
-/// Public sweep observations retain the existing status/code strings for callers and logs.
+fn discovery_stale(entry: Option<&Entry>, now: i64) -> bool {
+    entry.is_none_or(|e| {
+        let fresh = e.fetched_ms.is_some_and(|f| now - f < LIST_MAX_AGE_MS);
+        let retry = if e.credits.is_empty() {
+            COLD_LIST_RETRY_MS
+        } else {
+            LIST_RETRY_MS
+        };
+        let failed_recently = e.error_ms.is_some_and(|f| now - f < retry);
+        !fresh && !failed_recently
+    })
+}
+
+/// What one account's turn in a sweep did (tests and logs).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     Skipped(SkipReason),
@@ -310,7 +319,6 @@ pub async fn sweep_once(
     if ids.is_empty() {
         return (events, None);
     }
-    let rows = rec.reset_attempts(HISTORY_ROWS).await.unwrap_or_default();
     let accounts: HashMap<_, _> = st
         .accounts
         .list()
@@ -325,28 +333,35 @@ pub async fn sweep_once(
             events.push((id, Event::Skipped(why)));
             continue;
         }
+        let rows = match rec.reset_recent_attempts(&id).await {
+            Ok(rows) => rows,
+            Err(_) => {
+                events.push((id, Event::Skipped(SkipReason::Db)));
+                continue;
+            }
+        };
         let lead = lead_ms(&st.config.load());
         let now = clock();
         let cached = cache.remove(&id);
         let wall = now_ms();
-        let stale = cached.as_ref().is_none_or(|e| {
-            let fresh = e.fetched_ms.is_some_and(|f| wall - f < LIST_MAX_AGE_MS);
-            let failed_recently = e.error_ms.is_some_and(|f| wall - f < LIST_RETRY_MS);
-            !fresh && !failed_recently
-        });
+        let stale = discovery_stale(cached.as_ref(), wall);
         let credits = if stale {
-            refresh_account(st, rc, &id).await.credits
+            let entry = refresh_account(st, rc, &id).await;
+            if entry.error.is_some() {
+                events.push((id, Event::Skipped(SkipReason::ListFailed)));
+                continue;
+            }
+            entry.credits
         } else {
             cached.map(|e| e.credits).unwrap_or_default()
         };
-        let hist = rc.auto.history(&rows, &id);
+        let hist = history(&rows, &rec.alias_account(&id));
         let pending = rows.iter().find(|r| {
-            r.account == id
-                && r.status == ConsumeStatus::Pending
+            r.status == ConsumeStatus::Pending
                 && wall - r.started_ms <= ciallopa_usage::reset::PENDING_REUSE_MS
         });
         match decide(now, lead, &credits, &hist, pending) {
-            Decision::Retry { .. } | Decision::Fresh { .. } => {
+            Decision::Retry { .. } | Decision::Fresh { .. } | Decision::Expire => {
                 let ev = attempt(st, rc, &rec, &id, clock).await;
                 events.push((id, ev));
                 let t = clock().saturating_add(RETRY_MS);
@@ -393,15 +408,36 @@ async fn attempt(
     }
     let lead = lead_ms(&st.config.load());
     let now = clock();
-    let rows = match rec.reset_attempts(HISTORY_ROWS).await {
+    let rows = match rec.reset_recent_attempts(id).await {
         Ok(r) => r,
         Err(_) => return Event::Skipped(SkipReason::Db),
     };
-    let hist = rc.auto.history(&rows, id);
-    let pending = match rec.reset_pending(id).await {
+    let hist = history(&rows, &rec.alias_account(id));
+    let mut pending = match rec.reset_pending(id).await {
         Ok(p) => p,
         Err(_) => return Event::Skipped(SkipReason::Db),
     };
+    if pending.as_ref().is_some_and(|p| {
+        p.key.as_deref() == Some(AUTO_LABEL)
+            && pending_expiry(&entry.credits, p).is_some_and(|e| now >= e)
+    }) {
+        let p = pending.as_ref().expect("expired pending");
+        if rec
+            .reset_finish(
+                p.id,
+                ciallopa_usage::reset::ConsumeOutcome {
+                    status: ConsumeStatus::Expired,
+                    error: Some("automatic card expired; upstream outcome remains unknown".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .is_err()
+        {
+            return Event::Skipped(SkipReason::Db);
+        }
+        pending = None;
+    }
     let (credit, rid) = match decide(now, lead, &entry.credits, &hist, pending.as_ref()) {
         Decision::Retry { credit, rid } => (credit.to_string(), Some(rid)),
         Decision::Fresh { credit } => (credit.to_string(), None),
@@ -414,9 +450,33 @@ async fn attempt(
         }
         Decision::Skip(SkipReason::NothingDue) => return Event::Skipped(SkipReason::NotDue),
         Decision::Skip(why) => return Event::Skipped(why),
+        Decision::Expire => return Event::Skipped(SkipReason::Expired),
     };
-    rc.auto.tried(id, &credit, now);
-    let out = consume_locked(st, rc, rec, id, Some(&credit), rid, Some(AUTO_LABEL), &g).await;
+    let expires_ms = pending
+        .as_ref()
+        .and_then(|p| pending_expiry(&entry.credits, p))
+        .or_else(|| {
+            entry
+                .credits
+                .iter()
+                .find(|c| c.id == credit)
+                .and_then(expiry)
+        });
+    let out = consume_locked(
+        st,
+        rc,
+        rec,
+        id,
+        Some(CreditRef {
+            id: &credit,
+            expires_ms,
+        }),
+        rid,
+        Some(AUTO_LABEL),
+        now,
+        &g,
+    )
+    .await;
     match (out.status, out.code) {
         (Some(ConsumeStatus::Done), Some(ConsumeCode::Reset)) => {
             tracing::info!(account = %ciallopa_core::a(id), %credit, "auto reset-card used before expiry")
@@ -464,12 +524,109 @@ mod tests {
     const E: i64 = 1_800_000_000_000;
     const LEAD: i64 = 10 * 60_000;
 
+    #[test]
+    fn discovery_keeps_normal_cache_and_warm_failure_intervals() {
+        let mut entry = Entry {
+            fetched_ms: Some(E),
+            ..Default::default()
+        };
+        assert!(!discovery_stale(Some(&entry), E + LIST_MAX_AGE_MS - 1));
+        assert!(discovery_stale(Some(&entry), E + LIST_MAX_AGE_MS));
+        entry
+            .credits
+            .push(credit("c", "available", "2027-01-01T00:00:00Z"));
+        entry.error_ms = Some(E + LIST_MAX_AGE_MS);
+        assert!(!discovery_stale(
+            Some(&entry),
+            E + LIST_MAX_AGE_MS + LIST_RETRY_MS - 1
+        ));
+        assert!(discovery_stale(
+            Some(&entry),
+            E + LIST_MAX_AGE_MS + LIST_RETRY_MS
+        ));
+    }
+
+    #[test]
+    fn cold_discovery_retries_once_per_minute_instead_of_missing_a_short_window() {
+        let entry = Entry {
+            error_ms: Some(E),
+            ..Default::default()
+        };
+        assert!(!discovery_stale(Some(&entry), E));
+        assert!(!discovery_stale(Some(&entry), E + RETRY_MS - 1));
+        assert!(discovery_stale(Some(&entry), E + RETRY_MS));
+    }
+
+    #[test]
+    fn page_and_sweep_share_the_pending_retry_schedule() {
+        let expires = parse_ms("2027-01-01T00:10:00Z").unwrap();
+        let cards = vec![
+            credit("a", "available", "2027-01-01T00:10:00Z"),
+            credit("b", "available", "2027-01-01T00:15:00Z"),
+        ];
+        let started = expires - 4 * 60_000;
+        let mut hist = HashMap::from([("a".into(), h(1, false, started))]);
+        let mut pending = ConsumeAttempt {
+            id: 1,
+            account: "a".into(),
+            credit_id: Some("a".into()),
+            credit_expires_ms: None,
+            redeem_request_id: "rid".into(),
+            key: Some(AUTO_LABEL.into()),
+            instance: None,
+            started_ms: started,
+            finished_ms: None,
+            status: ConsumeStatus::Pending,
+            http_status: None,
+            code: None,
+            windows_reset: None,
+            error: None,
+        };
+        let now = started + RETRY_MS / 2;
+        assert_eq!(
+            next_due(&cards, &hist, LEAD, now),
+            Some(now),
+            "another card is due"
+        );
+        assert_eq!(
+            next_account_due(&cards, &hist, Some(&pending), LEAD, now),
+            Some(started + RETRY_MS)
+        );
+        hist.get_mut("a").unwrap().tries = MAX_TRIES;
+        assert_eq!(
+            next_account_due(&cards, &hist, Some(&pending), LEAD, now),
+            None
+        );
+        assert_eq!(
+            next_account_due(&cards, &hist, Some(&pending), LEAD, expires + 1),
+            Some(expires + 1)
+        );
+        pending.key = Some("admin".into());
+        assert_eq!(
+            next_account_due(&cards, &hist, Some(&pending), LEAD, now),
+            None
+        );
+    }
+
     fn h(tries: u32, stop: bool, last_ms: i64) -> Hist {
         Hist {
             tries,
             stop,
             last_ms,
         }
+    }
+
+    #[test]
+    fn recovery_window_covers_every_valid_automatic_lead() {
+        let mut cfg = Config::default();
+        cfg.ui.reset_credits_auto_lead_mins =
+            (ciallopa_usage::reset::PENDING_REUSE_MS / 60_000) as u64;
+        assert!(cfg.validate().is_ok());
+        cfg.ui.reset_credits_auto_lead_mins += 1;
+        assert!(
+            cfg.validate().is_err(),
+            "history must widen if the allowed lead grows"
+        );
     }
 
     #[test]
@@ -486,6 +643,7 @@ mod tests {
             id: 1,
             account: "a".into(),
             credit_id: Some("c".into()),
+            credit_expires_ms: None,
             redeem_request_id: "same-id".into(),
             key: Some(AUTO_LABEL.into()),
             instance: None,
@@ -549,7 +707,7 @@ mod tests {
                 E,
                 Some("c"),
                 AUTO_LABEL,
-                Decision::Skip(SkipReason::Expired),
+                Decision::Expire,
             ),
             (
                 "manual",
@@ -574,6 +732,7 @@ mod tests {
         ] {
             let p = ConsumeAttempt {
                 credit_id: credit_id.map(str::to_string),
+                credit_expires_ms: None,
                 key: Some(key.into()),
                 ..base.clone()
             };
@@ -627,15 +786,6 @@ mod tests {
         assert!(!due(E, Some(&h(1, false, E - 1000)), LEAD, E - 1));
     }
 
-    #[test]
-    fn clock_skew_bounds() {
-        // a local clock 4 min ahead fires 4 min early, still before the real expiry
-        let skew = 4 * 60_000;
-        assert!(due(E, None, LEAD, (E - LEAD) + skew - skew));
-        // a clock behind by more than the lead never fires at a local time >= expiry
-        assert!(!due(E, None, LEAD, E + skew));
-    }
-
     fn credit(id: &str, status: &str, exp: &str) -> Credit {
         Credit {
             id: id.into(),
@@ -678,6 +828,7 @@ mod tests {
             id: t,
             account: "a".into(),
             credit_id: Some(credit.into()),
+            credit_expires_ms: None,
             redeem_request_id: "r".into(),
             key: Some(key.into()),
             instance: None,

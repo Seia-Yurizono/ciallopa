@@ -301,13 +301,19 @@ fn create_fixture(c: &mut rusqlite::Connection, version: i64) {
     if version >= 12 {
         crate::migrate_v12::load_or_create_aliaser(c).unwrap();
     }
-    if version == 16 {
+    if version >= 16 {
         // Freeze the v16 additions on top of v15, independently of LATEST.
         c.execute_batch(
             "CREATE INDEX requests_account ON requests(account,id);
              CREATE TABLE threads(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);
              INSERT INTO threads SELECT DISTINCT l.id,l.name FROM labels l JOIN requests r ON r.thread=l.id;
              UPDATE reset_consume SET code=lower(code);",
+        )
+        .unwrap();
+    }
+    if version >= 17 {
+        c.execute_batch(
+            "DROP INDEX requests_account; CREATE INDEX requests_account ON requests(account)",
         )
         .unwrap();
     }
@@ -542,7 +548,7 @@ fn v17_fresh_and_historical_files_reopen_without_rebuilding() {
             assert_eq!(
                 c.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
                     .unwrap(),
-                17
+                crate::schema::SCHEMA_VERSION
             );
             assert_eq!(
                 c.pragma_query_value::<i64, _>(None, "schema_version", |r| r.get(0))
@@ -599,7 +605,7 @@ fn v17_does_not_rebuild_an_existing_target_index() {
     assert_eq!(
         c.pragma_query_value::<i64, _>(None, "schema_version", |r| r.get(0))
             .unwrap(),
-        before
+        before + 1 // v18 adds the expiry column; the index remains unchanged.
     );
     assert_account_index(&c);
 
@@ -708,4 +714,52 @@ fn v17_account_range_and_same_millisecond_pagination() {
     )
     .unwrap();
     assert_eq!(sum.total.count, 3);
+}
+
+#[test]
+fn v18_preserves_pending_and_known_expiry_across_upgrades() {
+    for version in [13, 15, 16, 17] {
+        for preexisting in [false, true] {
+            let mut c = fixture(version);
+            c.execute_batch(
+                "INSERT INTO reset_consume(account,credit_id,redeem_request_id,started_ms,status)
+                VALUES('acct_01234567','card','same-id',123,'pending')",
+            )
+            .unwrap();
+            if preexisting {
+                c.execute_batch(
+                    "ALTER TABLE reset_consume ADD COLUMN credit_expires_ms INTEGER;
+                    UPDATE reset_consume SET credit_expires_ms=456",
+                )
+                .unwrap();
+            }
+            for _ in 0..2 {
+                crate::schema::migrate(&mut c).unwrap();
+                let row = c.query_row("SELECT account,credit_id,redeem_request_id,started_ms,status,credit_expires_ms
+                    FROM reset_consume", [], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,
+                    r.get::<_,String>(2)?,r.get::<_,i64>(3)?,r.get::<_,String>(4)?,r.get::<_,Option<i64>>(5)?))).unwrap();
+                assert_eq!(
+                    row,
+                    (
+                        "acct_01234567".into(),
+                        "card".into(),
+                        "same-id".into(),
+                        123,
+                        "pending".into(),
+                        preexisting.then_some(456)
+                    )
+                );
+                assert_eq!(
+                    c.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
+                        .unwrap(),
+                    18
+                );
+                assert_eq!(
+                    c.query_row("SELECT count(*) FROM requests", [], |r| r.get::<_, i64>(0))
+                        .unwrap(),
+                    1
+                );
+            }
+        }
+    }
 }

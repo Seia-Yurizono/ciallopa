@@ -2,7 +2,7 @@ use crate::UsageError;
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 
-pub(crate) const SCHEMA_VERSION: i64 = 17;
+pub(crate) const SCHEMA_VERSION: i64 = 18;
 
 pub(crate) const LATEST: &str = r#"
 CREATE TABLE IF NOT EXISTS labels(
@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS reset_consume(
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
   account           TEXT NOT NULL,
   credit_id         TEXT,
+  credit_expires_ms INTEGER,
   redeem_request_id TEXT NOT NULL,
   key               TEXT,               -- client key label (never the key)
   instance          TEXT,
@@ -301,6 +302,15 @@ const STEPS: &[(i64, Migration)] = &[
     }),
     (16, migrate_v16),
     (17, migrate_v17),
+    (18, |tx| {
+        let has: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('reset_consume') WHERE name='credit_expires_ms')",
+            [], |r| r.get(0))?;
+        if has {
+            return Ok(());
+        }
+        tx.execute_batch("ALTER TABLE reset_consume ADD COLUMN credit_expires_ms INTEGER")
+    }),
 ];
 
 fn migrate_v17(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {

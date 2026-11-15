@@ -27,6 +27,29 @@ For a public `core` contract, include its consumers. For a fix, start with a reg
 that exercises the failing behavior, then run the affected crate or integration target.
 Documentation-only edits need link/content review, not a local Rust rebuild.
 
+Reset-card recovery and request-frequency checks:
+
+```sh
+cargo test --locked -p ciallopa --test it auto_reset::
+cargo test --locked -p ciallopa --test it reset_credits::
+cargo test --locked -p ciallopa --lib auto_reset::tests
+cargo test --locked -p ciallopa --lib refresh_sched::tests
+cargo test --locked -p ciallopa-usage reset::tests
+```
+
+The reset fixtures install the production account aliaser. Their loopback upstream records
+request ids and actual reset side effects separately, can lose a response after committing
+a reset, and can produce real disconnects/timeouts. Unix process tests launch the compiled
+server, exercise SIGTERM flush, then restart it against the same database and upstream
+receipt store. The longest successful restart scenario takes about 80 seconds because it
+keeps the production startup delay and the persisted 60-second retry interval. Frequency
+assertions cover fresh-cache reads, retry spacing and limits across restarts, protected live pending requests, quota-refresh
+throttling after failure, and configured refresh intervals without catch-up bursts. These
+checks use synthetic credentials and never need a provider account.
+The usage tests cover the v13/v15/v16/v17-to-v18 migrations and missing historical expiry values; the
+automatic tests cover a card disappearing during retries, exhausting its budget, and
+reopening the database before its saved expiry unblocks later manual use.
+
 ### Faults we can reproduce locally
 
 The forwarding integration tests start their own loopback upstream. The CLI and deployment

@@ -8,7 +8,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use ciallopa_forward::{AppState, ClientKey};
-use ciallopa_usage::reset::ConsumeOutcome;
+use ciallopa_usage::reset::{ConsumeOutcome, CreditRef};
 use ciallopa_usage::{now_ms, QuotaObs, Recorder};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -587,30 +587,37 @@ async fn list_body(s: &S, admin: bool) -> Value {
     let cfg = s.st.config.load();
     let snap = s.rc.snapshot();
     let accounts = s.st.accounts.list().await;
-    let need_history = admin || accounts.iter().any(|a| s.rc.auto.is_on(&a.id));
     let mut attempts = match &s.st.usage {
-        Some(r) if need_history => r
+        Some(r) if admin => r
             .reset_attempts(crate::auto_reset::HISTORY_ROWS)
             .await
             .unwrap_or_default(),
         _ => vec![],
     };
-    let mut grouped: HashMap<&str, Vec<&ciallopa_usage::reset::ConsumeAttempt>> = HashMap::new();
-    for row in &attempts {
-        grouped.entry(&row.account).or_default().push(row);
-    }
     let lead_ms = crate::auto_reset::lead_ms(&cfg);
     let now = now_ms();
     let mut out = vec![];
     for a in accounts {
         let auto = s.rc.auto.is_on(&a.id);
-        let next = snap.get(&a.id).filter(|_| auto).and_then(|e| {
-            let hist = s.rc.auto.history(
-                grouped.get(a.id.as_str()).into_iter().flatten().copied(),
-                &a.id,
-            );
-            crate::auto_reset::next_due(&e.credits, &hist, lead_ms, now)
-        });
+        let next = if auto {
+            match (snap.get(&a.id), &s.st.usage) {
+                (Some(e), Some(rec)) => {
+                    rec.reset_recent_attempts(&a.id)
+                        .await
+                        .ok()
+                        .and_then(|rows| {
+                            let hist = crate::auto_reset::history(&rows, &rec.alias_account(&a.id));
+                            let pending = rows.iter().find(|r| r.status == ConsumeStatus::Pending);
+                            crate::auto_reset::next_account_due(
+                                &e.credits, &hist, pending, lead_ms, now,
+                            )
+                        })
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
         let alias = ciallopa_core::a(&a.id);
         let mut row = json!({
             "account": if admin { a.id.clone() } else { alias },
@@ -625,7 +632,6 @@ async fn list_body(s: &S, admin: bool) -> Value {
         }
         out.push(row);
     }
-    drop(grouped);
     if admin {
         attempts.truncate(20);
     } else {
@@ -1004,9 +1010,13 @@ async fn consume(
         &s.rc,
         &rec,
         &account,
-        credit,
+        credit.map(|id| CreditRef {
+            id,
+            expires_ms: None,
+        }),
         req.redeem_request_id.as_deref(),
         label.as_deref(),
+        now_ms(),
         &g,
     )
     .await;
@@ -1022,12 +1032,14 @@ async fn consume_locked(
     rc: &ResetCredits,
     rec: &Recorder,
     account: &str,
-    credit: Option<&str>,
+    credit: Option<CreditRef<'_>>,
     req_rid: Option<&str>,
     label: Option<&str>,
+    started_ms: i64,
     _held: &tokio::sync::MutexGuard<'_, ()>,
 ) -> ConsumeResult {
     let fail = ConsumeResult::error;
+    let credit_id = credit.map(|c| c.id);
     let pending = match rec.reset_pending(account).await {
         Ok(p) => p,
         Err(e) => return fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
@@ -1035,7 +1047,7 @@ async fn consume_locked(
     // An earlier attempt on this account has an unknown outcome: the only allowed action is
     // retrying that exact attempt (same redeem id + credit), never a second spend.
     if let Some(p) = &pending {
-        let same_credit = p.credit_id.as_deref() == credit;
+        let same_credit = p.credit_id.as_deref() == credit_id;
         let same_rid = req_rid.is_none_or(|r| r == p.redeem_request_id);
         if !same_credit || !same_rid {
             return ConsumeResult {
@@ -1060,8 +1072,22 @@ async fn consume_locked(
         (Some(r), None) => (r.to_string(), true),
         (None, None) => (uuid_v4(), false),
     };
+    // Manual retries may not have a fresh listing; retain the saved expiry in that case.
+    let credit = credit.map(|c| CreditRef {
+        expires_ms: c
+            .expires_ms
+            .or_else(|| pending.as_ref().and_then(|p| p.credit_expires_ms)),
+        ..c
+    });
     let row = match rec
-        .reset_begin(account, credit, &rid, label, &st.config.load().instance_id)
+        .reset_begin(
+            account,
+            credit,
+            &rid,
+            label,
+            &st.config.load().instance_id,
+            started_ms,
+        )
         .await
     {
         Ok(r) => r,
@@ -1084,7 +1110,7 @@ async fn consume_locked(
     }
     let auto = label == Some(crate::auto_reset::AUTO_LABEL);
     tracing::warn!(%account, redeem_request_id = %rid, reused, auto, "reset-credit consume");
-    let res = consume_upstream(st, account, &rid, credit).await;
+    let res = consume_upstream(st, account, &rid, credit_id).await;
     let Classified {
         status,
         code,
@@ -1093,6 +1119,7 @@ async fn consume_locked(
         body: payload,
     } = classify(res);
     let was_reset = code == Some(ConsumeCode::Reset);
+    let was_redeemed = code == Some(ConsumeCode::AlreadyRedeemed);
     if let Err(e) = rec.reset_finish(row, outcome).await {
         tracing::warn!(error = %e, "reset consume log write failed");
     }
@@ -1108,7 +1135,7 @@ async fn consume_locked(
     if status == ConsumeStatus::Done {
         let entry = refresh_account(st, rc, account).await;
         extra["reset_credits"] = json!(entry);
-        if was_reset {
+        if was_reset || was_redeemed {
             if let Ok((200..=299, b)) = upstream_req(
                 st,
                 account,
@@ -1121,6 +1148,13 @@ async fn consume_locked(
             {
                 if let Ok(v) = serde_json::from_str::<Value>(&b) {
                     rc.note_usage(account, &v);
+                    if was_redeemed {
+                        let (_, allowed, reached) = usage_extras(&v);
+                        if allowed == Some(true) && reached == Some(false) {
+                            let cleared = st.router.clear_quota_cooldown(&account.to_string());
+                            extra["cooldown_cleared"] = json!(cleared);
+                        }
+                    }
                     extra["rate_limit"] = v.get("rate_limit").cloned().unwrap_or(Value::Null);
                     if let Some(q) = usage_to_quota(&v, now_ms() / 1000) {
                         let by = if auto { "auto" } else { QUOTA_MANUAL };

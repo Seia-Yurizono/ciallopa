@@ -146,7 +146,10 @@ async fn env_cfg(allow: bool, write: bool) -> Env {
         dir.path().join("u.db").display()
     ))
     .unwrap();
-    let usage = Some(ciallopa_usage::Recorder::open_as(&cfg.usage, "inst").unwrap());
+    let rec = ciallopa_usage::Recorder::open_as(&cfg.usage, "inst").unwrap();
+    // Match the real server's write-time account aliases.
+    rec.load_or_create_aliaser().unwrap();
+    let usage = Some(rec);
     let router = Arc::new(NoRoute::default());
     let state = AppState {
         accounts: Arc::new(Store::with_accounts(
@@ -425,6 +428,119 @@ async fn idempotent_retry_reuses_id() {
 }
 
 #[tokio::test]
+async fn recovered_receipt_checks_quota_once_before_clearing_cooldown() {
+    let e = env(true).await;
+    e.mock.replies.lock().unwrap().extend([
+        (502, json!({"error": "response lost"})),
+        (200, json!({"code": "already_redeemed", "windows_reset": 0})),
+    ]);
+    e.mock
+        .usage
+        .lock()
+        .unwrap()
+        .push_back(json!({"rate_limit": {
+            "allowed": true, "limit_reached": false, "primary_window": {"used_percent": 0}
+        }}));
+    let body = json!({"confirm": "a", "credit_id": "rc_2"});
+    let (_, first) = e.consume("a", body.clone()).await;
+    let (_, recovered) = e.consume("a", body).await;
+    assert_eq!(first["redeem_request_id"], recovered["redeem_request_id"]);
+    assert_eq!(recovered["code"], "already_redeemed");
+    assert_eq!(recovered["cooldown_cleared"], true);
+    assert_eq!(*e.router.0.lock().unwrap(), ["a"]);
+    assert_eq!(e.mock.usage_hits.lock().unwrap().len(), 1);
+    let lists = e.mock.lists.lock().unwrap().len();
+    for _ in 0..10 {
+        e.get("/usage/v1/reset-credits").await;
+    }
+    assert_eq!(
+        e.n_consumes(),
+        2,
+        "a receipt must not trigger another reset"
+    );
+    assert_eq!(e.mock.usage_hits.lock().unwrap().len(), 1);
+    assert_eq!(e.mock.lists.lock().unwrap().len(), lists);
+}
+
+#[tokio::test]
+async fn transient_http_errors_keep_the_request_id_and_do_not_query_quota() {
+    for status in [408, 429, 500, 502, 503] {
+        let e = env(true).await;
+        e.mock
+            .replies
+            .lock()
+            .unwrap()
+            .push_back((status, json!({"detail": "retry later"})));
+        let body = json!({"confirm": "a", "credit_id": "rc_2"});
+        let (_, first) = e.consume("a", body.clone()).await;
+        assert_eq!(first["status"], "pending", "HTTP {status}: {first}");
+        assert!(e.mock.usage_hits.lock().unwrap().is_empty());
+        assert!(e.mock.lists.lock().unwrap().is_empty());
+        let (_, retry) = e.consume("a", body).await;
+        assert_eq!(first["redeem_request_id"], retry["redeem_request_id"]);
+        assert_eq!(retry["code"], "reset");
+        assert_eq!(e.n_consumes(), 2);
+    }
+}
+
+#[tokio::test]
+async fn recovered_receipt_does_not_clear_cooldown_without_restored_quota() {
+    for rate_limit in [
+        json!({"allowed": false, "limit_reached": false}),
+        json!({"allowed": true, "limit_reached": true}),
+        json!({"limit_reached": false}),
+    ] {
+        let e = env(true).await;
+        e.mock
+            .replies
+            .lock()
+            .unwrap()
+            .push_back((200, json!({"code": "already_redeemed"})));
+        e.mock
+            .usage
+            .lock()
+            .unwrap()
+            .push_back(json!({"rate_limit": rate_limit}));
+        let (_, response) = e
+            .consume("a", json!({"confirm": "a", "credit_id": "rc_2"}))
+            .await;
+        assert_eq!(response["status"], "done");
+        assert!(e.router.0.lock().unwrap().is_empty());
+        assert!(response.get("cooldown_cleared").is_none());
+        assert_eq!(e.mock.usage_hits.lock().unwrap().len(), 1);
+        assert_eq!(e.n_consumes(), 1);
+    }
+}
+
+#[tokio::test]
+async fn failed_quota_refresh_keeps_the_same_throttle_and_never_consumes() {
+    let e = env(true).await;
+    e.mock
+        .usage
+        .lock()
+        .unwrap()
+        .push_back(json!({"unexpected": "no quota windows"}));
+    let post = || {
+        e.http
+            .post(format!("{}/admin/v1/accounts/a/quota-refresh", e.base))
+            .bearer_auth(KEY)
+            .json(&json!({}))
+            .send()
+    };
+    let first: Value = post().await.unwrap().json().await.unwrap();
+    assert_eq!(first["error"]["kind"], "decode");
+    for _ in 0..10 {
+        let result: Value = post().await.unwrap().json().await.unwrap();
+        assert_eq!(result["error"]["kind"], "rate_limited");
+        assert!(result["error"]["retry_after_s"].as_u64().unwrap() <= 30);
+    }
+    assert_eq!(e.mock.usage_hits.lock().unwrap().len(), 1);
+    assert!(e.mock.lists.lock().unwrap().is_empty());
+    assert_eq!(e.n_consumes(), 0);
+    assert!(!e.rc.auto().is_on("a"));
+}
+
+#[tokio::test]
 async fn pending_blocks_a_different_spend() {
     // Core #2: account-level attempt with unknown outcome, then a card-level click must not
     // create a second redeem id (would spend two cards).
@@ -524,6 +640,32 @@ async fn refresh_admin_csrf_and_can_consume() {
         .unwrap();
     assert_ne!(r.status(), 400);
     assert_ne!(r.status(), 403);
+}
+
+#[tokio::test]
+async fn listing_and_quota_refresh_never_spend_an_enabled_manual_credit() {
+    let e = env(true).await;
+    for path in [
+        "/usage/v1/reset-credits/refresh",
+        "/admin/v1/accounts/a/quota-refresh",
+    ] {
+        let response = e
+            .http
+            .post(format!("{}{path}", e.base))
+            .bearer_auth(KEY)
+            .json(&json!({"account": "a"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+    }
+    for _ in 0..10 {
+        e.get("/usage/v1/reset-credits").await;
+    }
+    assert_eq!(e.n_consumes(), 0);
+    assert_eq!(e.mock.lists.lock().unwrap().len(), 1);
+    assert_eq!(e.mock.usage_hits.lock().unwrap().len(), 1);
+    assert!(!e.rc.auto().is_on("a"));
 }
 
 #[tokio::test]
