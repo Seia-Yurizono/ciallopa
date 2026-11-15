@@ -35,7 +35,8 @@ max_buffered_body_mb = 256
 ws_max_connections = 24
 # Largest client WebSocket message in MiB after decompression (hot: new handshakes; 1-4096).
 # A larger one closes the connection with 1009; Codex retries, then falls back to HTTP, where
-# max_body_mb applies.
+# max_body_mb applies. Advertised to the client as x-codex-websocket-max-message-bytes (capped
+# by the upstream's own value). chatgpt.com refuses messages over 16 MiB, so above 16 is moot.
 ws_max_message_mb = 16
 # Seconds running HTTP/SSE responses and WebSocket turns may still finish after SIGTERM (hot,
 # read at the signal; 0-60). Idle connections close at once. A Responses stream or WS turn

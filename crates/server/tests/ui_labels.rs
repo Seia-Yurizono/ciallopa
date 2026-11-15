@@ -45,6 +45,13 @@ fn new_codex_terminal_codes_have_chinese_labels() {
         "invalid_workspace_selected",
         "codex_workspace_access_denied",
         "budget_reached",
+        "audio_too_large",
+        "audio_too_short",
+        "invalid_audio",
+        "invalid_audio_data",
+        "invalid_audio_format",
+        "missing_audio_sample_rate",
+        "model_not_found",
     ];
     let html = include_str!("../src/ui.html");
     let labelled = keys(html, "const ERR_LBL=Object.assign({");

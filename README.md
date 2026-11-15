@@ -331,7 +331,8 @@ ws_compression = true                   # permessage-deflate on the client WebSo
                                         # offers it (Codex always does); applies to new connections
 ws_max_connections = 24                 # client WebSockets open at once (idle too); over: handshake 503,
                                         # Codex then uses HTTP; 0 = unlimited; new connections
-ws_max_message_mb = 16                  # largest client WS message after inflating; over: close 1009
+ws_max_message_mb = 16                  # largest client WS message after inflating; over: close 1009;
+                                        # advertised in the 101; upstream refuses > 16 anyway
 shutdown_drain_secs = 5                 # on SIGTERM, running responses/turns get this long (0-60), then
                                         # a retryable response.failed that Codex replays; hot-reloadable
 
@@ -396,7 +397,7 @@ cloudflare_cookies = false # true = per-account in-memory jar of ChatGPT infrast
 enabled = true
 main_model = "gpt-6.1-sol"         # wrapper model for non-gpt-image-* Images requests
 default_originator = "codex_exec"       # only for clients that don't send one
-default_user_agent = "codex_exec/0.167.1"   # used when client UA doesn't start with "codex"
+default_user_agent = "codex_exec/0.169.0"   # used when client UA doesn't start with "codex"
 ```
 
 ## Codex CLI client
@@ -535,7 +536,7 @@ button after re-listing the cards upstream; disabled / re-login accounts are ski
 
 Internal upstream calls (token refresh, `/wham/*`, reset credits) reuse the `User-Agent` +
 `originator` of the latest validated Codex client request (`GET /usage/v1/client-fingerprint`;
-default `codex_cli_rs/0.167.1`). See docs/USAGE.md.
+default `codex_cli_rs/0.169.0`). See docs/USAGE.md.
 
 Details: docs/USAGE.md.
 

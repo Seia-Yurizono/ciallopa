@@ -10,7 +10,7 @@ use ciallopa_core::{AccountId, Outcome, RouteError, RouteRequest};
 use ciallopa_routing::{parse_quota, parse_quota_event_headers};
 use ciallopa_upstream::drain::Phase;
 use ciallopa_upstream::retry::{delay_for, is_retryable_status, switch_jitter};
-use ciallopa_upstream::ws::handshake_status;
+use ciallopa_upstream::ws::{handshake_status, send_message};
 use ciallopa_upstream::{UpstreamWs, WsMessage};
 use ciallopa_usage::Transport;
 use futures::{SinkExt, StreamExt};
@@ -31,6 +31,26 @@ const CLOSE_REPLAY: u16 = 1012;
 const CLOSE_REPLAY_REASON: &str = "upstream requires HTTP replay";
 const CLOSE_INTERNAL: u16 = 1011;
 const CLOSE_TOO_BIG: u16 = 1009;
+/// How long a failed upstream write waits for the upstream's close frame. An upstream over
+/// its message limit (16 MiB for chatgpt.com) often closes before reading the rest, so the
+/// send fails first and the 1009 is still unread.
+const TOO_BIG_PEEK: Duration = Duration::from_millis(200);
+
+/// Handshake response header with the largest request message the server accepts, in bytes
+/// (serialized text before compression). Codex 0.170+ reads it from the 101 and sends a
+/// larger turn over HTTP instead of uploading it to be refused.
+const MAX_MESSAGE_BYTES_HEADER: &str = "x-codex-websocket-max-message-bytes";
+
+/// Value of [`MAX_MESSAGE_BYTES_HEADER`] for the client: the upstream's own (first value,
+/// parsed like Codex: a decimal `usize`, anything else ignored), never above the local
+/// `ws_max_message_mb` limit, which a larger message cannot pass anyway.
+fn advertised_max_message(upstream: &HeaderMap, local: usize) -> usize {
+    upstream
+        .get(MAX_MESSAGE_BYTES_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<usize>().ok())
+        .map_or(local, |u| u.min(local))
+}
 
 pub(crate) async fn handler(
     State(st): State<AppState>,
@@ -137,6 +157,7 @@ pub(crate) async fn handler(
         ..ctx
     };
     let drain = st.upstream.drain.clone();
+    let advertised = advertised_max_message(&resp_headers, max_message);
     let mut resp = ws.on_upgrade(compression, max_message, move |socket| async move {
         let _slot = slot;
         let handoff = lease.map(|axum::Extension(l)| l);
@@ -162,11 +183,17 @@ pub(crate) async fn handler(
                     | "set-cookie"
                     | "set-cookie2"
             )
+            // replaced by the capped value below
+            || n == MAX_MESSAGE_BYTES_HEADER
         {
             continue;
         }
         resp.headers_mut().append(k.clone(), v.clone());
     }
+    resp.headers_mut().insert(
+        MAX_MESSAGE_BYTES_HEADER,
+        http::HeaderValue::from(advertised),
+    );
     resp
 }
 
@@ -541,32 +568,56 @@ fn classify_observed(
     (kind, done, snapshot)
 }
 
-/// Whether Codex ends the turn on this `error` frame (codex-api
-/// `map_wrapped_websocket_error_event` + `flex_unavailable`): a non-2xx `status` /
-/// `status_code`, or a code it maps itself. Frames the proxy classifies (quota, overload,
-/// encrypted-content rejection) also end it, as before. Anything else Codex ignores and
-/// keeps reading, so the proxy forwards it and the turn goes on.
+/// Whether Codex ends the turn on this `error` frame. Mirrors codex-api 0.169.0's WS reader:
+/// `map_wrapped_websocket_error_event` first (the two lifecycle codes, then a `status` /
+/// `status_code` that is a valid non-2xx `http::StatusCode`, 100..=999), then
+/// `process_responses_event`, which calls `parse_terminal_provider_error` with status None, so
+/// its codes end the turn whatever the frame's own `status` says. Exact names only. Frames the
+/// proxy classifies (quota, overload, encrypted-content rejection) also end it, as before.
+/// Anything else Codex ignores and keeps reading, so the proxy forwards it and the turn goes on.
 fn error_frame_ends_turn(v: &serde_json::Value, kind: &proxy::EventKind) -> bool {
     if !matches!(kind, proxy::EventKind::Content | proxy::EventKind::Preamble) {
-        return true;
-    }
-    let status = ["status", "status_code"]
-        .iter()
-        .find_map(|k| v.get(*k).and_then(|s| s.as_u64()));
-    if status.is_some_and(|s| !(200..300).contains(&s)) {
         return true;
     }
     let code = v
         .get("error")
         .and_then(|e| e.get("code"))
         .and_then(|c| c.as_str());
+    if matches!(
+        code,
+        Some("websocket_connection_limit_reached" | "previous_response_not_found")
+    ) {
+        return true;
+    }
+    let status = ["status", "status_code"]
+        .iter()
+        .find_map(|k| v.get(*k).and_then(|s| s.as_u64()));
+    if status.is_some_and(|s| (100..=999).contains(&s) && !(200..300).contains(&s)) {
+        return true;
+    }
+    code.is_some_and(codex_terminal_code)
+}
+
+/// codex-api 0.169.0 `parse_terminal_provider_error` codes (error.rs), checked there with
+/// status None on the WS path.
+fn codex_terminal_code(code: &str) -> bool {
     matches!(
         code,
-        Some(
-            "websocket_connection_limit_reached"
-                | "previous_response_not_found"
-                | "flex_unavailable"
-        )
+        "inference_hook_denied"
+            | "context_length_exceeded"
+            | "invalid_access_program"
+            | "unsupported_access_program"
+            | "content_policy_violation"
+            | "access_program_not_enabled"
+            | "budget_reached"
+            | "audio_too_large"
+            | "audio_too_short"
+            | "invalid_audio"
+            | "invalid_audio_data"
+            | "invalid_audio_format"
+            | "missing_audio_sample_rate"
+            | "flex_unavailable"
+            | "model_not_found"
     )
 }
 
@@ -841,7 +892,7 @@ async fn relay(
                         awaiting = true;
                     }
                     if let Some(u) = to_up(m) {
-                        match write_with_client_close(utx.send(u), &mut drx, &mut queued_down).await {
+                        match write_with_client_close(send_message(&mut utx, u), &mut drx, &mut queued_down).await {
                             WriteResult::Sent(Ok(())) => {}
                             WriteResult::ClientClosed => {
                                 if let Some(t) = turn.as_mut() { t.client_gone(); }
@@ -849,8 +900,21 @@ async fn relay(
                                 break;
                             }
                             WriteResult::Sent(Err(e)) => {
+                                let forced = st.upstream.drain.phase() == Phase::Force;
+                                if !is_close && !forced && upstream_close_code(&mut urx, TOO_BIG_PEEK).await == Some(CLOSE_TOO_BIG) {
+                                    // The upstream refused the message as too big: a property of
+                                    // the request, not of this account. No cooldown, no switch;
+                                    // 1009 lets Codex 0.170+ send the turn over HTTP at once.
+                                    tracing::warn!(account = %ciallopa_core::a(&account), error = %e, "upstream closed 1009 (message too big) after a failed send; closing 1009");
+                                    if let Some(t) = turn.as_mut() {
+                                        t.fail_msg("upstream_ws_too_big", format!("upstream closed with 1009 (message too big) after a failed send (transport error: {e})"));
+                                        t.source(crate::errors::SRC_UPSTREAM);
+                                    }
+                                    let _ = dtx.send(close(CLOSE_TOO_BIG, "message too big")).await;
+                                    break;
+                                }
                                 // Client Close and forced shutdown retain their cancellation cause.
-                                if !is_close && st.upstream.drain.phase() != Phase::Force {
+                                if !is_close && !forced {
                                     if awaiting {
                                         progress.warn("ws", "write_error", &account, upstream_request_id.as_deref(), turn.as_ref());
                                     }
@@ -904,9 +968,14 @@ async fn relay(
                         let code = f.as_ref().map(|f| u16::from(f.code)).unwrap_or(1000);
                         if let Some(t) = turn.as_mut() {
                             let reason = f.as_ref().map(|f| f.reason.to_string()).unwrap_or_default();
-                            t.fail_msg("upstream_ws_close", format!("upstream websocket closed mid-turn (code {code}) {reason}").trim_end().to_string()); t.source(crate::errors::SRC_STREAM);
+                            if code == CLOSE_TOO_BIG {
+                                t.fail_msg("upstream_ws_too_big", format!("upstream closed with 1009 (message too big) {reason}").trim_end().to_string()); t.source(crate::errors::SRC_UPSTREAM);
+                            } else {
+                                t.fail_msg("upstream_ws_close", format!("upstream websocket closed mid-turn (code {code}) {reason}").trim_end().to_string()); t.source(crate::errors::SRC_STREAM);
+                            }
                         }
-                        if code != 1000 {
+                        // 1009 is about the message, not the account (forwarded as is below).
+                        if code != 1000 && code != CLOSE_TOO_BIG {
                             st.router.report(&route, &account, &Outcome::Transient { status: None });
                         }
                         for h in held.drain(..) { let _ = send_down(&mut dtx, h, turn.as_mut()).await; }
@@ -1005,7 +1074,7 @@ async fn relay(
                                         tokio::spawn(drain_close(old_tx, old_rx));
                                         held.clear();
                                         st.router.note_attempt(&account);
-                                        match write_replay(utx.send(WsMessage::Text(req)), &mut drx, &mut queued_down, &st.upstream.drain, &mut progress, &account, upstream_request_id.as_deref(), turn.as_mut()).await {
+                                        match write_replay(send_message(&mut utx, WsMessage::Text(req)), &mut drx, &mut queued_down, &st.upstream.drain, &mut progress, &account, upstream_request_id.as_deref(), turn.as_mut()).await {
                                             WriteResult::Sent(Ok(())) => {
                                                 sleep.as_mut().reset(tokio::time::Instant::now() + idle);
                                                 continue 'outer;
@@ -1060,7 +1129,7 @@ async fn relay(
                                             let old_rx = std::mem::replace(&mut urx, r);
                                             tokio::spawn(drain_close(old_tx, old_rx));
                                             held.clear();
-                                            match write_replay(utx.send(WsMessage::Text(req)), &mut drx, &mut queued_down, &st.upstream.drain, &mut progress, &account, upstream_request_id.as_deref(), turn.as_mut()).await {
+                                            match write_replay(send_message(&mut utx, WsMessage::Text(req)), &mut drx, &mut queued_down, &st.upstream.drain, &mut progress, &account, upstream_request_id.as_deref(), turn.as_mut()).await {
                                                 WriteResult::Sent(Ok(())) => {
                                                     sleep.as_mut().reset(tokio::time::Instant::now() + idle);
                                                     continue 'outer;
@@ -1450,6 +1519,25 @@ where
     .await;
 }
 
+/// After a failed upstream write: the code of an upstream close frame read within `window`
+/// (frames before it are dropped; the turn is over either way), or `None`.
+async fn upstream_close_code<R, E>(rx: &mut R, window: Duration) -> Option<u16>
+where
+    R: futures::Stream<Item = Result<WsMessage, E>> + Unpin,
+{
+    tokio::time::timeout(window, async {
+        while let Some(Ok(m)) = rx.next().await {
+            if let WsMessage::Close(f) = m {
+                return f.map(|f| u16::from(f.code));
+            }
+        }
+        None
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 /// Send Close and wait for its reply within one bound, then drop both halves.
 async fn drain_close<T, R, E>(mut tx: T, mut rx: R)
 where
@@ -1509,6 +1597,97 @@ fn upstream_end(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn advertised_max_message_is_min_of_upstream_and_local() {
+        const MIB: usize = 1 << 20;
+        let h = |vals: &[&str]| {
+            let mut h = HeaderMap::new();
+            for v in vals {
+                h.append(MAX_MESSAGE_BYTES_HEADER, v.parse().unwrap());
+            }
+            h
+        };
+        assert_eq!(advertised_max_message(&h(&[]), 16 * MIB), 16 * MIB);
+        assert_eq!(advertised_max_message(&h(&["1048576"]), 16 * MIB), MIB);
+        assert_eq!(
+            advertised_max_message(&h(&["33554432"]), 16 * MIB),
+            16 * MIB
+        );
+        assert_eq!(
+            advertised_max_message(&h(&["16777216"]), 16 * MIB),
+            16 * MIB
+        );
+        assert_eq!(
+            advertised_max_message(&h(&["16777216"]), 4096 * MIB),
+            16 * MIB
+        );
+        // Parsed like Codex (`str::parse::<usize>`): invalid values are ignored.
+        for bad in [
+            "",
+            "abc",
+            "-1",
+            " 1024",
+            "1024 ",
+            "1e6",
+            "99999999999999999999999",
+        ] {
+            assert_eq!(
+                advertised_max_message(&h(&[bad]), 2 * MIB),
+                2 * MIB,
+                "{bad:?}"
+            );
+        }
+        // The first value counts, as with `HeaderMap::get`.
+        assert_eq!(
+            advertised_max_message(&h(&["2097152", "1024"]), 16 * MIB),
+            2 * MIB
+        );
+        // An upstream that says 0 is passed on: it is the upstream's real limit.
+        assert_eq!(advertised_max_message(&h(&["0"]), 16 * MIB), 0);
+    }
+
+    #[tokio::test]
+    async fn upstream_close_code_after_a_failed_write() {
+        use tokio_tungstenite::tungstenite::Error as E;
+        type Item = Result<WsMessage, E>;
+        let close = |code: u16| {
+            WsMessage::Close(Some(UpCloseFrame {
+                code: CloseCode::from(code),
+                reason: "message too big".into(),
+            }))
+        };
+        let peek = |items: Vec<Item>| async move {
+            let mut rx = futures::stream::iter(items);
+            upstream_close_code(&mut rx, TOO_BIG_PEEK).await
+        };
+        assert_eq!(peek(vec![Ok(close(1009))]).await, Some(1009));
+        // Frames before the close are skipped.
+        assert_eq!(
+            peek(vec![
+                Ok(WsMessage::text("{}")),
+                Ok(WsMessage::Ping(Vec::new().into())),
+                Ok(close(1009))
+            ])
+            .await,
+            Some(1009)
+        );
+        assert_eq!(peek(vec![Ok(close(1011))]).await, Some(1011));
+        assert_eq!(peek(vec![Ok(WsMessage::Close(None))]).await, None);
+        assert_eq!(
+            peek(vec![Err(E::ConnectionClosed), Ok(close(1009))]).await,
+            None
+        );
+        assert_eq!(peek(vec![]).await, None);
+        // Nothing within the window: bounded.
+        let mut pending = futures::stream::pending::<Item>();
+        let t = tokio::time::Instant::now();
+        assert_eq!(
+            upstream_close_code(&mut pending, Duration::from_millis(50)).await,
+            None
+        );
+        assert!(t.elapsed() < Duration::from_secs(2));
+    }
 
     #[test]
     fn upstream_end_splits_eof_from_read_error() {
@@ -1783,6 +1962,78 @@ mod tests {
         assert!(replayable(r#"{"type":"response.create","input":[]}"#));
     }
 
+    /// Codex 0.169.0 `parse_terminal_provider_error`, which the WS reader calls for every
+    /// `error` frame with `status` = None (after `map_wrapped_websocket_error_event`): these
+    /// exact codes end the turn whatever the frame's own `status` says. Exact names, no
+    /// prefix matching (`audio_*` is a fixed list of six).
+    const CODEX_0_169_TERMINAL_CODES: &[&str] = &[
+        "inference_hook_denied",
+        "context_length_exceeded",
+        "invalid_access_program",
+        "unsupported_access_program",
+        "content_policy_violation",
+        "access_program_not_enabled",
+        "budget_reached",
+        "audio_too_large",
+        "audio_too_short",
+        "invalid_audio",
+        "invalid_audio_data",
+        "invalid_audio_format",
+        "missing_audio_sample_rate",
+        "flex_unavailable",
+        "model_not_found",
+    ];
+
+    #[test]
+    fn error_frame_ends_turn_on_codex_0_169_terminal_codes() {
+        let done = |t: &str| classify(t).1;
+        let mut wrong = Vec::new();
+        for code in CODEX_0_169_TERMINAL_CODES {
+            for frame in [
+                format!(r#"{{"type":"error","error":{{"code":"{code}","message":"x"}}}}"#),
+                // A 2xx status is not mapped by the wrapped-error path, so Codex still
+                // reaches parse_terminal_provider_error(status = None).
+                format!(r#"{{"type":"error","status":200,"error":{{"code":"{code}"}}}}"#),
+            ] {
+                if !done(&frame) {
+                    wrong.push(format!("not terminal: {frame}"));
+                }
+            }
+        }
+        // Not prefixes: near names stay non-terminal, like any unknown code.
+        for code in [
+            "audio_too_long",
+            "audio_x",
+            "model_not_found_x",
+            "invalid_audio_rate",
+        ] {
+            let frame = format!(r#"{{"type":"error","error":{{"code":"{code}"}}}}"#);
+            if done(&frame) {
+                wrong.push(format!("terminal: {frame}"));
+            }
+        }
+        // `status` outside http::StatusCode's 100..=999 is not mapped by Codex either.
+        for (frame, want) in [
+            (
+                r#"{"type":"error","status":1000,"error":{"code":"x"}}"#,
+                false,
+            ),
+            (
+                r#"{"type":"error","status":100,"error":{"code":"x"}}"#,
+                true,
+            ),
+            (
+                r#"{"type":"error","status_code":999,"error":{"code":"x"}}"#,
+                true,
+            ),
+        ] {
+            if done(frame) != want {
+                wrong.push(format!("want terminal={want}: {frame}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
     /// Codex (`map_wrapped_websocket_error_event`) ends a turn on an `error` frame only for
     /// a non-2xx `status`, or the codes it maps itself; any other error frame is ignored and
     /// it keeps reading. The proxy must not settle the turn on such a frame.
@@ -1805,6 +2056,7 @@ mod tests {
             "websocket_connection_limit_reached",
             "previous_response_not_found",
             "flex_unavailable",
+            "budget_reached",
         ] {
             assert!(
                 done(&format!(
