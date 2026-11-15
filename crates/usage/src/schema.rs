@@ -301,35 +301,38 @@ const STEPS: &[(i64, Migration)] = &[
     (16, migrate_v16),
 ];
 
-// Excludes requests.thread, whose ids now belong to the independent threads dictionary.
-// Used once by the v16 migration to drop the moved session names from `labels`.
-const LABEL_REFERENCES: &str = r#"SELECT account AS id FROM requests WHERE account IS NOT NULL
-UNION SELECT first_account AS id FROM requests WHERE first_account IS NOT NULL
-UNION SELECT model AS id FROM requests WHERE model IS NOT NULL
-UNION SELECT effort AS id FROM requests WHERE effort IS NOT NULL
-UNION SELECT endpoint AS id FROM requests WHERE endpoint IS NOT NULL
-UNION SELECT error AS id FROM requests WHERE error IS NOT NULL
-UNION SELECT key AS id FROM requests WHERE key IS NOT NULL
-UNION SELECT instance AS id FROM requests WHERE instance IS NOT NULL
-UNION SELECT plan AS id FROM requests WHERE plan IS NOT NULL
-UNION SELECT tier AS id FROM requests WHERE tier IS NOT NULL
-UNION SELECT req_tier AS id FROM requests WHERE req_tier IS NOT NULL
-UNION SELECT resp_model AS id FROM requests WHERE resp_model IS NOT NULL
-UNION SELECT resp_effort AS id FROM requests WHERE resp_effort IS NOT NULL
-UNION SELECT incomplete AS id FROM requests WHERE incomplete IS NOT NULL
-UNION SELECT err_source AS id FROM requests WHERE err_source IS NOT NULL
-UNION SELECT account AS id FROM quota_obs WHERE account IS NOT NULL
-UNION SELECT instance AS id FROM quota_obs WHERE instance IS NOT NULL
-UNION SELECT plan AS id FROM quota_obs WHERE plan IS NOT NULL
-UNION SELECT account AS id FROM quota_reset_events WHERE account IS NOT NULL
-UNION SELECT account AS id FROM quota_cycle_estimates WHERE account IS NOT NULL
-UNION SELECT key AS id FROM refusals WHERE key IS NOT NULL
-UNION SELECT route AS id FROM refusals WHERE route IS NOT NULL
-UNION SELECT ua AS id FROM refusals WHERE ua IS NOT NULL
-UNION SELECT model AS id FROM refusals WHERE model IS NOT NULL
-UNION SELECT account AS id FROM refusals WHERE account IS NOT NULL
-UNION SELECT instance AS id FROM refusals WHERE instance IS NOT NULL
-UNION SELECT instance AS id FROM occupancy WHERE instance IS NOT NULL"#;
+// Every label reference except requests.thread, whose ids now belong to the independent
+// threads dictionary. Used once by the v16 migration to drop the moved session names from
+// `labels`.
+const LABEL_REFERENCES: &[(&str, &str)] = &[
+    ("requests", "account"),
+    ("requests", "first_account"),
+    ("requests", "model"),
+    ("requests", "effort"),
+    ("requests", "endpoint"),
+    ("requests", "error"),
+    ("requests", "key"),
+    ("requests", "instance"),
+    ("requests", "plan"),
+    ("requests", "tier"),
+    ("requests", "req_tier"),
+    ("requests", "resp_model"),
+    ("requests", "resp_effort"),
+    ("requests", "incomplete"),
+    ("requests", "err_source"),
+    ("quota_obs", "account"),
+    ("quota_obs", "instance"),
+    ("quota_obs", "plan"),
+    ("quota_reset_events", "account"),
+    ("quota_cycle_estimates", "account"),
+    ("refusals", "key"),
+    ("refusals", "route"),
+    ("refusals", "ua"),
+    ("refusals", "model"),
+    ("refusals", "account"),
+    ("refusals", "instance"),
+    ("occupancy", "instance"),
+];
 
 fn migrate_v16(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
     tx.execute_batch(LATEST)?;
@@ -337,9 +340,17 @@ fn migrate_v16(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
         "INSERT INTO threads(id,name) SELECT DISTINCT l.id,l.name FROM labels l JOIN requests r ON r.thread=l.id;
          UPDATE reset_consume SET code=lower(code);"
     )?;
-    tx.execute_batch(&format!(
-        "DELETE FROM labels WHERE id NOT IN ({LABEL_REFERENCES})"
-    ))
+    // Collect the referenced ids column by column into a deduplicating table: one
+    // `NOT IN (<27-arm UNION>)` held ~240 MiB of temp b-tree for 1M rows (temp_store=MEMORY).
+    tx.execute_batch("CREATE TEMP TABLE label_keep(id INTEGER PRIMARY KEY)")?;
+    for (table, column) in LABEL_REFERENCES {
+        tx.execute_batch(&format!(
+            "INSERT OR IGNORE INTO label_keep SELECT {column} FROM {table} WHERE {column} IS NOT NULL"
+        ))?;
+    }
+    tx.execute_batch(
+        "DELETE FROM labels WHERE id NOT IN (SELECT id FROM label_keep); DROP TABLE label_keep;",
+    )
 }
 
 /// Create or migrate the schema atomically, preserving existing ids and values.
