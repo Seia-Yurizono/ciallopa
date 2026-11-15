@@ -2430,6 +2430,13 @@ mod quota_tests {
             "invalid_workspace_selected",
             "codex_workspace_access_denied",
             "budget_reached",
+            "audio_too_large",
+            "audio_too_short",
+            "invalid_audio",
+            "invalid_audio_data",
+            "invalid_audio_format",
+            "missing_audio_sample_rate",
+            "model_not_found",
         ];
         for code in CODES {
             for ev in [

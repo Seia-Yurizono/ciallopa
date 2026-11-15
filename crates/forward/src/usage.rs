@@ -953,6 +953,10 @@ pub(crate) const DESCRIPTIONS: &[(&str, &str)] = &[
         "upstream_ws_send_error",
         "could not forward the client frame to the upstream websocket",
     ),
+    (
+        "upstream_ws_too_big",
+        "upstream websocket closed with 1009: the message is over the upstream size limit",
+    ),
     ("idle_timeout", "upstream stream idle timeout"),
     ("usage_limit", "upstream usage limit reached"),
     ("no_account", "no account configured"),

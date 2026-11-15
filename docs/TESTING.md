@@ -242,6 +242,10 @@ CODEX_LOCK=/path/to/codex-rs/Cargo.lock scripts/lock-check.sh
 scripts/fp-check.sh
 ```
 
+`lock-check.sh` fails when a third-party crate version is missing from the codex-rs lock
+(apart from the listed security pins), and when a git-patched crate (the tungstenite forks)
+resolves to a different rev than codex-rs uses.
+
 `fp-check.sh` needs its documented reference tools and permission to temporarily modify
 `/etc/hosts`. It requires both HTTP and WS captures, starts one owned capture server, and
 removes only its uniquely marked hosts entry on exit. Existing `chatgpt.com` mappings are

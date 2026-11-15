@@ -1307,6 +1307,8 @@ pub const REQUEST_ERRORS: &[&str] = &[
     "unsupported_parameter",
     "unsupported_value",
     "string_above_max_length",
+    // WS close 1009 from the upstream (recorded by the relay): the message is over its limit.
+    "upstream_ws_too_big",
 ];
 
 /// WebSocket lifecycle codes: Codex reconnects (connection age limit) or resends the full

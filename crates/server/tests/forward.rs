@@ -1050,7 +1050,35 @@ async fn up_ws(State(m): State<Mock>, h: HeaderMap, ws: WebSocketUpgrade) -> Res
     }
     let drop_replay = mode == "ws_replay_drop" && !auth.contains("tok-a");
     let burst_sync = (m.ready.clone(), m.release.clone());
+    // Upstream size limit fixtures: `ws_up_limit` reads with a 1 MiB limit (like the real
+    // 16 MiB one) and answers an oversized message with Close 1009, then drops the connection
+    // with the rest unread; `ws_close_1009` reads the message and answers Close 1009.
+    let up_limit = mode == "ws_up_limit";
+    let close_1009 = mode == "ws_close_1009";
+    let ws = if up_limit {
+        ws.max_message_size(1 << 20).max_frame_size(1 << 20)
+    } else {
+        ws
+    };
+    // `ws_maxmsg:<v>[|<v>...]`: the 101 carries x-codex-websocket-max-message-bytes values.
+    let max_hdr: Vec<String> = mode
+        .strip_prefix("ws_maxmsg:")
+        .map(|v| v.split('|').map(str::to_string).collect())
+        .unwrap_or_default();
     let mut r = ws.on_upgrade(move |mut s| async move {
+        if up_limit || close_1009 {
+            let first = s.recv().await;
+            if up_limit && !matches!(first, Some(Err(_))) {
+                return;
+            }
+            let _ = s
+                .send(Message::Close(Some(axum::extract::ws::CloseFrame {
+                    code: 1009,
+                    reason: "message too big".into(),
+                })))
+                .await;
+            return;
+        }
         while let Some(Ok(msg)) = s.recv().await {
             if let Message::Text(t) = msg {
                 if drop_replay {
@@ -1168,6 +1196,18 @@ async fn up_ws(State(m): State<Mock>, h: HeaderMap, ws: WebSocketUpgrade) -> Res
                     let _ = s.send(Message::Text(r#"{"type":"response.created","response":{"id":"r-d"}}"#.into())).await;
                     return;
                 }
+                if t.as_str().contains("\"tag\":\"terminal_code:") {
+                    // A status-less error frame Codex treats as terminal; the upstream then keeps
+                    // the socket open without a terminal response event (the relay must settle the
+                    // turn on the error frame itself, as Codex does).
+                    let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap_or_default();
+                    let code = v["tag"].as_str().unwrap_or("").trim_start_matches("terminal_code:").to_string();
+                    let created = r#"{"type":"response.created","response":{"id":"r-t"}}"#;
+                    let _ = s.send(Message::Text(created.into())).await;
+                    let err = format!(r#"{{"type":"error","error":{{"code":"{code}","message":"fixture {code}"}}}}"#);
+                    let _ = s.send(Message::Text(err.into())).await;
+                    continue;
+                }
                 if t.as_str().contains("\"soft_error\"") {
                     // An error frame Codex ignores (no status, unknown code), then the turn goes on.
                     for f in [
@@ -1246,6 +1286,10 @@ async fn up_ws(State(m): State<Mock>, h: HeaderMap, ws: WebSocketUpgrade) -> Res
         .insert("set-cookie", "__cf_bm=secret".parse().unwrap());
     r.headers_mut()
         .insert("set-cookie2", "__oailb=secret".parse().unwrap());
+    for v in &max_hdr {
+        r.headers_mut()
+            .append("x-codex-websocket-max-message-bytes", v.parse().unwrap());
+    }
     r
 }
 
@@ -1295,6 +1339,63 @@ async fn env_cfg_accounts(
     extra: &str,
     accounts: Option<Arc<dyn AccountStore>>,
 ) -> Env {
+    env_inner(idle, usage, extra, accounts, None).await
+}
+
+/// Bytes ciallopa wrote to the upstream, one entry per TCP connection (handshake included).
+type Tap = Arc<Mutex<Vec<Arc<Mutex<Vec<u8>>>>>>;
+
+/// Plain TCP relay in front of `target` that records what the proxy writes upstream.
+async fn tap_to(target: String) -> (String, Tap) {
+    let ln = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = ln.local_addr().unwrap();
+    let tap: Tap = Default::default();
+    let t = tap.clone();
+    tokio::spawn(async move {
+        while let Ok((mut down, _)) = ln.accept().await {
+            let buf = Arc::new(Mutex::new(Vec::new()));
+            t.lock().unwrap().push(buf.clone());
+            let target = target.clone();
+            tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let Ok(mut up) = tokio::net::TcpStream::connect(&target).await else {
+                    return;
+                };
+                let (mut dr, mut dw) = down.split();
+                let (mut ur, mut uw) = up.split();
+                let to_up = async {
+                    let mut b = vec![0u8; 64 * 1024];
+                    loop {
+                        match dr.read(&mut b).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                buf.lock().unwrap().extend_from_slice(&b[..n]);
+                                if uw.write_all(&b[..n]).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    let _ = uw.shutdown().await;
+                };
+                let to_down = async {
+                    let _ = tokio::io::copy(&mut ur, &mut dw).await;
+                    let _ = dw.shutdown().await;
+                };
+                tokio::join!(to_up, to_down);
+            });
+        }
+    });
+    (format!("127.0.0.1:{}", addr.port()), tap)
+}
+
+async fn env_inner(
+    idle: u64,
+    usage: Option<Arc<ciallopa_usage::Recorder>>,
+    extra: &str,
+    accounts: Option<Arc<dyn AccountStore>>,
+    tap: Option<&mut Option<Tap>>,
+) -> Env {
     let mock = Mock::default();
     let up = Router::new()
         .route(
@@ -1307,7 +1408,12 @@ async fn env_cfg_accounts(
         .route("/backend-api/codex/images/edits", post(up_images))
         .route("/backend-api/wham/usage", get(up_models))
         .with_state(mock.clone());
-    let up_addr = serve(up).await;
+    let mut up_addr = serve(up).await;
+    if let Some(slot) = tap {
+        let (addr, t) = tap_to(up_addr).await;
+        up_addr = addr;
+        *slot = Some(t);
+    }
     let cfg = Config::parse(&format!(
         "api_keys = [\"{KEY}\"]\nupstream = \"http://{up_addr}/backend-api\"\n[upstream_opts]\nstream_idle_timeout_secs = {idle}\n{extra}"
     ))
@@ -1886,6 +1992,241 @@ async fn ws_message_over_the_limit_closes_1009_even_when_compressed() {
     })
     .await
     .unwrap();
+}
+
+/// Wait for a close frame from the proxy and return its code (None: no close frame).
+async fn ws_close_code<S>(ws: &mut tokio_tungstenite::WebSocketStream<S>, secs: u64) -> Option<u16>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use tokio_tungstenite::tungstenite::Message as M;
+    loop {
+        match tokio::time::timeout(Duration::from_secs(secs), ws.next())
+            .await
+            .expect("close within the bound")
+        {
+            Some(Ok(M::Close(f))) => return f.map(|f| u16::from(f.code)),
+            Some(Ok(_)) => continue,
+            _ => return None,
+        }
+    }
+}
+
+/// A `response.create` turn of exactly `len` bytes.
+fn sized_turn(len: usize) -> String {
+    let head = r#"{"type":"response.create","model":"gpt-5.5","pad":""#;
+    format!("{head}{}\"}}", "x".repeat(len - head.len() - 2))
+}
+
+#[tokio::test]
+async fn ws_handshake_advertises_max_message_bytes_min_of_upstream_and_local() {
+    const MIB: u64 = 1 << 20;
+    let e = env(300).await;
+    // (upstream 101 values, local ws_max_message_mb, advertised to the client)
+    for (up, local, want) in [
+        (None, 16, 16 * MIB),
+        (Some("1048576"), 16, MIB),
+        (Some("33554432"), 16, 16 * MIB),
+        (Some("16777216"), 32, 16 * MIB),
+        (Some("16777216"), 16, 16 * MIB),
+        // unparseable: ignored like Codex does
+        (Some("bogus"), 4, 4 * MIB),
+        (Some("-1"), 4, 4 * MIB),
+        (Some("99999999999999999999999"), 4, 4 * MIB),
+        // several values: the first one counts (Codex reads `headers().get`)
+        (Some("2097152|8388608"), 16, 2 * MIB),
+    ] {
+        let mut cfg = (*e.config.load()).clone();
+        cfg.ws_max_message_mb = local;
+        e.config.store(cfg);
+        let mut req = ws_req(&e);
+        if let Some(v) = up {
+            req.headers_mut()
+                .insert("x-test-mode", format!("ws_maxmsg:{v}").parse().unwrap());
+        }
+        let (mut ws, r) = tokio_tungstenite::connect_async(req).await.unwrap();
+        assert_eq!(r.status(), 101);
+        let got: Vec<_> = r
+            .headers()
+            .get_all("x-codex-websocket-max-message-bytes")
+            .iter()
+            .map(|v| v.to_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            got,
+            vec![want.to_string()],
+            "upstream {up:?}, local {local} MiB"
+        );
+        let _ = ws.close(None).await;
+    }
+}
+
+#[tokio::test]
+async fn ws_upstream_1009_after_failed_write_closes_1009_without_cooling() {
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    // Above the upstream limit (1 MiB in this fixture, 16 MiB for real): only a raised
+    // ws_max_message_mb lets such a message reach the upstream.
+    let mut cfg = (*e.config.load()).clone();
+    cfg.ws_max_message_mb = 32;
+    e.config.store(cfg);
+    let mut req = ws_req(&e);
+    req.headers_mut()
+        .insert("x-test-mode", "ws_up_limit".parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    let hits = e.mock.hits.load(Ordering::SeqCst);
+    // Far more than the socket buffers hold: the upstream stops reading, so the write fails.
+    ws.send(tokio_tungstenite::tungstenite::Message::text(sized_turn(
+        24 << 20,
+    )))
+    .await
+    .unwrap();
+    assert_eq!(ws_close_code(&mut ws, 30).await, Some(1009));
+    // Same account, no redial, no account outcome beyond the handshake's success.
+    assert_eq!(e.mock.hits.load(Ordering::SeqCst), hits);
+    let outcomes = e.outcomes();
+    assert!(
+        outcomes
+            .iter()
+            .all(|(_, o)| matches!(o, Outcome::Success { .. })),
+        "{outcomes:?}"
+    );
+    let rows = wait_rows(&e, 1).await;
+    assert_eq!(rows[0]["error"], "upstream_ws_too_big", "{rows:?}");
+    assert_eq!(rows[0]["account"], "a", "{rows:?}");
+    assert_eq!(rows[0]["switches"], 0, "{rows:?}");
+    let detail: serde_json::Value = detail_of(&e, rows[0]["request_id"].as_str().unwrap(), true)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        detail.to_string().contains("after a failed send"),
+        "{detail}"
+    );
+}
+
+#[tokio::test]
+async fn ws_upstream_close_1009_is_not_an_account_failure() {
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    let mut req = ws_req(&e);
+    req.headers_mut()
+        .insert("x-test-mode", "ws_close_1009".parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    ws.send(tokio_tungstenite::tungstenite::Message::text(sized_turn(
+        4096,
+    )))
+    .await
+    .unwrap();
+    assert_eq!(ws_close_code(&mut ws, 5).await, Some(1009));
+    let outcomes = e.outcomes();
+    assert!(
+        outcomes
+            .iter()
+            .all(|(_, o)| matches!(o, Outcome::Success { .. })),
+        "{outcomes:?}"
+    );
+    let rows = wait_rows(&e, 1).await;
+    assert_eq!(rows[0]["error"], "upstream_ws_too_big", "{rows:?}");
+}
+
+/// Client-to-server frames after the HTTP handshake: (fin, rsv1, opcode, unmasked payload).
+fn wire_frames(raw: &[u8]) -> Vec<(bool, bool, u8, Vec<u8>)> {
+    let start = raw.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+    let mut b = &raw[start..];
+    let mut out = Vec::new();
+    while b.len() >= 2 {
+        let (fin, rsv1, op) = (b[0] & 0x80 != 0, b[0] & 0x40 != 0, b[0] & 0x0f);
+        let masked = b[1] & 0x80 != 0;
+        let (mut len, mut i) = ((b[1] & 0x7f) as usize, 2);
+        if len == 126 {
+            len = u16::from_be_bytes([b[2], b[3]]) as usize;
+            i = 4;
+        } else if len == 127 {
+            len = u64::from_be_bytes(b[2..10].try_into().unwrap()) as usize;
+            i = 10;
+        }
+        let mask = masked.then(|| {
+            let m = [b[i], b[i + 1], b[i + 2], b[i + 3]];
+            i += 4;
+            m
+        });
+        if b.len() < i + len {
+            break;
+        }
+        let mut p = b[i..i + len].to_vec();
+        if let Some(m) = mask {
+            for (j, x) in p.iter_mut().enumerate() {
+                *x ^= m[j % 4];
+            }
+        }
+        out.push((fin, rsv1, op, p));
+        b = &b[i + len..];
+    }
+    out
+}
+
+#[tokio::test]
+async fn ws_upstream_turn_is_fragmented_at_1_mib_like_codex_0_169() {
+    use tokio_tungstenite::tungstenite::Message as M;
+    const MIB: usize = 1 << 20;
+    let mut tap = None;
+    let e = env_inner(300, None, "", None, Some(&mut tap)).await;
+    let tap = tap.unwrap();
+    // A 4-byte character straddles the first 1 MiB boundary, so the first two fragments
+    // are not valid UTF-8 on their own.
+    let head = r#"{"type":"response.create","model":"gpt-5.5","pad":""#;
+    let mut big = String::from(head);
+    big.push_str(&"a".repeat(MIB - head.len() - 2));
+    big.push('🌱');
+    while big.len() < 3 * MIB + 5 {
+        big.push('b');
+    }
+    big.push_str("\"}");
+    assert_eq!(big.len(), 3 * MIB + 7);
+    let exact = sized_turn(MIB);
+    let small = sized_turn(300);
+    let (mut ws, _) = tokio_tungstenite::connect_async(ws_req(&e)).await.unwrap();
+    for msg in [&small, &exact, &big] {
+        ws.send(M::text(msg.as_str())).await.unwrap();
+        let got = ws.next().await.unwrap().unwrap();
+        let v: serde_json::Value = serde_json::from_str(got.to_text().unwrap()).unwrap();
+        let sent: serde_json::Value = serde_json::from_str(msg).unwrap();
+        assert!(v["echo"] == sent, "upstream got the message intact");
+    }
+    let _ = ws.close(None).await;
+    let conns = tap.lock().unwrap().clone();
+    let raw = conns
+        .iter()
+        .map(|c| c.lock().unwrap().clone())
+        .find(|b| {
+            b.starts_with(b"GET ")
+                && String::from_utf8_lossy(&b[..b.len().min(4096)])
+                    .to_ascii_lowercase()
+                    .contains("upgrade: websocket")
+        })
+        .expect("websocket connection through the tap");
+    let data: Vec<_> = wire_frames(&raw).into_iter().filter(|f| f.2 <= 2).collect();
+    let shape: Vec<_> = data
+        .iter()
+        .map(|(fin, rsv1, op, p)| (*fin, *rsv1, *op, p.len()))
+        .collect();
+    assert_eq!(
+        shape,
+        vec![
+            (true, false, 1, small.len()),
+            // exactly 1 MiB is still one frame (Codex: `text.len() <= FRAGMENT_SIZE`)
+            (true, false, 1, MIB),
+            (false, false, 1, MIB),
+            (false, false, 0, MIB),
+            (false, false, 0, MIB),
+            (true, false, 0, 7),
+        ]
+    );
+    let joined: Vec<u8> = data[2..].iter().flat_map(|f| f.3.clone()).collect();
+    assert_eq!(joined, big.as_bytes());
+    assert!(std::str::from_utf8(&data[2].3).is_err() && std::str::from_utf8(&data[3].3).is_err());
 }
 
 #[tokio::test]
@@ -4889,7 +5230,7 @@ async fn models_catalog_passthrough_no_null_service_tiers() {
     let e = env(300).await;
     for p in [
         "/v1/models",
-        "/backend-api/codex/models?client_version=0.167.1",
+        "/backend-api/codex/models?client_version=0.169.0",
     ] {
         let r = e
             .http
@@ -6192,6 +6533,89 @@ async fn ws_client_close_records_upstream_silent_duration() {
         .and_then(|n| n.parse().ok())
         .unwrap_or_else(|| panic!("no silent duration: {v}"));
     assert!((0.2..5.0).contains(&secs), "{v}");
+}
+
+/// Codex 0.169.0 ends the turn on these status-less error codes
+/// (`parse_terminal_provider_error`); the relay settles the turn on the frame too instead of
+/// holding it until the idle timeout, and the next turn on the same socket goes through.
+#[tokio::test]
+async fn ws_codex_terminal_error_codes_end_the_turn() {
+    use tokio_tungstenite::tungstenite::Message as M;
+    const CODES: &[&str] = &[
+        "inference_hook_denied",
+        "context_length_exceeded",
+        "invalid_access_program",
+        "unsupported_access_program",
+        "content_policy_violation",
+        "access_program_not_enabled",
+        "audio_too_large",
+        "audio_too_short",
+        "invalid_audio",
+        "invalid_audio_data",
+        "invalid_audio_format",
+        "missing_audio_sample_rate",
+        "model_not_found",
+    ];
+    let mut stuck = Vec::new();
+    for code in CODES {
+        let d = tempfile::tempdir().unwrap();
+        let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+        let (mut ws, _) = tokio_tungstenite::connect_async(ws_req(&e)).await.unwrap();
+        ws.send(M::text(format!(
+            r#"{{"type":"response.create","tag":"terminal_code:{code}"}}"#
+        )))
+        .await
+        .unwrap();
+        // Before any output: a non-terminal error frame is held with the preamble, so the
+        // client would not even see it until the idle timeout.
+        let delivered = loop {
+            match tokio::time::timeout(Duration::from_secs(3), ws.next()).await {
+                Err(_) => break false,
+                Ok(Some(Ok(M::Text(t)))) if t.as_str().contains("\"type\":\"error\"") => {
+                    assert!(t.as_str().contains(code), "{t}");
+                    break true;
+                }
+                Ok(Some(Ok(_))) => {}
+                Ok(other) => panic!("{code}: {other:?}"),
+            }
+        };
+        if !delivered {
+            stuck.push(*code);
+            continue;
+        }
+        // Settled on the error frame: the row is written while the socket stays open.
+        let rows = wait_rows(&e, 1).await;
+        assert_eq!(rows.len(), 1, "{code}: turn still open: {rows:?}");
+        assert_eq!(rows[0]["error"], *code, "{code}: {rows:?}");
+        // The connection is free for the next turn.
+        ws.send(M::text(r#"{"type":"response.create","tag":"soft_error"}"#))
+            .await
+            .unwrap();
+        loop {
+            match tokio::time::timeout(Duration::from_secs(3), ws.next())
+                .await
+                .unwrap()
+            {
+                Some(Ok(M::Text(t))) if t.as_str().contains("response.completed") => break,
+                Some(Ok(_)) => {}
+                other => panic!("{code}: second turn {other:?}"),
+            }
+        }
+        ws.close(None).await.unwrap();
+        let rows = wait_rows(&e, 2).await;
+        assert_eq!(rows.len(), 2, "{code}: {rows:?}");
+        assert!(
+            e.outcomes()
+                .iter()
+                .all(|(_, o)| !matches!(o, Outcome::Transient { .. })),
+            "{code}: {:?}",
+            e.outcomes()
+        );
+    }
+    assert!(
+        stuck.is_empty(),
+        "error frame not delivered within 3 s (turn held until idle timeout): {stuck:?}"
+    );
 }
 
 /// A status-less error frame with an unknown code does not end the turn (Codex ignores it);
