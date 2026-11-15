@@ -422,7 +422,7 @@ CREATE TABLE requests(
   incomplete INTEGER,                                         -- v7
   err_source INTEGER, up_status INTEGER);                     -- v9
 CREATE INDEX requests_thread ON requests(thread) WHERE thread IS NOT NULL;
-CREATE INDEX requests_account ON requests(account, id); -- v16, quota/cycle scans
+CREATE INDEX requests_account ON requests(account); -- v17; rowid already carries id
 -- one row per *change* of an account's quota (id = observing request id)
 CREATE TABLE quota_obs(id INTEGER PRIMARY KEY, account INTEGER NOT NULL, instance INTEGER,
   plan INTEGER, p_pct REAL, p_reset INTEGER, p_win INTEGER, s_pct REAL, s_reset INTEGER, s_win INTEGER,
@@ -464,17 +464,20 @@ CREATE TABLE occupancy(minute INTEGER NOT NULL, instance INTEGER NOT NULL, sampl
   lim_inflight INTEGER NOT NULL, lim_ws INTEGER NOT NULL, lim_buffered INTEGER NOT NULL,
   PRIMARY KEY(minute, instance));
 ```
-- Schema is at `user_version = 16` (v13 adds the `requests_thread` index; v14 adds the
+- Schema is at `user_version = 17` (v13 adds the `requests_thread` index; v14 adds the
   `request_obs` table, see *Gateway downstream observation*; v15 adds `quota_obs.cards` and the
   `quota_reset_events` / `quota_cycle_estimates` tables; v16 moves sessions into `threads`,
-  preserving ids, adds `requests_account`, and normalizes reset-result codes). Opening an older file upgrades it in place (`ALTER TABLE` /
+  preserving ids, adds `requests_account`, and normalizes reset-result codes; v17 narrows
+  that index to `account`, since SQLite already stores the request id as its rowid).
+  Opening an older file upgrades it in place (`ALTER TABLE` /
   new tables); columns that did not exist yet stay NULL on old rows.
 - `quota_obs` gets a row only when used % / plan changes or a reset time moves by > 120 s
   (upstream reset times jitter by a few seconds). Purge keeps each account's latest row.
   A successful reset-card consume also writes the fetched `/wham/usage` snapshot (via the
   existing writer queue, not a synchronous extra write).
 - `requests_thread(thread) WHERE thread IS NOT NULL` serves session views; the
-  `requests_account(account,id)` index keeps quota/cycle scans proportional to one account.
+  `requests_account(account)` index keeps quota/cycle scans proportional to one account,
+  including request-id ranges and ordering through the implicit rowid.
   Time ranges and retention still use the ordered request id. Other strings live in `labels`;
   sessions live in `threads`. Retention removes orphan dictionary entries after the final chunk.
   The writer caches at most 10,000 labels and does not cache session names.

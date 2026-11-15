@@ -328,6 +328,31 @@ with results. Compare direct mock access with proxy access when measuring gatewa
 Establish a baseline before choosing latency or memory thresholds; one machine's RPS is
 not a project-wide capacity promise.
 
+### Exact short-SSE comparison
+
+The cloud reproduction uses 20 deltas plus created/completed events (22 total, 3009
+SSE bytes), one event per application body chunk, no sleeps and TCP_NODELAY. The
+request-size parameter 200 produces 192 bytes. The client stops at the terminal
+event; this does not establish HTTP connection reuse or wait for EOF.
+
+```sh
+cargo build --release --locked -p ciallopa --example benchx
+export BENCH_HX="$PWD/target/release/examples/benchx"
+export BENCH_BINS='{"main":"/path/to/baseline/ciallopa","new":"/path/to/candidate/ciallopa"}'
+export BENCH_ORDER='["main","new"]'
+uv run --no-project python scripts/bench-sse-compare.py 8 8 /scratch/new-sse-evidence
+uv run --no-project python scripts/bench-sse-compare.py --compare /scratch/new-sse-evidence/results.jsonl
+```
+
+Use immutable release binaries built with the same toolchain and features. Set
+`BENCH_GW_CPUS` and `BENCH_LOAD_CPUS` to available disjoint CPUs (defaults 0–3 and
+4–7). The three default scenarios cover concurrency 64 with usage on/off and
+concurrency 4 with usage on. Each round preserves raw logs and an explicit
+scenario/round/build key; failed or missing runs are excluded from paired ratios.
+Legacy results without round keys cannot be paired by this tool. Usage databases
+remain in new `/tmp` directories; the filesystem type is recorded, since tmpfs
+results are not disk-writing measurements. Run performance comparisons serially.
+
 ### Optional bounded usage migration check
 
 Build the example once and use synthetic v15+ fixtures only. `gen` requires a new database
