@@ -276,6 +276,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pending_and_data_hold_the_lease_until_drop() {
+        for pending in [false, true] {
+            let drain = Arc::new(Drain::default());
+            let inner = if pending {
+                Body::from_stream(futures::stream::pending::<Result<Bytes, std::io::Error>>())
+            } else {
+                Body::from("chunk")
+            };
+            let mut body = leased(&drain, inner, None);
+            let mut cx = Context::from_waker(std::task::Waker::noop());
+            let frame = Pin::new(&mut body).poll_frame(&mut cx);
+            assert_eq!(frame.is_pending(), pending);
+            assert_eq!(drain.inflight(), 1);
+            drop(body);
+            assert_eq!(drain.inflight(), 0);
+        }
+    }
+
+    #[tokio::test]
     async fn eof_and_read_error_release_the_lease() {
         for error in [false, true] {
             let drain = Arc::new(Drain::default());
