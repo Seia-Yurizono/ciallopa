@@ -442,7 +442,7 @@ CREATE TABLE quota_cycle_estimates (
   started_ms INTEGER NOT NULL, ended_ms INTEGER NOT NULL, ended_obs_id INTEGER NOT NULL,
   cycle_reset_at INTEGER, close_kind TEXT NOT NULL,
   capacity_credits REAL, capacity_lo REAL, capacity_hi REAL, delta_pct REAL,
-  credits_used REAL, api_cost_usd REAL, requests INTEGER, snapshots INTEGER,
+  credits_used REAL, api_cost_usd REAL, requests INTEGER, snapshots INTEGER, -- api_cost_usd: 额度 only (v20)
   coverage_gap INTEGER NOT NULL DEFAULT 0, confidence TEXT NOT NULL, card_source TEXT,
   over_credits REAL, over_api_usd REAL,           -- v19, 点数 spent after the window was full
   UNIQUE(account, window, ended_obs_id));
@@ -751,7 +751,8 @@ path). Classes, independently per window:
 | *(not stored)* | only `resets_at` moved (idle slide / jitter) |
 
 Each cycle row stores `capacity_credits` (and lo/hi), `credits_used`, `api_cost_usd` (sum of
-nominal API list prices for requests in that cycle, the existing `cost_usd` formula),
+nominal API list prices for the included requests in that cycle, the existing `cost_usd` formula;
+requests paid from 点数 are priced separately in `over_api_usd`),
 `coverage_gap`, `confidence`, and `card_source` (`manual` / `auto`) when a local card was
 used. In-progress cycles are computed at read time and not persisted. Across closed cycles
 there is no smoothing: a cycle whose point estimate is outside 0.7–1.4× of the historical
@@ -766,13 +767,15 @@ a card is used) and draws each row's 30-day sparkline from it (the long window o
 pro: step line and a hollow dot per reset). Expanding a row shows 「额度周期 · 30 天」 for one window
 at a time: accounts with both windows (by `window_minutes`) get a 周 | 5h toggle (default 周, kept
 for the browser session), weekly-only accounts just show 周. Each cycle is one row, newest first,
-with every row on the same credits scale: the outlined box is the estimated capacity (tick = point
-estimate, grey hatching = range), the blue fill is included quota used (`credits_used`), and an
-orange hatched segment past it is 点数 (purchased credits) spent after the window was full
-(`over_credits`). Right of the bar: `used / capacity` and `$API price · 点数 N`. A cycle whose
-capacity is not known yet says 「估算中」 (dashed box at the median of earlier cycles), never 0.
-Clicking a row (or Enter / Space) opens its details: capacity and range, used, API price, 点数 and
-their API price, exact start/end, Δ% / snapshots / requests, confidence, how it ended (card use,
+with every row on the same credits scale: the blue block is the estimated capacity (light-blue
+hatching = low–high range; a fading end when only a lower bound is known) and the dark inset bar (light
+in dark mode) inside it is included quota used (`credits_used`). The bar shows 额度 only. Right of
+the bar: `used / capacity` and the 额度 API price. 点数 (purchased credits) spent after the window
+was full is never drawn on the bar: a separate orange chip under it reads `点数 N · $x.xx`
+(`over_credits`, `over_api_usd`). A cycle whose capacity is not known yet says 「估算中」 (dashed
+outline at the median of earlier cycles, or across the whole track without one), never 0. Clicking a row (or Enter / Space) opens its
+details in groups: 额度 (capacity and range, used, 额度 API price), 点数 (amount and its own API
+price, only when used), then exact start/end, Δ% / snapshots / requests, confidence, how it ended (card use,
 used % before/after) and the trend flag. Nothing is tooltip-only. 5h shows the newest 12 cycles
 with 「再显示 N 个周期」. The scale's top ignores far-off capacities (Tukey upper fence on the
 estimates, IQR floored at 20% of the median, ×1.5); longer bars are cut at the edge and the real
@@ -784,7 +787,9 @@ keeps serving and bills 点数 (Fast 2×, Ultrafast 6× on the purchased rate ca
 for included usage). For the estimate:
 - A request made while its own window was already full (used ≥ 99.5% with that window still
   live) is paid from 点数 and left out of `credits_used`; it is counted in `over_credits`
-  (purchased rates), `over_api_usd` and the cycle's `api_cost_usd` (which stays the total).
+  (purchased rates) and `over_api_usd`, and not in the cycle's `api_cost_usd` (额度 only since
+  schema v20; the v20 upgrade subtracts `over_api_usd` from rows written by v19, while cycles
+  closed before v19 have no split and keep their total).
 - Plus: while only the 5h window is full, weekly is not moving either (both are billed from
   点数). Requests in such a run are left out of the weekly numerator when the weekly percent
   did not move by at least 1 across the run.

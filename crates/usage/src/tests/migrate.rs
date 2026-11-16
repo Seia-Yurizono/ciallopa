@@ -823,7 +823,49 @@ fn v19_adds_credit_columns_and_keeps_rows() {
         assert_eq!(
             c.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
                 .unwrap(),
-            19
+            crate::schema::SCHEMA_VERSION
+        );
+    }
+}
+
+#[test]
+fn v20_moves_credit_funded_price_out_of_the_cycle_price() {
+    // v19 stored api_cost_usd as included + credit-funded; v20 keeps only the included part.
+    let mut c = fixture(16);
+    crate::schema::migrate(&mut c).unwrap();
+    c.execute_batch(
+        "PRAGMA user_version=19;
+         INSERT INTO quota_cycle_estimates(account,window,started_ms,ended_ms,ended_obs_id,close_kind,
+           credits_used,api_cost_usd,confidence,over_credits,over_api_usd) VALUES
+           (1,'primary',1,2,10,'natural',100,12.5,'ok',30,2.5),
+           (1,'primary',3,4,11,'natural',100,8.0,'ok',NULL,NULL),
+           (1,'primary',5,6,12,'natural',100,NULL,'ok',30,NULL),
+           (1,'primary',7,8,13,'natural',100,1.0,'ok',30,1.5);",
+    )
+    .unwrap();
+    for _ in 0..2 {
+        crate::schema::migrate(&mut c).unwrap();
+        let mut st = c
+            .prepare(
+                "SELECT api_cost_usd, over_api_usd FROM quota_cycle_estimates ORDER BY started_ms",
+            )
+            .unwrap();
+        let rows: Vec<(Option<f64>, Option<f64>)> = st
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (Some(10.0), Some(2.5)),
+                // closed before v19: no split known, left as is
+                (Some(8.0), None),
+                (None, None),
+                // never negative
+                (Some(0.0), Some(1.5)),
+            ],
+            "applied once, not again on the second open"
         );
     }
 }

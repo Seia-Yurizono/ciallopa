@@ -35,6 +35,7 @@ pub struct Estimate {
     pub coverage_gap: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confidence: Option<&'static str>,
+    /// API list price of the included (额度) requests only; 点数-funded ones are in over_api_usd.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_cost_usd: Option<f64>,
     /// Purchased credits (点数) spent in this window after it was full.

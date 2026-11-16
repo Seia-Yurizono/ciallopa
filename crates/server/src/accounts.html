@@ -42,14 +42,18 @@
 .cy .k-lim:before{border-radius:1px;background:var(--ctl)}.cy .k-open:before{background:transparent;box-shadow:inset 0 0 0 1.4px var(--focus);border-radius:1px}
 .cy .k-arch{color:var(--mut)}.cy .k-arch:before{display:none}
 .cbar{position:relative;height:22px;min-width:0}
-.cbar .capbox{position:absolute;left:0;top:0;bottom:0;border-radius:3px;box-shadow:inset 0 0 0 1.5px var(--line-2);background:var(--surface-2)}
-.cbar.open .capbox{background:repeating-linear-gradient(90deg,var(--surface-2) 0 6px,var(--surface) 6px 9px)}
-.cbar .rng{position:absolute;top:-3px;bottom:-3px;background:repeating-linear-gradient(90deg,var(--line-2) 0 2px,transparent 2px 4px);border-radius:2px}
-.cbar .tick{position:absolute;top:-4px;bottom:-4px;width:2px;background:var(--fg-2);border-radius:1px}
-.cbar .used{position:absolute;left:0;top:3px;bottom:3px;background:var(--focus);opacity:.78;border-radius:2px 0 0 2px}
-.cbar .over{position:absolute;top:3px;bottom:3px;background:repeating-linear-gradient(135deg,var(--pts) 0 2px,transparent 2px 4px);box-shadow:inset 0 0 0 1px var(--pts);border-radius:0 2px 2px 0}
-.cbar .pct{position:absolute;top:0;bottom:0;display:flex;align-items:center;font-size:var(--fs-xs);font-weight:600;color:#fff;padding-left:6px;font-variant-numeric:tabular-nums}
-.cbar .pct.out{color:var(--fg-2);padding-left:4px}
+/* blue block = estimated capacity; light-blue hatch = estimate range; dark (light in dark mode) inset = included quota used */
+.cbar .capbox{position:absolute;left:0;top:2px;bottom:2px;border-radius:3px;background:var(--cap)}
+.cbar .capbox.lo{background:linear-gradient(90deg,var(--cap) 70%,var(--cap-fade))}
+.cbar.open .capbox{background:transparent;box-shadow:none;border:1.5px dashed var(--cap);box-sizing:border-box}
+.cbar .rng{position:absolute;top:2px;bottom:2px;background:repeating-linear-gradient(135deg,var(--cap-rng) 0 2px,transparent 2px 5px);border-radius:2px}
+.cbar .used{position:absolute;left:0;top:7px;bottom:7px;background:var(--used);border-radius:4px;box-shadow:0 0 0 1px var(--used-ring)}
+.cbw{display:flex;flex-direction:column;gap:4px;min-width:0}
+/* 点数 is never drawn on the 额度 bar: its own chip under it, with its own amount and API price */
+.cpts{align-self:flex-start;display:inline-flex;align-items:center;gap:6px;padding:1px 8px 1px 6px;border-radius:999px;border:1px solid var(--pts);color:var(--pts);font-size:var(--fs-xs);font-variant-numeric:tabular-nums;white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+.cpts:before{content:"";width:10px;height:8px;flex:none;border-radius:2px;background:repeating-linear-gradient(135deg,var(--pts) 0 2px,transparent 2px 4px);box-shadow:inset 0 0 0 1px var(--pts)}
+.cdet .grp{grid-column:1/-1;color:var(--fg-2);font-weight:600;font-size:var(--fs-xs);margin-top:var(--s1)}.cdet .grp:first-child{margin-top:0}
+.cdet .grp.p{color:var(--pts)}
 .cy .nums{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .cy .nums b{font-weight:600;font-size:var(--fs-m)}.cy .nums .u{color:var(--mut);font-size:var(--fs-xs)}
 .cy .nums div{font-size:var(--fs-xs);color:var(--mut)}
@@ -61,19 +65,19 @@
 .qh-axis .sc{position:relative;height:14px}.qh-axis .sc span{position:absolute;transform:translateX(-50%)}.qh-axis .sc span:first-child{transform:none}
 .qh-leg{display:flex;flex-wrap:wrap;gap:var(--s1) var(--s3);font-size:var(--fs-xs);color:var(--mut)}
 .qh-leg i{display:inline-block;width:14px;height:8px;margin-right:4px;vertical-align:middle;border-radius:2px}
-.qh-leg .l-used{background:var(--focus);opacity:.78}.qh-leg .l-cap{box-shadow:inset 0 0 0 1.5px var(--fg-2);background:var(--surface)}
-.qh-leg .l-rng{background:repeating-linear-gradient(90deg,var(--line-2) 0 2px,transparent 2px 4px)}.qh-leg .l-pts{background:repeating-linear-gradient(135deg,var(--pts) 0 2px,transparent 2px 4px);box-shadow:inset 0 0 0 1px var(--pts)}
+.qh-leg .l-cap{background:var(--cap)}.qh-leg .l-used{height:5px;border-radius:3px;background:var(--used);box-shadow:0 0 0 1px var(--used-ring)}.qh-leg .l-est{box-sizing:border-box;border:1.5px dashed var(--cap)}
+.qh-leg .l-rng{background:repeating-linear-gradient(135deg,var(--cap-rng) 0 2px,transparent 2px 5px);box-shadow:inset 0 0 0 1px var(--cap-rng)}.qh-leg .l-pts{border-radius:2px;background:repeating-linear-gradient(135deg,var(--pts) 0 2px,transparent 2px 4px);box-shadow:inset 0 0 0 1px var(--pts)}
 .qh-more{align-self:flex-start;margin-top:var(--s1)}
 #erw{display:flex;flex-direction:column;gap:var(--s2);margin:var(--s1) 0}p#erw{display:block}
 #erw label{display:grid;grid-template-columns:auto minmax(0,1fr);gap:0 var(--s2);align-items:start;align-content:center;cursor:pointer}
 #erw label input{margin:2px 0 0;width:16px;height:16px;min-height:0;padding:0}
 #erw label small{grid-column:2;color:var(--mut);font-size:var(--fs-xs)}
-:root{--pts:#c2410c}
-@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--pts:#fb923c}}
-:root[data-theme=dark]{--pts:#fb923c}
+:root{--pts:#c2410c;--cap:#3b82f6;--cap-rng:#93c5fd;--cap-fade:rgba(59,130,246,.25);--used:#0f1b33;--used-ring:rgba(255,255,255,.55)}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--pts:#fb923c;--cap:#2f6fe0;--cap-rng:#7fb0ff;--cap-fade:rgba(47,111,224,.25);--used:#f4f7fb;--used-ring:rgba(15,27,51,.6)}}
+:root[data-theme=dark]{--pts:#fb923c;--cap:#2f6fe0;--cap-rng:#7fb0ff;--cap-fade:rgba(47,111,224,.25);--used:#f4f7fb;--used-ring:rgba(15,27,51,.6)}
 @media (max-width:560px){
 .cy{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"when nums" "bar bar";padding:var(--s2) var(--s1)}
-.cy .when{grid-area:when;display:flex;gap:6px;align-items:baseline;flex-wrap:wrap}.cy .meta{margin-top:0}.cy .nums{grid-area:nums}.cy .cbar{grid-area:bar}
+.cy .when{grid-area:when;display:flex;gap:6px;align-items:baseline;flex-wrap:wrap}.cy .meta{margin-top:0}.cy .nums{grid-area:nums}.cy .cbw{grid-area:bar}
 .qh-axis{grid-template-columns:minmax(0,1fr)}.qh-axis>div:not(.sc){display:none}
 .cdet{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
@@ -388,42 +392,50 @@ function qhMini(data,from,to,W,wins){const win=qhMainWin(wins,data.cycles),rows=
   qhDots(s,dots,2.2);
   return s}
 // ---- cycle rows: one bullet bar per cycle, newest first, every row on one credits scale.
-// Box = estimated capacity, tick = point estimate, grey hatching = range, blue = included quota used,
-// orange hatching past it = 点数 (purchased credits) spent after the window was full. Every number is
-// written next to the bar or in the row's expanded details; nothing is tooltip-only.
+// The bar is 额度 only: blue block = estimated capacity (light-blue hatch from the low to the high
+// estimate; a fading end when only a lower bound is known), dark inset (light in dark mode) = included
+// quota used. An open cycle without an estimate gets a dashed outline. 点数 (purchased credits spent
+// after the window was full) is never drawn on the bar: it gets its own chip under it with its own
+// amount and API price, and neither counts toward capacity, used or the cycle's API price. Every number
+// is written next to the bar or in the expanded details; nothing is tooltip-only.
 function qhUsed(c){return c.credits_used!=null?Number(c.credits_used):null}
 function qhScale(rows){const fence=qhFence(rows.map(qhCap));let top=0,all=0;
-  for(const c of rows){const cap=qhCap(c),u=qhUsed(c)||0,o=Number(c.over_credits)||0,hi=c.capacity_hi!=null?Number(c.capacity_hi):null;
-    for(const v of [cap,hi,u+o]){if(v==null||!isFinite(v))continue;all=Math.max(all,v);if(v<=fence*1.5)top=Math.max(top,v)}}
+  for(const c of rows){const cap=qhCap(c),u=qhUsed(c)||0,hi=c.capacity_hi!=null?Number(c.capacity_hi):null;
+    for(const v of [cap,hi,u]){if(v==null||!isFinite(v))continue;all=Math.max(all,v);if(v<=fence*1.5)top=Math.max(top,v)}}
   return qhNiceScale((top||all||1)*1.05,5)}
 function qhKindCls(k){return {natural:"k-nat",early_reset:"k-early",manual_card:"k-card",external_card:"k-card",auto_card:"k-auto",limit_change:"k-lim",open:"k-open"}[k]||"k-nat"}
 function qhEnd(c){return c.open?(c.cycle_reset_at?c.cycle_reset_at*1000:null):c.ended_ms}
 function qhConf(c){if(c.coverage_gap)return"低 · 可能有其他端用量";return {ok:"正常",fallback:"低 · 观测还不多",lower_only:"只有下限",insufficient:"数据不足"}[c.confidence]||"–"}
 function qhRowKind(c,ev){if(c.open)return"open";const e=qhEventAt(ev,c);return (e&&e.kind)||c.close_kind||"natural"}
 const QH_OPEN=new Set(),QH_MORE=new Set();
-function qhBar(c,S){const cap=qhCap(c),u=qhUsed(c),o=Number(c.over_credits)||0,est=c.open&&cap==null,X=v=>Math.max(0,Math.min(100,v/S.max*100));
+function qhBar(c,S){const cap=qhCap(c),u=qhUsed(c),est=c.open&&cap==null,X=v=>Math.max(0,Math.min(100,v/S.max*100));
   const bar=h("div",{class:"cbar"+(est?" open":""),"aria-hidden":"true"}),put=(cls,l,w)=>{const e=h("div",cls);if(l!=null)e.style.left=l;if(w!=null)e.style.width=w;bar.appendChild(e);return e};
-  const capW=cap!=null?X(cap):est&&S.med!=null?X(S.med):null;
-  if(capW!=null)put("capbox",null,capW+"%");
+  // No estimate yet: dashed outline at the median of earlier cycles, or the whole track without one.
+  const capW=cap!=null?X(cap):est?(S.med!=null?X(S.med):100):null;
+  if(capW!=null)put(!est&&c.capacity_credits==null?"capbox lo":"capbox",null,capW+"%");
   if(!est&&c.capacity_lo!=null&&c.capacity_hi!=null&&c.capacity_hi>c.capacity_lo)put("rng",X(c.capacity_lo)+"%",(X(c.capacity_hi)-X(c.capacity_lo))+"%");
-  if(u)put("used",null,X(u)+"%");
-  if(o>0)put("over",X(u||0)+"%",Math.max(.8,X((u||0)+o)-X(u||0))+"%");
-  if(cap!=null&&!est)put("tick","calc("+X(cap)+"% - 1px)",null);
-  if(u&&c.delta_pct!=null){const p=Math.min(100,Math.round(c.delta_pct)),w=X(u);put(w<12?"pct out":"pct",w<12?w+"%":null,null).textContent=p+"%"}
+  if(u)put("used",null,Math.max(.6,X(u))+"%");
   return bar}
-function qhNums(c){const cap=qhCap(c),u=qhUsed(c),o=Number(c.over_credits)||0,est=c.open&&cap==null;
+function qhPts(c){const o=Number(c.over_credits)||0;if(!(o>0))return null;
+  return h("span","cpts","点数 "+fmtN(o)+(c.over_api_usd!=null?" · "+fmtUsd(c.over_api_usd):""))}
+function qhNums(c){const cap=qhCap(c),u=qhUsed(c),est=c.open&&cap==null;
   return h("div","nums",h("b",null,u!=null?fmtN(u):"–"),h("span","u",est?" / 估算中":cap==null?" / –":(c.capacity_credits==null?" / ≥":" / ")+fmtN(cap)),
-    h("div",null,fmtUsd(c.api_cost_usd),o>0?[" · ",h("span","pts","点数 "+fmtN(o))]:null))}
+    h("div",null,fmtUsd(c.api_cost_usd)))}
 function qhDetail(c,k,ev){const it=(l,v,cls)=>v==null||v===""?null:h("div",cls||null,l,h("b",null,v)),end=qhEnd(c),e=c.open?null:qhEventAt(ev,c);
   const cap=c.capacity_credits!=null?fmtN(c.capacity_credits)+" credits":c.capacity_lo!=null?"至少 "+fmtN(c.capacity_lo)+" credits":c.open?"估算中（变化还不够）":"没有估算";
   const obs=[c.delta_pct!=null?"Δ "+Math.round(c.delta_pct)+"%":null,c.snapshots!=null?c.snapshots+" 个快照":null,c.requests!=null?c.requests+" 次请求":null].filter(Boolean).join(" · ");
   const card=e&&e.card_source==="auto"?" · 自动用卡":e&&e.card_source==="manual"?" · 手动用卡":"";
+  const o=Number(c.over_credits)>0;
   return h("div","cdet",
+    o?h("div","grp","额度"):null,
     it("容量",cap),
     it("范围",c.capacity_lo!=null&&c.capacity_hi!=null?fmtN(c.capacity_lo)+"–"+fmtN(c.capacity_hi):null),
     it("本周期已用额度",c.credits_used!=null?fmtN(c.credits_used)+(c.delta_pct!=null?" · "+Math.round(c.delta_pct)+"%":""):null),
-    it("API 价格",fmtUsd(c.api_cost_usd)),
-    it("超出后用的点数",Number(c.over_credits)>0?fmtN(c.over_credits)+(c.over_api_usd!=null?" · "+fmtUsd(c.over_api_usd):""):null),
+    it(o?"额度 API 价格":"API 价格",fmtUsd(c.api_cost_usd)),
+    o?h("div","grp p","点数（额度用满后另扣，不计入上面的已用、容量和 API 价格）"):null,
+    o?it("点数",fmtN(c.over_credits)):null,
+    o?it("点数 API 价格",fmtUsd(c.over_api_usd)):null,
+    o?h("div","grp","周期信息"):null,
     it("周期",fmtTime(c.started_ms,true)+" → "+(end?fmtTime(end,true):"…")),
     it("观测",obs||null),
     it("可信度",qhConf(c)),
@@ -437,7 +449,7 @@ function qhCycleRows(rows,win,ev,key){const box=h("div","qh-cys");
   for(const c of list.slice(0,lim)){const k=qhRowKind(c,ev),id=key+"|"+c.window+"|"+c.started_ms,open=QH_OPEN.has(id),end=qhEnd(c);
     const meta=h("span","meta",h("span","tag "+qhKindCls(k),c.open?"进行中":qhKindLabel(k)),c.archived?h("span","tag k-arch","已归档"):null);
     const r=h("div",{class:"cy"+(c.archived?" arch":""),role:"button",tabindex:"0","aria-expanded":String(open),"data-fk":id},
-      h("div","when",h("span",null,qhMD(c.started_ms)+" → "+(end?qhMD(end):"…")),meta),qhBar(c,S),qhNums(c));
+      h("div","when",h("span",null,qhMD(c.started_ms)+" → "+(end?qhMD(end):"…")),meta),h("div","cbw",qhBar(c,S),qhPts(c)),qhNums(c));
     const flip=()=>{if(QH_OPEN.has(id))QH_OPEN.delete(id);else QH_OPEN.add(id);const now=QH_OPEN.has(id);r.setAttribute("aria-expanded",String(now));
       if(now)r.after(qhDetail(c,k,ev));else if(r.nextSibling&&r.nextSibling.className==="cdet")r.nextSibling.remove()};
     r.addEventListener("click",flip);r.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();flip()}});
@@ -447,7 +459,7 @@ function qhCycleRows(rows,win,ev,key){const box=h("div","qh-cys");
   const ax=h("div","sc");for(const t of S.ticks){const sp=h("span",null,qhTick(t));sp.style.left=(t/S.max*100)+"%";ax.appendChild(sp)}
   box.appendChild(h("div",{class:"qh-axis","aria-hidden":"true"},h("div"),ax,h("div")));
   return box}
-function qhLegend(){return h("div","qh-leg",h("span",null,h("i","l-used"),"已用额度"),h("span",null,h("i","l-cap"),"估算容量（竖线）"),h("span",null,h("i","l-rng"),"估算范围"),h("span",null,h("i","l-pts"),"超出后用的点数"))}
+function qhLegend(){return h("div","qh-leg",h("span",null,h("i","l-cap"),"估算容量"),h("span",null,h("i","l-rng"),"估算范围"),h("span",null,h("i","l-used"),"已用额度"),h("span",null,h("i","l-est"),"估算中"),h("span",null,h("i","l-pts"),"点数（单列，不计入额度）"))}
 // Latest reset of this window that can still be undone.
 function qhEpoch(data,win){const now=Date.now();return (data.epochs||[]).filter(e=>e.active&&e.window===win&&e.undo_until_ms>now).sort((a,b)=>b.created_ms-a.created_ms)[0]||null}
 function qhUndo(a,ep,b){return busyRun(b,"撤销",async()=>{await apost(path(a)+"/quota-estimate/reset/"+ep.id+"/undo",{});ok("已撤销 "+nm(a)+" 的估算重置");await loadHistAll(true);await load()},"撤销中…")}
@@ -657,7 +669,8 @@ function side(a,k){const box=h("div","side"),s=ST[a.status]||[a.status,"off",""]
   if(ct){st.append(h("span","mut","点数"),h("span","row",h("span","num"+(ct[1]?" faint":""),cr.unlimited?"不限":cr.has_credits?crBal(cr.balance)+" 点":"没有"),
       cr.overage_limit_reached?h("span","sm c-err","已达点数上限"):cr.spend_control_reached?h("span","sm c-err","已达支出上限"):null));
     if(cr.has_credits&&!cr.unlimited)st.append(h("span"),h("span","xs mut","额度用满后才扣点数；网关会先换还有额度的账号"))}
-  const cost=[ws.s,ws.l].map(x=>x&&x[1].estimate&&x[1].estimate.api_cost_usd).find(v=>v!=null);if(cost!=null)st.append(h("span",{class:"mut",title:"本周期按 API 标价估算"},"API 价格"),h("span",{class:"num",title:"本周期按 API 标价估算"},fmtUsd(cost)));
+  const est=[ws.s,ws.l].map(x=>x&&x[1].estimate).find(e=>e&&e.api_cost_usd!=null),cost=est&&est.api_cost_usd;if(cost!=null)st.append(h("span",{class:"mut",title:"本周期额度用量按 API 标价估算，不含点数"},"API 价格"),h("span",{class:"num",title:"本周期额度用量按 API 标价估算，不含点数"},fmtUsd(cost)));
+  const po=[ws.s,ws.l].map(x=>x&&x[1].estimate).find(e=>e&&Number(e.over_credits)>0);if(po)st.append(h("span","mut pts","本周期点数"),h("span","num pts",fmtN(po.over_credits)+(po.over_api_usd!=null?" · "+fmtUsd(po.over_api_usd):"")));
   box.appendChild(sec("状态",st));
   box.appendChild(sec("重置卡",cardsBlock(a,k)));
   // 操作
