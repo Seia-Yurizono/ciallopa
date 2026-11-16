@@ -1222,7 +1222,7 @@ pub fn usage_to_quota(v: &Value, now_s: i64) -> Option<QuotaObs> {
         return None;
     }
     let (cards, _, _) = usage_extras(v);
-    Some(QuotaObs {
+    let mut q = QuotaObs {
         plan: v
             .get("plan_type")
             .and_then(Value::as_str)
@@ -1235,7 +1235,29 @@ pub fn usage_to_quota(v: &Value, now_s: i64) -> Option<QuotaObs> {
         s_reset: s.and_then(|w| w.1),
         s_window_min: s.and_then(|w| w.2),
         cards,
-    })
+        ..Default::default()
+    };
+    // `credits` / `spend_control` as in codex-rs `RateLimitStatusPayload`; the balance is a
+    // decimal string. `overage_limit_reached` is not in Codex's model but is sent upstream.
+    if let Some(c) = v.get("credits").filter(|c| c.is_object()) {
+        let flag = |k: &str| c.get(k).and_then(Value::as_bool);
+        let balance = c.get("balance").and_then(|b| match b {
+            Value::String(s) => s.trim().parse::<f64>().ok(),
+            other => other.as_f64(),
+        });
+        let spend = v
+            .get("spend_control")
+            .and_then(|s| s.get("reached"))
+            .and_then(Value::as_bool);
+        q.set_credits(
+            flag("has_credits"),
+            flag("unlimited"),
+            balance,
+            flag("overage_limit_reached"),
+            spend,
+        );
+    }
+    Some(q)
 }
 
 fn quota_json(q: &QuotaObs) -> Value {
@@ -1605,6 +1627,40 @@ mod tests {
         assert_eq!(q.p_reset, None);
         assert_eq!(q.p_pct, Some(80.0));
         assert_eq!(q.cards, Some(1));
+    }
+
+    #[test]
+    fn wham_usage_keeps_purchased_credits() {
+        let v = json!({"plan_type": "pro", "rate_limit": {"allowed": true, "limit_reached": true,
+            "primary_window": {"used_percent": 100, "limit_window_seconds": 604800, "reset_at": 1700300000}},
+            "credits": {"has_credits": true, "unlimited": false, "balance": "1234.50",
+                "overage_limit_reached": false},
+            "spend_control": {"reached": false}});
+        let q = usage_to_quota(&v, 1_700_000_000).unwrap();
+        assert_eq!(
+            (q.cr_flags, q.cr_balance),
+            (Some(ciallopa_usage::CR_HAS), Some(1234.5))
+        );
+        let mut v = v;
+        v["credits"]["overage_limit_reached"] = json!(true);
+        v["spend_control"]["reached"] = json!(true);
+        v["credits"]["balance"] = json!(-3.5);
+        let q = usage_to_quota(&v, 1_700_000_000).unwrap();
+        assert_eq!(
+            q.cr_flags,
+            Some(
+                ciallopa_usage::CR_HAS
+                    | ciallopa_usage::CR_OVERAGE_REACHED
+                    | ciallopa_usage::CR_SPEND_CONTROL
+            )
+        );
+        assert_eq!(
+            q.cr_balance,
+            Some(-3.5),
+            "a negative balance is shown as is"
+        );
+        v.as_object_mut().unwrap().remove("credits");
+        assert_eq!(usage_to_quota(&v, 1_700_000_000).unwrap().cr_flags, None);
     }
 
     #[test]

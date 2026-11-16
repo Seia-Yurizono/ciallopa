@@ -1237,6 +1237,7 @@ mod tests {
             to_ms: 1,
             events: vec![],
             cycles: vec![],
+            epochs: vec![],
         };
         let mut rows = vec![row(&alias), row("unknown-label")];
         reveal_history_with(&mut rows, Some(&al));

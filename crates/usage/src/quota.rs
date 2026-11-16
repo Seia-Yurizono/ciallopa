@@ -37,6 +37,38 @@ pub struct Estimate {
     pub confidence: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_cost_usd: Option<f64>,
+    /// Purchased credits (点数) spent in this window after it was full.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub over_credits: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub over_api_usd: Option<f64>,
+    /// Start of the current estimate epoch when the estimate was reset by hand.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub since_ms: Option<i64>,
+}
+
+/// Purchased credits (点数) as last reported upstream (like Codex `/status` "Credits").
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct CreditState {
+    pub has_credits: bool,
+    pub unlimited: bool,
+    pub balance: Option<f64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub overage_limit_reached: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub spend_control_reached: bool,
+}
+impl CreditState {
+    fn from_row(flags: Option<i64>, balance: Option<f64>) -> Option<Self> {
+        let f = flags?;
+        Some(Self {
+            has_credits: f & crate::CR_HAS != 0,
+            unlimited: f & crate::CR_UNLIMITED != 0,
+            balance,
+            overage_limit_reached: f & crate::CR_OVERAGE_REACHED != 0,
+            spend_control_reached: f & crate::CR_SPEND_CONTROL != 0,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -56,6 +88,8 @@ pub struct AccountQuota {
     pub observed_by: Option<String>,
     pub primary: WindowQuota,
     pub secondary: WindowQuota,
+    /// None when the upstream never reported purchased credits for this account.
+    pub credits: Option<CreditState>,
 }
 
 fn empty_estimate(status: &'static str) -> Estimate {
@@ -77,6 +111,9 @@ fn empty_estimate(status: &'static str) -> Estimate {
         coverage_gap: false,
         confidence: None,
         api_cost_usd: None,
+        over_credits: None,
+        over_api_usd: None,
+        since_ms: None,
     }
 }
 
@@ -89,7 +126,8 @@ pub(crate) fn quota(
 ) -> Result<Vec<AccountQuota>, UsageError> {
     let mut names = LabelNames::new(c);
     let mut st = c.prepare(
-        "SELECT q.id,q.account,q.instance,q.plan,q.p_pct,q.p_reset,q.p_win,q.s_pct,q.s_reset,q.s_win \
+        "SELECT q.id,q.account,q.instance,q.plan,q.p_pct,q.p_reset,q.p_win,q.s_pct,q.s_reset,q.s_win,\
+         q.cr_flags,q.cr_balance \
          FROM quota_obs q WHERE q.id = (SELECT max(id) FROM quota_obs WHERE account = q.account)",
     )?;
     type Latest = (
@@ -100,6 +138,7 @@ pub(crate) fn quota(
         [Option<f64>; 2],
         [Option<i64>; 2],
         [Option<i64>; 2],
+        Option<CreditState>,
     );
     let latest: Vec<Latest> = st
         .query_map([], |r| {
@@ -111,11 +150,12 @@ pub(crate) fn quota(
                 [r.get(4)?, r.get(7)?],
                 [r.get(5)?, r.get(8)?],
                 [r.get(6)?, r.get(9)?],
+                CreditState::from_row(r.get(10)?, r.get(11)?),
             ))
         })?
         .collect::<rusqlite::Result<_>>()?;
     let mut out = vec![];
-    for (id, account, inst, plan, pcts, resets, wins) in latest {
+    for (id, account, inst, plan, pcts, resets, wins, credits) in latest {
         names.load([Some(account), inst, plan])?;
         let win = |which: WindowKind| -> Result<WindowQuota, UsageError> {
             let i = which.index();
@@ -139,6 +179,7 @@ pub(crate) fn quota(
             observed_by: inst.and_then(|p| names.get(&p).cloned()),
             primary: win(WindowKind::Primary)?,
             secondary: win(WindowKind::Secondary)?,
+            credits,
         });
     }
     out.sort_by(|a, b| a.account.cmp(&b.account));
@@ -155,12 +196,13 @@ fn estimate(
     reset: Option<i64>,
 ) -> Result<Estimate, UsageError> {
     let data = crate::history::load_cycle(c, prices, account, which, reset, None)?;
+    let mut e = empty_estimate("insufficient_data");
+    e.since_ms = crate::epoch::since(c, account, which)?.map(|id| id >> SEQ_BITS);
     let (Some(&(first, first_pct)), Some(&(last, used))) = (data.obs.first(), data.obs.last())
     else {
-        return Ok(empty_estimate("insufficient_data"));
+        return Ok(e);
     };
     let delta = used - first_pct;
-    let mut e = empty_estimate("insufficient_data");
     e.delta_pct = Some(delta);
     e.sample_from_ms = Some(first >> SEQ_BITS);
     e.sample_to_ms = Some(last >> SEQ_BITS);
@@ -176,6 +218,8 @@ fn estimate(
     e.coverage_gap = cap.coverage_gap;
     e.confidence = Some(cap.confidence.as_str());
     e.api_cost_usd = data.api_cost();
+    e.over_credits = data.over_credits;
+    e.over_api_usd = data.over_api_cost;
     if let Some(cap_c) = cap.capacity {
         e.remaining_credits = Some((100.0 - used).max(0.0) / 100.0 * cap_c);
     }

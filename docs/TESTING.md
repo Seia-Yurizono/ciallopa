@@ -46,7 +46,7 @@ keeps the production startup delay and the persisted 60-second retry interval. F
 assertions cover fresh-cache reads, retry spacing and limits across restarts, protected live pending requests, quota-refresh
 throttling after failure, and configured refresh intervals without catch-up bursts. These
 checks use synthetic credentials and never need a provider account.
-The usage tests cover the v13/v15/v16/v17-to-v18 migrations and missing historical expiry values; the
+The usage tests cover the v13/v15/v16/v17-to-v18 and v18-to-v19 migrations and missing historical expiry values; the
 automatic tests cover a card disappearing during retries, exhausting its budget, and
 reopening the database before its saved expiry unblocks later manual use.
 

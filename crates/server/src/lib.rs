@@ -17,6 +17,7 @@ pub mod accounts_api;
 pub mod affinity_store;
 pub use reset_credits::auto_reset;
 pub mod client_fp;
+pub mod estimate_reset;
 pub mod host;
 mod http;
 pub mod init;
@@ -188,6 +189,7 @@ pub fn build_router(s: Arc<settings::Settings>) -> Router {
     let live_cfg = state.config.clone();
     let admin = usage
         .merge(resets)
+        .merge(estimate_reset::routes(state.clone()))
         .merge(ui::runtime_routes(state.clone()))
         .merge(client_fp::routes())
         .merge(memory::routes(state.clone(), s.memory.clone()))

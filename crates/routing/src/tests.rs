@@ -1115,7 +1115,8 @@ fn prompt_cache_key_binds_conversation_alias() {
 fn quota_threshold_for_new_sessions() {
     assert_eq!(RoutingConfig::default().quota_avoid_threshold, 0.0);
     for (threshold, reset, advance, only_hot_account, expected) in [
-        (0.0, None, 0, false, "a"),
+        // Threshold off still skips a full (100%) account while another has quota.
+        (0.0, None, 0, false, "b"),
         (0.99, None, 0, false, "b"),
         (0.99, Some(5), 0, false, "b"),
         (0.99, Some(5), 6, false, "a"),
@@ -1975,4 +1976,110 @@ fn success_without_attempt_time_still_clears_cooldown() {
     clk.advance(Duration::from_secs(1));
     r.report(&rq("m"), &a, &Outcome::Success { quota: None });
     assert!(r.cooling_reason(&a).is_none());
+}
+
+fn full_window(used: f64) -> QuotaSnapshot {
+    QuotaSnapshot {
+        primary: Some(ciallopa_core::QuotaWindow {
+            used_percent: used,
+            window_minutes: Some(10080),
+            resets_at: Some(t0() + Duration::from_secs(86_400)),
+        }),
+        secondary: None,
+    }
+}
+
+fn mark(r: &CpaRouter, id: &str, used: f64) {
+    r.report(
+        &rq("m"),
+        &id.into(),
+        &Outcome::Success {
+            quota: Some(full_window(used)),
+        },
+    );
+}
+
+#[test]
+fn full_account_is_last_resort_for_new_sessions() {
+    // Threshold off (default): a window at 100% still serves from purchased credits, so the
+    // upstream never says "limit reached"; other accounts with quota go first.
+    let (r, _) = router(aff(RebindOn::Quota, true));
+    let a = [acct("a"), acct("b")];
+    mark(&r, "a", 100.0);
+    assert_eq!(pick(&r, &rq("m"), &a), "b");
+    assert_eq!(pick(&r, &rq_s("m", "codex:new"), &a), "b");
+    // Every account full: credits are the last resort, nothing is refused.
+    mark(&r, "b", 100.0);
+    assert_eq!(pick(&r, &rq_s("m", "codex:other"), &a), "a");
+}
+
+#[test]
+fn bound_session_moves_off_a_full_account() {
+    let (r, _) = router(aff(RebindOn::Quota, true));
+    let a = [acct("a"), acct("b")];
+    let bound = rq_s("m", "codex:bound");
+    assert_eq!(pick(&r, &bound, &a), "a");
+    mark(&r, "a", 100.0);
+    let s = r.select(&bound, &a).unwrap();
+    assert_eq!((s.account.as_str(), s.from_binding), ("b", false));
+    // The binding moved with it, and stays when the old account recovers.
+    mark(&r, "a", 10.0);
+    let s = r.select(&bound, &a).unwrap();
+    assert_eq!((s.account.as_str(), s.from_binding), ("b", true));
+}
+
+#[test]
+fn bound_session_stays_when_every_account_is_full() {
+    let (r, _) = router(aff(RebindOn::Quota, true));
+    let a = [acct("a"), acct("b")];
+    let bound = rq_s("m", "codex:bound");
+    assert_eq!(pick(&r, &bound, &a), "a");
+    mark(&r, "a", 100.0);
+    mark(&r, "b", 100.0);
+    let s = r.select(&bound, &a).unwrap();
+    assert_eq!((s.account.as_str(), s.from_binding), ("a", true));
+}
+
+#[test]
+fn threshold_falls_back_to_accounts_below_full() {
+    // Everything is over the threshold: still prefer the one that is not full.
+    let (r, _) = router(RoutingConfig {
+        quota_avoid_threshold: 0.9,
+        ..cfg(Strategy::FillFirst)
+    });
+    let a = [acct("a"), acct("b")];
+    mark(&r, "a", 100.0);
+    mark(&r, "b", 95.0);
+    assert_eq!(pick(&r, &rq("m"), &a), "b");
+}
+
+#[test]
+fn prefer_other_only_when_another_account_has_quota() {
+    let (r, _) = router(aff(RebindOn::Quota, true));
+    let a = [acct("a"), acct("b")];
+    assert!(!r.prefer_other(&"a".into(), "m", &a), "nothing known");
+    mark(&r, "a", 100.0);
+    assert!(r.prefer_other(&"a".into(), "m", &a));
+    assert!(!r.prefer_other(&"b".into(), "m", &a));
+    let b_off = [
+        acct("a"),
+        Account {
+            disabled: true,
+            ..acct("b")
+        },
+    ];
+    assert!(
+        !r.prefer_other(&"a".into(), "m", &b_off),
+        "only disabled others"
+    );
+    r.report(
+        &rq("m"),
+        &"b".into(),
+        &Outcome::RateLimited {
+            retry_after: Some(Duration::from_secs(60)),
+            usage_limit: true,
+            quota: None,
+        },
+    );
+    assert!(!r.prefer_other(&"a".into(), "m", &a), "b cooling down");
 }

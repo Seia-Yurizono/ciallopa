@@ -11,6 +11,7 @@ pub const LOCAL: &[&str] = &[
     "all_quota_exhausted",
     "first_quota_reset",
     "model_cooldown",
+    "quota_full",
     // quota / rate limit seen in a stream
     "usage_limit",
     "rate_limit_exceeded",

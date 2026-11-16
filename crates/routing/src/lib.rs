@@ -10,8 +10,8 @@ pub mod session;
 #[cfg(test)]
 use quota::is_cloudflare_challenge;
 pub use quota::{
-    cloudflare_block, is_usage_limit, parse_codex_retry_after, parse_quota, parse_quota_at,
-    parse_quota_event_headers, retry_after_for_429, CloudflareBlock,
+    cloudflare_block, is_usage_limit, parse_codex_retry_after, parse_credits, parse_quota,
+    parse_quota_at, parse_quota_event_headers, retry_after_for_429, CloudflareBlock, CreditsHeader,
 };
 #[cfg(test)]
 use session::bound_session_identity;
@@ -491,6 +491,14 @@ fn blocked_kind(st: &State, id: &AccountId, model: &str, now: SystemTime) -> Opt
         .map(|(_, k)| k)
 }
 
+/// Last observed used fraction of the account's fullest live window (0 = unknown).
+fn used(st: &State, id: &str, now: SystemTime) -> f64 {
+    st.accounts
+        .get(id)
+        .and_then(|a| a.quota.as_ref())
+        .map_or(0.0, |q| quota::max_used_fraction(q, now))
+}
+
 fn blocked(st: &State, id: &AccountId, model: &str, now: SystemTime) -> Option<SystemTime> {
     let a = st.accounts.get(id)?;
     std::iter::once(&a.health)
@@ -561,6 +569,18 @@ impl Router for CpaRouter {
         let now = (self.clock)();
         let model = canonical_model_key(model);
         blocked(&self.lock(), id, &model, now)
+    }
+    fn prefer_other(&self, id: &AccountId, model: &str, accounts: &[Account]) -> bool {
+        let now = (self.clock)();
+        let model = canonical_model_key(model);
+        let st = self.lock();
+        used(&st, id, now) >= quota::FULL_FRACTION
+            && accounts.iter().any(|a| {
+                a.id != *id
+                    && !a.disabled
+                    && blocked(&st, &a.id, &model, now).is_none()
+                    && used(&st, &a.id, now) < quota::FULL_FRACTION
+            })
     }
     fn clear_cooldown(&self, id: &AccountId) -> bool {
         let now = (self.clock)();
@@ -661,25 +681,28 @@ impl Router for CpaRouter {
             });
         }
 
-        // Cold pick: quota-threshold avoidance (new bindings only), then highest priority tier.
+        // Cold pick: avoid accounts over the quota threshold, then full ones (a full window
+        // keeps serving from purchased credits: last resort), then highest priority tier.
         let thr = cfg.quota_avoid_threshold;
+        let limits: Vec<f64> = [thr, quota::FULL_FRACTION]
+            .into_iter()
+            .filter(|l| *l > 0.0 && *l <= quota::FULL_FRACTION)
+            .collect();
         let cold = |st: &mut State| -> Option<AccountId> {
             let filtered: Vec<&Account>;
             let mut pool = available.as_slice();
-            if thr > 0.0 {
-                filtered = pool
-                    .iter()
-                    .copied()
-                    .filter(|a| {
-                        st.accounts
-                            .get(&a.id)
-                            .and_then(|a| a.quota.as_ref())
-                            .is_none_or(|q| quota::max_used_fraction(q, now) < thr)
-                    })
-                    .collect();
-                if !filtered.is_empty() {
-                    pool = &filtered;
-                }
+            if let Some(below) = limits
+                .iter()
+                .map(|l| {
+                    pool.iter()
+                        .copied()
+                        .filter(|a| used(st, &a.id, now) < *l)
+                        .collect::<Vec<_>>()
+                })
+                .find(|p| !p.is_empty())
+            {
+                filtered = below;
+                pool = &filtered;
             }
             let best = pool.iter().map(|a| a.priority).max()?;
             let tier: Vec<&Account> = pool
@@ -688,6 +711,13 @@ impl Router for CpaRouter {
                 .filter(|a| a.priority == best)
                 .collect();
             Self::pick_strategy(st, cfg.strategy, &model, &tier)
+        };
+        // A bound session leaves a full account when another available one is not full.
+        let moving = |st: &State, id: &str| {
+            used(st, id, now) >= quota::FULL_FRACTION
+                && available
+                    .iter()
+                    .any(|a| used(st, &a.id, now) < quota::FULL_FRACTION)
         };
         let fresh = |account: AccountId| {
             Ok(Selection {
@@ -716,7 +746,8 @@ impl Router for CpaRouter {
         };
 
         if let Some(cached) = st.cache.get_and_refresh(&keys.primary, now) {
-            if in_avail(&cached) {
+            let leave = in_avail(&cached) && moving(&st, &cached);
+            if in_avail(&cached) && !leave {
                 bind(&mut st, &cached);
                 return Ok(Selection {
                     account: cached,
@@ -726,7 +757,7 @@ impl Router for CpaRouter {
             let Some(pick) = cold(&mut st) else {
                 return Err(RouteError::NoAccounts);
             };
-            if preserve(&st, &cached) {
+            if !leave && preserve(&st, &cached) {
                 bind(&mut st, &cached);
             } else {
                 bind(&mut st, &pick);
@@ -735,14 +766,15 @@ impl Router for CpaRouter {
         }
         if let Some(fk) = &keys.fallback {
             if let Some(cached) = st.cache.get(fk, now) {
-                if in_avail(&cached) && keys.inherits_parent {
+                let leave = in_avail(&cached) && moving(&st, &cached);
+                if in_avail(&cached) && keys.inherits_parent && !leave {
                     bind(&mut st, &cached);
                     return Ok(Selection {
                         account: cached,
                         from_binding: true,
                     });
                 }
-                if keys.aliased && preserve(&st, &cached) {
+                if keys.aliased && !leave && preserve(&st, &cached) {
                     let Some(pick) = cold(&mut st) else {
                         return Err(RouteError::NoAccounts);
                     };

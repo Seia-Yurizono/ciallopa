@@ -123,7 +123,7 @@ Not recorded: `/models`, `/wham/*` and other passthrough, WS handshakes that suc
 | `err_source` | Meaning | Codes |
 |---|---|---|
 | `client` | the client went away **before** the terminal event | `client_closed` (not counted as an upstream failure; the message says how long the upstream had been silent, e.g. `upstream silent for 301.2s`, or `no upstream data yet`, so a client-side idle timeout is visible). Closing after `response.completed` / `incomplete` / `failed` is a normal end (Codex hangs up as soon as it has the terminal event) and is not recorded as an error |
-| `local` | ciallopa itself could not serve the request | `no_account`, `no_usable_account` (all disabled / excluded / need relogin), `all_cooling` (every account cooling, the first recovers later than the wait), `all_quota_exhausted` (every account out of usage quota), `first_quota_reset` (every account cooling, the first to recover is out of usage quota), `model_cooldown` (WS: the turn's account is cooling for this model; closed so the client replays elsewhere), `preparation_timeout` (the preparation budget ran out; no further attempt), `error_body_too_large`, `shutdown`, `internal`; the record message gives the time to the first recovery |
+| `local` | ciallopa itself could not serve the request | `no_account`, `no_usable_account` (all disabled / excluded / need relogin), `all_cooling` (every account cooling, the first recovers later than the wait), `all_quota_exhausted` (every account out of usage quota), `first_quota_reset` (every account cooling, the first to recover is out of usage quota), `model_cooldown` (WS: the turn's account is cooling for this model; closed so the client replays elsewhere), `quota_full` (WS: the session's account has a full quota window, so upstream would bill 点数, while another account still has quota; redialled on another account when the turn can be replayed, otherwise closed with 1012 so Codex replays it; panel label 额度已满，换号重放), `preparation_timeout` (the preparation budget ran out; no further attempt), `error_body_too_large`, `shutdown`, `internal`; the record message gives the time to the first recovery |
 | `network` | no usable upstream response | `connect`, `dns`, `tls`, `timeout`, `timeout_connect`, `header_timeout`, `error_body_timeout`, `error_body_read`, `transport` (HTTP and the WS handshake use the same breakdown: `dns`, `tls`, `timeout_connect`, else `connect`), `idle_timeout`, `stream_read_error` (the 200 body broke mid-stream: reset, broken chunking, TLS error), WS `upstream_ws_eof` (the upstream connection ended without a close frame), `upstream_ws_read_error` (reset, TLS or protocol error while reading), `upstream_ws_send_error` (forwarding a client frame failed); with an egress proxy: `proxy_connect` (proxy unreachable, auth or tunnel refused, proxy-side DNS failure), `proxy_timeout` (connect through the proxy timed out). Proxy errors fail the request at once (every account shares the proxy, so no account switching) and never cool an account; the panel labels them 代理. `cf_blocked` (a Cloudflare error page such as `error code: 1010`, browser signature banned, plain text, JSON or HTML) and `challenge` (a Cloudflare challenge page or `cf-mitigated`) on a 403: Cloudflare in front of the upstream blocks this host's egress, so the request fails at once with a neutral 502, no account switching and no cooldown (see [Cloudflare blocks](#cloudflare-blocks)) |
 | `upstream` | upstream HTTP error, passed through verbatim | upstream `error.code` / `error.type`, else `http_<status>`; `invalid_encrypted_content` (also when the upstream reports it inside a 200 stream or WS turn, see below; panel label 加密推理被拒) |
 | `stream` | error inside a 200 stream | the event's upstream code, bucketed like an HTTP error body (`response.error`, then `error`, then the event's own `code`; `code` before `type`, at most 64 chars), e.g. `rate_limit_exceeded`, `context_length_exceeded`, `server_is_overloaded`; quota codes (`usage_limit_reached`, `insufficient_quota`, `usage_not_included`, or a 429 whose text says usage limit) log as `usage_limit`; a 429 with no code as `rate_limit_exceeded`; no code at all: `upstream_error_event` (`error` event) / `response_failed`. Also `stream_truncated` (the body ended cleanly without a terminal event; a read error is `stream_read_error` / `network`), Images `image_output_missing`, WS `upstream_ws_close` (the upstream sent a close frame mid-turn; the close code and reason are in the detail). An upstream close 1009, read mid-turn or within 200 ms after a failed send, is `upstream_ws_too_big` instead (source `upstream`, class `request`): the client gets 1009 too, the account is not cooled or switched. Rows written before this split carry `upstream_closed`. A WS `error` frame ends the turn only where Codex 0.169.0 treats it as fatal: the code `websocket_connection_limit_reached` or `previous_response_not_found`; a `status` / `status_code` from 100 to 999 outside 2xx; or one of the codes in Codex's `parse_terminal_provider_error` list, whatever the frame's `status` says: `inference_hook_denied`, `context_length_exceeded`, `invalid_access_program`, `unsupported_access_program`, `content_policy_violation`, `access_program_not_enabled`, `budget_reached`, `audio_too_large`, `audio_too_short`, `invalid_audio`, `invalid_audio_data`, `invalid_audio_format`, `missing_audio_sample_rate`, `flex_unavailable`, `model_not_found` (exact names, no prefix matching). Quota and overload frames end it too. Any other error frame is forwarded, logged as a warning and kept in the detail body, and the turn continues; before the first output it is held back with the preamble like other bookkeeping frames. WS lifecycle codes `websocket_connection_limit_reached` and `previous_response_not_found` are recorded but counted as cancelled (Codex reconnects or resends the history), not as failures |
@@ -426,7 +426,8 @@ CREATE INDEX requests_account ON requests(account); -- v17; rowid already carrie
 -- one row per *change* of an account's quota (id = observing request id)
 CREATE TABLE quota_obs(id INTEGER PRIMARY KEY, account INTEGER NOT NULL, instance INTEGER,
   plan INTEGER, p_pct REAL, p_reset INTEGER, p_win INTEGER, s_pct REAL, s_reset INTEGER, s_win INTEGER,
-  cards INTEGER);                                 -- v15, available reset-card count when known
+  cards INTEGER,                                  -- v15, available reset-card count when known
+  cr_flags INTEGER, cr_balance REAL);             -- v19, 点数: 1 has, 2 unlimited, 4 overage reached, 8 spend control
 CREATE INDEX quota_obs_account ON quota_obs(account, id);
 -- v15: reset events and per-cycle capacity / API-cost estimates
 CREATE TABLE quota_reset_events (
@@ -443,8 +444,13 @@ CREATE TABLE quota_cycle_estimates (
   capacity_credits REAL, capacity_lo REAL, capacity_hi REAL, delta_pct REAL,
   credits_used REAL, api_cost_usd REAL, requests INTEGER, snapshots INTEGER,
   coverage_gap INTEGER NOT NULL DEFAULT 0, confidence TEXT NOT NULL, card_source TEXT,
+  over_credits REAL, over_api_usd REAL,           -- v19, 点数 spent after the window was full
   UNIQUE(account, window, ended_obs_id));
 CREATE INDEX quota_cycle_estimates_acct ON quota_cycle_estimates(account, ended_ms);
+-- v19: manual estimate resets (soft; undo = undone_ms), grp shared by an "all windows" reset
+CREATE TABLE quota_est_epochs(id INTEGER PRIMARY KEY AUTOINCREMENT, grp INTEGER NOT NULL,
+  account INTEGER NOT NULL, window TEXT NOT NULL, from_id INTEGER NOT NULL,
+  created_ms INTEGER NOT NULL, by_key TEXT, undone_ms INTEGER);
 -- failed requests, plus retried / switched successes; id = requests.id
 CREATE TABLE error_detail(id INTEGER PRIMARY KEY, message TEXT, body TEXT,
   body_len INTEGER NOT NULL, truncated INTEGER NOT NULL, headers TEXT NOT NULL,
@@ -660,14 +666,23 @@ See [METRICS.md](METRICS.md) for the current outcome, sampling, cursor and bucke
   {plan, observed_at_ms, observed_by, primary:{used_pct, resets_at, window_minutes, estimate},
   secondary:{…}}}], "note": …}`. `estimate` includes the legacy weighted-token fields and
   `capacity_credits` / `remaining_credits` / `capacity_lo` / `capacity_hi` / `coverage_gap` /
-  `confidence` / `api_cost_usd`. Every configured account is listed (`quota: null` if never
+  `confidence` / `api_cost_usd` / `over_credits` / `over_api_usd` / `since_ms` (start after an
+  estimate reset), and `quota.credits` is the 点数 state (see *Purchased credits*). Every configured account is listed (`quota: null` if never
   observed); accounts seen in the log but no longer configured carry `configured: false`.
 - `GET /usage/v1/quota/history?days=30` (optional `account=<id>`, `from`/`to` ms; without
   `account`, every account with history) →
   `{from_ms, to_ms, accounts:[{account, events:[{kind, window, at_ms, prev_pct, next_pct,
   prev_reset, next_reset, card_source}], cycles:[{window, started_ms, ended_ms,
   cycle_reset_at, close_kind, capacity_credits, capacity_lo, capacity_hi, credits_used,
-  api_cost_usd, coverage_gap, confidence, trend, open}]}]}`. See *Quota estimate*.
+  api_cost_usd, over_credits, over_api_usd, coverage_gap, confidence, trend, open, archived}],
+  epochs:[{id, window, from_ms, created_ms, undone_ms, undo_until_ms, active}]}]}`. See *Quota estimate*.
+- `POST /admin/v1/accounts/{id}/quota-estimate/reset` — `{"window": "primary"|"secondary"|"all",
+  "confirm": "<id>"}` (admin key, JSON, same-origin; `confirm` must equal the path id) →
+  `{epoch_id, from_ms, windows, archived_cycles, undo_until_ms}`. Applied by the usage writer in
+  order with the records queued before it, and answered after it is on disk. 400 bad body,
+  404 unknown account / no snapshot for it yet / usage log disabled.
+- `POST /admin/v1/accounts/{id}/quota-estimate/reset/{epoch_id}/undo` → `{epoch_id, undone}`;
+  404 when not found, already undone, or older than 30 days.
 - 404 when `[usage] enabled = false`.
 - `POST /admin/v1/accounts/{id}/quota-refresh` and `POST /admin/v1/accounts/quota-refresh` (all
   accounts, four at a time; admin key, JSON body, same-origin) ask upstream `GET /wham/usage`
@@ -748,21 +763,50 @@ default 30, max 90) returns `{from_ms, to_ms, accounts:[{account, events, cycles
 ids in the result are the live ids, also for history recorded under an older alias. The
 accounts page reads it once for all accounts (no `account`, at most once a minute, again after
 a card is used) and draws each row's 30-day sparkline from it (the long window only, 周 on plus and
-pro: step line and a hollow dot per reset). Expanding a row shows 「额度记录 · 30 天」 for one window
+pro: step line and a hollow dot per reset). Expanding a row shows 「额度周期 · 30 天」 for one window
 at a time: accounts with both windows (by `window_minutes`) get a 周 | 5h toggle (default 周, kept
-for the browser session), weekly-only accounts just show 周. Each chart has its own y axis and
-draws the cycle capacity in credits as one step line with a hollow dot per reset (the open cycle
-dashed). Where there is no data between two cycles (idle, ciallopa not running, or a cycle
-without a capacity estimate, which is skipped rather than invented), a fainter dashed segment
-bridges the last known value to the next; the row sparkline does the same. Dense 5h histories get
-smaller, thinned dots. Hover, arrow keys or a tap opens the
-details: reset kind, time, capacity and range, API price, card use, used % change and caveats.
-There is no API price pane; a collapsible 明细 table lists the same numbers. Charts are drawn at
-the measured pixel width (never stretched) and redrawn on resize. The y axis starts at 0 and its
-top follows the typical cycles (Tukey upper fence on the estimates, IQR floored at 20% of the
-median, plus 10% headroom; with fewer than 4 cycles nothing is treated as an outlier), so one
-far-off cycle does not flatten the rest. A cycle above the top is pinned to the edge with an
-unlabeled ▲ marker; the real value is in that reset's details (also in 明细); the row sparklines use the same rule.
+for the browser session), weekly-only accounts just show 周. Each cycle is one row, newest first,
+with every row on the same credits scale: the outlined box is the estimated capacity (tick = point
+estimate, grey hatching = range), the blue fill is included quota used (`credits_used`), and an
+orange hatched segment past it is 点数 (purchased credits) spent after the window was full
+(`over_credits`). Right of the bar: `used / capacity` and `$API price · 点数 N`. A cycle whose
+capacity is not known yet says 「估算中」 (dashed box at the median of earlier cycles), never 0.
+Clicking a row (or Enter / Space) opens its details: capacity and range, used, API price, 点数 and
+their API price, exact start/end, Δ% / snapshots / requests, confidence, how it ended (card use,
+used % before/after) and the trend flag. Nothing is tooltip-only. 5h shows the newest 12 cycles
+with 「再显示 N 个周期」. The scale's top ignores far-off capacities (Tukey upper fence on the
+estimates, IQR floored at 20% of the median, ×1.5); longer bars are cut at the edge and the real
+numbers stay on the right.
+
+**Purchased credits (点数).** In this UI 「额度」 is the subscription quota (unit: credits) and
+「点数」 the credits bought on top. When a window is full and the account still has 点数, upstream
+keeps serving and bills 点数 (Fast 2×, Ultrafast 6× on the purchased rate card, versus 2.5× / 8×
+for included usage). For the estimate:
+- A request made while its own window was already full (used ≥ 99.5% with that window still
+  live) is paid from 点数 and left out of `credits_used`; it is counted in `over_credits`
+  (purchased rates), `over_api_usd` and the cycle's `api_cost_usd` (which stays the total).
+- Plus: while only the 5h window is full, weekly is not moving either (both are billed from
+  点数). Requests in such a run are left out of the weekly numerator when the weekly percent
+  did not move by at least 1 across the run.
+- Snapshots at ≥ 99.5% are censored (they only say "at least full"), and a run of identical
+  percents counts as one observation before the adjacent-slope fallback.
+- `GET /usage/v1/quota` carries `quota.credits: {has_credits, unlimited, balance,
+  overage_limit_reached?, spend_control_reached?}` from the last `x-codex-credits-*` headers or
+  `/wham/usage` `credits` (like Codex `/status` "Credits"), `null` when upstream never sent it.
+  The account list shows it under the quota bar (「点数 812.5」, 「点数 不限」, 「无点数」) and the
+  details' 状态 section repeats it. These fields are stored in `quota_obs.cr_flags` /
+  `cr_balance` (v19). A balance-only change is written at most once per 60 s per account and only
+  when it moved by ≥ 1% (min 1); a change of the flags is written at once; responses without the
+  headers keep the last known state.
+
+**Estimate reset.** 「重置估算…」 next to the toggle (admin key; it only writes the usage log, so it works with the config read-only) opens a confirm dialog:
+reset this window, or all windows of this account (only offered when the account has more than
+one). Nothing is deleted. A row in `quota_est_epochs` marks the request id from which estimates
+start again: the open cycle restarts from the latest snapshot, closed cycles that ended before
+it are returned with `archived: true` (greyed, left out of trend flags), and `estimate.since_ms`
+shows the new start. The panel then shows 「已重置 · <time> 起重新统计 · 撤销」 for 30 days; undo
+just stamps `undone_ms`. Undone resets are purged 30 days later. Requests, costs, reset events
+and cycle rows are untouched. There is no automatic recompute of old cycles.
 
 `primary` / `secondary` are the upstream header slots, stored as sent; they are not "5h" and
 "weekly". Upstream fills them by position: Plus sends 5h as primary and weekly as secondary, while a

@@ -117,7 +117,11 @@ pub fn estimate(points: &[Point], min_delta: f64) -> Capacity {
 }
 
 /// Adjacent-median fallback when quantization bounds do not intersect (coverage gap).
+/// A run of snapshots with the same percent (another window moved, a refresh, a credit
+/// balance change) is one observation: only its first snapshot starts the next segment.
 fn fallback(points: &[Point], ts: f64, credits_used: f64, delta_pct: Option<f64>) -> Capacity {
+    let mut points = points.to_vec();
+    points.dedup_by(|b, a| b.pct == a.pct);
     let mut adj: Vec<(f64, f64)> = Vec::new();
     let mut lowers = Vec::new();
     for w in points.windows(2) {
@@ -227,6 +231,10 @@ fn weighted_median(pairs: &mut [(f64, f64)]) -> f64 {
     }
     pairs.last().map(|(v, _)| *v).unwrap_or(0.0)
 }
+
+/// Snapshots at or above this percent are censored: the window may be full while purchased
+/// credits keep serving, so the true used share is only known to be ≥ this value.
+pub const FULL_PCT: f64 = 99.5;
 
 /// Build aligned `(percent, cumulative credits)` points.
 /// `obs` is `(id, used_percent)` in id order; `reqs` is `(id, credits)` of requests whose
@@ -397,6 +405,24 @@ mod tests {
         assert!((p[0].credits - 0.0).abs() < 1e-9);
         assert!((p[1].credits - 15.0).abs() < 1e-9); // reqs 100 and 150
         assert!((p[2].credits - 50.0).abs() < 1e-9); // +200 +250
+    }
+
+    #[test]
+    fn fallback_merges_equal_percent_runs() {
+        // 10 credits per percent. Dense snapshots of an unchanged percent (another window
+        // moved) used to split each step into a tiny first segment and a long tail.
+        let mut raw = vec![(0.0, 0.0)];
+        for step in 1..=6 {
+            let base = f64::from(step - 1) * 100.0;
+            for k in 1..=9 {
+                raw.push((f64::from(step - 1) * 10.0, base + f64::from(k) * 10.0));
+            }
+            raw.push((f64::from(step) * 10.0, base + 100.0));
+        }
+        let e = fallback(&pts(&raw), 0.0, 600.0, Some(60.0));
+        assert_eq!(e.confidence, Confidence::Fallback);
+        let cap = e.capacity.unwrap();
+        assert!((cap - 1000.0).abs() / 1000.0 < 0.15, "{cap}");
     }
 
     #[test]

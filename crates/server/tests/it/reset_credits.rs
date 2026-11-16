@@ -908,3 +908,122 @@ async fn quota_auto_forget_on_account_removal_via_switch_off() {
     e.rc.forget("a");
     assert!(!e.rc.quota_auto().is_on("a"));
 }
+
+#[tokio::test]
+async fn quota_shows_credits_and_estimate_reset_round_trip() {
+    let e = env(false).await;
+    e.mock.usage.lock().unwrap().push_back(json!({
+        "plan_type": "pro",
+        "rate_limit": {"limit_reached": true, "primary_window":
+            {"used_percent": 100, "limit_window_seconds": 604800, "reset_after_seconds": 86400}},
+        "credits": {"has_credits": true, "unlimited": false, "balance": "812.5"}
+    }));
+    let post = |path: String, body: Value| {
+        e.http
+            .post(format!("{}{path}", e.base))
+            .bearer_auth(KEY)
+            .json(&body)
+            .send()
+    };
+    let r: Value = post("/admin/v1/accounts/a/quota-refresh".into(), json!({}))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(r["ok"], true, "{r}");
+    let mut credits = Value::Null;
+    for _ in 0..50 {
+        let q = e.get("/usage/v1/quota").await;
+        credits = q["accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["quota"]["observed_by"] == "manual")
+            .map(|x| x["quota"]["credits"].clone())
+            .unwrap_or(Value::Null);
+        if !credits.is_null() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(credits["has_credits"], true, "{credits}");
+    assert_eq!(credits["unlimited"], false, "{credits}");
+    assert_eq!(credits["balance"], 812.5, "{credits}");
+
+    let url = |acct: &str| format!("/admin/v1/accounts/{acct}/quota-estimate/reset");
+    let status = |r: reqwest::Response| r.status().as_u16();
+    // Confirmation, window and JSON are required; unknown accounts are refused.
+    for (acct, body, want) in [
+        ("a", json!({"window": "primary", "confirm": "b"}), 400),
+        ("a", json!({"window": "monthly", "confirm": "a"}), 400),
+        ("a", json!({"confirm": "a"}), 422),
+        ("zz", json!({"window": "all", "confirm": "zz"}), 404),
+    ] {
+        assert_eq!(status(post(url(acct), body).await.unwrap()), want, "{acct}");
+    }
+    let s = e
+        .http
+        .post(format!("{}{}", e.base, url("a")))
+        .bearer_auth(KEY)
+        .header("content-type", "text/plain")
+        .body(r#"{"window":"all","confirm":"a"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert!(matches!(s.status().as_u16(), 400 | 415), "{}", s.status());
+    let s = e
+        .http
+        .post(format!("{}{}", e.base, url("a")))
+        .json(&json!({"window": "all", "confirm": "a"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(s.status(), 401);
+    // b is configured but never observed: nothing to reset.
+    assert_eq!(
+        status(
+            post(url("b"), json!({"window": "all", "confirm": "b"}))
+                .await
+                .unwrap()
+        ),
+        404
+    );
+
+    let done: Value = post(url("a"), json!({"window": "primary", "confirm": "a"}))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(done["windows"], json!(["primary"]), "{done}");
+    let epoch = done["epoch_id"].as_i64().unwrap();
+    let h = e.get("/usage/v1/quota/history").await;
+    let ep = &h["accounts"][0]["epochs"][0];
+    assert_eq!(ep["id"], epoch, "{h}");
+    assert_eq!(ep["active"], true, "{h}");
+    let q = e.get("/usage/v1/quota").await;
+    // The test's per-process alias may differ from the recorder's, so match by observer.
+    let a = q["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["quota"]["observed_by"] == "manual")
+        .unwrap();
+    assert_eq!(
+        a["quota"]["primary"]["estimate"]["since_ms"], done["from_ms"],
+        "{a}"
+    );
+
+    let undo = format!("/admin/v1/accounts/a/quota-estimate/reset/{epoch}/undo");
+    let r: Value = post(undo.clone(), json!({}))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(r["undone"], 1, "{r}");
+    assert_eq!(status(post(undo, json!({})).await.unwrap()), 404);
+    let h = e.get("/usage/v1/quota/history").await;
+    assert_eq!(h["accounts"][0]["epochs"][0]["active"], false, "{h}");
+}

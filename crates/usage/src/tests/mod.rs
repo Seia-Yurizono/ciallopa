@@ -2,6 +2,7 @@
 use super::*;
 use crate::problem::{failure_class, LIFECYCLE_ERRORS};
 
+mod credits;
 mod migrate;
 mod occupancy;
 mod quota;

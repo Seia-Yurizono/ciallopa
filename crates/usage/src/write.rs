@@ -5,7 +5,8 @@ use std::{collections::HashMap, path::Path};
 /// Writer-side caches: `labels` (name → id) and the last quota snapshot per account.
 pub(crate) struct WriterState {
     labels: HashMap<String, i64>,
-    last_quota: Option<HashMap<i64, QuotaObs>>,
+    /// Last written snapshot per account and its id.
+    last_quota: Option<HashMap<i64, (i64, QuotaObs)>>,
     data_version: Option<i64>,
     pub(crate) instance: String,
 }
@@ -23,6 +24,10 @@ impl WriterState {
         self.labels.clear();
         self.last_quota = None;
         self.data_version = None;
+    }
+    /// Reload the snapshot cache on next use (after a write outside the batch path).
+    pub(crate) fn forget_quota(&mut self) {
+        self.last_quota = None;
     }
     pub(crate) fn label(
         &mut self,
@@ -59,22 +64,27 @@ impl WriterState {
         }
         let mut st = c.prepare(
             "SELECT q.account, (SELECT name FROM labels WHERE id=q.plan), q.p_pct, q.p_reset, q.p_win, \
-             q.s_pct, q.s_reset, q.s_win, q.cards FROM quota_obs q \
+             q.s_pct, q.s_reset, q.s_win, q.cards, q.id, q.cr_flags, q.cr_balance FROM quota_obs q \
              WHERE q.id = (SELECT max(id) FROM quota_obs WHERE account = q.account)",
         )?;
         let rows = st.query_map([], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
-                QuotaObs {
-                    plan: r.get(1)?,
-                    p_pct: r.get(2)?,
-                    p_reset: r.get(3)?,
-                    p_window_min: r.get(4)?,
-                    s_pct: r.get(5)?,
-                    s_reset: r.get(6)?,
-                    s_window_min: r.get(7)?,
-                    cards: r.get(8)?,
-                },
+                (
+                    r.get::<_, i64>(9)?,
+                    QuotaObs {
+                        plan: r.get(1)?,
+                        p_pct: r.get(2)?,
+                        p_reset: r.get(3)?,
+                        p_window_min: r.get(4)?,
+                        s_pct: r.get(5)?,
+                        s_reset: r.get(6)?,
+                        s_window_min: r.get(7)?,
+                        cards: r.get(8)?,
+                        cr_flags: r.get(10)?,
+                        cr_balance: r.get(11)?,
+                    },
+                ),
             ))
         })?;
         self.last_quota = Some(rows.collect::<rusqlite::Result<_>>()?);
@@ -84,13 +94,41 @@ impl WriterState {
 
 use crate::classify::same_reset;
 
-fn quota_changed(old: Option<&QuotaObs>, new: &QuotaObs) -> bool {
-    let Some(o) = old else { return true };
+/// A credit balance change is written at most this often (per account)…
+const CREDIT_WRITE_MS: i64 = 60_000;
+/// …and only when it moved by at least max(1 credit, 1%).
+const CREDIT_MIN_DELTA: f64 = 1.0;
+const CREDIT_MIN_SHARE: f64 = 0.01;
+
+/// Responses that carry no credit fields keep the last known credit state.
+fn with_credits(old: Option<&(i64, QuotaObs)>, new: &QuotaObs) -> QuotaObs {
+    let mut q = new.clone();
+    if q.cr_flags.is_none() && q.cr_balance.is_none() {
+        if let Some((_, o)) = old {
+            q.cr_flags = o.cr_flags;
+            q.cr_balance = o.cr_balance;
+        }
+    }
+    q
+}
+
+/// `new` already carries the inherited credit state (see [`with_credits`]).
+fn quota_changed(old: Option<&(i64, QuotaObs)>, id: i64, new: &QuotaObs) -> bool {
+    let Some((old_id, o)) = old else { return true };
     o.plan != new.plan
         || o.p_pct != new.p_pct
         || o.s_pct != new.s_pct
         || !same_reset(o.p_reset, new.p_reset)
         || !same_reset(o.s_reset, new.s_reset)
+        || o.cr_flags != new.cr_flags
+        || match (o.cr_balance, new.cr_balance) {
+            (None, Some(_)) => true,
+            (Some(a), Some(b)) => {
+                (a - b).abs() >= CREDIT_MIN_DELTA.max(a.abs() * CREDIT_MIN_SHARE)
+                    && (id - old_id) >> SEQ_BITS >= CREDIT_WRITE_MS
+            }
+            _ => false,
+        }
 }
 
 pub(crate) fn insert_batch(
@@ -109,8 +147,8 @@ pub(crate) fn insert_batch(
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,?34)",
         )?;
         let mut qst = tx.prepare_cached(
-            "INSERT OR IGNORE INTO quota_obs(id,account,instance,plan,p_pct,p_reset,p_win,s_pct,s_reset,s_win,cards) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            "INSERT OR IGNORE INTO quota_obs(id,account,instance,plan,p_pct,p_reset,p_win,s_pct,s_reset,s_win,cards,cr_flags,cr_balance) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
         )?;
         let mut dst = tx.prepare_cached(
             "INSERT OR IGNORE INTO error_detail(id,message,body,body_len,truncated,headers,up_req_id,attempts) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
@@ -191,16 +229,15 @@ pub(crate) fn insert_batch(
                 }
             }
             if let (1, Some(q), Some(a)) = (n, q, account) {
-                if quota_changed(
-                    ws.last_quota.as_ref().expect("quota cache loaded").get(&a),
-                    q,
-                ) {
-                    let old = ws
-                        .last_quota
-                        .as_ref()
-                        .expect("quota cache loaded")
-                        .get(&a)
-                        .cloned();
+                let old = ws
+                    .last_quota
+                    .as_ref()
+                    .expect("quota cache loaded")
+                    .get(&a)
+                    .cloned();
+                let q = &with_credits(old.as_ref(), q);
+                if quota_changed(old.as_ref(), r.id, q) {
+                    let old = old.map(|(_, o)| o);
                     qst.execute(params![
                         r.id,
                         a,
@@ -212,7 +249,9 @@ pub(crate) fn insert_batch(
                         q.s_pct,
                         q.s_reset,
                         q.s_window_min,
-                        q.cards
+                        q.cards,
+                        q.cr_flags,
+                        q.cr_balance
                     ])?;
                     if let Some(name) = r.account.as_deref() {
                         pending.push((a, name.to_string(), r.id, old, q.clone()));
@@ -220,7 +259,7 @@ pub(crate) fn insert_batch(
                     ws.last_quota
                         .as_mut()
                         .expect("quota cache loaded")
-                        .insert(a, q.clone());
+                        .insert(a, (r.id, q.clone()));
                 }
             }
         }
@@ -242,8 +281,8 @@ pub(crate) fn insert_quota(
     let mut pending: Vec<(i64, String, i64, Option<QuotaObs>, QuotaObs)> = Vec::new();
     {
         let mut qst = tx.prepare_cached(
-            "INSERT OR IGNORE INTO quota_obs(id,account,instance,plan,p_pct,p_reset,p_win,s_pct,s_reset,s_win,cards) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            "INSERT OR IGNORE INTO quota_obs(id,account,instance,plan,p_pct,p_reset,p_win,s_pct,s_reset,s_win,cards,cr_flags,cr_balance) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
         )?;
         for crate::QuotaSnapshot {
             id,
@@ -263,6 +302,8 @@ pub(crate) fn insert_quota(
                 .expect("quota cache loaded")
                 .get(&a)
                 .cloned();
+            let q = &with_credits(old.as_ref(), q);
+            let old = old.map(|(_, o)| o);
             qst.execute(params![
                 id,
                 a,
@@ -274,13 +315,15 @@ pub(crate) fn insert_quota(
                 q.s_pct,
                 q.s_reset,
                 q.s_window_min,
-                q.cards
+                q.cards,
+                q.cr_flags,
+                q.cr_balance
             ])?;
             pending.push((a, account.clone(), *id, old, q.clone()));
             ws.last_quota
                 .as_mut()
                 .expect("quota cache loaded")
-                .insert(a, q.clone());
+                .insert(a, (*id, q.clone()));
         }
     }
     for (a, name, id, old, new) in &pending {
@@ -315,6 +358,7 @@ pub(crate) fn purge_step(
         if !more {
             tx.execute("DELETE FROM quota_obs WHERE id < ?1 AND id < (SELECT max(id) FROM quota_obs q WHERE q.account=quota_obs.account)", [cut])?;
             crate::history::purge(&tx, cutoff_ms)?;
+            crate::epoch::purge(&tx, crate::now_ms())?;
             // Sessions are unbounded, so their dictionary is pruned; labels stay small and are kept.
             tx.execute("DELETE FROM threads WHERE NOT EXISTS (SELECT 1 FROM requests WHERE thread=threads.id)", [])?;
         }

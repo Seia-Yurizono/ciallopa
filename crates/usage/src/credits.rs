@@ -10,6 +10,10 @@ pub const FAST_INCLUDED_X: f64 = 2.5;
 /// Ultrafast included-usage multiplier (ChatGPT plan, not the API Ultrafast list-price multiplier).
 pub const ULTRA_INCLUDED_X: f64 = 8.0;
 
+/// Purchased credits (点数) bill Fast at 2× and Ultrafast at 6× (included usage: 2.5× / 8×).
+pub const FAST_PURCHASED_X: f64 = 2.0;
+pub const ULTRA_PURCHASED_X: f64 = 6.0;
+
 /// Per-1M-token Standard credit rates.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CreditRates {
@@ -142,12 +146,26 @@ pub fn rates(model: &str) -> Option<CreditRates> {
 /// Included-usage credits for one request. `None` = unknown model (never 0).
 /// Flex (not an included-usage speed) uses the Standard rate.
 pub fn credits(model: Option<&str>, tier: Tier, u: Usage) -> Option<f64> {
-    let r = rates(model?)?;
     let x = match tier {
         Tier::Standard | Tier::Flex => 1.0,
         Tier::PriorityFast => FAST_INCLUDED_X,
         Tier::Ultrafast => ULTRA_INCLUDED_X,
     };
+    at(model, x, u)
+}
+
+/// Purchased credits (点数) for one request served after the window was full.
+pub fn purchased(model: Option<&str>, tier: Tier, u: Usage) -> Option<f64> {
+    let x = match tier {
+        Tier::Standard | Tier::Flex => 1.0,
+        Tier::PriorityFast => FAST_PURCHASED_X,
+        Tier::Ultrafast => ULTRA_PURCHASED_X,
+    };
+    at(model, x, u)
+}
+
+fn at(model: Option<&str>, x: f64, u: Usage) -> Option<f64> {
+    let r = rates(model?)?;
     let cached = u.cached.max(0) as f64;
     let fresh = (u.input - u.cached).max(0) as f64;
     let out = u.output.max(0) as f64;
@@ -216,5 +234,10 @@ mod tests {
         assert!((ultra - std * 8.0).abs() < 1e-9);
         let flex = credits(Some("gpt-6.1-sol"), Tier::Flex, u(100_000, 20_000, 10_000)).unwrap();
         assert!((flex - std).abs() < 1e-9);
+        let usage = u(100_000, 20_000, 10_000);
+        let bought = |t| purchased(Some("gpt-6.1-sol"), t, usage).unwrap();
+        assert!((bought(Tier::Standard) - std).abs() < 1e-9);
+        assert!((bought(Tier::PriorityFast) - std * 2.0).abs() < 1e-9);
+        assert!((bought(Tier::Ultrafast) - std * 6.0).abs() < 1e-9);
     }
 }

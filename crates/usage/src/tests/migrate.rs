@@ -345,6 +345,7 @@ fn historical_schemas_upgrade_and_roundtrip() {
             "quota_reset_events",
             "quota_cycle_estimates",
             "reset_consume",
+            "quota_est_epochs",
         ] {
             assert_eq!(
                 c.query_row(
@@ -605,7 +606,9 @@ fn v17_does_not_rebuild_an_existing_target_index() {
     assert_eq!(
         c.pragma_query_value::<i64, _>(None, "schema_version", |r| r.get(0))
             .unwrap(),
-        before + 1 // v18 adds the expiry column; the index remains unchanged.
+        // v18 adds the expiry column, v19 four credit columns plus the epoch table and its
+        // index; the account index remains unchanged.
+        before + 1 + 6
     );
     assert_account_index(&c);
 
@@ -752,7 +755,7 @@ fn v18_preserves_pending_and_known_expiry_across_upgrades() {
                 assert_eq!(
                     c.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
                         .unwrap(),
-                    18
+                    crate::schema::SCHEMA_VERSION
                 );
                 assert_eq!(
                     c.query_row("SELECT count(*) FROM requests", [], |r| r.get::<_, i64>(0))
@@ -761,5 +764,66 @@ fn v18_preserves_pending_and_known_expiry_across_upgrades() {
                 );
             }
         }
+    }
+}
+
+#[test]
+fn v19_adds_credit_columns_and_keeps_rows() {
+    // Build a v18 database: today's schema without the v19 additions.
+    let mut c = fixture(16);
+    crate::schema::migrate(&mut c).unwrap();
+    c.execute_batch(
+        "ALTER TABLE quota_obs DROP COLUMN cr_flags;
+         ALTER TABLE quota_obs DROP COLUMN cr_balance;
+         ALTER TABLE quota_cycle_estimates DROP COLUMN over_credits;
+         ALTER TABLE quota_cycle_estimates DROP COLUMN over_api_usd;
+         DROP TABLE quota_est_epochs;
+         PRAGMA user_version=18;
+         INSERT INTO quota_obs(id,account,p_pct,p_reset,p_win) VALUES(1048576,1,42,99,10080);
+         INSERT INTO quota_cycle_estimates(account,window,started_ms,ended_ms,ended_obs_id,
+           close_kind,credits_used,confidence) VALUES(1,'primary',1,2,1048576,'natural',77.5,'ok');",
+    )
+    .unwrap();
+    for _ in 0..2 {
+        crate::schema::migrate(&mut c).unwrap();
+        let obs = c
+            .query_row(
+                "SELECT p_pct, cr_flags, cr_balance FROM quota_obs WHERE id=1048576",
+                [],
+                |r| {
+                    Ok((
+                        r.get::<_, f64>(0)?,
+                        r.get::<_, Option<i64>>(1)?,
+                        r.get::<_, Option<f64>>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(obs, (42.0, None, None));
+        let cycle = c
+            .query_row(
+                "SELECT credits_used, over_credits, over_api_usd FROM quota_cycle_estimates",
+                [],
+                |r| {
+                    Ok((
+                        r.get::<_, f64>(0)?,
+                        r.get::<_, Option<f64>>(1)?,
+                        r.get::<_, Option<f64>>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(cycle, (77.5, None, None));
+        assert_eq!(
+            c.query_row("SELECT count(*) FROM quota_est_epochs", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            c.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
+                .unwrap(),
+            19
+        );
     }
 }

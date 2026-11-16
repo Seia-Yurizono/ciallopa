@@ -58,6 +58,40 @@ pub fn parse_quota_at(headers: &HeaderMap, now: SystemTime) -> Option<QuotaSnaps
     (s.primary.is_some() || s.secondary.is_some()).then_some(s)
 }
 
+/// Purchased credits (点数) from `x-codex-credits-*`, parsed like Codex
+/// (`parse_credits_snapshot`): both flags are required, the balance is optional.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CreditsHeader {
+    pub has_credits: bool,
+    pub unlimited: bool,
+    pub balance: Option<f64>,
+}
+
+fn header_bool(h: &HeaderMap, n: &str) -> Option<bool> {
+    let raw = hget(h, n)?;
+    if raw.eq_ignore_ascii_case("true") || raw == "1" {
+        Some(true)
+    } else if raw.eq_ignore_ascii_case("false") || raw == "0" {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+pub fn parse_credits(h: &HeaderMap) -> Option<CreditsHeader> {
+    Some(CreditsHeader {
+        has_credits: header_bool(h, "x-codex-credits-has-credits")?,
+        unlimited: header_bool(h, "x-codex-credits-unlimited")?,
+        balance: hget(h, "x-codex-credits-balance")
+            .and_then(|b| b.parse::<f64>().ok())
+            .filter(|b| b.is_finite()),
+    })
+}
+
+/// A live window at this used fraction is full: the upstream keeps serving from purchased
+/// credits (点数) when the account has them, so it is avoided while others have quota.
+pub const FULL_FRACTION: f64 = 1.0;
+
 /// Highest live used fraction (0..=1) across windows; windows whose reset passed are ignored.
 pub fn max_used_fraction(q: &QuotaSnapshot, now: SystemTime) -> f64 {
     [&q.primary, &q.secondary]
