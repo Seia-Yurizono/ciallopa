@@ -489,7 +489,7 @@ const Shell = (() => {
     const need = attentionCount(q);
     setBadge("accounts", need ? need : null, "err");
     const block = q && q.egress_block && q.egress_block.active ? q.egress_block : null;
-    setBadge("system", block ? 1 : null, "err");
+    systemAlert("egress-block", block ? 1 : 0);
     banner("egress-block", block ? () => egressBlockBanner(block) : null);
     const usable = usableCount(q);
     const configured = q && Array.isArray(q.accounts) ? q.accounts.filter(a => a.configured !== false).length : 0;
@@ -527,6 +527,17 @@ const Shell = (() => {
     if (!box) return;
     Core.clear(box);
     for (const fn of banners.values()) box.appendChild(UI.banner(fn()));
+  }
+
+  // systemAlert(id, n) — one source of the system badge (egress block here; memory, recorder gaps and
+  // draining from the system view); the badge shows the sum. 0 / null clears the source.
+  const sysAlerts = new Map();
+  function systemAlert(id, n) {
+    if (n) sysAlerts.set(id, Number(n));
+    else sysAlerts.delete(id);
+    let sum = 0;
+    for (const v of sysAlerts.values()) sum += v;
+    setBadge("system", sum || null, "err");
   }
 
   // setBadge(name, n, kind) — count on the nav items of `name` (accounts, system); null hides it.
@@ -1075,6 +1086,7 @@ const Shell = (() => {
     statusSeq++;
     status.quota = status.runtime = null;
     scopeValues = null;
+    sysAlerts.clear();
     for (const k of Object.keys(badges)) setBadge(k, null);
     banners.clear();
     renderBanners();
@@ -1171,6 +1183,6 @@ const Shell = (() => {
   }
 
   return {ROUTES, LEGACY_REQUEST_PARAMS, RANGES, parseRoute, scopeFromQuery, scopeToQuery, scopeWindow, attentionCount, usableCount,
-    scope, href, go, refresh, refreshStatus, status, banner, setBadge, busy, setTheme, theme, setAuto, logout, start,
+    scope, href, go, refresh, refreshStatus, status, banner, setBadge, systemAlert, busy, setTheme, theme, setAuto, logout, start,
     current: () => (current ? current.name : null)};
 })();

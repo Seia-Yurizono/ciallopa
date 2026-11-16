@@ -204,6 +204,12 @@
   font-variant-numeric: tabular-nums;
 }
 
+.chart-tip-extra {
+  color: var(--fg-2);
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+}
+
 .chart-tip-hint {
   margin-top: 4px;
   padding-top: 4px;

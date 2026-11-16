@@ -126,6 +126,7 @@
 }
 
 .btn-link {
+  position: relative; /* anchors the coarse-pointer hit area even without .btn */
   height: auto;
   padding: 0;
   border: 0;
@@ -342,6 +343,12 @@ input[type="number"].input {
   height: 16px;
   margin: 0;
   accent-color: var(--primary);
+}
+
+/* a switch inside .check keeps its own size (the rule above is more specific than .switch) */
+.check input.switch {
+  width: 32px;
+  height: 18px;
 }
 
 /* switch: <input type="checkbox" class="switch"> */

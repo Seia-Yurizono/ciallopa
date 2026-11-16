@@ -41,7 +41,8 @@ const Charts = (() => {
   // opts.x: bucket start times (ms); opts.series: [{id, label, values: (number|null)[], color?}];
   // opts.kind: "bar" (series stacked bottom → top, e.g. failed then ok) | "line" | "area";
   // opts.height (px, includes the x-axis band; default 200); opts.yFormat(v); opts.xFormat(ms, i);
-  // opts.tipTitle(i); opts.tipValue(series, v, i); opts.hint (last tooltip line, e.g. "click to …");
+  // opts.tipTitle(i); opts.tipValue(series, v, i); opts.tipExtra(i) → string[]; opts.lines (bar charts: line series
+  // on the same axis, e.g. the previous period; colour slots continue after the bars); opts.hint (last tooltip line, e.g. "click to …");
   // opts.onClick(i) — bucket click / Enter / second tap; opts.onBrush(i0, i1) — mouse drag over
   // buckets (touch drag scrubs instead); opts.legend (default: shown for 2+ series); opts.label.
   function timeSeries(container, opts) {
@@ -63,7 +64,10 @@ const Charts = (() => {
       const H = o.height || 200;
       const series = o.series;
       const stackTotals = o.x.map((_, i) => series.reduce((a, s) => a + (Number(s.values[i]) || 0), 0));
-      const dataMax = kind === "bar" ? Math.max(0, ...stackTotals) :
+      // opts.lines: line series drawn over a bar chart on the same axis (e.g. the previous period)
+      const lines = kind === "bar" ? o.lines || [] : [];
+      const lineVals = lines.flatMap(s => s.values.filter(v => v !== null && v !== undefined).map(Number));
+      const dataMax = kind === "bar" ? Math.max(0, ...stackTotals, ...lineVals) :
         Math.max(0, ...series.flatMap(s => s.values.filter(v => v !== null && v !== undefined).map(Number)));
       const scale = niceScale(dataMax);
       const yFmt = o.yFormat || tickFormat(scale.max);
@@ -113,45 +117,46 @@ const Charts = (() => {
               d: barPath(round1(x0), round1(y2), round1(bw), round1(hgt), k === parts.length - 1)}));
           });
         }
-      } else {
-        series.forEach((sr, si) => {
-          const pts = sr.values.map((v, i) => (v === null || v === undefined ? null : [left + band * (i + 0.5), y(Number(v))]));
-          let d = "", area = "", runStart = null, prev = null;
-          pts.forEach((p, i) => {
-            if (!p) {
-              if (prev && runStart !== null) area += "L" + prev[0] + "," + y(0) + "Z";
-              runStart = null;
-              prev = null;
-              return;
-            }
-            if (!prev) {
-              d += "M" + round1(p[0]) + "," + round1(p[1]);
-              area += "M" + round1(p[0]) + "," + y(0) + "L" + round1(p[0]) + "," + round1(p[1]);
-              runStart = i;
-            } else {
-              d += "L" + round1(p[0]) + "," + round1(p[1]);
-              area += "L" + round1(p[0]) + "," + round1(p[1]);
-            }
-            prev = p;
-          });
-          if (prev && runStart !== null) area += "L" + round1(prev[0]) + "," + y(0) + "Z";
-          if (kind === "area" && area) marks.appendChild(svg("path", {class: "mark-area c-" + colorOf(sr, si), d: area}));
-          if (d) marks.appendChild(svg("path", {class: "mark-line c-" + colorOf(sr, si) + (sr.dashed ? " dashed" : ""), d}));
-          // isolated points (no neighbours) would be invisible as a path: draw a dot
-          pts.forEach((p, i) => {
-            if (p && !pts[i - 1] && !pts[i + 1]) {
-              marks.appendChild(svg("circle", {class: "mark-dot c-" + colorOf(sr, si), cx: p[0], cy: p[1], r: 3}));
-            }
-          });
-        });
       }
+      const drawLine = (sr, si, withArea) => {
+        const pts = sr.values.map((v, i) => (v === null || v === undefined ? null : [left + band * (i + 0.5), y(Number(v))]));
+        let d = "", area = "", runStart = null, prev = null;
+        pts.forEach((p, i) => {
+          if (!p) {
+            if (prev && runStart !== null) area += "L" + prev[0] + "," + y(0) + "Z";
+            runStart = null;
+            prev = null;
+            return;
+          }
+          if (!prev) {
+            d += "M" + round1(p[0]) + "," + round1(p[1]);
+            area += "M" + round1(p[0]) + "," + y(0) + "L" + round1(p[0]) + "," + round1(p[1]);
+            runStart = i;
+          } else {
+            d += "L" + round1(p[0]) + "," + round1(p[1]);
+            area += "L" + round1(p[0]) + "," + round1(p[1]);
+          }
+          prev = p;
+        });
+        if (prev && runStart !== null) area += "L" + round1(prev[0]) + "," + y(0) + "Z";
+        if (withArea && area) marks.appendChild(svg("path", {class: "mark-area c-" + colorOf(sr, si), d: area}));
+        if (d) marks.appendChild(svg("path", {class: "mark-line c-" + colorOf(sr, si) + (sr.dashed ? " dashed" : ""), d}));
+        // isolated points (no neighbours) would be invisible as a path: draw a dot
+        pts.forEach((p, i) => {
+          if (p && !pts[i - 1] && !pts[i + 1]) {
+            marks.appendChild(svg("circle", {class: "mark-dot c-" + colorOf(sr, si), cx: p[0], cy: p[1], r: 3}));
+          }
+        });
+      };
+      if (kind !== "bar") series.forEach((sr, si) => drawLine(sr, si, kind === "area"));
+      lines.forEach((sr, si) => drawLine(sr, series.length + si, false));
       s.appendChild(marks);
       s.appendChild(svg("g", {class: "chart-overlay"}));
       root.insertBefore(s, tip);
       clear(legendBox);
-      const showLegend = o.legend !== undefined ? o.legend : series.length > 1;
+      const showLegend = o.legend !== undefined ? o.legend : series.length + lines.length > 1;
       if (showLegend) legendBox.appendChild(legend(series.map((sr, si) => ({label: sr.label, color: colorOf(sr, si),
-        line: kind !== "bar"}))));
+        line: kind !== "bar"})).concat(lines.map((sr, si) => ({label: sr.label, color: colorOf(sr, series.length + si), line: true})))));
       if (hover >= 0 && hover < n) showHover(hover, false);
     }
 
@@ -204,6 +209,14 @@ const Charts = (() => {
         tip.appendChild(h("div", "chart-tip-row", h("span", "legend-key sw-" + colorOf(sr, si)),
           h("span", "chart-tip-name", sr.label), h("span", "chart-tip-value", text)));
       });
+      (o.kind || "bar") === "bar" && (o.lines || []).forEach((sr, li) => {
+        const v = sr.values[i];
+        const text = o.tipValue ? o.tipValue(sr, v, i) : v === null || v === undefined ? Core.fmt.NONE : Core.fmt.exact(v);
+        tip.appendChild(h("div", "chart-tip-row", h("span", "legend-key line sw-" + colorOf(sr, o.series.length + li)),
+          h("span", "chart-tip-name", sr.label), h("span", "chart-tip-value", text)));
+      });
+      // opts.tipExtra(i) → extra lines (strings) under the series rows
+      for (const line of o.tipExtra ? o.tipExtra(i) || [] : []) tip.appendChild(h("div", "chart-tip-extra", line));
       if (o.hint && o.onClick) tip.appendChild(h("div", "chart-tip-hint", o.hint));
       tip.classList.remove("hide");
       const tw = tip.offsetWidth;
