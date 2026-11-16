@@ -2,7 +2,7 @@ use crate::UsageError;
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 
-pub(crate) const SCHEMA_VERSION: i64 = 19;
+pub(crate) const SCHEMA_VERSION: i64 = 20;
 
 pub(crate) const LATEST: &str = r#"
 CREATE TABLE IF NOT EXISTS labels(
@@ -218,7 +218,8 @@ CREATE TABLE IF NOT EXISTS quota_cycle_estimates (
   confidence        TEXT NOT NULL,
   card_source       TEXT,
   -- v19: purchased credits (点数) and API price of requests served while the window was full;
-  -- NULL on cycles closed before v19 (their credits_used may include them).
+  -- NULL on cycles closed before v19 (their credits_used may include them). Since v20
+  -- api_cost_usd is the price of the included requests only (v19 rows: minus over_api_usd).
   over_credits      REAL,
   over_api_usd      REAL,
   UNIQUE(account, window, ended_obs_id)
@@ -332,6 +333,14 @@ const STEPS: &[(i64, Migration)] = &[
         tx.execute_batch("ALTER TABLE reset_consume ADD COLUMN credit_expires_ms INTEGER")
     }),
     (19, migrate_v19),
+    // v19 wrote api_cost_usd as included + credit-funded; keep only the included part. Rows
+    // closed before v19 have no split (over_api_usd NULL) and stay as they are.
+    (20, |tx| {
+        tx.execute_batch(
+            "UPDATE quota_cycle_estimates SET api_cost_usd = max(0.0, api_cost_usd - over_api_usd)
+             WHERE api_cost_usd IS NOT NULL AND over_api_usd IS NOT NULL",
+        )
+    }),
 ];
 
 /// Columns may already exist when an older step ran `LATEST`.

@@ -165,7 +165,7 @@ pub(crate) struct CycleData {
     req_credits: Vec<(i64, f64)>,
     /// Included usage (额度) only; requests served after the window was full are excluded.
     credits_used: f64,
-    /// API list price of every request in the cycle, credit-funded ones included.
+    /// API list price of the included (额度) requests only; credit-funded ones are in over_api_cost.
     api_cost: Option<f64>,
     /// Purchased credits (点数) of requests served while the window was full.
     pub over_credits: Option<f64>,
@@ -336,9 +336,6 @@ pub(crate) fn load_cycle(
     };
     let add = |acc: &mut Option<f64>, v: f64| *acc = Some(acc.unwrap_or(0.0) + v);
     for (r, over) in reqs.iter().zip(over) {
-        if let Some(usd) = r.usd {
-            add(&mut d.api_cost, usd);
-        }
         if over {
             d.over_requests += 1;
             if let Some(c) = r.bought {
@@ -355,6 +352,9 @@ pub(crate) fn load_cycle(
             for (t, v) in d.tokens.iter_mut().zip(r.tokens) {
                 *t += v;
             }
+        }
+        if let Some(usd) = r.usd {
+            add(&mut d.api_cost, usd);
         }
         if let Some(c) = r.credits {
             d.req_credits.push((r.id, c));
@@ -439,6 +439,8 @@ pub struct CycleRow {
     pub capacity_hi: Option<f64>,
     pub delta_pct: Option<f64>,
     pub credits_used: Option<f64>,
+    /// API list price of the included (额度) requests; 点数-funded ones are in over_api_usd.
+    /// Cycles closed before v19 have no split and may include them.
     pub api_cost_usd: Option<f64>,
     pub requests: Option<i64>,
     pub snapshots: Option<i64>,

@@ -53,13 +53,30 @@ fn pro(pct: f64, reset: i64) -> QuotaObs {
 struct ProRun {
     closed: CycleRow,
     overage: f64,
+    /// API list price (with `PRICES`) of the included requests and of the credit-funded ones.
+    included_usd: f64,
+    over_usd: f64,
+}
+
+/// Synthetic list price for MODEL, USD per 1M tokens.
+const PRICES: &str = "[[model]]\nmodel=\"gpt-6.1-sol\"\nin=5.0\ncache=0.5\nout=25.0\n";
+fn list_usd((inp, cached, out): (i64, i64, i64)) -> f64 {
+    ((inp - cached) as f64 * 5.0 + cached as f64 * 0.5 + out as f64 * 25.0) / 1e6
 }
 
 /// Included usage up to 100%, then `overage_frac × capacity` funded by purchased credits.
 /// `refresh_every` > 0 adds a management refresh (unchanged 100%) every N credit requests.
 async fn pro_run(overage_frac: f64, refresh_every: usize) -> ProRun {
+    pro_run_with(overage_frac, refresh_every, false).await
+}
+
+async fn pro_run_with(overage_frac: f64, refresh_every: usize, priced: bool) -> ProRun {
     let d = tempfile::tempdir().unwrap();
     let r = Recorder::open_as(&cfg(d.path()), "host-a").unwrap();
+    if priced {
+        r.set_prices(crate::prices::PriceTable::parse(PRICES).unwrap());
+    }
+    let (mut included_usd, mut over_usd) = (0.0, 0.0);
     let reset = now_ms() / 1000 + 100;
     let mut t = now_ms() - 3 * 86_400_000;
     let mut rng = Lcg(7);
@@ -72,6 +89,7 @@ async fn pro_run(overage_frac: f64, refresh_every: usize) -> ProRun {
         }
         let pct = (cum / PRO_CAP * 100.0).floor();
         cum += c;
+        included_usd += list_usd(tok);
         send(&r, t, "pro", tok, pro(pct, reset));
         t += 30_000;
     }
@@ -82,6 +100,7 @@ async fn pro_run(overage_frac: f64, refresh_every: usize) -> ProRun {
     while overage < overage_frac * PRO_CAP {
         let tok = rng.tokens();
         overage += std_credits(tok.0, tok.1, tok.2);
+        over_usd += list_usd(tok);
         send(&r, t, "pro", tok, pro(100.0, reset));
         t += 30_000;
         n += 1;
@@ -108,7 +127,12 @@ async fn pro_run(overage_frac: f64, refresh_every: usize) -> ProRun {
         .expect("closed weekly cycle")
         .clone();
     r.shutdown();
-    ProRun { closed, overage }
+    ProRun {
+        closed,
+        overage,
+        included_usd,
+        over_usd,
+    }
 }
 
 fn near(x: Option<f64>, truth: f64, tol: f64) -> bool {
@@ -133,6 +157,27 @@ async fn credit_funded_requests_do_not_inflate_the_cycle() {
         run.overage
     );
     assert!(c.over_api_usd.is_none(), "no price table installed");
+}
+
+/// The cycle's API price is the price of its included (额度) requests only; the credit-funded
+/// requests have their own price in over_api_usd and are never added to it.
+#[tokio::test]
+async fn cycle_api_price_excludes_credit_funded_requests() {
+    let run = pro_run_with(0.3, 0, true).await;
+    let c = &run.closed;
+    assert!(
+        near(c.over_api_usd, run.over_usd, 0.03),
+        "{c:?} vs {}",
+        run.over_usd
+    );
+    // Before the fix api_cost_usd was included + credit-funded (≈ 1.3× here).
+    assert!(
+        near(c.api_cost_usd, run.included_usd, 0.03),
+        "api {:?} vs included {} (+ over {})",
+        c.api_cost_usd,
+        run.included_usd,
+        run.over_usd
+    );
 }
 
 #[tokio::test]
