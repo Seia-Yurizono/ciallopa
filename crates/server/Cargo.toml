@@ -19,6 +19,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
+flate2 = { workspace = true }
 http = { workspace = true }
 subtle = { workspace = true }
 tracing = { workspace = true }
@@ -40,7 +41,6 @@ tikv-jemalloc-sys = { version = "=0.7.1", features = ["stats"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
-flate2 = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 tokio-tungstenite = { workspace = true }
 reqwest = { workspace = true }

@@ -6,7 +6,7 @@
 //!
 //! CSP allows exactly the page's inline `<script>` / `<style>` by SHA-256 hash; everything
 //! else is `'none'` except `connect-src 'self'`.
-use axum::http::{header, HeaderValue};
+use axum::http::{header, HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
 use axum::Router;
@@ -111,9 +111,40 @@ pub fn csp_for(page: &str) -> String {
 
 static CSP: LazyLock<String> = LazyLock::new(|| csp_for(&PAGE));
 
-async fn page() -> Response {
-    let mut r = PAGE.as_str().into_response();
+/// The document, gzip-compressed once (about a quarter of its size; phones load it over the network).
+static PAGE_GZ: LazyLock<Vec<u8>> = LazyLock::new(|| {
+    use std::io::Write;
+    let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+    enc.write_all(PAGE.as_bytes())
+        .and_then(|()| enc.finish())
+        .unwrap_or_default()
+});
+
+fn accepts_gzip(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(header::ACCEPT_ENCODING)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .any(|coding| {
+            let mut parts = coding.split(';').map(str::trim);
+            parts.next().is_some_and(|c| c.eq_ignore_ascii_case("gzip"))
+                && !parts.any(|q| matches!(q, "q=0" | "q=0.0" | "q=0.00" | "q=0.000"))
+        })
+}
+
+async fn page(headers: HeaderMap) -> Response {
+    let gzip = accepts_gzip(&headers) && !PAGE_GZ.is_empty();
+    let mut r = if gzip {
+        PAGE_GZ.as_slice().into_response()
+    } else {
+        PAGE.as_str().into_response()
+    };
     let h = r.headers_mut();
+    if gzip {
+        h.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+    }
+    h.insert(header::VARY, HeaderValue::from_static("accept-encoding"));
     let hv = |s: &str| HeaderValue::from_str(s).unwrap_or(HeaderValue::from_static(""));
     h.insert(
         header::CONTENT_TYPE,
@@ -156,6 +187,7 @@ async fn favicon() -> Response {
 
 pub fn routes() -> Router {
     LazyLock::force(&CSP);
+    LazyLock::force(&PAGE_GZ);
     PATHS
         .iter()
         .fold(Router::new(), |r, path| r.route(path, get(page)))
@@ -188,5 +220,23 @@ mod tests {
                 && !FAVICON.contains("<script")
                 && !FAVICON.contains("<text")
         );
+    }
+
+    #[test]
+    fn gzip_is_negotiated_and_round_trips() {
+        use std::io::Read;
+        let with = |v: &'static str| {
+            let mut h = HeaderMap::new();
+            h.insert(header::ACCEPT_ENCODING, HeaderValue::from_static(v));
+            accepts_gzip(&h)
+        };
+        assert!(with("gzip, deflate, br") && with("br;q=1.0, GZIP;q=0.8"));
+        assert!(!with("br, deflate") && !with("gzip;q=0, br") && !accepts_gzip(&HeaderMap::new()));
+        let mut out = String::new();
+        flate2::read::GzDecoder::new(PAGE_GZ.as_slice())
+            .read_to_string(&mut out)
+            .unwrap();
+        assert_eq!(out, *PAGE);
+        assert!(PAGE_GZ.len() * 2 < PAGE.len());
     }
 }
