@@ -38,6 +38,7 @@ impl PurgeState {
 struct Batch {
     rows: Vec<Record>,
     quotas: Vec<QuotaSnapshot>,
+    epochs: Vec<crate::epoch::Command>,
     acks: Vec<SyncSender<()>>,
     stop: bool,
 }
@@ -46,6 +47,7 @@ impl Batch {
         match msg {
             Msg::Rec(row) => self.rows.push(*row),
             Msg::Quota(q) => self.quotas.push(*q),
+            Msg::Epoch(e) => self.epochs.push(*e),
             Msg::Flush(ack) => self.acks.push(ack),
             Msg::Stop => self.stop = true,
         }
@@ -110,6 +112,9 @@ impl Writer {
                     }
                 }
             }
+            for cmd in batch.epochs {
+                let _ = cmd.reply.send(self.epoch(&cmd.op));
+            }
             if batch.stop || !batch.acks.is_empty() {
                 self.flush_refusals();
                 self.flush_occupancy(true);
@@ -128,6 +133,7 @@ impl Writer {
         let mut batch = Batch {
             rows: Vec::with_capacity(self.batch_size),
             quotas: Vec::new(),
+            epochs: Vec::new(),
             acks: Vec::new(),
             stop: false,
         };
@@ -136,6 +142,7 @@ impl Writer {
         while !batch.stop
             && batch.rows.len() + batch.quotas.len() < self.batch_size
             && batch.acks.is_empty()
+            && batch.epochs.is_empty()
         {
             match self.rx.try_recv() {
                 Ok(msg) => batch.take(msg),
@@ -173,6 +180,23 @@ impl Writer {
             let value = f(&tx, &mut self.state)?;
             tx.commit()?;
             Ok(value)
+        })();
+        if result.is_err() {
+            self.state.reset();
+        }
+        result
+    }
+
+    /// One reset / undo per transaction, after the records queued before it.
+    fn epoch(&mut self, op: &crate::epoch::Op) -> Result<crate::epoch::Reply, crate::UsageError> {
+        let result = (|| {
+            let tx = self
+                .conn
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            self.state.refresh(&tx)?;
+            let reply = crate::epoch::apply(&tx, &mut self.state, op)?;
+            tx.commit()?;
+            Ok(reply)
         })();
         if result.is_err() {
             self.state.reset();

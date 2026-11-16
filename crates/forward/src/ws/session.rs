@@ -62,6 +62,9 @@ impl UpLink {
 
 enum Redial<'a> {
     ModelCooldown,
+    /// The pinned account's window is full (serving from purchased credits) while another
+    /// account has quota: move at the start of a turn, before anything is sent.
+    QuotaFull,
     Overload {
         code: &'a str,
         wait: Option<Duration>,
@@ -430,7 +433,7 @@ impl Session {
             &mut self.route
         };
         let (hold, wait) = match why {
-            Redial::ModelCooldown => (crate::attempt::WS_HOLD_MAX, None),
+            Redial::ModelCooldown | Redial::QuotaFull => (crate::attempt::WS_HOLD_MAX, None),
             Redial::Overload { wait, .. } => (Duration::MAX, wait),
             Redial::Quota(_) => (Duration::MAX, None),
         };
@@ -456,6 +459,7 @@ impl Session {
         let replacement = UpLink::new(ws, headers, account, gen);
         let code = match why {
             Redial::ModelCooldown => "model_cooldown",
+            Redial::QuotaFull => "quota_full",
             Redial::Overload { code, .. } => code,
             Redial::Quota(outcome) => crate::errors::quota_outcome_code(outcome),
         };
@@ -698,6 +702,35 @@ impl Session {
                                     failure,
                                     "model_cooldown",
                                     "account cooling down for this model",
+                                )
+                            }
+                        }
+                    }
+                    if self.st.router.prefer_other(
+                        &self.up.account,
+                        &self.route.model,
+                        &self.st.accounts.accounts(),
+                    ) {
+                        if self.state.turn().and_then(Turn::request).is_none() {
+                            self.fail(
+                                "quota_full",
+                                crate::errors::SRC_LOCAL,
+                                "account window full (purchased credits); closed for client replay on an account with quota",
+                            );
+                            return Flow::Close(Close::Replay);
+                        }
+                        match self.redial(Redial::QuotaFull).await {
+                            Ok(()) => {}
+                            Err(RedialFailed::Refused(response)) => {
+                                let tracker =
+                                    self.state.take_turn().and_then(|mut t| t.tracker.take());
+                                return self.send(error_event(response, tracker).await).await;
+                            }
+                            Err(failure) => {
+                                return self.replay_failed(
+                                    failure,
+                                    "quota_full",
+                                    "account window full (purchased credits)",
                                 )
                             }
                         }

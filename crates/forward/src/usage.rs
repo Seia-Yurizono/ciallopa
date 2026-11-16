@@ -776,7 +776,7 @@ pub(crate) fn quota_obs(h: &HeaderMap) -> Option<QuotaObs> {
         .and_then(|v| v.to_str().ok())
         .map(|v| v.trim().to_ascii_lowercase())
         .filter(|v| !v.is_empty());
-    Some(QuotaObs {
+    let mut q = QuotaObs {
         plan,
         p_pct: p.as_ref().map(|w| w.used_percent),
         p_reset: p.as_ref().and_then(|w| w.resets_at).and_then(secs),
@@ -784,8 +784,18 @@ pub(crate) fn quota_obs(h: &HeaderMap) -> Option<QuotaObs> {
         s_pct: s.as_ref().map(|w| w.used_percent),
         s_reset: s.as_ref().and_then(|w| w.resets_at).and_then(secs),
         s_window_min: s.as_ref().and_then(|w| w.window_minutes).map(|m| m as i64),
-        cards: None,
-    })
+        ..Default::default()
+    };
+    if let Some(c) = ciallopa_routing::parse_credits(h) {
+        q.set_credits(
+            Some(c.has_credits),
+            Some(c.unlimited),
+            c.balance,
+            None,
+            None,
+        );
+    }
+    Some(q)
 }
 
 /// Ids / tiers are short tokens; refuse junk so a client can't bloat the label table.
@@ -1334,5 +1344,33 @@ mod tests {
             (None, None),
             "no invented 5h window"
         );
+        assert_eq!(
+            (q.cr_flags, q.cr_balance),
+            (None, None),
+            "no credit headers"
+        );
+    }
+
+    #[test]
+    fn quota_obs_keeps_purchased_credits() {
+        let mut h = HeaderMap::new();
+        for (k, v) in [
+            ("x-codex-primary-used-percent", "100"),
+            ("x-codex-primary-window-minutes", "10080"),
+            ("x-codex-primary-reset-at", "1794464253"),
+            ("x-codex-credits-has-credits", "True"),
+            ("x-codex-credits-unlimited", "false"),
+            ("x-codex-credits-balance", " 812.5 "),
+        ] {
+            h.insert(k, v.parse().unwrap());
+        }
+        let q = quota_obs(&h).unwrap();
+        assert_eq!(
+            (q.cr_flags, q.cr_balance),
+            (Some(ciallopa_usage::CR_HAS), Some(812.5))
+        );
+        // Like Codex: without both flags there is no credit snapshot.
+        h.remove("x-codex-credits-unlimited");
+        assert_eq!(quota_obs(&h).unwrap().cr_flags, None);
     }
 }

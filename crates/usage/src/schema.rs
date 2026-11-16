@@ -2,7 +2,7 @@ use crate::UsageError;
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 
-pub(crate) const SCHEMA_VERSION: i64 = 18;
+pub(crate) const SCHEMA_VERSION: i64 = 19;
 
 pub(crate) const LATEST: &str = r#"
 CREATE TABLE IF NOT EXISTS labels(
@@ -61,7 +61,10 @@ CREATE TABLE IF NOT EXISTS quota_obs(
   instance INTEGER,
   plan     INTEGER,
   p_pct    REAL, p_reset INTEGER, p_win INTEGER,
-  s_pct    REAL, s_reset INTEGER, s_win INTEGER, cards INTEGER
+  s_pct    REAL, s_reset INTEGER, s_win INTEGER, cards INTEGER,
+  -- v19: purchased credits (点数). cr_flags bits: 1 has_credits, 2 unlimited,
+  -- 4 overage_limit_reached, 8 spend_control_reached. NULL = never reported.
+  cr_flags INTEGER, cr_balance REAL
 );
 CREATE INDEX IF NOT EXISTS quota_obs_account ON quota_obs(account, id);
 -- v4: failed requests only (id = requests.id); body redacted + capped at 16 KiB.
@@ -214,9 +217,26 @@ CREATE TABLE IF NOT EXISTS quota_cycle_estimates (
   coverage_gap      INTEGER NOT NULL DEFAULT 0,
   confidence        TEXT NOT NULL,
   card_source       TEXT,
+  -- v19: purchased credits (点数) and API price of requests served while the window was full;
+  -- NULL on cycles closed before v19 (their credits_used may include them).
+  over_credits      REAL,
+  over_api_usd      REAL,
   UNIQUE(account, window, ended_obs_id)
 );
 CREATE INDEX IF NOT EXISTS quota_cycle_estimates_acct ON quota_cycle_estimates(account, ended_ms);
+-- v19: manual estimate resets. Estimates of (account, window) use only snapshots and requests
+-- with id >= the latest from_id not undone; rows of one reset share grp (= its first id).
+CREATE TABLE IF NOT EXISTS quota_est_epochs (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  grp         INTEGER NOT NULL,
+  account     INTEGER NOT NULL,
+  window      TEXT NOT NULL,
+  from_id     INTEGER NOT NULL,
+  created_ms  INTEGER NOT NULL,
+  by_key      TEXT,
+  undone_ms   INTEGER
+);
+CREATE INDEX IF NOT EXISTS quota_est_epochs_acct ON quota_est_epochs(account, window, from_id);
 
 CREATE TABLE IF NOT EXISTS threads(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);
 "#;
@@ -311,7 +331,28 @@ const STEPS: &[(i64, Migration)] = &[
         }
         tx.execute_batch("ALTER TABLE reset_consume ADD COLUMN credit_expires_ms INTEGER")
     }),
+    (19, migrate_v19),
 ];
+
+/// Columns may already exist when an older step ran `LATEST`.
+fn migrate_v19(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
+    for (table, column, ty) in [
+        ("quota_obs", "cr_flags", "INTEGER"),
+        ("quota_obs", "cr_balance", "REAL"),
+        ("quota_cycle_estimates", "over_credits", "REAL"),
+        ("quota_cycle_estimates", "over_api_usd", "REAL"),
+    ] {
+        let has: bool = tx.query_row(
+            &format!("SELECT EXISTS(SELECT 1 FROM pragma_table_info('{table}') WHERE name=?1)"),
+            [column],
+            |r| r.get(0),
+        )?;
+        if !has {
+            tx.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {ty}"))?;
+        }
+    }
+    Ok(())
+}
 
 fn migrate_v17(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
     // v16 executes LATEST too: do not rebuild an index it just created. Inspect
@@ -358,6 +399,7 @@ const LABEL_REFERENCES: &[(&str, &str)] = &[
     ("quota_obs", "plan"),
     ("quota_reset_events", "account"),
     ("quota_cycle_estimates", "account"),
+    ("quota_est_epochs", "account"),
     ("refusals", "key"),
     ("refusals", "route"),
     ("refusals", "ua"),

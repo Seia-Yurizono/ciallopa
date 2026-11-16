@@ -80,6 +80,12 @@ pub trait Router: Send + Sync + 'static {
     /// When the account is usable again for `model` (account- or model-level cooldown;
     /// None = usable now). Lets a connection pinned to an account re-check each request's model.
     fn model_cooling_until(&self, id: &AccountId, model: &str) -> Option<std::time::SystemTime>;
+    /// The account's window is full (it serves from purchased credits, if any) while another
+    /// of `accounts` is usable for `model` and not full: a connection pinned to it should move
+    /// at the next safe point.
+    fn prefer_other(&self, _id: &AccountId, _model: &str, _accounts: &[Account]) -> bool {
+        false
+    }
     /// Why the account is cooling down (`usage_limit`, `rate_limited`, `auth`, `transient`,
     /// `overloaded`, `challenge`, `model_unsupported`, `not_found`, `payment_required`,
     /// `workspace_deactivated`); None = not cooling.

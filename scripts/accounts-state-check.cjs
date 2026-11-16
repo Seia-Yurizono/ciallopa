@@ -414,7 +414,7 @@ function addPanel() {
 
 (async () => {
 
-function quotaHistoryRender() {
+async function quotaHistoryRender() {
   function h(tag, a, ...kids) {
     const e = {tag, className: '', style: {}, children: [], attrs: {}};
     e.appendChild = c => { e.children.push(c); return c; };
@@ -424,6 +424,7 @@ function quotaHistoryRender() {
     Object.defineProperty(e, 'firstChild', {get() { return e.children[0] || null; }});
     e.removeChild = c => { e.children.splice(e.children.indexOf(c), 1); };
     e.contains = () => false;
+    e.after = n => { e._after = n; };
     Object.defineProperty(e, 'textContent', {get() { return e.text || ''; }, set(v) { e.text = String(v); }});
     if (typeof a === 'string') e.className = a;
     else if (a) {
@@ -441,6 +442,7 @@ function quotaHistoryRender() {
   }
   function walk(e, acc = []) {
     if (e == null) return acc;
+    if (Array.isArray(e)) { for (const k of e) walk(k, acc); return acc; }
     if (typeof e === 'string' || typeof e === 'number') { acc.push(String(e)); return acc; }
     if (e.text) acc.push(e.text);
     for (const k of e.children || []) walk(k, acc);
@@ -448,6 +450,7 @@ function quotaHistoryRender() {
   }
   function find(e, pred, out = []) {
     if (!e || typeof e !== 'object') return out;
+    if (Array.isArray(e)) { for (const k of e) find(k, pred, out); return out; }
     if (pred(e)) out.push(e);
     for (const k of e.children || []) find(k, pred, out);
     return out;
@@ -492,17 +495,6 @@ function quotaHistoryRender() {
   const day = 86_400_000;
   const from = 1_791_776_716_136, to = from + 30 * day;
   assert.ok(Math.abs(c.qhPos(from + 3 * day, from, to) - 0.1) < 1e-9);
-  const tip = c.qhCapTip({capacity_credits: 50, capacity_lo: 800, capacity_hi: 1200, api_cost_usd: 8.7, coverage_gap: true, trend: 'up', close_kind: 'natural', ended_ms: 9});
-  assert.match(tip, /可能有其他端用量/);
-  assert.match(tip, /高于历史中位/);
-  assert.match(tip, /API 价格 \$8\.70/);
-  // Popover lines: reset kind + time first, then only facts that exist; card use and caveats live here.
-  const tl = c.qhTipLines({window: 'primary', ended_ms: 9, capacity_credits: 80, capacity_lo: 70, capacity_hi: 90, api_cost_usd: 2, close_kind: 'manual_card', confidence: 'fallback', coverage_gap: true, trend: 'up'},
-    {kind: 'manual_card', card_source: 'manual', prev_pct: 40, next_pct: 1, at_ms: 9}, 50, false);
-  assert.equal(tl[0], '手动卡 · t9');
-  assert.deepEqual(Array.from(tl.slice(1, 5)), ['容量 ≈ 80 credits（70–90）', 'API 价格 $2.00', '手动使用重置卡', '已用 40% → 1%']);
-  assert.equal(tl[5], '高于历史中位 50 · 可能有其他端用量 · 估算可信度低（相邻斜率回退）');
-  assert.deepEqual(Array.from(c.qhTipLines({window: 'primary', ended_ms: 9, capacity_credits: 50, close_kind: 'natural', confidence: 'ok'}, null, null, true)), ['自然重置 · t9', '容量 ≈ 50 credits', '超出图表上沿']);
   assert.equal(c.qhEventAt([{window: 'primary', kind: 'early_reset', at_ms: 1e6 + 3e5}, {window: 'secondary', kind: 'natural', at_ms: 1e6}], {window: 'primary', ended_ms: 1e6}).kind, 'early_reset');
   assert.equal(c.qhEventAt([{window: 'primary', kind: 'early_reset', at_ms: 1e6 + 7e5}], {window: 'primary', ended_ms: 1e6}), null, 'more than 10 min apart: not this reset');
   const cycles = [
@@ -515,34 +507,6 @@ function quotaHistoryRender() {
     {window: 'secondary', kind: 'early_reset', at_ms: from + 9 * day},
   ];
   const all = n => find(n, () => true);
-  // Drawn at the measured px width: viewBox == width/height attributes, never stretched, no style="" (CSP).
-  for (const W of [360, 800]) {
-    const g = c.qhGeom(W), svg = c.qhFull(cycles, 'primary', from, to, W, null, ev);
-    const vb = svg.attrs.viewBox.split(' ').map(Number);
-    assert.equal(vb[2], W);assert.equal(Number(svg.attrs.width), W);assert.equal(Number(svg.attrs.height), vb[3]);
-    assert.equal(svg.attrs.preserveAspectRatio, undefined, 'no non-uniform scaling');
-    assert.ok(all(svg).every(n => !n.attrs || n.attrs.style === undefined), 'no style attribute (CSP blocks it)');
-    const pts = find(svg, n => /\bqh-pt\b/.test(n.className));
-    assert.equal(pts.length, 2);
-    assert.ok(Math.abs(parseFloat(pts[0].attrs.cx) - c.qhX(from + 3 * day, from, to, g)) < 0.06, 'marker at the cycle end');
-    assert.ok(pts.every(p => p.className === 'qh-pt' && p.tag === 'circle' && p.attrs.r === '3.5'), 'every reset is the same hollow dot');
-    assert.equal(find(svg, n => n.tag === 'title').length, 0, 'no native titles: details are in the popover');
-    const steps = find(svg, n => /\bqh-step\b/.test(n.className) && !/\b(join|gap)\b/.test(n.className));
-    assert.equal(steps.length, 2, 'one flat segment per cycle');
-    assert.ok(Math.abs(parseFloat(steps[0].attrs.x1) - c.qhX(from + day, from, to, g)) < 0.06, 'segment starts at started_ms');
-    assert.ok(Math.abs(parseFloat(steps[0].attrs.x2) - c.qhX(from + 3 * day, from, to, g)) < 0.06, 'segment ends at ended_ms');
-    assert.ok(steps.every(st => st.className === 'qh-step'), 'low confidence is not drawn (it is in the popover)');
-    assert.equal(find(svg, n => /\bjoin\b/.test(n.className)).length, 1, 'adjacent cycles joined by a riser');
-    assert.equal(find(svg, n => /\bgap\b/.test(n.className)).length, 0, 'touching cycles: no dashed bridge');
-    assert.equal(find(svg, n => /qh-cost-bar|qh-band|qh-median|qh-wl/.test(n.className)).length, 0, 'one line only: no API price bars, band, median or window label');
-    assert.equal(find(svg, n => n.tag === 'pattern' || /qh-ring|qh-med-lbl|qh-hatch|gap/.test(n.className)).length, 0, 'no rings, hatching or labels in the plot');
-    assert.deepEqual(find(svg, n => n.className === 'qh-unit').map(n => n.text), ['credits']);
-    assert.ok(!walk(svg).join(' ').includes('API 价格'), 'API price only in the popover');
-    const dates = find(svg, n => n.className === 'qh-tick' && /^\d+-\d\d$/.test(n.text || ''));
-    assert.equal(dates.length, g.ticks);
-    assert.ok(W - c.qhX(to, from, to, g) >= 8, 'right pad fits the selection ring');
-    assert.equal(Number(svg.attrs.height), g.top + g.capH + g.xh, 'no API price pane');
-  }
   // Gaps: no observations between two cycles → one dashed bridge from the last known value to the next;
   // a cycle without an estimate is skipped (no invented value) and named in the next point's popover.
   {
@@ -554,35 +518,12 @@ function quotaHistoryRender() {
       {window: 'primary', started_ms: from + 8 * day, ended_ms: from + 8 * day + 4 * H, capacity_credits: null, capacity_lo: null, close_kind: 'natural', confidence: 'insufficient'},
       {window: 'primary', started_ms: from + 9 * day, ended_ms: from + 9 * day + 5 * H, capacity_credits: 55, close_kind: 'natural', confidence: 'ok'},
     ];
-    const W = 800, g = c.qhGeom(W), sg = c.qhFull(gc, 'primary', from, to, W, '5h', []);
-    const solid = find(sg, n => n.className === 'qh-step'), gaps = find(sg, n => n.className === 'qh-step gap'), joins = find(sg, n => n.className === 'qh-step join');
-    assert.equal(solid.length, 4, 'a solid segment for every cycle with a value, none for the one without');
-    assert.equal(gaps.length, 2, 'dashed bridge over the idle gap and over the cycle without an estimate');
-    assert.equal(joins.length, 1, 'touching cycles keep a solid riser');
-    const X = t => c.qhX(t, from, to, g);
-    assert.ok(Math.abs(parseFloat(gaps[0].attrs.x1) - X(gc[0].ended_ms)) < 0.06 && Math.abs(parseFloat(gaps[0].attrs.x2) - X(gc[1].started_ms)) < 0.06, 'bridge runs from the last end to the next start');
-    assert.equal(gaps[0].attrs.y1, solid[0].attrs.y1);assert.equal(gaps[0].attrs.y2, solid[1].attrs.y1);
-    assert.ok(Math.abs(parseFloat(gaps[1].attrs.x1) - X(gc[2].ended_ms)) < 0.06 && Math.abs(parseFloat(gaps[1].attrs.x2) - X(gc[4].started_ms)) < 0.06, 'bridge skips the cycle without an estimate');
-    assert.match(Array.from(c.qhTipLines(gc[4], null, null, false, 1)).join('|'), /前面 1 个周期没有容量估算（虚线跳过）/);
     const mg = c.qhMini({cycles: gc.map(x => Object.assign({}, x, {window: 'secondary'})), events: []}, from, to, 320);
     assert.equal(find(mg, n => n.className === 'qh-step gap').length, 1, 'row sparkline: one dashed path for the bridges');
     assert.equal((find(mg, n => n.className === 'qh-step gap')[0].attrs.d.match(/M/g) || []).length, 2);
     assert.equal((find(mg, n => n.className === 'qh-step')[0].attrs.d.match(/M/g) || []).length, 3, 'solid path restarts after each bridge');
   }
   assert.match(html, /\.qh-svg \.qh-step\.gap\{stroke-width:1\.2;stroke-dasharray:3 3;opacity:\.55\}/);
-  assert.match(html, /没有容量估算（图上虚线跳过）/, '明细 names cycles without an estimate');
-  // open cycle: dashed, no dot; dense (5h) histories keep one dot per 8 px, the popover still has every reset
-  const openC = cycles.concat([{window: 'primary', started_ms: from + 15 * day, ended_ms: null, open: true, capacity_credits: 70}]);
-  const so = c.qhFull(openC, 'primary', from, to, 800, null, ev);
-  assert.equal(find(so, n => n.className === 'qh-step open').length, 1);
-  assert.equal(find(so, n => n.className === 'qh-pt').length, 2);
-  const dense5 = Array.from({length: 140}, (_, i) => ({window: 'primary', started_ms: from + i * 5 * 3600e3, ended_ms: from + (i + 1) * 5 * 3600e3, capacity_credits: 45 + (i % 7), close_kind: 'natural', confidence: 'ok'}));
-  const sd = c.qhFull(dense5, 'primary', from, to, 360, '5h', []);
-  const dd = find(sd, n => n.className === 'qh-pt').map(n => parseFloat(n.attrs.cx));
-  assert.ok(dd.length > 10 && dd.length < 140, `dense 5h dots thinned (${dd.length})`);
-  assert.ok(dd.every((x, i) => !i || x - dd[i - 1] >= 16), 'thinned dots at least 16 px apart');
-  assert.ok(find(sd, n => n.className === 'qh-pt').every(n => n.attrs.r === '2.2'), 'dense: smaller dots');
-  assert.ok(c.qhGeom(360).L < c.qhGeom(800).L, 'narrow charts use a narrower axis gutter');
   // Robust y-domain: far-off cycles no longer flatten the rest; they are pinned to the top edge with a
   // triangle that carries the real value. The axis keeps 0 (credits are ratio data), so low values show as-is.
   assert.equal(c.qhFence([1, 2, 3]), Infinity, 'fewer than 4 values: no outliers');
@@ -593,24 +534,6 @@ function quotaHistoryRender() {
   const outl = vals.map((v, i) => ({window: 'primary', started_ms: from + (2 * i + 0.4) * day, ended_ms: from + (2 * i + 2) * day,
     capacity_credits: v, capacity_lo: v * 0.85, capacity_hi: v * 1.15, api_cost_usd: v * 0.06, close_kind: 'natural', confidence: 'ok',
     trend: v > 100 ? 'up' : v < 10 ? 'down' : null}));
-  for (const W of [344, 800]) {
-    const g = c.qhGeom(W), svgO = c.qhFull(outl, 'primary', from, to, W), bot = g.top + g.capH;
-    const yt = find(svgO, n => n.className === 'qh-tick' && /^\d+$/.test(n.text || '') && n.attrs['text-anchor'] === 'end').map(n => Number(n.text));
-    assert.equal(Math.min(...yt), 0, 'axis keeps 0');
-    assert.ok(Math.max(...yt) <= 100, `top follows the inliers, not the 600 outlier (${yt})`);
-    const steps = find(svgO, n => /\bqh-step\b/.test(n.className) && !/\b(join|gap)\b/.test(n.className)).map(n => Number(n.attrs.y1));
-    assert.equal(steps.length, vals.length, 'every cycle is drawn');
-    const inl = steps.filter((_, i) => vals[i] > 10 && vals[i] < 100), med = (bot - inl.sort((a, b) => a - b)[inl.length >> 1]) / g.capH;
-    assert.ok(med > 0.3 && med < 0.7, `inlier median sits mid-plot (${med.toFixed(2)})`);
-    assert.equal(steps[6], g.top, 'outlier step pinned to the top edge');
-    assert.ok(steps[9] > g.top && steps[9] <= bot && steps[9] > steps[0], 'low value drawn at its real height');
-    const overs = find(svgO, n => n.className === 'qh-over');
-    assert.equal(overs.length, 1, 'one ▲ for the capacity; no value labels, no price pane');
-    assert.ok(overs.every(o => o.tag === 'polygon' && !o.children.length));
-    assert.ok(Number(overs.find(o => Number(o.attrs.points.split(/[ ,]/)[1]) < g.top).attrs.points.split(/[ ,]/)[1]) < g.top, '▲ sits on the top edge');
-    assert.equal(find(svgO, n => n.tag === 'text' && /600/.test(n.text || '')).length, 0);
-    assert.ok(all(svgO).every(n => !n.attrs || n.attrs.style === undefined));
-  }
   // Windows come from upstream window_minutes, not the slot: pro sends its only (weekly) window as
   // primary, so primary history is labelled 周 and there is no 5h lane, chart or table label.
   const w = (pct, m) => ({used_pct: pct, window_minutes: m});
@@ -644,53 +567,117 @@ function quotaHistoryRender() {
   const miniY = find(miniO, n => n.className === 'qh-step')[0].attrs.d.match(/,([\d.]+)/g).map(t => Number(t.slice(1)));
   assert.ok(Math.max(...miniY) - Math.min(...miniY.filter(y => y > 1.5)) > 2, 'sparkline inliers are not flattened');
   assert.equal(c.qhTick(1500), '1.5k');
-  // Pro panel: 周 only, no toggle, no 5h anywhere
-  const proPanel = c.histPanel({from_ms: from, to_ms: to, events: [], cycles: weekly}, pro, 'b|x');
+  // Cycle rows (one bullet bar per cycle, newest first, one shared credits scale); every number is
+  // beside the bar or in the row's details, nothing tooltip-only.
+  Object.assign(c, {W: true, fullDate: ms => 'd' + ms, nm: a => a.id, path: a => '/admin/v1/accounts/' + a.id, posts: [],
+    apost: async (p, b) => { c.posts.push([p, b]); return {epoch_id: 77}; }, busyRun: (b, n, f) => f(),
+    ok: (m, o) => { c.okMsg = m; c.okUndo = o && o.undo; }, toast() {}, loadHistAll: async () => {}, load: async () => {},
+    confirmDlg: (title, nodes, yes, run) => { c.dlg = {title, nodes, yes, run}; }});
+  const pc = [
+    {window: 'primary', started_ms: from + day, ended_ms: from + 8 * day, capacity_credits: 2000, capacity_lo: 1800, capacity_hi: 2200, credits_used: 1980, delta_pct: 99, api_cost_usd: 50, close_kind: 'natural', confidence: 'ok', snapshots: 20, requests: 100},
+    {window: 'primary', started_ms: from + 8 * day, ended_ms: from + 15 * day, capacity_credits: 1500, capacity_lo: 1480, capacity_hi: 1520, credits_used: 1500, delta_pct: 100, api_cost_usd: 70, over_credits: 300, over_api_usd: 12, close_kind: 'manual_card', confidence: 'ok'},
+    {window: 'primary', started_ms: from + 15 * day, ended_ms: from + 16 * day, cycle_reset_at: (from + 22 * day) / 1000, open: true, capacity_credits: null, credits_used: 120, delta_pct: 4, api_cost_usd: 3, close_kind: 'open', confidence: 'insufficient'},
+  ];
+  const pdat = extra => Object.assign({from_ms: from, to_ms: to, events: [], cycles: pc, epochs: []}, extra || {});
+  const proPanel = c.histPanel(pdat(), pro, 'b|x', {id: 'b'});
   assert.equal(find(proPanel, n => n.className === 'seg').length, 0, 'weekly-only: no toggle');
-  assert.deepEqual(find(proPanel, n => /\bqh-fit\b/.test(n.className)).map(n => n.attrs['aria-label']), ['周 周期容量']);
-  assert.ok(walk(proPanel).join(' ').includes('额度记录 · 30 天 · 周'));
+  assert.ok(walk(proPanel).join(' ').includes('额度周期 · 30 天 · 周'));
   assert.ok(!/5h/.test(walk(proPanel).join(' ')), 'no 5h anywhere in a pro account panel');
+  const rowsOf = p => find(p, n => /^cy\b/.test(n.className));
+  const pr = rowsOf(proPanel);
+  assert.equal(pr.length, 3, 'one row per cycle');
+  assert.ok(walk(pr[0]).join(' ').includes('进行中'), 'newest (open) cycle first');
+  assert.ok(walk(pr[0]).join('').includes('/ 估算中'), 'open cycle without a capacity says 估算中, not 0');
+  assert.match(pr[0].children[1].className, /\bopen\b/, 'open cycle: dashed box');
+  const r1 = walk(pr[1]).join('');
+  assert.ok(r1.includes('1500 / 1500'), r1);
+  assert.ok(r1.includes('$70.00 · 点数 300'), 'API price and 点数 written next to the bar');
+  const part = (r, cls) => find(r, n => n.className === cls);
+  assert.equal(part(pr[1], 'over').length, 1, '点数 overflow past the used fill');
+  assert.equal(part(pr[1], 'over')[0].style.left, part(pr[1], 'used')[0].style.width, 'overflow starts where included quota ends');
+  assert.equal(part(pr[2], 'over').length, 0);
+  assert.ok(parseFloat(part(pr[2], 'capbox')[0].style.width) > parseFloat(part(pr[1], 'capbox')[0].style.width), 'shared scale: bigger capacity, longer box');
+  assert.equal(part(pr[1], 'rng').length, 1);assert.equal(part(pr[1], 'tick').length, 1);
+  assert.ok(all(proPanel).every(n => !n.attrs || n.attrs.style === undefined), 'geometry via CSSOM, no style attribute (CSP)');
+  assert.deepEqual([pr[1].attrs.role, pr[1].attrs.tabindex, pr[1].attrs['aria-expanded']], ['button', '0', 'false']);
+  pr[1].on.click();
+  assert.equal(pr[1].attrs['aria-expanded'], 'true');assert.equal(pr[1]._after.className, 'cdet', 'click opens the details under the row');
+  pr[1].on.click();assert.equal(pr[1].attrs['aria-expanded'], 'false');
+  const leg = find(proPanel, n => n.className === 'qh-leg')[0];
+  assert.deepEqual(leg.children.map(x => walk(x).join('')), ['已用额度', '估算容量（竖线）', '估算范围', '超出后用的点数']);
+  const dt = walk(c.qhDetail(pc[1], 'manual_card', [])).join('|');
+  for (const x of ['容量', '1500 credits', '范围', '1480–1520', '本周期已用额度', 'API 价格', '$70.00', '超出后用的点数', '300 · $12.00', '周期', '可信度', '正常', '结束', '手动卡']) assert.ok(dt.includes(x), x);
+  assert.match(walk(c.qhDetail(Object.assign({}, pc[0], {coverage_gap: true, confidence: 'fallback'}), 'natural', [])).join('|'), /低 · 可能有其他端用量/);
+  assert.match(walk(c.qhDetail(Object.assign({}, pc[0], {archived: true}), 'natural', [])).join('|'), /不参与趋势比较/);
+  assert.match(walk(c.qhDetail(pc[2], 'open', [])).join('|'), /估算中（变化还不够）/);
+  // 重置估算…: manual, behind the confirm dialog; pro has one window, so there is nothing to choose
+  const rb = find(proPanel, n => /\brst\b/.test(n.className))[0];
+  assert.equal(walk(rb).join(''), '重置估算…');assert.equal(rb.attrs['aria-haspopup'], 'dialog');
+  rb.on.click();
+  assert.equal(c.dlg.title, '重置 b 的额度估算？');assert.equal(c.dlg.yes, '重置估算');
+  const dlgText = () => walk({children: c.dlg.nodes}).join('');
+  assert.ok(dlgText().includes('之前的估算不再参与计算，从现在起重新统计。请求记录和费用不受影响。'));
+  assert.ok(dlgText().includes('周窗口') && dlgText().includes('2 个已结束的周期 + 进行中的估算'), dlgText());
+  assert.ok(dlgText().includes('旧估算会归档，不删除 · 30 天内可以撤销'));
+  assert.equal(find({children: c.dlg.nodes}, n => n.attrs && n.attrs.type === 'radio').length, 0, 'one window: no radio');
+  await c.dlg.run();
+  assert.equal(JSON.stringify(c.posts[0]), JSON.stringify(['/admin/v1/accounts/b/quota-estimate/reset', {window: 'primary', confirm: 'b'}]));
+  assert.match(c.okMsg, /已重置 b 的周额度估算/);
+  await c.okUndo();
+  assert.equal(JSON.stringify(c.posts[1]), JSON.stringify(['/admin/v1/accounts/b/quota-estimate/reset/77/undo', {}]));
+  // after a reset: banner with 撤销 (not only a toast), older cycles greyed as archived
+  const ep = {id: 5, window: 'primary', from_ms: 123, created_ms: 1, undo_until_ms: Date.now() + day, active: true};
+  const pe = c.histPanel(pdat({cycles: pc.map(x => Object.assign({}, x, {archived: !x.open})), epochs: [ep, Object.assign({}, ep, {id: 4, window: 'secondary'})]}), pro, 'b|x', {id: 'b'});
+  const bn = find(pe, n => n.className === 'qh-ep')[0];
+  assert.equal(bn.attrs.role, 'status');
+  assert.ok(walk(bn).join('').startsWith('已重置 · t123 起重新统计撤销'), walk(bn).join(''));
+  await find(bn, n => n.tag === 'button')[0].on.click();
+  assert.equal(JSON.stringify(c.posts[2]), JSON.stringify(['/admin/v1/accounts/b/quota-estimate/reset/5/undo', {}]));
+  assert.equal(rowsOf(pe).filter(r => /\barch\b/.test(r.className)).length, 2);
+  assert.ok(walk(rowsOf(pe)[1]).join(' ').includes('已归档'));
+  for (const gone of [Object.assign({}, ep, {active: false}), Object.assign({}, ep, {undo_until_ms: Date.now() - 1})])
+    assert.equal(find(c.histPanel(pdat({epochs: [gone]}), pro, 'b|x', {id: 'b'}), n => n.className === 'qh-ep').length, 0, 'undone or expired: no banner');
+  c.W = false;
+  assert.equal(find(c.histPanel(pdat(), pro, 'b|x', {id: 'b'}), n => /\brst\b/.test(n.className)).length, 1, 'config read-only: reset still offered (usage log only)');
+  assert.equal(find(c.histPanel(pdat(), pro, 'b|x'), n => /\brst\b/.test(n.className)).length, 0, 'no account: no reset button');
+  c.W = true;
   // Plus panel: 周 | 5h toggle (button group, aria-pressed), default 周, choice kept for the session
   const pdata = {from_ms: from, to_ms: to, events: [], cycles: plusCycles};
-  const panel = c.histPanel(pdata, plus, 'a|x');
+  const panel = c.histPanel(pdata, plus, 'a|x', {id: 'a'});
   const seg = find(panel, n => n.className === 'seg')[0];
   assert.equal(seg.attrs.role, 'group');
   assert.deepEqual(seg.children.map(b => [b.tag, b.text || b.children.join(''), b.attrs['aria-pressed'], b.attrs.type]), [['button', '周', 'true', 'button'], ['button', '5h', 'false', 'button']]);
   assert.deepEqual(seg.children.map(b => b.attrs['data-fk']), ['a|x|qwl', 'a|x|qws']);
-  const fitOf = p => find(p, n => /\bqh-fit\b/.test(n.className));
-  assert.deepEqual(fitOf(panel).map(n => n.attrs['aria-label']), ['周 周期容量'], 'one chart at a time');
+  assert.equal(rowsOf(panel).length, weekly.length, '周 rows only');
   seg.children[1].on.click();
   assert.deepEqual(seg.children.map(b => b.attrs['aria-pressed']), ['false', 'true']);
-  assert.deepEqual(fitOf(panel).map(n => n.attrs['aria-label']), ['5h 周期容量'], '5h on its own chart');
+  assert.equal(rowsOf(panel).length, 12, '5h: the newest 12 cycles');
+  assert.ok(walk(panel).join('').includes('再显示 ' + (outl.length - 12) + ' 个周期'));
   assert.equal(store.ciallopa_qh_win, 's');
-  assert.deepEqual(fitOf(c.histPanel(pdata, plus)).map(n => n.attrs['aria-label']), ['5h 周期容量'], 'the choice carries to the next panel');
-  assert.deepEqual(fitOf(c.histPanel({from_ms: from, to_ms: to, events: [], cycles: weekly}, pro)).map(n => n.attrs['aria-label']), ['周 周期容量'], 'pro ignores a 5h choice');
+  assert.equal(rowsOf(c.histPanel(pdata, plus)).length, 12, 'the choice carries to the next panel');
+  assert.equal(rowsOf(c.histPanel(pdat(), pro)).length, 3, 'pro ignores a 5h choice');
+  find(panel, n => /\brst\b/.test(n.className))[0].on.click();
+  assert.deepEqual(find({children: c.dlg.nodes}, n => n.attrs && n.attrs.type === 'radio').map(n => n.attrs.value), ['primary', 'all'], 'plus: this window or all windows');
+  assert.ok(dlgText().includes('5h窗口') && dlgText().includes('这个账号的所有窗口') && dlgText().includes('5h + 周'), dlgText());
   seg.children[0].on.click();assert.equal(store.ciallopa_qh_win, 'l');
   // plus account with only weekly history so far: toggle still there, 5h says there is nothing yet
   const p2 = c.histPanel({from_ms: from, to_ms: to, events: [], cycles: weekly.map(x => Object.assign({}, x, {window: 'secondary'}))}, plus);
   find(p2, n => n.className === 'seg')[0].children[1].on.click();
   assert.ok(walk(p2).join(' ').includes('暂无已记录的周期'));
-  const text = walk(panel).join(' ');
-  for (const label of ['额度记录 · 30 天', '明细', '重置（悬停或点按看详情）', 'API 价格']) assert.ok(text.includes(label), label);
-  const leg = find(panel, n => n.className === 'qh-leg')[0];
-  assert.equal(leg.children.length, 1, 'legend: one item');
-  for (const gone of ['历史中位', '估算范围', '手动卡', '可能有其他端用量']) assert.ok(!walk(leg).join('').includes(gone), gone);
-  const fits = fitOf(panel);
-  assert.equal(fits[0].attrs.role, 'group', 'interactive chart is not role=img');
   // no quota read yet: slots with history decide; only one → no toggle
   assert.equal(find(c.histPanel({from_ms: from, to_ms: to, events: ev, cycles}), n => n.className === 'seg').length, 0);
-  // keyboard + touch popover: focusable svg, arrow keys, Escape, 22 px hit radius (44 px), 关闭 button
-  assert.match(html, /sv\.setAttribute\("tabindex","0"\)/);
-  assert.match(html, /ArrowRight[\s\S]{0,200}ArrowLeft[\s\S]{0,200}Escape/);
-  assert.match(html, /let b=-1,bd=23;pts\.forEach\(\(p,i\)=>\{const d=Math\.abs\(p\.x-x\)/, 'nearest reset in x within 22 px');
-  assert.match(html, /\.qh-hd \.seg button\{height:44px;min-width:56px\}/, 'toggle is 44 px on touch');
-  assert.match(html, /h\("button",\{class:"xs qh-tx",type:"button"\},"关闭"\)/);
-  assert.match(html, /@media \(pointer:coarse\)\{\.qh-tip \.qh-tx\{min-height:44px;min-width:44px/);
-  assert.match(html, /\.qh-tip:not\(\.pin\)\{pointer-events:none\}/, 'hover tooltip never covers the cursor');
-  assert.match(html, /t\.style\.left=/, 'popover placed via CSSOM, not a style attribute');
-  assert.equal(fits[0]._draw(640).attrs.width, '640');
+  assert.match(html, /@media \(pointer:coarse\)\{\.qh-hd \.seg button,\.qh-hd \.rst,\.qh-ep button,\.qh-more\{min-height:44px;min-width:56px\}/, '44 px targets on touch');
+  assert.match(html, /#dlg\{z-index:41\}/, 'confirm dialog above the phone sheet');
   assert.match(walk(c.histPanel(null)).join(''), /加载中/);
   assert.match(walk(c.histPanel({error: 'x'})).join(''), /读取失败：x/);
+  // 点数 next to the quota (like Codex /status "Credits")
+  const crSrc = html.match(/function crBal\(b\)[^\n]*\nfunction crText\(cr\)[^\n]*/)[0];
+  const cr = new Function(crSrc + ';return {crBal, crText};')();
+  assert.deepEqual(cr.crText({has_credits: true, unlimited: false, balance: 812.5}), ['点数 812.5', '']);
+  assert.deepEqual(cr.crText({has_credits: true, unlimited: true, balance: null}), ['点数 不限', '']);
+  assert.deepEqual(cr.crText({has_credits: false, unlimited: false, balance: 0}), ['无点数', 'none']);
+  assert.equal(cr.crText(null), null);assert.equal(cr.crBal(1204.456), '1204.46');assert.equal(cr.crBal(null), '?');
+  assert.match(html, /if\(cr\)\(\/\\bnone\\b\/\.test\(b\.className\)\?a:b\)\.appendChild\(cr\)/, '点数 under the long window cell, or the only one');
   assert.doesNotMatch(html, /preserveAspectRatio:"none"/);
   assert.match(html, /\.qh-fit>svg\{position:absolute/, 'svg out of flow so a table cell can shrink');
   assert.match(html, /if\(r===null&&known\)return h\("td","qc none "\+cls\);/, 'missing window: empty cell, no placeholder');
@@ -705,7 +692,7 @@ function quotaHistoryRender() {
 }
 
   addPanel();
-  quotaHistoryRender();
+  await quotaHistoryRender();
   resetCardDisplay();
   await switchReplies();
   await consumeDialog();
@@ -716,7 +703,7 @@ function quotaHistoryRender() {
   await loginChanges();
   await deviceLoginIsolation();
   await accessGate();
-  console.log('PASS: add-panel toggle/Esc/one solid button, reset-card display, auto-use and quota-auto switch state, account snapshots, prewarm preference, read/login races, device start/poll cancellation and identity isolation, Cloudflare Access expiry, quota history charts (px-fitted), single history read, card flags');
+  console.log('PASS: add-panel toggle/Esc/one solid button, reset-card display, auto-use and quota-auto switch state, account snapshots, prewarm preference, read/login races, device start/poll cancellation and identity isolation, Cloudflare Access expiry, quota cycle rows, estimate reset/undo, 点数 balance, single history read, card flags');
 })().catch(error => {console.error(error); process.exitCode = 1;}).finally(() => clearTimeout(watchdog));
 
 // Switching updates only the affected row and trusts the server's accepted value.

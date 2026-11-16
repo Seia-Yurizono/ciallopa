@@ -339,7 +339,7 @@ async fn main() {
         r.key = Some("laptop".into());
         r.duration_ms = 3_000;
         r.account = Some("frank".into());
-        r.quota = Some(QuotaObs {
+        let mut q = QuotaObs {
             plan: Some("free".into()),
             p_pct: Some(17.0),
             p_reset: Some(now / 1000 + 27 * 86400),
@@ -348,7 +348,10 @@ async fn main() {
             s_reset: None,
             s_window_min: None,
             ..Default::default()
-        });
+        };
+        // Synthetic: unlimited credits, shows 点数 不限.
+        q.set_credits(Some(true), Some(true), None, None, None);
+        r.quota = Some(q);
         rec.record(r);
     }
     demo_special_rows(&rec, now);
@@ -1266,16 +1269,33 @@ fn demo_pro_history(rec: &Recorder, now: i64) {
         r.output_tokens = Some((15_000.0 * sc) as i64);
         r.cached_tokens = Some(0);
         r.duration_ms = 4_000;
-        r.quota = Some(QuotaObs {
+        // Two heavy weeks run the window full; the rest of those weeks is paid from 点数.
+        let heavy = k == 1 || k == 3;
+        let pct = if heavy {
+            (into * 135.0 / sc).min(100.0).floor()
+        } else {
+            (into * 70.0 / sc).min(99.0).floor()
+        };
+        // Synthetic purchased-credit balance: 1500 at the start, 812.5 by now.
+        let left = ((now - t) as f64 / (30.0 * 86_400_000.0)).clamp(0.0, 1.0);
+        let balance = if t + 8 * hour >= now - hour {
+            812.5
+        } else {
+            ((812.5 + 687.5 * left) * 2.0).round() / 2.0
+        };
+        let mut q = QuotaObs {
             plan: Some("pro".into()),
-            p_pct: Some((into * 70.0 / sc).min(99.0).floor()),
+            p_pct: Some(pct),
             p_reset: Some(reset / 1000),
             p_window_min: Some(10_080),
             s_pct: None,
             s_reset: None,
             s_window_min: None,
             cards: Some(3),
-        });
+            ..Default::default()
+        };
+        q.set_credits(Some(true), Some(false), Some(balance), Some(false), None);
+        r.quota = Some(q);
         rec.record(r);
         t += 8 * hour;
     }
@@ -1326,7 +1346,7 @@ fn demo_hist_snap(
     r.cached_tokens = Some(0);
     r.duration_ms = 4_000;
     r.service_tier = tier.map(|t| t.into());
-    r.quota = Some(QuotaObs {
+    let mut q = QuotaObs {
         plan: Some("plus".into()),
         p_pct: Some(p_pct),
         p_reset: Some(p_reset),
@@ -1335,7 +1355,11 @@ fn demo_hist_snap(
         s_reset: Some(s_reset),
         s_window_min: Some(10_080),
         cards: Some(cards),
-    });
+        ..Default::default()
+    };
+    // alice never bought credits: shows 无点数.
+    q.set_credits(Some(false), Some(false), Some(0.0), None, None);
+    r.quota = Some(q);
     rec.record(r);
 }
 

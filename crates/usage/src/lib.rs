@@ -1,6 +1,7 @@
 pub(crate) mod classify;
 pub(crate) mod credits;
 pub mod detail;
+mod epoch;
 pub(crate) mod estimate;
 mod filter;
 mod history;
@@ -19,7 +20,9 @@ mod summary;
 mod write;
 mod writer;
 
+pub use classify::WindowKind;
 pub use detail::{DetailRow, ErrorDetail};
+pub use epoch::{EpochReset, EpochRow, UNDO_WINDOW_MS};
 pub use filter::{Filters, RecentQuery, ThreadMatch, THREAD_FRAGMENT_MIN};
 pub use history::{AccountHistory, CycleRow, ResetEvent};
 pub use observation::{Observation, ObservationRow};
@@ -28,7 +31,7 @@ pub use occupancy::{OccupancyRow, Sample as OccupancySample};
 pub use prices::{PriceTable, Tier};
 pub use problem::FAILURE_CLASSES;
 pub use problem::{Outcome, Problem, ProblemCounts};
-pub use quota::{AccountQuota, Estimate, WindowQuota};
+pub use quota::{AccountQuota, CreditState, Estimate, WindowQuota};
 pub use records::{RecordRow, ScopeValue};
 pub use refusals::RefusalQuery;
 pub use refusals::{Reason as RefusalReason, Refusal, RefusalRow, RefusalTotals};
@@ -141,6 +144,49 @@ pub struct QuotaObs {
     pub s_window_min: Option<i64>,
     /// `rate_limit_reset_credits.available_count` when the snapshot came from `/wham/usage`.
     pub cards: Option<i64>,
+    /// Purchased credits (点数) state, `CR_*` bits; None = not reported on this snapshot.
+    pub cr_flags: Option<i64>,
+    /// Purchased credits balance; None = not reported.
+    pub cr_balance: Option<f64>,
+}
+
+/// `credits.has_credits`.
+pub const CR_HAS: i64 = 1;
+/// `credits.unlimited`.
+pub const CR_UNLIMITED: i64 = 2;
+/// `credits.overage_limit_reached` (`/wham/usage` only).
+pub const CR_OVERAGE_REACHED: i64 = 4;
+/// `spend_control.reached` (`/wham/usage` only).
+pub const CR_SPEND_CONTROL: i64 = 8;
+
+impl QuotaObs {
+    /// Fold the purchased-credit fields of a snapshot into `cr_flags` / `cr_balance`.
+    /// `None` inputs leave the state unreported; returns whether anything was set.
+    pub fn set_credits(
+        &mut self,
+        has: Option<bool>,
+        unlimited: Option<bool>,
+        balance: Option<f64>,
+        overage_reached: Option<bool>,
+        spend_control: Option<bool>,
+    ) -> bool {
+        let bits = [
+            (has, CR_HAS),
+            (unlimited, CR_UNLIMITED),
+            (overage_reached, CR_OVERAGE_REACHED),
+            (spend_control, CR_SPEND_CONTROL),
+        ];
+        if bits.iter().all(|(v, _)| v.is_none()) && balance.is_none() {
+            return false;
+        }
+        self.cr_flags = Some(
+            bits.iter()
+                .filter(|(v, _)| *v == Some(true))
+                .fold(0, |acc, (_, bit)| acc | bit),
+        );
+        self.cr_balance = balance.filter(|b| b.is_finite());
+        true
+    }
 }
 
 /// `gpt-5.5-2026-01-15` → `gpt-5.5` (a dated snapshot is the same model).
@@ -235,6 +281,8 @@ pub(crate) enum Msg {
     Rec(Box<Record>),
     /// Quota snapshot read on request (not from a proxied response): `(id, account, by, obs)`.
     Quota(Box<QuotaSnapshot>),
+    /// Manual estimate reset / undo, applied in its own transaction and acknowledged.
+    Epoch(Box<epoch::Command>),
     Flush(SyncSender<()>),
     Stop,
 }
@@ -256,6 +304,9 @@ pub enum UsageError {
     Gone,
     #[error("usage blocking task: {0}")]
     Join(#[from] tokio::task::JoinError),
+    /// A request named something the database has never seen (account, reset).
+    #[error("not found: {0}")]
+    NotFound(&'static str),
 }
 
 pub struct Recorder {
@@ -621,6 +672,44 @@ impl Recorder {
         let (weights, prices) = (self.weights.load_full(), self.prices());
         self.read(move |c| quota::quota(c, &weights, &prices, now_ms()))
             .await
+    }
+
+    /// Start a new estimate epoch for `account` (one window, or both when `None`). Older
+    /// snapshots and requests stop counting for those windows; nothing is deleted.
+    pub async fn reset_estimate(
+        &self,
+        account: &str,
+        window: Option<WindowKind>,
+        by_key: Option<String>,
+    ) -> Result<EpochReset, UsageError> {
+        let from_id = self.ids.next();
+        let op = epoch::Op::Reset {
+            account: self.alias_account(account),
+            windows: window.map_or(WindowKind::ALL.to_vec(), |w| vec![w]),
+            from_id,
+            by_key,
+        };
+        self.epoch(op).await?.reset()
+    }
+
+    /// Undo a reset (all windows it covered) within [`UNDO_WINDOW_MS`]; returns rows restored.
+    pub async fn undo_estimate_reset(&self, account: &str, epoch: i64) -> Result<u64, UsageError> {
+        let op = epoch::Op::Undo {
+            account: self.alias_account(account),
+            grp: epoch,
+        };
+        self.epoch(op).await?.undone()
+    }
+
+    async fn epoch(&self, op: epoch::Op) -> Result<epoch::Reply, UsageError> {
+        let fast = self.fast.clone();
+        tokio::task::spawn_blocking(move || {
+            let (tx, rx) = sync_channel(1);
+            fast.send(Msg::Epoch(Box::new(epoch::Command { op, reply: tx })))
+                .map_err(|_| UsageError::Gone)?;
+            rx.recv().map_err(|_| UsageError::Gone)?
+        })
+        .await?
     }
 
     pub async fn quota_history(

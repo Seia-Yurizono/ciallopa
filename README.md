@@ -258,6 +258,9 @@ in three steps:
    `weighted-round-robin`, accounts with weight ≤ 0 are dropped too.
 2. With `routing.quota_avoid_threshold` above 0, skip accounts whose last observed usage in
    any unexpired quota window is at or over the threshold (unless that would skip all of them).
+   Then, threshold or not, skip accounts with a full window (100%) while another account still
+   has quota: a full account may keep working on purchased credits (点数), so it is the last
+   resort.
 3. Keep only the highest `priority` tier and apply `routing.strategy`:
    - `round-robin` (default): take turns in account-id order, with a separate cursor per model;
      weights are ignored.
@@ -268,7 +271,10 @@ in three steps:
 When the bound account cannot serve a request, `routing.session_affinity_rebind_on` decides
 whether the binding moves: `quota` (default) moves it for quota, token, 402 or deactivation problems,
 while short failures such as repeated 5xx only borrow another account until the original one
-recovers; `any` moves it whenever the bound account is unusable.
+recovers; `any` moves it whenever the bound account is unusable. A session bound to an account
+whose window is full moves to an account that still has quota, if there is one (WebSocket
+sessions: at the next turn, redialled or closed with 1012 for replay, recorded as `quota_full`);
+when every account is full it stays where it is.
 
 Bindings survive a restart: they are saved to `session_affinity.json` next to the usage
 database (mode 0600; at most every 30 s and only after a change, plus once at shutdown) and
@@ -342,7 +348,7 @@ session_affinity = true
 session_affinity_ttl = "24h"
 session_affinity_subagents = true
 session_affinity_rebind_on = "quota"    # | any
-quota_avoid_threshold = 0.0             # 0 = off (default): switch only on upstream quota errors; e.g. 0.95 = new sessions skip accounts at/over 95% used
+quota_avoid_threshold = 0.0             # 0 = off (default); e.g. 0.95 = new sessions skip accounts at/over 95% used. Full (100%) accounts are always last resort
 cooldown_wait_secs = 20                 # every account cooling and one recovers within this: hold the
                                         # request until it does (WS handshakes up to 10 s); 0 = never hold
 

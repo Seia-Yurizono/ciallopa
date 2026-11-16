@@ -51,7 +51,9 @@ session_affinity = true
 session_affinity_ttl = "24h"
 session_affinity_subagents = true
 session_affinity_rebind_on = "quota"
-quota_avoid_threshold = 0.0   # 0 = off (default); error-driven cooldown + switch only. e.g. 0.95 to also avoid near-full accounts for new sessions
+quota_avoid_threshold = 0.0   # 0 = off (default). e.g. 0.95 to also avoid near-full accounts for new sessions.
+                              # Independent of this, accounts with a full window (100%) are used only when
+                              # no other account has quota left (they may be spending purchased credits)
 # Every account cooling down and the first one recovers within this many seconds: hold the
 # request and route it once that account recovers (WebSocket handshakes are held up to 10 s).
 # Longer: answer at once. 0 = never hold. Max 120.
