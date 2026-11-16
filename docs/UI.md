@@ -1,7 +1,8 @@
 # 管理界面
 
-界面围绕“发现异常 → 缩小范围 → 查看请求 → 返回原位置”组织。概览、账号和设置保持三个简单入口，
-由 Rust 静态嵌入交付，部署无需前端运行时。
+界面围绕“发现异常 → 缩小范围 → 查看请求 → 返回原位置”组织。单文档应用，五个视图：概览 `/ui`、
+请求 `/ui/requests`、账号 `/ui/accounts`、设置 `/ui/settings`、系统 `/ui/system`；由 Rust 静态嵌入交付，
+部署无需前端运行时。源码结构、视图契约、组件与 CSP 约定见 [crates/server/src/ui/README.md](../crates/server/src/ui/README.md)。
 
 ## 概览与账号
 

@@ -1,0 +1,361 @@
+/* Charts (Charts.* in js/charts.js). Every colour comes from tokens, so a theme switch restyles
+   drawn charts without a redraw. Colour keys: s1..s4 (categorical, fixed order), other, neutral,
+   accent, ok, warn, err. */
+.chart {
+  position: relative;
+  min-width: 0;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: pan-y;
+}
+
+.chart svg {
+  display: block;
+  overflow: visible;
+}
+
+.chart:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 4px;
+  border-radius: var(--r1);
+}
+
+.chart.loading svg {
+  opacity: 0.55;
+  transition: opacity var(--t-med) ease-out;
+}
+
+.chart-grid {
+  stroke: var(--chart-grid);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+
+.chart-base {
+  stroke: var(--chart-axis);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+
+.chart-tick {
+  fill: var(--fg-3);
+  font-family: var(--font);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-cursor {
+  stroke: var(--chart-cursor);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+  pointer-events: none;
+}
+
+.chart-brush {
+  fill: color-mix(in srgb, var(--accent-solid) 14%, transparent);
+  stroke: var(--accent);
+  stroke-width: 1;
+  pointer-events: none;
+}
+
+.chart-hover-band {
+  fill: var(--fg);
+  opacity: 0.05;
+  pointer-events: none;
+}
+
+.chart-empty {
+  fill: var(--fg-3);
+  font-size: 12px;
+}
+
+.mark-bar {
+  transition: opacity var(--t-fast) ease-out;
+}
+
+.chart.has-hover .mark-bar:not(.hot) {
+  opacity: 0.55;
+}
+
+.mark-line {
+  fill: none;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.mark-line.dashed {
+  stroke-dasharray: 4 3;
+  stroke-width: 1.5;
+}
+
+.mark-area {
+  stroke: none;
+  opacity: 0.1;
+}
+
+.mark-dot {
+  stroke: var(--surface);
+  stroke-width: 2;
+}
+
+.c-s1 { fill: var(--series-1); stroke: var(--series-1); }
+.c-s2 { fill: var(--series-2); stroke: var(--series-2); }
+.c-s3 { fill: var(--series-3); stroke: var(--series-3); }
+.c-s4 { fill: var(--series-4); stroke: var(--series-4); }
+.c-other { fill: var(--series-other); stroke: var(--series-other); }
+.c-neutral { fill: var(--chart-neutral); stroke: var(--chart-neutral); }
+.c-accent { fill: var(--accent-solid); stroke: var(--accent-solid); }
+.c-ok { fill: var(--ok-solid); stroke: var(--ok-solid); }
+.c-warn { fill: var(--warn-solid); stroke: var(--warn-solid); }
+.c-err { fill: var(--err-solid); stroke: var(--err-solid); }
+
+.mark-line[class*="c-"] {
+  fill: none;
+}
+
+/* swatches for HTML (legends, tooltips, segment bars) */
+.sw-s1 { --sw: var(--series-1); }
+.sw-s2 { --sw: var(--series-2); }
+.sw-s3 { --sw: var(--series-3); }
+.sw-s4 { --sw: var(--series-4); }
+.sw-other { --sw: var(--series-other); }
+.sw-neutral { --sw: var(--chart-neutral); }
+.sw-accent { --sw: var(--accent-solid); }
+.sw-ok { --sw: var(--ok-solid); }
+.sw-warn { --sw: var(--warn-solid); }
+.sw-err { --sw: var(--err-solid); }
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px var(--s4);
+  color: var(--fg-2);
+  font-size: var(--fs-12);
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.legend-key {
+  display: inline-block;
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: var(--sw, var(--fg-3));
+}
+
+.legend-key.line {
+  width: 14px;
+  height: 2px;
+  border-radius: 1px;
+}
+
+/* tooltip */
+.chart-tip {
+  position: absolute;
+  z-index: 5;
+  min-width: 140px;
+  max-width: 260px;
+  padding: var(--s2) 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r2);
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
+  font-size: var(--fs-12);
+  pointer-events: none;
+}
+
+.chart-tip-title {
+  margin-bottom: 4px;
+  color: var(--fg-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-tip-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  line-height: 1.6;
+}
+
+.chart-tip-row .legend-key {
+  width: 10px;
+  height: 2px;
+}
+
+.chart-tip-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chart-tip-value {
+  color: var(--fg);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-tip-hint {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+  color: var(--fg-3);
+  font-size: var(--fs-11);
+}
+
+/* sparkline */
+.spark {
+  display: block;
+  overflow: visible;
+}
+
+.spark .mark-line {
+  stroke-width: 1.5;
+}
+
+/* horizontal bars */
+.hbars {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.hbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 2fr) minmax(48px, max-content);
+  align-items: center;
+  gap: var(--s3);
+  min-height: 32px;
+  padding: 0 var(--s2);
+  border: 0;
+  border-radius: var(--r1);
+  background: none;
+  color: var(--fg);
+  font-size: var(--fs-13);
+  text-align: left;
+}
+
+button.hbar {
+  cursor: pointer;
+}
+
+button.hbar:hover {
+  background: var(--surface-2);
+}
+
+button.hbar:active {
+  background: var(--surface-3);
+}
+
+.hbar-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hbar-track {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 0 4px 4px 0;
+}
+
+.hbar-fill {
+  display: block;
+  width: 0;
+  min-width: 2px;
+  height: 100%;
+  border-radius: 0 4px 4px 0;
+  background: var(--sw, var(--series-1));
+  transition: width var(--t-slow) var(--ease-out);
+}
+
+.hbar-fill.zero {
+  min-width: 0;
+}
+
+.hbar-value {
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.hbar-value .sub {
+  margin-left: 4px;
+  color: var(--fg-2);
+  font-size: var(--fs-12);
+}
+
+/* segmented ratio bar (one whole split into parts) */
+.segbar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  min-width: 0;
+}
+
+.segbar-track {
+  display: flex;
+  gap: 2px;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 4px;
+}
+
+.segbar.tall .segbar-track {
+  height: 28px;
+}
+
+.segbar-part {
+  flex: 0 0 auto;
+  min-width: 2px;
+  height: 100%;
+  background: var(--sw, var(--fg-3));
+  transition: flex-basis var(--t-slow) var(--ease-out);
+}
+
+.segbar.tall .segbar-part {
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  overflow: hidden;
+  border-radius: 4px;
+  color: #fff;
+  font-size: var(--fs-11);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.segbar.tall .segbar-part.sw-warn,
+.segbar.tall .segbar-part.sw-neutral {
+  color: #1c2024;
+}
+
+.segbar-part:first-child {
+  border-top-left-radius: 4px;
+  border-bottom-left-radius: 4px;
+}
+
+.segbar-part:last-child {
+  border-top-right-radius: 4px;
+  border-bottom-right-radius: 4px;
+}
+
+.segbar-empty {
+  flex: 1;
+  background: var(--surface-4);
+}

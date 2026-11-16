@@ -108,7 +108,7 @@ async fn ui_pages_and_toggle() {
     use base64::Engine;
     use sha2::Digest;
     let app = app(true).await;
-    for path in ["/ui", "/ui/settings", "/ui/accounts"] {
+    for path in ciallopa::ui::PATHS {
         let r = app
             .clone()
             .oneshot(Request::get(path).body(Body::empty()).unwrap())
@@ -156,7 +156,7 @@ async fn ui_pages_and_toggle() {
     assert_eq!(r.status(), StatusCode::TEMPORARY_REDIRECT);
     assert_eq!(r.headers()["location"], "/ui");
     let off = self::app(false).await;
-    for path in ["/ui", "/ui/settings", "/ui/accounts"] {
+    for path in ciallopa::ui::PATHS {
         assert_eq!(
             off.clone()
                 .oneshot(Request::get(path).body(Body::empty()).unwrap())

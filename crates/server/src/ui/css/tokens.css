@@ -1,0 +1,222 @@
+/* Design tokens. Values follow Radix Colors v3 (slate neutrals, blue accent, green/amber/red
+   status). Dark mode maps step by step to the dark scales instead of inverting. The four chart
+   series colours were checked with the dataviz validate_palette.js script (light on #ffffff,
+   dark on #111113 and #18191b): all checks pass; light aqua is below 3:1 so series always carry a
+   legend or direct label. */
+:root {
+  color-scheme: light;
+
+  /* surfaces: page < surface; -2..-4 are subtle / control / pressed steps */
+  --page: #f9f9fb;
+  --surface: #ffffff;
+  --surface-2: #f9f9fb;
+  --surface-3: #f0f0f3;
+  --surface-4: #e8e8ec;
+  --side-bg: #f9f9fb;
+
+  --line: #e8e8ec;
+  --line-2: #d9d9e0;
+  --line-3: #b9bbc6;
+
+  --fg: #1c2024;
+  --fg-2: #60646c;
+  --fg-3: #8b8d98; /* icons, placeholders, axis ticks only — not body text */
+
+  --accent: #0d74ce;
+  --accent-solid: #0090ff;
+  --accent-bg: #e6f4fe;
+  --accent-tint: #f4faff;
+  --accent-line: #acd8fc;
+
+  --ok: #218358;
+  --ok-bg: #e6f6eb;
+  --ok-solid: #30a46c;
+  --warn: #ab6400;
+  --warn-bg: #fff7c2;
+  --warn-solid: #ffc53d;
+  --err: #ce2c31;
+  --err-bg: #feebec;
+  --err-solid: #e5484d;
+
+  --primary: #1c2024;
+  --primary-hover: #33373d;
+  --primary-fg: #ffffff;
+
+  --focus: #0d74ce;
+  --scrim: rgba(17, 19, 24, 0.36);
+  --shadow-pop: 0 12px 32px -12px rgba(16, 24, 40, 0.22), 0 2px 6px -2px rgba(16, 24, 40, 0.08);
+  --shadow-sheet: 0 -8px 32px -12px rgba(16, 24, 40, 0.24);
+  --ring: 0 0 0 1px rgba(16, 24, 40, 0.06);
+
+  /* charts: categorical slots in fixed order, then neutral / grid / axis */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #6250d6;
+  --series-other: #8b8d98;
+  --chart-neutral: #cdced6;
+  --chart-grid: #f0f0f3;
+  --chart-axis: #d9d9e0;
+  --chart-cursor: #b9bbc6;
+  --hatch: rgba(13, 116, 206, 0.28);
+
+  /* type */
+  --font: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+    "Noto Sans SC", "Noto Sans CJK SC", sans-serif;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, "Noto Sans Mono CJK SC", monospace;
+  --fs-11: 11px;
+  --fs-12: 12px;
+  --fs-13: 13px;
+  --fs-14: 14px;
+  --fs-16: 16px;
+  --fs-20: 20px;
+  --fs-28: 28px;
+  --fs-body: 13px;
+  --fs-input: 13px;
+  --lh: 1.6;
+
+  /* space (4px base), radius, control size */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 20px;
+  --s6: 24px;
+  --s7: 32px;
+  --s8: 48px;
+  --r1: 6px;
+  --r2: 8px;
+  --r3: 12px;
+  --h-ctl: 32px;
+  --h-ctl-sm: 28px;
+  --h-row: 40px;
+  --hit: 32px;
+
+  /* motion */
+  --t-fast: 100ms;
+  --t-med: 160ms;
+  --t-slow: 200ms;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+
+  /* shell geometry */
+  --side-w: 224px;
+  --rail-w: 56px;
+  --topbar-h: 56px;
+  --tabbar-h: 56px;
+  --drawer-w: 520px;
+}
+
+:root[lang="en"] {
+  --lh: 1.5;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #111113;
+    --surface: #18191b;
+    --surface-2: #1d1e21;
+    --surface-3: #212225;
+    --surface-4: #272a2d;
+    --side-bg: #111113;
+    --line: #272a2d;
+    --line-2: #363a3f;
+    --line-3: #5a6169;
+    --fg: #edeef0;
+    --fg-2: #b0b4ba;
+    --fg-3: #777b84;
+    --accent: #70b8ff;
+    --accent-solid: #0090ff;
+    --accent-bg: #0d2847;
+    --accent-tint: #131c2a;
+    --accent-line: #104d87;
+    --ok: #3dd68c;
+    --ok-bg: #132d21;
+    --ok-solid: #30a46c;
+    --warn: #ffca16;
+    --warn-bg: #302008;
+    --warn-solid: #ffc53d;
+    --err: #ff9592;
+    --err-bg: #3b1219;
+    --err-solid: #e5484d;
+    --primary: #edeef0;
+    --primary-hover: #d5d7da;
+    --primary-fg: #111113;
+    --focus: #70b8ff;
+    --scrim: rgba(0, 0, 0, 0.56);
+    --shadow-pop: 0 16px 40px -12px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.06);
+    --shadow-sheet: 0 -8px 32px -8px rgba(0, 0, 0, 0.7);
+    --ring: 0 0 0 1px rgba(255, 255, 255, 0.08);
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #9085e9;
+    --series-other: #777b84;
+    --chart-neutral: #43484e;
+    --chart-grid: #232528;
+    --chart-axis: #363a3f;
+    --chart-cursor: #5a6169;
+    --hatch: rgba(112, 184, 255, 0.3);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #111113;
+  --surface: #18191b;
+  --surface-2: #1d1e21;
+  --surface-3: #212225;
+  --surface-4: #272a2d;
+  --side-bg: #111113;
+  --line: #272a2d;
+  --line-2: #363a3f;
+  --line-3: #5a6169;
+  --fg: #edeef0;
+  --fg-2: #b0b4ba;
+  --fg-3: #777b84;
+  --accent: #70b8ff;
+  --accent-solid: #0090ff;
+  --accent-bg: #0d2847;
+  --accent-tint: #131c2a;
+  --accent-line: #104d87;
+  --ok: #3dd68c;
+  --ok-bg: #132d21;
+  --ok-solid: #30a46c;
+  --warn: #ffca16;
+  --warn-bg: #302008;
+  --warn-solid: #ffc53d;
+  --err: #ff9592;
+  --err-bg: #3b1219;
+  --err-solid: #e5484d;
+  --primary: #edeef0;
+  --primary-hover: #d5d7da;
+  --primary-fg: #111113;
+  --focus: #70b8ff;
+  --scrim: rgba(0, 0, 0, 0.56);
+  --shadow-pop: 0 16px 40px -12px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  --shadow-sheet: 0 -8px 32px -8px rgba(0, 0, 0, 0.7);
+  --ring: 0 0 0 1px rgba(255, 255, 255, 0.08);
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #9085e9;
+  --series-other: #777b84;
+  --chart-neutral: #43484e;
+  --chart-grid: #232528;
+  --chart-axis: #363a3f;
+  --chart-cursor: #5a6169;
+  --hatch: rgba(112, 184, 255, 0.3);
+}
+
+/* Phone layout (also short landscape phones with a coarse pointer): touch-sized controls. */
+@media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
+  :root {
+    --fs-body: 14px;
+    --fs-input: 16px;
+    --h-ctl: 44px;
+    --h-ctl-sm: 36px;
+    --hit: 44px;
+    --topbar-h: 52px;
+  }
+}

@@ -13,14 +13,13 @@ cargo test --locked -p ciallopa-usage
 # A forwarding behavior; omit the final filter to run the integration file.
 cargo test --locked -p ciallopa --test it forward::sse::sse_observation_on_client_disconnect
 
-# Embedded UI query and asynchronous state behavior; no npm install needed.
-node scripts/ui-state-check.cjs
+# Embedded UI foundation (routing, scope URLs, formatting, i18n parity, Api semantics); no npm
+# install needed. Each view adds its own scripts/<view>-check.cjs; run them all with:
+node scripts/shell-check.cjs
+for f in scripts/*-check.cjs; do node "$f"; done
 
-# Settings drafts, reloads and revision conflicts.
-node scripts/settings-state-check.cjs
-
-# Account snapshots, partial failures and late reads.
-node scripts/accounts-state-check.cjs
+# Edit the UI against the demo backend without rebuilding Rust (see crates/server/src/ui/README.md).
+node scripts/ui-dev.cjs
 ```
 
 For a public `core` contract, include its consumers. For a fix, start with a regression
