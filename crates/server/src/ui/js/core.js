@@ -150,8 +150,9 @@ const Core = (() => {
     pct(x, digits) {
       if (!isNum(x)) return NONE;
       const v = Number(x) * 100;
-      const d = digits === undefined ? (Math.abs(v) < 10 && v !== 0 ? 1 : 0) : digits;
-      return v.toFixed(d) + "%";
+      if (digits !== undefined) return v.toFixed(digits) + "%";
+      // One decimal below 100 (13.8%), without a trailing ".0" (50%).
+      return (Math.abs(v) < 100 ? v.toFixed(1).replace(/\.0$/, "") : v.toFixed(0)) + "%";
     },
     // Percent value already in 0..100.
     pct100(v, digits) {
@@ -318,7 +319,8 @@ const Core = (() => {
     boxes = boxes.filter(Boolean);
     const a = document.activeElement;
     if (a && a !== document.body && boxes.some(b => b.contains(a))) a.blur();
-    const e = pickAnchor();
+    // At the top of the page there is nothing to hold: content growing above an anchor must not scroll it away.
+    const e = window.scrollY > 0 ? pickAnchor() : null;
     const sel = e && anchorSel(e);
     const before = e ? e.getBoundingClientRect().top : 0;
     f();

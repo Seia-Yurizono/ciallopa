@@ -819,11 +819,13 @@ Views.settings = (() => {
     const tbl = UI.table({compact: true, keyOf: d => d.key, label: t("settings.saveTitle", {n: o.diff.length}), columns: [
       {id: "k", label: t("settings.col.key"), render: d => {
         const f = S.draft.field(d.key);
-        return h("div", null, h("div", null, f ? T.title(f) : d.key), h("code", "st-key", d.key));
+        // Phones drop the effect column; a restart still shows, next to the name.
+        return h("div", null, h("div", null, f ? T.title(f) : d.key, d.effect === "hot" ? null :
+          h("span", {class: "tag outline st-tag phone-only"}, t("settings.restart"))), h("code", "st-key", d.key));
       }},
       {id: "o", label: t("settings.col.old"), className: "st-rv-old", render: d => h("span", "muted", val(S.draft.field(d.key), d.old))},
       {id: "n", label: t("settings.col.new"), className: "st-rv-new", render: d => h("span", "strong", val(S.draft.field(d.key), d.new))},
-      {id: "e", label: t("settings.col.effect"), render: d => (d.effect === "hot" ?
+      {id: "e", label: t("settings.col.effect"), className: "st-rv-eff", render: d => (d.effect === "hot" ?
         h("span", {class: "muted small", title: t("settings.hotTip")}, t("settings.hot")) :
         h("span", {class: "tag outline", title: t("settings.restartTip")}, t("settings.restart")))}]});
     tbl.setRows(o.diff);

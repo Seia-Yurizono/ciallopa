@@ -958,6 +958,13 @@
   overflow-wrap: anywhere;
 }
 
+/* Phones: the review table keeps setting / current / new; a restart shows as a tag by the name. */
+@media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
+  .st-rv-eff {
+    display: none;
+  }
+}
+
 /* ---------- medium widths: default goes under the control ---------- */
 @media (max-width: 1279px) {
   .st-layout {

@@ -169,7 +169,7 @@ Views.overview = (() => {
     "overview.rpm": "{n} RPM",
     "overview.upstream": "Upstream {p}",
     "overview.p90": "p90 {v}",
-    "overview.samples": "{n} samples",
+    "overview.samples": (v) => (String(v.n) === "1" ? "1 sample" : v.n + " samples"),
     "overview.io": "In {i} · out {o}",
     "overview.cache": "Cached {p}",
     "overview.noUsage": "{n} unreported",
@@ -257,7 +257,7 @@ Views.overview = (() => {
     "overview.quotaInfo": "One segment per enabled account with that window; the fill is the remaining quota (latest " +
       "upstream snapshot, not range-scoped). The percentage averages the known accounts. Tap to " +
       "see each account.",
-    "overview.nAccounts": "{n} accounts",
+    "overview.nAccounts": (v) => (Number(v.n) === 1 ? "1 account" : v.n + " accounts"),
     "overview.quotaUnknown": "Unknown",
     "overview.relogin": "Needs re-login",
     "overview.left": "{p} left",
@@ -1203,10 +1203,11 @@ Views.overview = (() => {
     } else Shell.go(Shell.href("requests", act.params));
   }
 
-  function nameCell(g, x, maxCount, total) {
+  // plain: no action button (the phone card is itself a button; its sheet holds the action).
+  function nameCell(g, x, maxCount, total, plain) {
     const v = x.group ? x.group[g] : null;
     const name = total ? t("overview.total") : groupName(g, v);
-    const act = total ? null : rowAction(g, x);
+    const act = total || plain ? null : rowAction(g, x);
     const label = act ? h("button", {type: "button", class: "ov-name-btn trunc",
       title: act.scope ? t("overview.filterTo", {v: name}) : t("overview.viewRequests") + " · " + name}, name) :
       h("span", "trunc" + (total ? " strong" : ""), name);
@@ -1270,14 +1271,11 @@ Views.overview = (() => {
     return h("div", "list ov-break-list", rows.map(r => {
       const x = r.x;
       const item = h("button", {type: "button", class: "list-item ov-break-item" + (r.total ? " total" : "")},
-        h("div", "list-line", nameCell(g, x, maxCount, r.total), h("span", "grow"),
+        h("div", "list-line", nameCell(g, x, maxCount, r.total, true), h("span", "grow"),
           h("span", "num strong", fmt.n(x.count))),
         h("div", "list-line sub", h("span", null, t("term.errorRate") + " "), failCell(x), h("span", null, " · " + t("term.tokens") + " "),
           tokensCell(x), h("span", null, " · "), costCell(x)));
-      item.addEventListener("click", e => {
-        if (e.target.closest(".ov-name-btn")) return;
-        openRowSheet(g, r);
-      });
+      item.addEventListener("click", () => openRowSheet(g, r));
       return item;
     }));
   }

@@ -185,8 +185,9 @@ const RequestsDetail = (() => {
         bar.setAttribute("aria-label", t("requests.d.tlWait") + " " + fmt.ms(ttft) + ", " + t("requests.d.tlGen") + " " + fmt.ms(d - ttft));
       } else {
         bar.append(place(h("span", "rq-tseg gen"), 0, 100));
-        legend.append(h("span", "rq-tkey", t("requests.d.tlTotal"), h("b", "num", fmt.ms(d))),
-          !M.isStream(r) ? h("span", "rq-tkey muted", t("requests.d.tlNoTtft")) : null);
+        // Node.append would print a null as the text "null"
+        legend.append(h("span", "rq-tkey", t("requests.d.tlTotal"), h("b", "num", fmt.ms(d))));
+        if (!M.isStream(r)) legend.append(h("span", "rq-tkey muted", t("requests.d.tlNoTtft")));
         bar.setAttribute("aria-label", t("requests.d.tlTotal") + " " + fmt.ms(d));
       }
       return h("section", "rq-dsec", h("div", "rq-tscale", h("span", null, "0"), h("span", null, fmt.ms(d))), bar, legend);

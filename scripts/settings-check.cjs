@@ -568,6 +568,23 @@ test('"0 = off" numbers: off writes 0 and keeps the typed value; on with 0 is an
   assert.equal(e2.value, '64', 'switching on fills the default');
 });
 
+test('a server validation mark on a "0 = off" or range control clears like any other', () => {
+  const draft = M.createDraft({identity: () => 'x'});
+  draft.base = {defaults: {}};
+  const zo = C.zeroOff(draft, {key: 'max_inflight_requests', kind: 'int', desc: 'x'}, 32, document.createElement('div'));
+  const zoErr = zo.el.children[1];
+  zo.error('需要在 1 到 1024 之间');
+  assert.equal(zoErr.classList.contains('hide'), false);
+  zo.error('');
+  assert.equal(zoErr.classList.contains('hide'), true, 'typing elsewhere clears the server mark');
+  const rz = C.range(draft, {key: 'ui.quota_refresh_mins', kind: 'int', desc: 'x'}, {key: 'ui.quota_refresh_max_mins', kind: 'int'}, 5, 10,
+    document.createElement('div'));
+  const rzErr = rz.el.children[1];
+  rz.error('bad');
+  rz.error('');
+  assert.equal(rzErr.classList.contains('hide'), true);
+});
+
 test('language switch: raw control state replays onto a rebuilt form', () => {
   const draft = M.createDraft({identity: () => 'x'});
   const build = () => {

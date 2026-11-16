@@ -263,20 +263,30 @@ const RequestsModel = (() => {
   // Summary bucket grain for the request chart: hourly up to 7 days, daily beyond.
   const chartBucket = (from, to) => (to - from <= 7 * DAY + HOUR ? "hour" : "day");
 
-  // Chart series from summary buckets (oldest first). Hourly gaps are filled with zero buckets so
-  // bars sit at their real time. refused: show local refusals instead of requests.
-  function histogram(buckets, bucket, refused) {
+  // Chart series from summary buckets (oldest first). With the query window (`win`, and `tz` in
+  // minutes east of UTC as sent to the API) every bucket intersecting it is drawn, empty ones as
+  // zero bars, so bars sit at their real time; without it only the gaps between buckets are filled.
+  // refused: show local refusals instead of requests.
+  function histogram(buckets, bucket, refused, win, tz) {
+    const step = bucket === "hour" ? HOUR : DAY;
     const list = (buckets || []).filter(b => Number.isFinite(b.start_ms)).slice().sort((a, b) => a.start_ms - b.start_ms);
+    const by = new Map(list.map(b => [b.start_ms, b]));
+    const row = (start, b) => ({start, end: (b && b.end_ms) || start + step, count: b ? Number(b.count) || 0 : 0,
+      failures: b ? Number(b.failures) || 0 : 0, refused: b ? Number(b.refused) || 0 : 0});
     const rows = [];
-    for (const b of list) {
-      const prev = rows[rows.length - 1];
-      if (prev && bucket === "hour") {
-        for (let s = prev.end + 0; s < b.start_ms && rows.length < 2000; s += HOUR) {
-          rows.push({start: s, end: s + HOUR, count: 0, failures: 0, refused: 0});
-        }
+    if (win && Number.isFinite(win.from) && Number.isFinite(win.to) && win.to > win.from) {
+      const off = (Number(tz) || 0) * 60000;
+      const first = Math.floor((win.from + off) / step) * step - off;
+      for (let s = first; s <= win.to && rows.length < 2000; s += step) rows.push(row(s, by.get(s)));
+      // a bucket the grid did not land on (DST shift) is kept at its own time
+      for (const b of list) if (!rows.some(r => r.start === b.start_ms)) rows.push(row(b.start_ms, b));
+      rows.sort((a, b) => a.start - b.start);
+    } else {
+      for (const b of list) {
+        const prev = rows[rows.length - 1];
+        if (prev) for (let s = prev.end; s < b.start_ms && rows.length < 2000; s += step) rows.push(row(s, null));
+        rows.push(row(b.start_ms, b));
       }
-      rows.push({start: b.start_ms, end: b.end_ms || b.start_ms + (bucket === "hour" ? HOUR : DAY),
-        count: Number(b.count) || 0, failures: Number(b.failures) || 0, refused: Number(b.refused) || 0});
     }
     const x = rows.map(r => r.start);
     const series = refused ?
@@ -291,7 +301,8 @@ const RequestsModel = (() => {
   function windowOf(rows, i0, i1, sw) {
     const a = rows[Math.min(i0, i1)], b = rows[Math.max(i0, i1)];
     if (!a || !b) return null;
-    const from = Math.max(a.start, sw.from), to = Math.min(b.end, sw.to);
+    // bucket ends are exclusive; list windows are inclusive (as the overview drill)
+    const from = Math.max(a.start, sw.from), to = Math.min(b.end - 1, sw.to);
     return to > from ? {from, to} : null;
   }
 

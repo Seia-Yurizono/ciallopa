@@ -423,9 +423,14 @@ const Shell = (() => {
   }
 
   // refresh({auto}) — status (quota, egress) plus every ctx.onRefresh handler of the current view.
+  // An automatic tick is skipped while the previous refresh is still running (slow scans would
+  // otherwise supersede each other forever and the screen would never update).
+  let refreshing = 0;
   function refresh(o) {
     o = o || {};
     if (!Api.key() || !current) return Promise.resolve();
+    if (o.auto && refreshing) return Promise.resolve();
+    refreshing++;
     const jobs = [refreshStatus()];
     for (const fn of current.ctx._refresh) {
       try {
@@ -435,6 +440,7 @@ const Shell = (() => {
       }
     }
     const all = Promise.allSettled(jobs).then(() => {
+      refreshing--;
       lastRefresh = Date.now();
       renderAuto();
     });

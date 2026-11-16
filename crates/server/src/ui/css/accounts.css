@@ -256,9 +256,38 @@
   font-weight: 400;
 }
 
+/* 点数 keeps its hue as a small swatch only: the amount is information, not a warning. */
 .acc-cr {
-  color: var(--series-2);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--fg-2);
   font-variant-numeric: tabular-nums;
+}
+
+.acc-cr::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--series-2);
+}
+
+.acc-cr.none::before {
+  background: var(--line-2);
+}
+
+.acc-stale {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--fg-2);
+}
+
+.acc-stale .icon {
+  width: 11px;
+  height: 11px;
 }
 
 .acc-cr.none {
@@ -1431,5 +1460,29 @@
 
   .acc-ring-fill {
     transition: none;
+  }
+}
+
+/* Figures of one line (24 h use): each one stays whole, the line wraps between them. */
+.acc-figs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.acc-figs > span + span::before {
+  content: "·";
+  padding: 0 6px;
+  color: var(--fg-3);
+}
+
+.acc-add-other {
+  margin-top: var(--s4);
+}
+
+/* Phones: a quota cell is half the card wide; its note wraps instead of losing the reset time. */
+@media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
+  .c-q .c-sub {
+    white-space: normal;
   }
 }

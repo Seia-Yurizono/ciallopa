@@ -172,7 +172,7 @@ const SettingsControls = (() => {
       if (n > 0) e.value = String(x);
       apply();
     };
-    return {el: h("div", "st-zo-wrap", h("div", "st-zo", sw, e, st), err.el), set, error: msg => msg && err.show(msg)};
+    return {el: h("div", "st-zo-wrap", h("div", "st-zo", sw, e, st), err.el), set, error: msg => err.show(msg)};
   }
 
   // Background refresh range (shortest–longest, minutes): the switch is the shortest key (0 = off).
@@ -248,7 +248,7 @@ const SettingsControls = (() => {
       apply();
     };
     return {el: h("div", "st-zo-wrap", h("div", "st-zo st-range", sw, a, h("span", "st-dash", "–"), b, st), err.el), set,
-      error: msg => msg && err.show(msg)};
+      error: msg => err.show(msg)};
   }
 
   // Raw state of every control under root (value / checked by data-fk, in document order), and its

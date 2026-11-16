@@ -143,7 +143,11 @@ const AccAdd = (() => {
     const {layer, env} = open;
     layer.setTitle(title(open.step));
     open.back.classList.toggle("hide", open.step === "pick");
-    Core.steady([layer.body], () => Core.fill(layer.body, STEPS[open.step](env)));
+    // Phone: the page header already holds the page's own back arrow, so the way back to the
+    // method list is a button under the step instead of a second arrow.
+    const other = open.phone && open.step !== "pick" ? UI.button(t("accounts.add.other"), {kind: "ghost", icon: "chevron-left",
+      className: "acc-add-other", onClick: () => go(env, "pick")}) : null;
+    Core.steady([layer.body], () => Core.fill(layer.body, STEPS[open.step](env), other));
   }
 
   function go(env, step, autostart) {
@@ -160,13 +164,14 @@ const AccAdd = (() => {
     if (open) return;
     step = step || (env.device.busy() ? "device" : "pick");
     const back = UI.button("", {kind: "ghost", icon: "chevron-left", title: t("ui.back"), className: "hide acc-add-back"});
-    const make = UI.isPhone() ? UI.page : UI.modal;
-    const layer = make({title: title(step), head: back, body: h("div"), className: "acc-add", onClose: () => {
+    const phone = UI.isPhone();
+    const make = phone ? UI.page : UI.modal;
+    const layer = make({title: title(step), head: phone ? null : back, body: h("div"), className: "acc-add", onClose: () => {
       open = null;
       env.renderToolbar();
     }});
-    layer.head.insertBefore(back, layer.head.firstChild);
-    open = {layer, env, step, back};
+    if (!phone) layer.head.insertBefore(back, layer.head.firstChild);
+    open = {layer, env, step, back, phone};
     back.addEventListener("click", () => go(env, "pick"));
     const tick = setInterval(() => {
       if (!open || open.layer !== layer) return clearInterval(tick);

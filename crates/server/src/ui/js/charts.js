@@ -89,11 +89,9 @@ const Charts = (() => {
       });
       // x labels
       const xFmt = o.xFormat || defaultXFormat(o.x);
-      const stride = Math.max(1, Math.ceil((n * 72) / plotW));
-      for (let i = 0; i < n; i += stride) {
-        const cx = left + band * (i + 0.5);
-        s.appendChild(svg("text", {class: "chart-tick", x: cx, y: top + plotH + 16,
-          "text-anchor": i === 0 && band < 36 ? "start" : "middle"}, xFmt(o.x[i], i)));
+      for (const {i, text, start} of xTicks(o.x, xFmt, band, plotW)) {
+        s.appendChild(svg("text", {class: "chart-tick", x: left + band * (i + 0.5), y: top + plotH + 16,
+          "text-anchor": start ? "start" : "middle"}, text));
       }
       if (!n || dataMax <= 0) {
         s.appendChild(svg("text", {class: "chart-empty", x: left + plotW / 2, y: top + plotH / 2, "text-anchor": "middle"},
@@ -348,6 +346,39 @@ const Charts = (() => {
 
   const round1 = v => Math.round(v * 10) / 10;
 
+  // X-axis labels: every `stride`-th bucket when each bucket has its own label (hours of a day, days
+  // of a month); when consecutive buckets share a label (hourly bars over several days labelled by
+  // date) only the buckets where the label changes, so a date sits at its midnight. Labels that would
+  // overlap the previous one are skipped. → [{i, text, start}]
+  function xTicks(xs, xFmt, band, plotW) {
+    const n = xs.length;
+    if (!n) return [];
+    const texts = xs.map((x, i) => xFmt(x, i));
+    const changes = texts.map((tx, i) => i).filter(i => i === 0 || texts[i] !== texts[i - 1]);
+    let picks;
+    if (changes.length === n) {
+      const stride = Math.max(1, Math.ceil((n * 72) / plotW));
+      picks = [];
+      for (let i = 0; i < n; i += stride) picks.push(i);
+    } else {
+      // the first (partial) group's label is dropped when a real boundary follows
+      picks = changes.length > 1 && n > 1 && texts[0] === texts[1] ? changes.slice(1) : changes;
+    }
+    const width = tx => Array.from(String(tx)).reduce((a, c) => a + (c.charCodeAt(0) > 255 ? 11 : 6.6), 0);
+    const out = [];
+    let right = -Infinity;
+    for (const i of picks) {
+      const start = i === 0 && band < 36;
+      const w = width(texts[i]);
+      const cx = band * (i + 0.5);
+      const l = start ? cx : cx - w / 2;
+      if (l < right + 10) continue;
+      out.push({i, text: texts[i], start});
+      right = l + w;
+    }
+    return out;
+  }
+
   function defaultXFormat(xs) {
     const span = xs.length > 1 ? xs[xs.length - 1] - xs[0] : 0;
     return span <= 2 * 864e5 ? ms => Core.fmt.hm(ms) : ms => Core.fmt.day(ms);
@@ -492,5 +523,5 @@ const Charts = (() => {
     return el;
   }
 
-  return {SLOTS, niceScale, barPath, legend, timeSeries, sparkline, hbars, segments, meter};
+  return {SLOTS, niceScale, barPath, xTicks, legend, timeSeries, sparkline, hbars, segments, meter};
 })();

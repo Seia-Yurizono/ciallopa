@@ -297,9 +297,11 @@ const AccDetail = (() => {
     if (M.limitHit(rc, qq)) lines.appendChild(row("", h("span", "small c-err", t("accounts.d.limitHit"))));
     if (s.qerr[a.id]) lines.appendChild(row("", h("span", "small c-err", t("accounts.d.quotaErr", {why: M.qerr(s.qerr[a.id])}))));
     const u = a.usage_24h;
-    lines.appendChild(row(t("accounts.col.h24"), u ? h("span", "num", t("accounts.u.req", {n: fmt.exact(u.requests)}) + " · " +
-      fmt.n(u.input_tokens + u.output_tokens) + " Token" + (Core.isNum(u.cost_usd) ? " · " + fmt.usd(u.cost_usd) : ""),
-    u.errors ? h("span", "c-err", " · " + t("accounts.u.errors", {n: u.errors})) : null) : h("span", "muted", s.data.usage_enabled ?
+    // Each figure is its own nowrap piece, so a narrow drawer wraps between them instead of overflowing.
+    const use = u ? [t("accounts.u.req", {n: fmt.exact(u.requests)}), fmt.n(u.input_tokens + u.output_tokens) + " Token",
+      Core.isNum(u.cost_usd) ? fmt.usd(u.cost_usd) : null].filter(Boolean) : [];
+    lines.appendChild(row(t("accounts.col.h24"), u ? h("span", "acc-figs", use.map(x => h("span", "num", x)),
+      u.errors ? h("span", "num c-err", t("accounts.u.errors", {n: u.errors})) : null) : h("span", "muted", s.data.usage_enabled ?
       t("accounts.u.none") : fmt.NONE), UI.info(Shell.scope.get().prewarm ? t("accounts.u.infoPrewarm") : t("accounts.u.info"))));
     const o = a.overload_24h;
     if (o && o.overloaded) lines.appendChild(row("overloaded", h("span", "num", o.overloaded + "/" + o.attempts),

@@ -413,6 +413,19 @@ test('Charts.niceScale gives round axis maxima', () => {
   assert.deepEqual(s(9), {max: 10, step: 2.5});
 });
 
+test('Charts.xTicks: hourly bars over days are labelled at day changes, labels never overlap', () => {
+  const {Charts} = sandbox();
+  const H = 36e5, t0 = Date.UTC(2026, 10, 10, 5);
+  const xs = Array.from({length: 169}, (_, i) => t0 + i * H);
+  const day = ms => String(Math.floor((ms - Date.UTC(2026, 10, 10)) / 864e5));
+  const ticks = JSON.parse(JSON.stringify(Charts.xTicks(xs, day, 4, 676)));
+  assert.equal(ticks[0].i, 19, 'the partial first day is not labelled when a midnight follows');
+  assert.ok(ticks.every(tk => (xs[tk.i] - Date.UTC(2026, 10, 10)) % 864e5 === 0), 'dates sit at midnight');
+  const hours = JSON.parse(JSON.stringify(Charts.xTicks(xs.slice(0, 25), ms => new Date(ms).toISOString().slice(11, 16), 40, 1000)));
+  assert.equal(hours[0].i, 0);
+  for (let k = 1; k < hours.length; k++) assert.ok((hours[k].i - hours[k - 1].i) * 40 >= 40, 'distinct labels are thinned');
+});
+
 test('every view honours the contract', () => {
   const {Views} = sandbox();
   for (const name of ['overview', 'requests', 'accounts', 'settings', 'system']) {

@@ -18,9 +18,17 @@ cargo test --locked -p ciallopa --test it forward::sse::sse_observation_on_clien
 node scripts/shell-check.cjs
 for f in scripts/*-check.cjs; do node "$f"; done
 
-# Edit the UI against the demo backend without rebuilding Rust (see crates/server/src/ui/README.md).
-node scripts/ui-dev.cjs
+# Edit the UI against the demo backend without rebuilding Rust (see crates/server/src/ui/README.md):
+# start the demo, then serve the page from disk with the same CSP and proxy the APIs to it.
+cargo run --locked -p ciallopa --example ui_demo -- 127.0.0.1:8399
+node scripts/ui-dev.cjs 8398 http://127.0.0.1:8399
 ```
+
+Check a UI change in a real browser as well (Playwright or by hand) at a desktop width, around
+1100px and a phone viewport with touch, in both languages and both themes; watch for console
+errors, CSP violations and horizontal scrolling. Price writes (「应用」, set or ignore a model) go to
+the demo's `[usage] prices` path, which defaults to `~/.ciallopa/prices.toml`: mock
+`/admin/v1/prices/*` in the browser, or point that path into the demo directory first.
 
 For a public `core` contract, include its consumers. For a fix, start with a regression
 that exercises the failing behavior, then run the affected crate or integration target.

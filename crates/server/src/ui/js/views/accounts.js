@@ -120,7 +120,9 @@ Views.accounts = (() => {
               {time: fmt.hms(s.readAt)}) : "")));
   }
 
-  function renderToolbar() {
+  // inRender: called from render()'s own steady pass. A separate steady pass there would anchor on a
+  // row the first render just placed and scroll the page by the toolbar's height.
+  function renderToolbar(inRender) {
     if (!env) return;
     const s = env.store.state, j = s.data, W = !!(j && j.write_enabled), has = !!(j && j.accounts.length);
     const kids = [];
@@ -153,7 +155,8 @@ Views.accounts = (() => {
       if (has) kids.push(qall);
       if (W) kids.push(imp, add);
     }
-    Core.steady([env.els.toolbar], () => Core.fill(env.els.toolbar, kids));
+    if (inRender === true) Core.fill(env.els.toolbar, kids);
+    else Core.steady([env.els.toolbar], () => Core.fill(env.els.toolbar, kids));
   }
 
   async function quotaAll() {
@@ -209,7 +212,8 @@ Views.accounts = (() => {
       h("div", "c-act"));
   }
 
-  function qcell(x, qq, slotLabel) {
+  // markStale: this cell carries the row's "old data" note (one per row, the snapshot is per account).
+  function qcell(x, qq, slotLabel, markStale) {
     const cell = h("div", "c-q");
     if (!x) {
       // No observation at all → "unknown" (never drawn as 0%). A window upstream does not return for
@@ -226,8 +230,9 @@ Views.accounts = (() => {
     if (stale) m.title = t("accounts.q.staleTip", {time: fmt.time(qq.observed_at_ms)});
     cell.appendChild(m);
     const rs = M.resetText(w);
-    if (rs || stale) cell.appendChild(h("span", "c-sub num", stale ? h("span", "c-warn", t("accounts.q.staleShort")) : null,
-      stale && rs ? " · " : null, rs));
+    const old = stale && markStale;
+    if (rs || old) cell.appendChild(h("span", "c-sub num", old ? h("span", {class: "acc-stale", title: m.title}, UI.icon("clock"),
+      t("accounts.q.staleShort")) : null, old && rs ? " · " : null, rs));
     return cell;
   }
 
@@ -270,8 +275,8 @@ Views.accounts = (() => {
           {time: fmt.time(a.cooling_until_ms)})},
         fmt.dur((a.cooling_until_ms - Date.now()) / 1000)));
     }
-    const qcellS = qcell(ws.s, qq, t("accounts.w.5h"));
-    const qcellL = qcell(ws.l, qq, t("accounts.w.week"));
+    const qcellS = qcell(ws.s, qq, t("accounts.w.5h"), true);
+    const qcellL = qcell(ws.l, qq, t("accounts.w.week"), !ws.s);
     const cr = M.crText(qq && qq.credits);
     if (cr) (qcellL.classList.contains("none") && !qcellS.classList.contains("none") ? qcellS : qcellL)
       .appendChild(h("span", "c-sub acc-cr" + (cr.none ? " none" : ""), cr.text));
@@ -365,8 +370,9 @@ Views.accounts = (() => {
       return;
     }
     if (!env.els) env.els = build(env.root);
-    Core.steady([env.els.banners, env.els.summary, env.els.list], () => {
+    Core.steady([env.els.banners, env.els.summary, env.els.toolbar, env.els.list], () => {
       banners();
+      renderToolbar(true);
       if (!s.data) {
         if (s.error) Core.fill(env.els.body, UI.errorState({error: s.error, retry: () => reload(true).catch(() => {})}));
         return;
@@ -374,7 +380,6 @@ Views.accounts = (() => {
       summary();
       renderList();
     });
-    renderToolbar();
     renderDrawer();
   }
 

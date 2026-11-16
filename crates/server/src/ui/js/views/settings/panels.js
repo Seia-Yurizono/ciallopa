@@ -164,8 +164,9 @@ const SettingsPanels = (() => {
           UI.field({label: t("settings.pr.cache"), control: fca}), UI.field({label: t("settings.pr.out"), control: fout})),
         err, h("p", "muted small", t("settings.pr.dlgNote")));
       const cancel = UI.button(t("ui.cancel"), {onClick: () => layer.close()});
-      const save = UI.button(t("settings.pr.save"), {kind: "primary", type: "submit", attrs: {form: "st-pr-form-" + m.length}});
-      form.id = "st-pr-form-" + m.length;
+      // The submit button sits in the dialog footer, outside the form: it names the form (one dialog at a time).
+      const save = UI.button(t("settings.pr.save"), {kind: "primary", type: "submit", attrs: {form: "st-pr-form"}});
+      form.id = "st-pr-form";
       const layer = UI.modal({title: t(cur ? "settings.pr.dlgEdit" : "settings.pr.dlgSet", {m}), body: form, foot: [cancel, save],
         focus: fin});
       form.addEventListener("submit", e => {

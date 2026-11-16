@@ -35,7 +35,7 @@ Views.system = (() => {
     "system.drainingBody": "进程正在关闭，不再接受新请求。",
     "system.trend": "近期趋势",
     "system.trendInfo": "每 {n} 秒采样一次，只保存在内存里（最近 15 分钟，重启后清空）。",
-    "system.collecting": "采集中，稍后显示趋势",
+    "system.collecting": "采集中，稍后刷新即可看到趋势",
     "system.t.memory": "内存",
     "system.t.buffer": "缓冲",
     "system.t.ws": "WS",
@@ -92,7 +92,7 @@ Views.system = (() => {
     "system.drainingBody": "The process is shutting down and takes no new requests.",
     "system.trend": "Recent trend",
     "system.trendInfo": "Sampled every {n} s and kept in memory only (last 15 minutes, cleared on restart).",
-    "system.collecting": "Collecting samples, the trend shows up shortly",
+    "system.collecting": "Collecting samples — refresh in a moment to see the trend",
     "system.t.memory": "Memory",
     "system.t.buffer": "Buffer",
     "system.t.ws": "WS",
@@ -306,7 +306,7 @@ Views.system = (() => {
         S.chart.destroy();
         S.chart = null;
       }
-      Core.fill(E.trendBox, h("div", "sys-collecting", h("span", "spinner"), t("system.collecting")));
+      Core.fill(E.trendBox, h("div", "sys-collecting", UI.icon("clock"), t("system.collecting")));
       return;
     }
     const x = hist.map(s => s.at_ms);
@@ -427,10 +427,6 @@ Views.system = (() => {
           renderCards();
         }
       });
-      // The sampler runs every 10 s; follow it while this view is visible.
-      ctx.interval(() => {
-        if (!document.hidden && !UI.blocking()) loadAll();
-      }, 10000);
       ctx.onCleanup(() => {
         if (S && S.chart) S.chart.destroy();
       });

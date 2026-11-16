@@ -410,7 +410,12 @@ test('attempt bars, histogram buckets and chart periods', () => {
   assert.equal(hist.total, 6);
   assert.deepEqual(JSON.parse(JSON.stringify(m.histogram([{start_ms: t0, count: 5, failures: 1, refused: 4}], 'day', true).series.map(s => s.id))), ['refused']);
   assert.deepEqual(JSON.parse(JSON.stringify(m.windowOf(hist.rows, 2, 1, {from: t0 + 1.5 * H, to: t0 + 10 * H}))),
-    {from: t0 + 1.5 * H, to: t0 + 3 * H}, 'a picked period is clipped to the scope window');
+    {from: t0 + 1.5 * H, to: t0 + 3 * H - 1}, 'a picked period is clipped to the scope window; bucket ends are exclusive');
+  const full = m.histogram([{start_ms: t0 + 2 * H, end_ms: t0 + 3 * H, count: 4, failures: 1, refused: 0}], 'hour', false,
+    {from: t0 + 0.5 * H, to: t0 + 4.5 * H}, 0);
+  assert.deepEqual(JSON.parse(JSON.stringify(full.x.map(x => (x - t0) / H))), [0, 1, 2, 3, 4],
+    'with the window, empty hours before and after the data are drawn too');
+  assert.equal(full.total, 4);
   assert.equal(m.chartBucket(0, 7 * 864e5), 'hour');
   assert.equal(m.chartBucket(0, 30 * 864e5), 'day');
 });

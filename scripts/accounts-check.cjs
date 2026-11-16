@@ -510,6 +510,18 @@ test('card use, delete, token refresh and estimate reset stay behind confirmatio
   assert.match(src, /Date\.now\(\) - layer\.at < 400/, 'no double tap through the opener');
 });
 
+test('first render builds the toolbar inside the same steady pass (no scroll jump on load)', () => {
+  const src = read('ui/js/views/accounts.js');
+  assert.match(src, /Core\.steady\(\[env\.els\.banners, env\.els\.summary, env\.els\.toolbar, env\.els\.list\], \(\) => \{\s*banners\(\);\s*renderToolbar\(true\);/);
+  assert.match(src, /if \(inRender === true\) Core\.fill\(env\.els\.toolbar, kids\);/);
+});
+
+test('a row says "old data" once, not in every quota cell', () => {
+  const src = read('ui/js/views/accounts.js');
+  assert.match(src, /qcell\(ws\.s, qq, t\("accounts\.w\.5h"\), true\)/);
+  assert.match(src, /qcell\(ws\.l, qq, t\("accounts\.w\.week"\), !ws\.s\)/);
+});
+
 // ---------- quota history ----------
 test('history windows come from the account, not the slot; pro shows weekly only', () => {
   const c = sandbox('zh'), H = c.AccHistory;

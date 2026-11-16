@@ -552,7 +552,8 @@ Views.requests = (() => {
     try {
       const d = await S.ctx.get("/usage/v1/summary?" + q, {current});
       if (!current()) return;
-      S.chart = {buckets: (d.summary && d.summary.buckets) || [], bucket, window: {from: w.from, to: w.to}};
+      S.chart = {buckets: (d.summary && d.summary.buckets) || [], bucket, window: {from: w.from, to: w.to},
+        tz: -new Date(w.to).getTimezoneOffset()};
     } catch (e) {
       if (!current()) return;
       if (!S.chart) S.chart = {failed: true};
@@ -570,7 +571,7 @@ Views.requests = (() => {
       return;
     }
     const refused = M.refusedMode(S.st.f);
-    const hist = M.histogram(c.buckets, c.bucket, refused);
+    const hist = M.histogram(c.buckets, c.bucket, refused, c.window, c.tz);
     c.rows = hist.rows;
     if (hist.rows.length < 6) {
       card.classList.add("hide");
