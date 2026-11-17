@@ -46,6 +46,10 @@ async fn main() {
     };
     acct("alice", serde_json::json!({"plan_type":"plus"}));
     acct("bob", serde_json::json!({"plan_type":"pro"}));
+    let jitter = std::env::var("UI_DEMO_CARD_JITTER").is_ok_and(|v| v == "1");
+    if jitter {
+        acct("grace", serde_json::json!({"plan_type":"pro"}));
+    }
     acct(
         "carol",
         serde_json::json!({"needs_relogin":true,"disabled":true}),
@@ -361,6 +365,9 @@ async fn main() {
     demo_occupancy(&rec, now, &mut next);
     demo_quota_history(&rec, now);
     demo_pro_history(&rec, now);
+    if jitter {
+        demo_card_jitter(&rec, now);
+    }
     rec.flush_blocking().unwrap();
     rec2.flush_blocking().unwrap();
     drop(rec2);
@@ -1298,6 +1305,78 @@ fn demo_pro_history(rec: &Recorder, now: i64) {
         r.quota = Some(q);
         rec.record(r);
         t += 8 * hour;
+    }
+}
+
+/// `UI_DEMO_CARD_JITTER=1`: grace (pro) uses a manual card two days ago, then concurrent sessions
+/// finish out of start order and a refresh reports a fractional percent (the v0.5.3 report of
+/// several tiny 额度变化 cycles on one day). Records are written in finish order with start ids.
+fn demo_card_jitter(rec: &Recorder, now: i64) {
+    rec.flush_blocking().unwrap();
+    let (min, hour, day) = (60_000i64, 3_600_000i64, 86_400_000i64);
+    let mut seq = 0x9000i64;
+    let card = now - 2 * day;
+    let r1 = (card + 3 * day) / 1000;
+    let r2 = (card + 7 * day) / 1000;
+    let put = |seq: &mut i64, ms: i64, pct: f64, reset: i64| {
+        let mut r = Record::new(demo_hist_id(seq, ms), Transport::Ws, "responses");
+        r.account = Some("grace".into());
+        r.model = Some("gpt-5.6-sol".into());
+        r.status = 200;
+        r.key = Some("laptop".into());
+        r.input_tokens = Some(300_000);
+        r.output_tokens = Some(6_000);
+        r.cached_tokens = Some(0);
+        r.duration_ms = 4_000;
+        r.quota = Some(QuotaObs {
+            plan: Some("pro".into()),
+            p_pct: Some(pct),
+            p_reset: Some(reset),
+            p_window_min: Some(10_080),
+            ..Default::default()
+        });
+        rec.record(r);
+    };
+    // The week before the card: 5% → 99%.
+    let mut t = card - 4 * day;
+    while t < card - hour {
+        let pct = (5.0 + (t - (card - 4 * day)) as f64 / (4 * day) as f64 * 94.0).floor();
+        put(&mut seq, t, pct, r1);
+        t += 4 * hour;
+    }
+    put(&mut seq, card - hour, 99.0, r1);
+    rec.flush_blocking().unwrap();
+    {
+        let c = rusqlite::Connection::open(rec.path()).unwrap();
+        c.execute(
+            "INSERT INTO reset_consume(account, credit_id, redeem_request_id, key, instance, \
+             started_ms, finished_ms, status, http_status, code) \
+             VALUES ('grace', 'demo-credit-grace', 'rr-grace', 'laptop', 'demo-vps', ?1, ?2, 'done', 200, 'reset')",
+            rusqlite::params![card - 2_000, card],
+        )
+        .unwrap();
+    }
+    // (start ms, percent, reset) in finish order.
+    let tail: &[(i64, f64, i64)] = &[
+        (card + 10_000, 0.0, r2),
+        (card - min, 99.0, r1), // started before the card, finished after it
+        (card + min, 1.0, r2),
+        (card + 40 * min, 3.0, r2),
+        (card + 38 * min, 2.0, r2),
+        (card + 3 * hour, 4.6, r2), // fractional refresh value
+        (card + 3 * hour + min, 4.0, r2),
+        (card + 5 * hour, 6.0, r2),
+        (card + 5 * hour - 20 * min, 5.0, r2),
+    ];
+    for &(ms, pct, reset) in tail {
+        put(&mut seq, ms, pct, reset);
+        rec.flush_blocking().unwrap();
+    }
+    let mut t = card + 8 * hour;
+    while t < now - hour {
+        let pct = (6.0 + (t - card) as f64 / (2 * day) as f64 * 40.0).floor();
+        put(&mut seq, t, pct, r2);
+        t += 4 * hour;
     }
 }
 

@@ -104,7 +104,9 @@ impl Class {
         }
     }
 
-    /// Closes the current estimate cycle (write an event + estimate row).
+    /// Closes the current estimate cycle (write an event + estimate row). Cycles follow
+    /// `resets_at`: a limit change keeps the window, so it is an event inside the cycle only
+    /// (an estimate row for it would be a prefix of the cycle that goes on).
     pub fn closes_cycle(self) -> bool {
         matches!(
             self,
@@ -113,8 +115,12 @@ impl Class {
                 | Self::AutoCard
                 | Self::ExternalCard
                 | Self::EarlyReset
-                | Self::LimitChange
         )
+    }
+
+    /// Written to `quota_reset_events`.
+    pub fn records_event(self) -> bool {
+        self.closes_cycle() || self == Self::LimitChange
     }
 
     pub fn card_source(self) -> Option<CardSource> {
@@ -163,6 +169,17 @@ fn dropped(prev: Option<f64>, next: Option<f64>) -> bool {
     d >= DROP_PCT || (n <= 5.0 && d >= 0.5) || (p >= 10.0 && n <= p * 0.5)
 }
 
+/// A drop large enough to mean something without a moved `resets_at`. The near-zero rule of
+/// [`dropped`] only counts next to a moved reset: between two snapshots of one window a point or
+/// so is rounding (headers are integers, `/wham/usage` may be fractional), not a limit change.
+fn dropped_far(prev: Option<f64>, next: Option<f64>) -> bool {
+    let (Some(p), Some(n)) = (prev, next) else {
+        return false;
+    };
+    let d = p - n;
+    d >= DROP_PCT || (p >= 10.0 && n <= p * 0.5)
+}
+
 /// Percent wiped from nearly-full to nearly-empty at the start of the (already recorded)
 /// new window: the second half of a rollover whose `resets_at` jumped first.
 fn delayed_rollover(t: &Transition) -> bool {
@@ -198,6 +215,10 @@ pub fn classify(t: &Transition) -> Class {
         .is_some_and(|r| t.now_s + RESET_TOLERANCE_S >= r);
 
     if pct_dropped {
+        if !reset_moved && !dropped_far(t.prev.pct, t.next.pct) && !delayed_rollover(t) {
+            // Same window, small dip: rounding or two sources a point apart.
+            return Class::None;
+        }
         if let Some(src) = t.local_card {
             return match src {
                 CardSource::Manual => Class::ManualCard,
@@ -399,7 +420,30 @@ mod tests {
         let now = old - 3_600;
         let c = classify(&t(side(80.0, old), side(40.0, old + 20), now, None));
         assert_eq!(c, Class::LimitChange);
-        assert!(c.closes_cycle());
+        assert!(!c.closes_cycle() && c.records_event());
+    }
+
+    #[test]
+    fn small_dip_in_the_same_window_is_nothing() {
+        let old = 1_700_010_000;
+        let now = old - 3_600;
+        // Rounding or two sources a point apart; with or without a recent card.
+        for (a, b) in [(3.0, 2.0), (4.6, 4.0), (6.0, 5.0), (40.0, 37.0)] {
+            assert_eq!(
+                classify(&t(side(a, old), side(b, old + 20), now, None)),
+                Class::None,
+                "{a}->{b}"
+            );
+            let local = Some(CardSource::Manual);
+            assert_eq!(
+                classify(&t(side(a, old), side(b, old), now, local)),
+                Class::None,
+                "card {a}->{b}"
+            );
+        }
+        // A real reset to near zero still counts when resets_at moves.
+        let c = classify(&t(side(4.0, old), side(0.0, old + 18_000), old + 10, None));
+        assert!(c.closes_cycle(), "{c:?}");
     }
 
     #[test]
