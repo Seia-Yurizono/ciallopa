@@ -359,7 +359,16 @@ const f1=v=>Number(v).toFixed(1);
 // A cycle covers [started_ms, ended_ms]; the open cycle ends "now".
 function qhSpan(c,from,to){const b=c.ended_ms!=null?c.ended_ms:to;return[c.started_ms!=null?c.started_ms:b,b]}
 function qhCap(c){return c.capacity_credits!=null?c.capacity_credits:c.capacity_lo}
-function qhRows(cycles,window){return (cycles||[]).filter(c=>c.window===window).slice().sort((a,b)=>(a.ended_ms||0)-(b.ended_ms||0))}
+function qhRows(cycles,window){return qhDedupe((cycles||[]).filter(c=>c.window===window).slice().sort((a,b)=>(a.ended_ms||0)-(b.ended_ms||0)))}
+// A cycle starts once: rows sharing started_ms are one cycle. Before v0.5.4 a limit change wrote a row
+// that was only a prefix of the cycle going on, and a response that started before a reset but
+// finished after it closed the old cycle a second time (its used then counted new-window requests).
+// Show one row per start: the open cycle, else the first reset that closed it; the rest is merged.
+function qhDedupe(rows){const by=new Map();for(const c of rows){if(!by.has(c.started_ms))by.set(c.started_ms,[]);by.get(c.started_ms).push(c)}
+  const pick=new Map();for(const g of by.values()){if(g.length<2)continue;const resets=g.filter(x=>!x.open&&x.close_kind!=="limit_change");
+    const keep=g.find(x=>x.open)||resets[0]||g[g.length-1];
+    pick.set(keep,{lc:g.filter(x=>x!==keep&&x.close_kind==="limit_change").length,dup:resets.filter(x=>x!==keep).length})}
+  return rows.filter(c=>by.get(c.started_ms).length<2||pick.has(c)).map(c=>pick.has(c)?Object.assign({},c,{merged:pick.get(c)}):c)}
 // The reset event at a cycle's end (same window, within 10 minutes): kind, card, used % before/after.
 function qhEventAt(ev,c){let b=null,bd=6e5;for(const e of ev||[]){if(e.window!==c.window||c.ended_ms==null)continue;const d=Math.abs(e.at_ms-c.ended_ms);if(d<=bd){bd=d;b=e}}return b}
 // How a cycle links to the previous one with a capacity: touching (or overlapping) → solid riser;
@@ -441,13 +450,14 @@ function qhDetail(c,k,ev){const it=(l,v,cls)=>v==null||v===""?null:h("div",cls||
     it("可信度",qhConf(c)),
     it("结束",(c.open?"进行中":qhKindLabel(k))+card+(e&&e.prev_pct!=null&&e.next_pct!=null?" · "+Number(e.prev_pct).toFixed(0)+"% → "+Number(e.next_pct).toFixed(0)+"%":"")),
     c.trend==="up"||c.trend==="down"?it("和之前比",c.trend==="up"?"偏高（超过之前中位的 1.4 倍）":"偏低（不到之前中位的 0.7 倍）"):null,
+    c.merged?it("已合并",[c.merged.lc?c.merged.lc+" 次额度变化（窗口没有重置）":null,c.merged.dup?c.merged.dup+" 条重复关闭记录":null].filter(Boolean).join(" · ")+"；同一周期只显示一行，旧版本写入","wide"):null,
     c.archived?it("已归档","重置估算之前的周期，不参与趋势比较","wide"):null)}
 function qhCycleRows(rows,win,ev,key){const box=h("div","qh-cys");
   if(!rows.length){box.appendChild(h("p","mut xs","暂无已记录的周期"));return box}
   const S=qhScale(rows);S.med=qhMedian(rows.filter(c=>!c.open&&!c.archived&&c.capacity_credits!=null).map(c=>c.capacity_credits));
   const list=rows.slice().reverse(),lim=QH_MORE.has(key)?list.length:12;
   for(const c of list.slice(0,lim)){const k=qhRowKind(c,ev),id=key+"|"+c.window+"|"+c.started_ms,open=QH_OPEN.has(id),end=qhEnd(c);
-    const meta=h("span","meta",h("span","tag "+qhKindCls(k),c.open?"进行中":qhKindLabel(k)),c.archived?h("span","tag k-arch","已归档"):null);
+    const meta=h("span","meta",h("span","tag "+qhKindCls(k),c.open?"进行中":qhKindLabel(k)),c.archived?h("span","tag k-arch","已归档"):null,c.merged?h("span","tag k-arch","含合并记录"):null);
     const r=h("div",{class:"cy"+(c.archived?" arch":""),role:"button",tabindex:"0","aria-expanded":String(open),"data-fk":id},
       h("div","when",h("span",null,qhMD(c.started_ms)+" → "+(end?qhMD(end):"…")),meta),h("div","cbw",qhBar(c,S),qhPts(c)),qhNums(c));
     const flip=()=>{if(QH_OPEN.has(id))QH_OPEN.delete(id);else QH_OPEN.add(id);const now=QH_OPEN.has(id);r.setAttribute("aria-expanded",String(now));

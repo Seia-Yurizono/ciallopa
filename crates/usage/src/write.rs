@@ -236,6 +236,9 @@ pub(crate) fn insert_batch(
                     .get(&a)
                     .cloned();
                 let q = &with_credits(old.as_ref(), q);
+                // A request is written when it finishes but its id (and snapshot) is from its start:
+                // one that started before the newest snapshot is history, not the current state.
+                let stale = old.as_ref().is_some_and(|(oid, _)| r.id < *oid);
                 if quota_changed(old.as_ref(), r.id, q) {
                     let old = old.map(|(_, o)| o);
                     qst.execute(params![
@@ -253,6 +256,9 @@ pub(crate) fn insert_batch(
                         q.cr_flags,
                         q.cr_balance
                     ])?;
+                    if stale {
+                        continue;
+                    }
                     if let Some(name) = r.account.as_deref() {
                         pending.push((a, name.to_string(), r.id, old, q.clone()));
                     }
@@ -303,6 +309,7 @@ pub(crate) fn insert_quota(
                 .get(&a)
                 .cloned();
             let q = &with_credits(old.as_ref(), q);
+            let stale = old.as_ref().is_some_and(|(oid, _)| *id < *oid);
             let old = old.map(|(_, o)| o);
             qst.execute(params![
                 id,
@@ -319,6 +326,9 @@ pub(crate) fn insert_quota(
                 q.cr_flags,
                 q.cr_balance
             ])?;
+            if stale {
+                continue;
+            }
             pending.push((a, account.clone(), *id, old, q.clone()));
             ws.last_quota
                 .as_mut()

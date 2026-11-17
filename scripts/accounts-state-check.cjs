@@ -618,6 +618,19 @@ async function quotaHistoryRender() {
   assert.ok(!dt2.includes('点数') && dt2.includes('API 价格'), 'no 点数 group when none was used');
   assert.match(walk(c.qhDetail(Object.assign({}, pc[0], {coverage_gap: true, confidence: 'fallback'}), 'natural', [])).join('|'), /低 · 可能有其他端用量/);
   assert.match(walk(c.qhDetail(Object.assign({}, pc[0], {archived: true}), 'natural', [])).join('|'), /不参与趋势比较/);
+  // Rows written before v0.5.4: limit-change prefixes and a second close of the same cycle share
+  // its started_ms. One row per start: the open cycle, else the first reset that closed it.
+  const S0 = from + 9 * day, card = {window: 'primary', started_ms: from + 2 * day, ended_ms: S0, capacity_credits: 841, credits_used: 825, delta_pct: 94, close_kind: 'manual_card', confidence: 'ok'};
+  const dup = Object.assign({}, card, {ended_ms: S0 + 50e3, capacity_credits: 825, credits_used: 891});
+  const lc = (h, used) => ({window: 'primary', started_ms: S0, ended_ms: S0 + h * 3600e3, capacity_credits: null, credits_used: used, delta_pct: 1, close_kind: 'limit_change', confidence: 'insufficient'});
+  const openRow = {window: 'primary', started_ms: S0, ended_ms: S0 + 30 * 3600e3, open: true, capacity_credits: 1100, credits_used: 594, delta_pct: 42, close_kind: 'open', confidence: 'ok'};
+  const dd = c.qhRows([openRow, lc(4, 198), dup, lc(1, 66), card, lc(3, 165)], 'primary');
+  assert.deepEqual(dd.map(x => [x.close_kind, x.credits_used]), [['manual_card', 825], ['open', 594]], 'one row per cycle start');
+  assert.equal(JSON.stringify(dd.map(x => x.merged)), JSON.stringify([{lc: 0, dup: 1}, {lc: 3, dup: 0}]));
+  const dtm = walk(c.qhDetail(dd[1], 'open', [])).join('|');
+  assert.ok(dtm.includes('3 次额度变化（窗口没有重置）') && dtm.includes('同一周期只显示一行'), dtm);
+  assert.ok(walk(c.qhDetail(dd[0], 'manual_card', [])).join('|').includes('1 条重复关闭记录'));
+  assert.equal(c.qhRows([card, openRow], 'primary').every(x => !x.merged), true, 'distinct starts untouched');
   assert.match(walk(c.qhDetail(pc[2], 'open', [])).join('|'), /估算中（变化还不够）/);
   // 重置估算…: manual, behind the confirm dialog; pro has one window, so there is nothing to choose
   const rb = find(proPanel, n => /\brst\b/.test(n.className))[0];
