@@ -426,6 +426,17 @@ test('Charts.xTicks: hourly bars over days are labelled at day changes, labels n
   for (let k = 1; k < hours.length; k++) assert.ok((hours[k].i - hours[k - 1].i) * 40 >= 40, 'distinct labels are thinned');
 });
 
+test('Charts.keepIndex: the chart cursor stays on its time when a rolling window shifts', () => {
+  const {Charts} = sandbox();
+  const H = 36e5, xs = Array.from({length: 25}, (_, i) => i * H);
+  const shifted = xs.map(x => x + H); // an hour later: one bucket dropped on the left, one added on the right
+  assert.equal(Charts.keepIndex(xs, 21, shifted), 20, 'same hour, one index to the left');
+  assert.equal(Charts.keepIndex(xs, 0, shifted), 0, 'a bucket that slid out moves to the first one');
+  assert.equal(Charts.keepIndex(xs, 21, xs), 21, 'unchanged buckets keep the index');
+  assert.equal(Charts.keepIndex(xs, 3, [0, 864e5]), -1, 'another granularity clears the cursor');
+  assert.equal(Charts.keepIndex(xs, -1, shifted), -1);
+});
+
 test('every view honours the contract', () => {
   const {Views} = sandbox();
   for (const name of ['overview', 'requests', 'accounts', 'settings', 'system']) {

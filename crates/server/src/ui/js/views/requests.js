@@ -1147,7 +1147,10 @@ Views.requests = (() => {
     el.listBody = h("div", "rq-list-body", UI.skeleton.rows(10, 6));
     el.foot = h("div", "rq-foot hide");
     el.listCard = h("section", "card card-flush rq-list-card",
-      h("div", "rq-card-head", el.count, el.pill, h("span", "grow"), UI.info(legend, t("requests.legend"))), el.listBody, el.foot);
+      h("div", "rq-card-head", el.count, h("span", "grow"), UI.info(legend, t("requests.legend"))),
+      // The pill shows while the reader is down the list (at the top new rows slide in instead), so it
+      // floats under the top bar rather than sitting in the card head that has scrolled away.
+      h("div", "rq-pill-dock", el.pill), el.listBody, el.foot);
     el.main = h("div", "rq-main", el.chartCard, el.listCard);
     // side-by-side detail (≥1280px)
     el.asideTitle = h("h2", "rq-aside-title", t("requests.d.title"));

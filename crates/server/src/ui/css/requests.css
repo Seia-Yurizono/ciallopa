@@ -227,13 +227,26 @@
   font-variant-numeric: tabular-nums;
 }
 
+.rq-pill-dock {
+  position: sticky;
+  top: calc(var(--topbar-h) + env(safe-area-inset-top) + var(--s2));
+  z-index: 6;
+  display: flex;
+  justify-content: center;
+  height: 0;
+  pointer-events: none;
+}
+
 .rq-pill {
+  pointer-events: auto;
+  box-shadow: var(--shadow-pop);
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  height: 26px;
-  padding: 0 10px;
-  border: 0;
+  height: 30px;
+  margin-top: var(--s2);
+  padding: 0 12px;
+  border: 1px solid var(--accent-line);
   border-radius: 999px;
   background: var(--accent-bg);
   color: var(--accent);
@@ -492,6 +505,11 @@
   .rq-table .c-next,
   .rq-table .c-tries {
     display: none;
+  }
+
+  /* Tokens is now the last visible column: give it the table's edge padding */
+  .rq-table .c-tokens {
+    padding-right: var(--s4);
   }
 
   .rq-table .c-model .rq-model {
@@ -1242,6 +1260,11 @@
 @media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
   .rq {
     gap: var(--s2);
+  }
+
+  /* below the sticky scope chips row (28px chips + 8px padding) as well */
+  .rq-pill-dock {
+    top: calc(var(--topbar-h) + env(safe-area-inset-top) + 36px + var(--s2));
   }
 
   .rq-bar {

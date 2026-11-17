@@ -330,7 +330,12 @@ const Charts = (() => {
     return {
       el: wrap,
       update(next) {
+        const prevX = o.x;
         o = Object.assign({}, o, next);
+        if (hover >= 0) {
+          hover = keepIndex(prevX, hover, o.x);
+          if (hover < 0) hideHover();
+        }
         draw();
       },
       setLoading(on) {
@@ -345,6 +350,16 @@ const Charts = (() => {
   }
 
   const round1 = v => Math.round(v * 10) / 10;
+
+  // The hovered / keyboard position follows its x value across an update: a rolling window shifts
+  // the buckets (a new hour, a new sample), so the old index would point at another time. A value
+  // that slid out on the left moves to the first bucket; one that no longer exists clears (-1).
+  function keepIndex(prevX, i, nextX) {
+    if (i < 0 || i >= prevX.length) return -1;
+    const at = prevX[i], j = nextX.indexOf(at);
+    if (j >= 0) return j;
+    return nextX.length && at < nextX[0] ? 0 : -1;
+  }
 
   // X-axis labels: every `stride`-th bucket when each bucket has its own label (hours of a day, days
   // of a month); when consecutive buckets share a label (hourly bars over several days labelled by
@@ -523,5 +538,5 @@ const Charts = (() => {
     return el;
   }
 
-  return {SLOTS, niceScale, barPath, xTicks, legend, timeSeries, sparkline, hbars, segments, meter};
+  return {SLOTS, niceScale, barPath, xTicks, keepIndex, legend, timeSeries, sparkline, hbars, segments, meter};
 })();

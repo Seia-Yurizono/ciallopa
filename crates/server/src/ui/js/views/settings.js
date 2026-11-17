@@ -86,7 +86,11 @@ Views.settings = (() => {
         if (moved) S.draftKept = true;
         renderChrome(cfg);
       },
-      loaded() {
+      loaded(cfg) {
+        // The top-bar egress tag reads /admin/v1/runtime on refresh only (auto refresh is off by
+        // default): after a proxy change here, re-read it so the tag does not keep the old route.
+        const rt = Shell.status.runtime;
+        if (cfg && cfg.egress && rt && JSON.stringify(cfg.egress) !== JSON.stringify(rt.egress)) Shell.refreshStatus();
         S.prices.load().catch(() => {});
         S.audit.load().catch(() => {});
         S.ctx.get("/usage/v1/client-fingerprint").then(f => {

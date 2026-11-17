@@ -26,9 +26,9 @@ node scripts/ui-dev.cjs 8398 http://127.0.0.1:8399
 
 Check a UI change in a real browser as well (Playwright or by hand) at a desktop width, around
 1100px and a phone viewport with touch, in both languages and both themes; watch for console
-errors, CSP violations and horizontal scrolling. Price writes (「应用」, set or ignore a model) go to
-the demo's `[usage] prices` path, which defaults to `~/.ciallopa/prices.toml`: mock
-`/admin/v1/prices/*` in the browser, or point that path into the demo directory first.
+errors, CSP violations and horizontal scrolling. The demo keeps its config, usage log and price
+table (`[usage] prices`) in its own data directory, so settings and price writes (「应用」, set or
+ignore a model) can be exercised for real without touching `~/.ciallopa`.
 
 For a public `core` contract, include its consumers. For a fix, start with a regression
 that exercises the failing behavior, then run the affected crate or integration target.

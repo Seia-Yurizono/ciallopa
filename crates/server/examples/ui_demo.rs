@@ -65,11 +65,12 @@ async fn main() {
         "listen = \"{listen}\"\nupstream = \"http://{fake_up}/backend-api\"\ninstance_id = \"demo-vps\"\nauth_dir = \"{}\"\n\
          [[api_keys]]\nlabel = \"laptop\"\nkey = \"{DEMO_KEY}\"\nadmin = true\n\
          [[api_keys]]\nlabel = \"{}\"\nkey = \"sk-demo-evil-0123456789\"\n\
-         [usage]\npath = \"{}\"\nretention_days = 0\n\
+         [usage]\npath = \"{}\"\nprices = \"{}\"\nretention_days = 0\n\
          [ui]\nallow_reset_consume = true\nreset_credits_refresh_mins = 0\n",
         dir.join("auths").display(),
         EVIL.replace('"', "\\\""),
-        dir.join("usage.db").display()
+        dir.join("usage.db").display(),
+        dir.join("prices.toml").display()
     );
     // A real file so /ui/settings is editable (demo only: allow_config_write = true;
     // UI_DEMO_READONLY=1 keeps the pages read-only).
@@ -88,15 +89,14 @@ async fn main() {
     let rec = Recorder::open_as(&cfg.usage, &cfg.instance_id).unwrap();
     // a second proxy instance writing to the same log
     let rec2 = Recorder::open_as(&cfg.usage, "home-nas").unwrap();
-    rec.set_prices(
-        // gpt-6-luna stays unpriced: the pages show the "unpriced models" hint.
-        ciallopa_usage::PriceTable::parse(
-            "[[model]]\nmodel = \"gpt-5.5\"\nin = 5.0\ncache = 0.5\nout = 30.0\nfast_x = 2.5\n\
-             [[model]]\nmodel = \"gpt-5.6-sol\"\nin = 4.0\ncache = 0.4\nwrite = 5.0\nout = 20.0\n\
-             [[model]]\nmodel = \"gpt-5.6-terra\"\nin = 2.0\ncache = 0.2\nwrite = 2.5\nout = 12.0\n",
-        )
-        .unwrap(),
-    );
+    // gpt-6-luna stays unpriced: the pages show the "unpriced models" hint. The table is also a
+    // real file inside the demo directory, so price writes from the page never touch ~/.ciallopa.
+    let prices =
+        "[[model]]\nmodel = \"gpt-5.5\"\nin = 5.0\ncache = 0.5\nout = 30.0\nfast_x = 2.5\n\
+         [[model]]\nmodel = \"gpt-5.6-sol\"\nin = 4.0\ncache = 0.4\nwrite = 5.0\nout = 20.0\n\
+         [[model]]\nmodel = \"gpt-5.6-terra\"\nin = 2.0\ncache = 0.2\nwrite = 2.5\nout = 12.0\n";
+    std::fs::write(dir.join("prices.toml"), prices).unwrap();
+    rec.set_prices(ciallopa_usage::PriceTable::parse(prices).unwrap());
     // 14 days of fake traffic
     let now = now_ms();
     let mut rng = 7u64;

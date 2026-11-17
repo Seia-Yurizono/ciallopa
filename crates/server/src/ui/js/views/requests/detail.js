@@ -55,7 +55,7 @@ const RequestsDetail = (() => {
     prevBtn.setAttribute("aria-keyshortcuts", "K Alt+ArrowUp");
     nextBtn.setAttribute("aria-keyshortcuts", "J Alt+ArrowDown");
     const position = h("span", {class: "rq-pos", role: "status"});
-    const linkBtn = UI.button("", {kind: "ghost", size: "sm", icon: "external", title: t("requests.d.copyLink"),
+    const linkBtn = UI.button("", {kind: "ghost", size: "sm", icon: "link", title: t("requests.d.copyLink"),
       onClick: () => record && copyText(o.linkFor(record.request_id), t("requests.d.copiedLink"))});
     const jsonBtn = UI.button("", {kind: "ghost", size: "sm", icon: "copy", title: t("requests.d.copyJson"),
       onClick: () => dtext && copyText(dtext, t("requests.d.copiedJson"))});
