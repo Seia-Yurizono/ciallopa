@@ -747,8 +747,18 @@ path). Classes, independently per window:
 | `auto_card` | same, but the consume was the 「快到期时自动使用」 path (`key = "(auto)"`) |
 | `external_card` | available card count dropped, and we did not consume one |
 | `early_reset` | official extra reset and paid instant reset, merged (UI: 「提前重置」) |
-| `limit_change` | percent dropped without `resets_at` moving — not a reset |
-| *(not stored)* | only `resets_at` moved (idle slide / jitter) |
+| `limit_change` | percent dropped by at least 5 points (or halved from ≥ 10%) without `resets_at` moving — not a reset. Stored as an event only: the cycle follows `resets_at` and goes on (no cycle row) |
+| *(not stored)* | only `resets_at` moved (idle slide / jitter), or a smaller dip in the same window (rounding: headers are integers, `/wham/usage` may be fractional) |
+
+Snapshots are classified in id order. A request's id is taken when it starts and its record is
+written when it finishes, so a request that started before the newest snapshot (a long turn on
+another session, or one that started just before a reset card) is stored for the estimate but
+never compared as the current state: it cannot close a cycle or count as a drop. Before v0.5.4
+both cases could write spurious rows: a limit change wrote a row that was only a prefix of the
+cycle that went on, and an old-window response finishing after a reset closed the old cycle a
+second time (with the new window's first requests counted in its used credits). The UI shows
+one row per cycle start (the open cycle, else the first reset that closed it) and lists the
+merged rows in its details; 「重置估算」 archives them, and they age out with the retention.
 
 Each cycle row stores `capacity_credits` (and lo/hi), `credits_used`, `api_cost_usd` (sum of
 nominal API list prices for the included requests in that cycle, the existing `cost_usd` formula;

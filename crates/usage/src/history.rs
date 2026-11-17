@@ -63,7 +63,7 @@ pub(crate) fn on_new_obs(
             now_s,
             local_card: local,
         });
-        if class.closes_cycle() {
+        if class.records_event() {
             close_one(
                 tx, prices, account_id, obs_id, now_ms, which, &prev, &next, class,
             )?;
@@ -106,7 +106,7 @@ fn close_one(
             src,
         ],
     )?;
-    if n == 0 {
+    if n == 0 || !class.closes_cycle() {
         return Ok(());
     }
     let event_id = tx.last_insert_rowid();
@@ -846,7 +846,10 @@ mod tests {
                 x.get(0)
             })
             .unwrap();
-        assert_eq!(cycles, 1);
+        assert_eq!(
+            cycles, 0,
+            "a limit change is an event inside the cycle, not a close"
+        );
         r.shutdown();
     }
 

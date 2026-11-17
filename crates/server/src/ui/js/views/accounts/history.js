@@ -37,7 +37,32 @@ const AccHistory = (() => {
     const r = w => (ws && ws[w] ? (ws[w].s === "s" ? 0 : 1) : ws ? 2 : w === "primary" ? 0 : 1);
     return ["primary", "secondary"].sort((a, b) => r(a) - r(b));
   }
-  const rows = (cycles, w) => (cycles || []).filter(c => c.window === w).slice().sort((a, b) => (a.ended_ms || 0) - (b.ended_ms || 0));
+  // One window's cycles, oldest first, one row per cycle start. Cycles follow resets_at, so rows
+  // sharing started_ms are one cycle: before v0.5.4 a limit change wrote a row that was only a
+  // prefix of the cycle going on, and a response that started before a reset but finished after it
+  // closed the old cycle a second time (its used then counted new-window requests). Keep the open
+  // cycle, else the first reset that closed it (else the longest prefix); `merged` counts the rest.
+  function dedupe(list) {
+    const by = new Map();
+    for (const c of list) {
+      if (!finite(c.started_ms)) continue;
+      const g = by.get(c.started_ms);
+      if (g) g.push(c);
+      else by.set(c.started_ms, [c]);
+    }
+    const keep = new Map();
+    for (const g of by.values()) {
+      if (g.length < 2) continue;
+      const resets = g.filter(x => !x.open && x.close_kind !== "limit_change");
+      const k = g.find(x => x.open) || resets[0] || g[g.length - 1];
+      keep.set(k, {lc: g.filter(x => x !== k && x.close_kind === "limit_change").length, dup: resets.filter(x => x !== k).length});
+    }
+    if (!keep.size) return list;
+    return list.filter(c => !finite(c.started_ms) || by.get(c.started_ms).length < 2 || keep.has(c))
+      .map(c => (keep.has(c) ? Object.assign({}, c, {merged: keep.get(c)}) : c));
+  }
+  const rows = (cycles, w) => dedupe((cycles || []).filter(c => c.window === w).slice().sort((a, b) => (a.ended_ms || 0) -
+    (b.ended_ms || 0)));
   // Windows to show, short first: the ones the account has now, or (no quota yet) slots with history.
   const winList = (ws, cycles) => order(ws).filter(w => (ws ? !!ws[w] : rows(cycles, w).length > 0));
   // The main window is the long one (week on plus and pro).
@@ -245,6 +270,9 @@ const AccHistory = (() => {
     if (c.coverage_gap) return t("accounts.qh.conf.gap");
     return ["ok", "fallback", "lower_only", "insufficient"].includes(c.confidence) ? t("accounts.qh.conf." + c.confidence) : fmt.NONE;
   }
+  // "3 limit changes (window not reset) · 1 duplicate close; one row per cycle, written by an older version"
+  const mergedText = m => [m.lc ? t("accounts.qh.merged.lc", {n: m.lc}) : null, m.dup ? t("accounts.qh.merged.dup", {n: m.dup}) : null]
+    .filter(Boolean).join(" · ") + t("accounts.qh.merged.note");
   function detail(c, k, ev) {
     const it = (l, v, cls) => (v === null || v === undefined || v === "" ? null : h("div", cls || null, h("span", null, l), h("b", null,
         v)));
@@ -276,6 +304,7 @@ const AccHistory = (() => {
       it(t("accounts.qh.d.conf"), conf(c)),
       it(t("accounts.qh.d.end"), (c.open ? t("accounts.qh.kind.open") : kindLabel(k)) + card + move),
       c.trend === "up" || c.trend === "down" ? it(t("accounts.qh.d.trend"), t("accounts.qh.trend." + c.trend)) : null,
+      c.merged ? it(t("accounts.qh.d.merged"), mergedText(c.merged), "wide") : null,
       c.archived ? it(t("accounts.qh.d.archived"), t("accounts.qh.archivedNote"), "wide") : null);
   }
 
@@ -301,7 +330,8 @@ const AccHistory = (() => {
     for (const c of newest.slice(0, lim)) {
       const k = rowKind(c, ev), id = key + "|" + c.window + "|" + c.started_ms, open = OPEN.has(id), end = endOf(c);
       const meta = h("span", "meta", h("span", "cy-kind " + kindCls(k), c.open ? t("accounts.qh.kind.open") : kindLabel(k)),
-        c.archived ? h("span", "cy-kind k-arch", t("accounts.qh.archived")) : null);
+        c.archived ? h("span", "cy-kind k-arch", t("accounts.qh.archived")) : null,
+        c.merged ? h("span", "cy-kind k-arch", t("accounts.qh.mergedTag")) : null);
       const r = h("div", {class: "cy" + (c.archived ? " arch" : ""), role: "button", tabindex: "0", "aria-expanded": String(open),
           "data-fk": id},
         h("div", "when", h("span", "num", fmt.day(c.started_ms) + " → " + (end ? fmt.day(end) : "…")), meta),

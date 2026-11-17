@@ -568,6 +568,77 @@ test('history scales: robust fence, nice ticks, reset events within 10 minutes, 
   assert.equal(ep.id, 2, 'the latest active reset that can still be undone');
 });
 
+// A minimal DOM for rendering history rows in the vm: elements with classes, attributes, children, text.
+function fakeDom() {
+  class Node {
+    constructor(tag) { this.tag = tag; this.children = []; this.attrs = {}; this.className = ''; this.text = ''; this.parentNode = null;
+      this.style = {setProperty() {}}; this.dataset = {}; }
+    appendChild(n) { n.parentNode = this; this.children.push(n); return n; }
+    append(...ns) { ns.forEach(n => this.appendChild(n)); }
+    setAttribute(k, v) { if (k === 'class') this.className = v; else this.attrs[k] = v; }
+    getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }
+    addEventListener() {}
+    set textContent(v) { this.text = v; this.children = []; }
+    get textContent() { return this.text + this.children.map(c => c.textContent).join(''); }
+  }
+  return {createElement: t => new Node(t), createElementNS: (_, t) => new Node(t),
+    createTextNode: s => Object.assign(new Node('#text'), {text: s})};
+}
+const findAll = (n, pred, out = []) => { if (pred(n)) out.push(n); (n.children || []).forEach(k => findAll(k, pred, out)); return out; };
+
+test('history: rows sharing a start (pre-v0.5.4 limit-change prefixes, second closes) show as one cycle', () => {
+  const c = sandbox('zh'), H = c.AccHistory;
+  const day = 864e5, from = 1.7e12, S0 = from + 9 * day;
+  const card = {window: 'primary', started_ms: from + 2 * day, ended_ms: S0, capacity_credits: 841, credits_used: 825, delta_pct: 94,
+    close_kind: 'manual_card', confidence: 'ok'};
+  // The old-window response that finished after the card: same start, later end, new-window requests counted.
+  const dup = Object.assign({}, card, {ended_ms: S0 + 50e3, capacity_credits: 825, credits_used: 891});
+  const lc = (hr, used) => ({window: 'primary', started_ms: S0, ended_ms: S0 + hr * 3600e3, capacity_credits: null, credits_used: used,
+    delta_pct: 1, close_kind: 'limit_change', confidence: 'insufficient'});
+  const open = {window: 'primary', started_ms: S0, ended_ms: S0 + 30 * 3600e3, open: true, capacity_credits: 1100, credits_used: 594,
+    delta_pct: 42, close_kind: 'open', confidence: 'ok'};
+  const other = {window: 'secondary', started_ms: S0, ended_ms: S0 + 3600e3, close_kind: 'limit_change'};
+  const all = [open, lc(4, 198), dup, lc(1, 66), card, lc(3, 165), other];
+  const dd = H.rows(all, 'primary');
+  assert.deepEqual(dd.map(x => [x.close_kind, x.credits_used]), [['manual_card', 825], ['open', 594]],
+    'the open cycle, else the first reset that closed it');
+  assert.equal(JSON.stringify(dd.map(x => x.merged)), JSON.stringify([{lc: 0, dup: 1}, {lc: 3, dup: 0}]));
+  assert.equal(all[0].merged, undefined, 'input rows are not mutated');
+  assert.equal(H.rows(all, 'secondary').length, 1, 'windows are grouped separately');
+  assert.ok(H.rows([card, open], 'primary').every(x => !x.merged), 'distinct starts untouched');
+  // Only prefixes left (the open cycle is not listed): the longest one stays.
+  const only = H.rows([lc(1, 66), lc(4, 198)], 'primary');
+  assert.deepEqual(only.map(x => [x.credits_used, x.merged.lc]), [[198, 1]]);
+  // A row without a start is never grouped with another.
+  assert.equal(H.rows([{window: 'primary', ended_ms: 1}, {window: 'primary', ended_ms: 2}], 'primary').length, 2);
+
+  // Rendering: one row per start (so one expand id), a 含合并记录 tag, the 已合并 detail in both languages.
+  c.document = fakeDom();
+  c.Core.session.get = () => null;
+  const ev = [{window: 'primary', kind: 'manual_card', card_source: 'manual', at_ms: S0, prev_pct: 99, next_pct: 0}];
+  const box = H.cycleRows(dd, ev, 'grace|d|primary');
+  const rowsEl = findAll(box, n => n.className === 'cy');
+  assert.equal(rowsEl.length, 2);
+  assert.equal(new Set(rowsEl.map(r => r.getAttribute('data-fk'))).size, 2, 'expand ids stay unique');
+  assert.equal(findAll(box, n => n.className === 'cy-kind k-arch' && n.textContent === '含合并记录').length, 2);
+  const dOpen = H.detail(dd[1], 'open', ev).textContent, dCard = H.detail(dd[0], 'manual_card', ev).textContent;
+  assert.ok(dOpen.includes('已合并') && dOpen.includes('3 次额度变化（窗口没有重置）') && dOpen.includes('同一周期只显示一行'), dOpen);
+  assert.ok(!dOpen.includes('重复关闭'), dOpen);
+  assert.ok(dCard.includes('1 条重复关闭记录') && !dCard.includes('额度变化（'), dCard);
+  assert.ok(!H.detail(card, 'manual_card', ev).textContent.includes('已合并'), 'unmerged rows have no 已合并 line');
+  c.I18n.setLang('en', {persist: false});
+  assert.match(H.detail(dd[1], 'open', ev).textContent, /Merged3 limit changes \(the window did not reset\); one row per cycle/);
+  assert.match(H.detail(dd[0], 'manual_card', ev).textContent, /1 duplicate close;/);
+  assert.match(H.detail(Object.assign({}, dd[1], {merged: {lc: 1, dup: 2}}), 'open', ev).textContent,
+    /1 limit change \(the window did not reset\) · 2 duplicate closes;/);
+  // The row sparkline reads the same rows: one step per cycle, one reset dot for the card.
+  const svgEl = H.miniSvg({cycles: all, from_ms: from, to_ms: S0 + 31 * 3600e3}, 300,
+    H.wins({primary: {used_pct: 5, window_minutes: 10080}, secondary: {used_pct: null}}));
+  assert.equal(findAll(svgEl, n => n.tag === 'circle').length, 1);
+  // The estimate reset dialog counts what the panel shows.
+  assert.equal(read('ui/js/views/accounts/detail.js').includes('rs = AccHistory.rows(data.cycles, w)'), true);
+});
+
 test('accounts strings: both languages, same keys, English plurals', () => {
   const c = sandbox('en');
   const d = c.I18n.dicts ? c.I18n.dicts() : null;

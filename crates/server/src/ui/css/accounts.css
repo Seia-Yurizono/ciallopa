@@ -693,6 +693,11 @@
   transform: translateX(-50%);
 }
 
+/* the end ticks stay inside the scale (on phones the scale spans the whole row) */
+.cy-axis .sc span:last-child {
+  transform: translateX(-100%);
+}
+
 .cy-axis .sc span:first-child {
   transform: none;
 }
