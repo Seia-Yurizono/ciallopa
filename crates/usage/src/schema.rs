@@ -2,7 +2,7 @@ use crate::UsageError;
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 
-pub(crate) const SCHEMA_VERSION: i64 = 20;
+pub(crate) const SCHEMA_VERSION: i64 = 21;
 
 pub(crate) const LATEST: &str = r#"
 CREATE TABLE IF NOT EXISTS labels(
@@ -95,7 +95,11 @@ CREATE TABLE IF NOT EXISTS reset_consume(
   http_status       INTEGER,
   code              TEXT,               -- reset | nothing_to_reset | no_credit | already_redeemed
   windows_reset     INTEGER,
-  error             TEXT
+  error             TEXT,
+  -- v21: first attributed observation per window. Kept with the receipt even after
+  -- observation/event retention; NULL for old receipts (no guessed historical links).
+  p_reset_obs_id    INTEGER,
+  s_reset_obs_id    INTEGER
 );
 CREATE INDEX IF NOT EXISTS reset_consume_account ON reset_consume(account, id);
 -- v8: small key/value state (e.g. learned client fingerprint).
@@ -341,7 +345,25 @@ const STEPS: &[(i64, Migration)] = &[
              WHERE api_cost_usd IS NOT NULL AND over_api_usd IS NOT NULL",
         )
     }),
+    (21, migrate_v21),
 ];
+
+fn migrate_v21(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
+    // v12/v16 may already have created this table using LATEST.
+    for column in ["p_reset_obs_id", "s_reset_obs_id"] {
+        let has: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('reset_consume') WHERE name=?1)",
+            [column],
+            |r| r.get(0),
+        )?;
+        if !has {
+            tx.execute_batch(&format!(
+                "ALTER TABLE reset_consume ADD COLUMN {column} INTEGER"
+            ))?;
+        }
+    }
+    Ok(())
+}
 
 /// Columns may already exist when an older step ran `LATEST`.
 fn migrate_v19(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {

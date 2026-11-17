@@ -1,5 +1,8 @@
-//! Quota resets require a percent drop and a moved reset time; card evidence identifies their source.
-//! A percent drop without a moved reset is a limit change, except a delayed rollover observation.
+//! A qualifying percent drop with an eligible local card receipt takes priority over reset shape.
+//! Without that evidence, a moved reset time or delayed rollover shape identifies a reset;
+//! other substantial drops in the same window are limit changes.
+//! History matches receipts and limits each receipt to one attribution per window. This pure
+//! classifier trusts the supplied evidence, including when time moves before percent drops.
 //! Card expiry alone never restores quota.
 use serde::Serialize;
 
@@ -83,7 +86,7 @@ pub enum Class {
     ExternalCard,
     /// Official extra reset and paid instant reset, merged (UI: 「提前重置」).
     EarlyReset,
-    /// Percent dropped, `resets_at` did not move: capacity/limit changed, not a reset.
+    /// Substantial drop without a moved reset, eligible local receipt or delayed rollover shape.
     LimitChange,
     /// Only `resets_at` moved (idle slide / jitter beyond tolerance). Not a reset.
     IdleSlide,
@@ -146,7 +149,8 @@ pub struct Transition {
     pub next: Side,
     /// Unix seconds of the new observation.
     pub now_s: i64,
-    /// Successful local `reset_consume` (`code=reset`) near this observation.
+    /// Eligible successful local `reset_consume` (`code=reset`) near this observation.
+    /// The caller must match its identity and prevent repeated attribution per window.
     pub local_card: Option<CardSource>,
 }
 
@@ -225,9 +229,9 @@ pub fn classify(t: &Transition) -> Class {
                 CardSource::Auto => Class::AutoCard,
             };
         }
-        // Redeeming a card starts a new window, so resets_at moves. A count drop
-        // with the same resets_at is an unused card expiring (or a listing glitch),
-        // not external_card — even if used% also dropped (that is a limit change).
+        // A card-count drop alone is ambiguous (expiry / listing changes). Only infer an
+        // external card alongside a moved reset; direct local evidence above also supports
+        // staged observations where the reset time arrived before the percentage drop.
         if cards_dropped && reset_moved {
             return Class::ExternalCard;
         }
@@ -484,5 +488,170 @@ mod tests {
     fn each_window_independent() {
         assert_eq!(WindowKind::Primary.as_str(), "primary");
         assert_eq!(WindowKind::Secondary.as_str(), "secondary");
+    }
+
+    /// Classifier behavior with supplied evidence, not receipt matching or its persistence.
+    /// Generated transitions use the rules in docs/USAGE.md, not this module's arithmetic.
+    /// Percentages are whole tenths; the seed is fixed and a failure prints the transition.
+    mod invariants {
+        use super::*;
+
+        struct Gen(u64);
+        impl Gen {
+            fn next(&mut self) -> u64 {
+                self.0 ^= self.0 << 13;
+                self.0 ^= self.0 >> 7;
+                self.0 ^= self.0 << 17;
+                self.0
+            }
+            fn below(&mut self, n: u64) -> i64 {
+                (self.next() % n) as i64
+            }
+        }
+
+        struct Case {
+            t: Transition,
+            /// Used percent in tenths (prev, next), when both are reported.
+            tenths: Option<(i64, i64)>,
+            same_window: bool,
+        }
+
+        fn case(g: &mut Gen) -> Case {
+            let reset = 1_700_000_000 + g.below(86_400);
+            let same_window = g.below(2) == 0;
+            let next_reset = if same_window {
+                reset + g.below(2 * RESET_TOLERANCE_S as u64 + 1) - RESET_TOLERANCE_S
+            } else {
+                reset + RESET_TOLERANCE_S + 1 + g.below(7 * 86_400)
+            };
+            let window_min = [None, Some(300), Some(10_080)][g.below(3) as usize];
+            let mut cards = || [None, Some(0), Some(1), Some(2)][g.below(4) as usize];
+            let (prev_cards, next_cards) = (cards(), cards());
+            let tenths = (g.below(8) != 0).then(|| (g.below(1001), g.below(1001)));
+            let pct = |v: i64| Some(v as f64 / 10.0);
+            let local_card =
+                [None, Some(CardSource::Manual), Some(CardSource::Auto)][g.below(3) as usize];
+            Case {
+                t: Transition {
+                    prev: Side {
+                        pct: tenths.and_then(|(p, _)| pct(p)),
+                        reset: Some(reset),
+                        window_min,
+                        cards: prev_cards,
+                    },
+                    next: Side {
+                        pct: tenths.and_then(|(_, n)| pct(n)),
+                        reset: Some(next_reset),
+                        window_min,
+                        cards: next_cards,
+                    },
+                    // Anywhere from a week before the old reset to an hour after it.
+                    now_s: reset - g.below(7 * 86_400) + g.below(3_600),
+                    local_card,
+                },
+                tenths,
+                same_window,
+            }
+        }
+
+        fn each(check: impl Fn(&Case, Class)) {
+            let mut g = Gen(0x005e_edc1_a55e_f1e5);
+            for _ in 0..20_000 {
+                let c = case(&mut g);
+                check(&c, classify(&c.t));
+            }
+        }
+
+        #[test]
+        fn no_drop_records_no_event() {
+            each(|c, class| {
+                if c.tenths.is_none_or(|(p, n)| n >= p) {
+                    assert!(!class.records_event(), "{class:?} for {:?}", c.t);
+                }
+            });
+        }
+
+        #[test]
+        fn same_window_counts_drops_of_at_least_five_points() {
+            // `limit_change`: at least 5 points (a halving from >= 10% is always that much);
+            // a smaller dip in the same window is rounding and is not stored.
+            each(|c, class| {
+                let Some((p, n)) = c.tenths else { return };
+                if c.same_window && n < p {
+                    let want = p - n >= 50;
+                    assert_eq!(class.records_event(), want, "{class:?} for {:?}", c.t);
+                }
+            });
+        }
+
+        #[test]
+        fn a_moved_reset_with_a_real_drop_closes_the_cycle() {
+            each(|c, class| {
+                let Some((p, n)) = c.tenths else { return };
+                if !c.same_window && p - n >= 50 {
+                    assert!(class.closes_cycle(), "{class:?} for {:?}", c.t);
+                }
+                if !c.same_window {
+                    assert_ne!(class, Class::LimitChange, "{:?}", c.t);
+                }
+            });
+        }
+
+        #[test]
+        fn the_card_count_names_the_source_but_not_whether_there_was_a_reset() {
+            // A falling available-card count without a moved reset is not enough evidence.
+            each(|c, class| {
+                let bare = Transition {
+                    prev: Side {
+                        cards: None,
+                        ..c.t.prev
+                    },
+                    next: Side {
+                        cards: None,
+                        ..c.t.next
+                    },
+                    ..c.t
+                };
+                let without = classify(&bare);
+                assert_eq!(
+                    (class.records_event(), class.closes_cycle()),
+                    (without.records_event(), without.closes_cycle()),
+                    "{class:?} vs {without:?} for {:?}",
+                    c.t
+                );
+            });
+        }
+
+        #[test]
+        fn supplied_local_card_takes_priority_for_every_qualifying_drop() {
+            // Characterize classifier precedence only. The database history tests verify
+            // that a receipt is eligible and is not repeatedly supplied for the same window.
+            each(|c, class| {
+                if let (Some(src), true) = (c.t.local_card, class.records_event()) {
+                    assert_eq!(class.card_source(), Some(src), "{class:?} for {:?}", c.t);
+                }
+            });
+        }
+
+        #[test]
+        fn a_larger_drop_never_records_less() {
+            each(|c, class| {
+                let Some((_, n)) = c.tenths else { return };
+                if !class.records_event() || n == 0 {
+                    return;
+                }
+                // Any lower next value; derived from the case so the run stays deterministic.
+                let lower = c.t.now_s.unsigned_abs() % n as u64;
+                let deeper = Transition {
+                    next: Side {
+                        pct: Some(lower as f64 / 10.0),
+                        ..c.t.next
+                    },
+                    ..c.t
+                };
+                let d = classify(&deeper);
+                assert!(d.records_event(), "{class:?} -> {d:?} for {deeper:?}");
+            });
+        }
     }
 }

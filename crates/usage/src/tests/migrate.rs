@@ -317,6 +317,25 @@ fn create_fixture(c: &mut rusqlite::Connection, version: i64) {
         )
         .unwrap();
     }
+    if version >= 18 {
+        c.execute_batch("ALTER TABLE reset_consume ADD COLUMN credit_expires_ms INTEGER")
+            .unwrap();
+    }
+    if version >= 19 {
+        // Frozen v19/v20 additions; deliberately independent of the current LATEST.
+        c.execute_batch(
+            "ALTER TABLE quota_obs ADD COLUMN cr_flags INTEGER;
+             ALTER TABLE quota_obs ADD COLUMN cr_balance REAL;
+             ALTER TABLE quota_cycle_estimates ADD COLUMN over_credits REAL;
+             ALTER TABLE quota_cycle_estimates ADD COLUMN over_api_usd REAL;
+             CREATE TABLE quota_est_epochs (
+               id INTEGER PRIMARY KEY AUTOINCREMENT, grp INTEGER NOT NULL,
+               account INTEGER NOT NULL, window TEXT NOT NULL, from_id INTEGER NOT NULL,
+               created_ms INTEGER NOT NULL, by_key TEXT, undone_ms INTEGER);
+             CREATE INDEX quota_est_epochs_acct ON quota_est_epochs(account, window, from_id);",
+        )
+        .unwrap();
+    }
     c.pragma_update(None, "user_version", version).unwrap();
 }
 
@@ -330,7 +349,7 @@ fn fixture(version: i64) -> rusqlite::Connection {
 
 #[test]
 fn historical_schemas_upgrade_and_roundtrip() {
-    for version in [1, 4, 11, 12, 13, 14, 15, 16] {
+    for version in [1, 4, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20] {
         let mut c = fixture(version);
         crate::schema::migrate(&mut c).unwrap();
         assert_eq!(
@@ -607,8 +626,8 @@ fn v17_does_not_rebuild_an_existing_target_index() {
         c.pragma_query_value::<i64, _>(None, "schema_version", |r| r.get(0))
             .unwrap(),
         // v18 adds the expiry column, v19 four credit columns plus the epoch table and its
-        // index; the account index remains unchanged.
-        before + 1 + 6
+        // index, v21 two attribution columns; the account index remains unchanged.
+        before + 1 + 6 + 2
     );
     assert_account_index(&c);
 
@@ -867,5 +886,86 @@ fn v20_moves_credit_funded_price_out_of_the_cycle_price() {
             ],
             "applied once, not again on the second open"
         );
+    }
+}
+
+#[test]
+fn v21_adds_attribution_without_guessing_or_rewriting_history() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("v20.db");
+    {
+        let mut c = rusqlite::Connection::open(&path).unwrap();
+        create_fixture(&mut c, 20);
+        c.execute_batch(
+            "INSERT INTO reset_consume(id,account,redeem_request_id,started_ms,finished_ms,status,code)
+             VALUES(7,'a','success',100,200,'done','reset'),(8,'a','pending',300,NULL,'pending',NULL);
+             INSERT INTO quota_reset_events(account,window,kind,at_ms,obs_id,cycle_id)
+             VALUES(1,'primary','manual_card',200,209715200,9);
+             INSERT INTO quota_cycle_estimates(id,account,window,started_ms,ended_ms,ended_obs_id,
+               close_kind,credits_used,api_cost_usd,over_api_usd,confidence)
+             VALUES(9,1,'primary',100,200,209715200,'manual_card',77.5,10.0,2.5,'ok');",
+        ).unwrap();
+    }
+    let mut cookie = None;
+    for pass in 0..2 {
+        let c = crate::schema::open_rw(&path).unwrap();
+        let current = c
+            .pragma_query_value::<i64, _>(None, "schema_version", |r| r.get(0))
+            .unwrap();
+        if let Some(previous) = cookie {
+            assert_eq!(current, previous);
+        }
+        cookie = Some(current);
+        assert_eq!(
+            c.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
+                .unwrap(),
+            21
+        );
+        let receipts: Vec<_> = c.prepare(
+            "SELECT id,redeem_request_id,status,p_reset_obs_id,s_reset_obs_id FROM reset_consume ORDER BY id"
+        ).unwrap().query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?, r.get::<_, Option<i64>>(3)?, r.get::<_, Option<i64>>(4)?)))
+            .unwrap().collect::<Result<_,_>>().unwrap();
+        assert_eq!(
+            receipts,
+            vec![
+                (
+                    7,
+                    "success".into(),
+                    "done".into(),
+                    (pass == 1).then_some(400),
+                    None
+                ),
+                (8, "pending".into(), "pending".into(), None, None),
+            ]
+        );
+        assert_eq!(
+            c.query_row(
+                "SELECT kind,obs_id,cycle_id FROM quota_reset_events",
+                [],
+                |r| Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?
+                ))
+            )
+            .unwrap(),
+            ("manual_card".into(), 209715200, 9)
+        );
+        assert_eq!(
+            c.query_row(
+                "SELECT credits_used,api_cost_usd,over_api_usd FROM quota_cycle_estimates",
+                [],
+                |r| Ok((
+                    r.get::<_, f64>(0)?,
+                    r.get::<_, f64>(1)?,
+                    r.get::<_, f64>(2)?
+                ))
+            )
+            .unwrap(),
+            (77.5, 10.0, 2.5)
+        );
+        c.execute("UPDATE reset_consume SET p_reset_obs_id=400 WHERE id=7", [])
+            .unwrap();
     }
 }

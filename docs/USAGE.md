@@ -743,12 +743,34 @@ path). Classes, independently per window:
 | `kind` | Meaning |
 |---|---|
 | `natural` | `used_percent` dropped and `resets_at` moved at/after the scheduled time (including the delayed case where `resets_at` jumped first while usage still showed ~100%) |
-| `manual_card` | local `reset_consume` success (`code=reset`) not from the auto-use path |
+| `manual_card` | qualifying percent drop matched to an eligible local `reset_consume` success (`code=reset`) not from the auto-use path |
 | `auto_card` | same, but the consume was the 「快到期时自动使用」 path (`key = "(auto)"`) |
-| `external_card` | available card count dropped, and we did not consume one |
+| `external_card` | available card count dropped alongside a moved reset time, without eligible local consumption evidence |
 | `early_reset` | official extra reset and paid instant reset, merged (UI: 「提前重置」) |
-| `limit_change` | percent dropped by at least 5 points (or halved from ≥ 10%) without `resets_at` moving — not a reset. Stored as an event only: the cycle follows `resets_at` and goes on (no cycle row) |
+| `limit_change` | percent dropped by at least 5 points (or halved from ≥ 10%) without `resets_at` moving, eligible local card evidence, or the delayed rollover shape. Stored as an event only: the cycle follows `resets_at` and goes on (no cycle row) |
 | *(not stored)* | only `resets_at` moved (idle slide / jitter), or a smaller dip in the same window (rounding: headers are integers, `/wham/usage` may be fractional) |
+
+For a qualifying drop, matched local card evidence takes priority over external-card and
+natural/early-reset inference. It does not require the reset time to move in that same
+snapshot: the upstream may report the new time before reporting the percentage drop.
+The small-dip guard still applies; a receipt alone cannot create an event.
+
+Local matching selects the latest successful consumption by id for the same account whose
+`finished_ms` is between five minutes before and 30 seconds after the observation. Since
+schema v21, `reset_consume.p_reset_obs_id` / `s_reset_obs_id` record the observation that
+used that receipt, at most once per window. Primary and secondary can each use the same
+receipt, including in separate snapshots across a database reopen. An already-used latest
+receipt does not fall back to an older receipt; a later independent consumption can explain
+a new reset. The claim, event, closed estimate and observation share one transaction.
+
+These two nullable columns are internal; API responses are unchanged. Claims live with the
+existing consumption audit rows (which are not currently removed by usage retention), so
+purging observations/events cannot reactivate a receipt. The v21 upgrade leaves old claims
+NULL and does not infer historical ownership or rewrite existing events/estimates. Thus it
+cannot deduplicate pre-upgrade history, and a pre-upgrade receipt still within the matching
+interval can be matched once per window after upgrade. The classifier's generated tests
+characterize precedence for supplied evidence; database history tests verify matching and
+single attribution. Cycle segmentation by `resets_at` is unchanged.
 
 Snapshots are classified in id order. A request's id is taken when it starts and its record is
 written when it finishes, so a request that started before the newest snapshot (a long turn on

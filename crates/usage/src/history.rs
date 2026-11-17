@@ -24,21 +24,34 @@ pub(crate) fn purge(c: &Connection, cutoff_ms: i64) -> rusqlite::Result<()> {
     Ok(())
 }
 
+struct RecentCard {
+    id: i64,
+    source: CardSource,
+    attributed: [bool; 2],
+}
+
 fn recent_card(
     tx: &Transaction,
     account: &str,
     now_ms: i64,
-) -> rusqlite::Result<Option<CardSource>> {
-    let row: Option<Option<String>> = tx
-        .query_row(
-            "SELECT key FROM reset_consume WHERE account=?1 AND status='done' \
+) -> rusqlite::Result<Option<RecentCard>> {
+    // Choose the latest success first, including already-attributed receipts. Filtering
+    // them out in SQL would let a later dip fall back to an older, unused receipt.
+    tx.query_row(
+        "SELECT id,key,p_reset_obs_id IS NOT NULL,s_reset_obs_id IS NOT NULL \
+             FROM reset_consume WHERE account=?1 AND status='done' \
              AND code='reset' AND finished_ms IS NOT NULL \
              AND finished_ms>=?2 AND finished_ms<=?3 ORDER BY id DESC LIMIT 1",
-            params![account, now_ms - CARD_LOOKBACK_MS, now_ms + 30_000],
-            |r| r.get(0),
-        )
-        .optional()?;
-    Ok(row.map(|k| CardSource::from_key(k.as_deref())))
+        params![account, now_ms - CARD_LOOKBACK_MS, now_ms + 30_000],
+        |r| {
+            Ok(RecentCard {
+                id: r.get(0)?,
+                source: CardSource::from_key(r.get::<_, Option<String>>(1)?.as_deref()),
+                attributed: [r.get(2)?, r.get(3)?],
+            })
+        },
+    )
+    .optional()
 }
 
 /// After a new `quota_obs` row: classify each window and persist a close when needed.
@@ -55,17 +68,29 @@ pub(crate) fn on_new_obs(
     let now_s = now_ms.div_euclid(1000);
     let local = recent_card(tx, account_name, now_ms)?;
     for which in WindowKind::ALL {
+        let available = local
+            .as_ref()
+            .filter(|card| !card.attributed[which.index()]);
         let prev = which.side(old);
         let next = which.side(Some(new));
         let class = classify::classify(&Transition {
             prev,
             next,
             now_s,
-            local_card: local,
+            local_card: available.map(|card| card.source),
         });
         if class.records_event() {
             close_one(
-                tx, prices, account_id, obs_id, now_ms, which, &prev, &next, class,
+                tx,
+                prices,
+                account_id,
+                obs_id,
+                now_ms,
+                which,
+                &prev,
+                &next,
+                class,
+                available.map(|card| card.id),
             )?;
         }
     }
@@ -83,6 +108,7 @@ fn close_one(
     prev: &Side,
     next: &Side,
     class: Class,
+    consume_id: Option<i64>,
 ) -> rusqlite::Result<()> {
     let window = which.as_str();
     let src = class.card_source().map(CardSource::as_str);
@@ -110,6 +136,18 @@ fn close_one(
         return Ok(());
     }
     let event_id = tx.last_insert_rowid();
+    if let Some(id) = consume_id.filter(|_| src.is_some()) {
+        let column = match which {
+            WindowKind::Primary => "p_reset_obs_id",
+            WindowKind::Secondary => "s_reset_obs_id",
+        };
+        // The receipt claim, event, estimate and observation commit or roll back together.
+        // Keep the claim on the receipt even if retention later removes the event/observation.
+        tx.execute(
+            &format!("UPDATE reset_consume SET {column}=?2 WHERE id=?1"),
+            params![id, obs_id],
+        )?;
+    }
     let data = load_cycle(tx, prices, account_id, which, prev.reset, Some(obs_id))?;
     let mut cap = data.capacity();
     if cap.delta_pct.is_none() {
@@ -737,6 +775,238 @@ mod tests {
 
     use crate::tests::cfg;
     use crate::{Record, Recorder, Transport};
+
+    fn card_receipt(c: &Connection, ms: i64, key: &str) {
+        c.execute(
+            "INSERT INTO reset_consume(account,redeem_request_id,key,started_ms,finished_ms,status,code) \
+             VALUES ('a',?1,?2,?1,?1,'done','reset')",
+            params![ms, key],
+        )
+        .unwrap();
+    }
+
+    fn card_obs(c: &mut Connection, ms: i64, primary: f64, secondary: f64, reset: i64) {
+        // Read the previous snapshot from disk, including after reopening the database.
+        let old = c
+            .query_row(
+                "SELECT p_pct,s_pct,p_reset,s_reset FROM quota_obs WHERE account=1 ORDER BY id DESC LIMIT 1",
+                [],
+                |r| Ok(QuotaObs {
+                    p_pct: r.get(0)?, s_pct: r.get(1)?, p_reset: r.get(2)?, s_reset: r.get(3)?,
+                    p_window_min: Some(300), s_window_min: Some(10080), ..Default::default()
+                }),
+            )
+            .optional()
+            .unwrap();
+        let obs = QuotaObs {
+            p_pct: Some(primary),
+            s_pct: Some(secondary),
+            p_reset: Some(reset),
+            s_reset: Some(reset),
+            p_window_min: Some(300),
+            s_window_min: Some(10080),
+            ..Default::default()
+        };
+        let id = ms << SEQ_BITS;
+        let tx = c.transaction().unwrap();
+        tx.execute(
+            "INSERT INTO quota_obs(id,account,p_pct,p_reset,p_win,s_pct,s_reset,s_win) \
+             VALUES (?1,1,?2,?3,300,?4,?3,10080)",
+            params![id, primary, reset, secondary],
+        )
+        .unwrap();
+        on_new_obs(&tx, &PriceTable::default(), 1, "a", id, old.as_ref(), &obs).unwrap();
+        tx.commit().unwrap();
+    }
+
+    fn successful_card_once_per_window(key: &str, kind: &str, staged: bool) {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("history.db");
+        let mut c = crate::schema::open_rw(&path).unwrap();
+        c.execute("INSERT INTO labels(id,name) VALUES (1,'a')", [])
+            .unwrap();
+        let base = 1_800_000_000_000;
+        let reset = base / 1000 + 18_000;
+        // Give the older receipt a different source to verify that the latest wins;
+        // the older success must not become a fallback once the latest is used.
+        let older_key = if key == "(auto)" { "manual" } else { "(auto)" };
+        card_receipt(&c, base - 10_000, older_key);
+        card_receipt(&c, base, key);
+        for (i, (p, s, r)) in [
+            (65.2, 70.0, reset),
+            (65.2, 70.0, if staged { reset + 600 } else { reset }),
+            (0.0, 70.0, reset + 600),
+            (10.0, 0.0, reset + 600),
+            (5.0, 10.0, reset + 600),
+            (5.0, 5.0, reset + 600),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if i == 3 {
+                drop(c);
+                c = crate::schema::open_rw(&path).unwrap();
+            }
+            card_obs(&mut c, base + i as i64 * 10_000, p, s, r);
+        }
+        let events = |c: &Connection| -> Vec<(String, String)> {
+            c.prepare("SELECT window,kind FROM quota_reset_events ORDER BY obs_id,window")
+                .unwrap()
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        let mut expected = vec![
+            ("primary".into(), kind.into()),
+            ("secondary".into(), kind.into()),
+            ("primary".into(), "limit_change".into()),
+            ("secondary".into(), "limit_change".into()),
+        ];
+        assert_eq!(
+            events(&c),
+            expected,
+            "one receipt per window, no fallback to older receipts"
+        );
+        let cycles = |c: &Connection| {
+            c.query_row("SELECT count(*) FROM quota_cycle_estimates", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap()
+        };
+        assert_eq!(cycles(&c), 2);
+
+        // A genuinely new consumption can explain another reset in both windows.
+        card_obs(&mut c, base + 60_000, 30.0, 40.0, reset + 600);
+        card_receipt(&c, base + 70_000, key);
+        card_obs(&mut c, base + 80_000, 0.0, 0.0, reset + 1200);
+        expected.extend([
+            ("primary".into(), kind.into()),
+            ("secondary".into(), kind.into()),
+        ]);
+        assert_eq!(events(&c), expected);
+        assert_eq!(cycles(&c), 4);
+    }
+
+    #[test]
+    fn manual_card_is_attributed_once_per_window_across_reopen() {
+        successful_card_once_per_window("manual", "manual_card", false);
+    }
+
+    #[test]
+    fn auto_card_is_attributed_once_per_window_across_reopen() {
+        successful_card_once_per_window("(auto)", "auto_card", false);
+    }
+
+    #[test]
+    fn staged_manual_card_is_attributed_once_per_window_across_reopen() {
+        successful_card_once_per_window("manual", "manual_card", true);
+    }
+
+    #[test]
+    fn staged_auto_card_is_attributed_once_per_window_across_reopen() {
+        successful_card_once_per_window("(auto)", "auto_card", true);
+    }
+
+    #[test]
+    fn failed_cycle_write_rolls_back_receipt_claim_with_observation() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = crate::schema::open_rw(&d.path().join("history.db")).unwrap();
+        let base = 1_800_000_000_000;
+        let reset = base / 1000 + 18_000;
+        card_receipt(&c, base, "manual");
+        card_obs(&mut c, base, 65.2, 70.0, reset);
+        // Fail after the primary close succeeds, so both the first claim and the
+        // second window's in-progress writes must roll back with the observation.
+        c.execute_batch(
+            "CREATE TEMP TRIGGER fail_cycle BEFORE INSERT ON quota_cycle_estimates
+            WHEN NEW.window='secondary' BEGIN SELECT RAISE(ABORT,'injected cycle failure'); END;",
+        )
+        .unwrap();
+        let old = QuotaObs {
+            p_pct: Some(65.2),
+            s_pct: Some(70.0),
+            p_reset: Some(reset),
+            s_reset: Some(reset),
+            ..Default::default()
+        };
+        let new = QuotaObs {
+            p_pct: Some(0.0),
+            s_pct: Some(0.0),
+            p_reset: Some(reset + 600),
+            s_reset: Some(reset + 600),
+            ..Default::default()
+        };
+        let id = (base + 10_000) << SEQ_BITS;
+        let tx = c.transaction().unwrap();
+        tx.execute(
+            "INSERT INTO quota_obs(id,account,p_pct,s_pct,p_reset,s_reset) VALUES(?1,1,0,0,?2,?2)",
+            params![id, reset + 600],
+        )
+        .unwrap();
+        let error =
+            on_new_obs(&tx, &PriceTable::default(), 1, "a", id, Some(&old), &new).unwrap_err();
+        assert!(error.to_string().contains("injected cycle failure"));
+        tx.rollback().unwrap();
+        for sql in [
+            "SELECT count(*) FROM quota_reset_events",
+            "SELECT count(*) FROM quota_cycle_estimates",
+            "SELECT count(*) FROM reset_consume WHERE p_reset_obs_id IS NOT NULL OR s_reset_obs_id IS NOT NULL",
+        ] {
+            assert_eq!(c.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        }
+        assert_eq!(
+            c.query_row("SELECT count(*) FROM quota_obs", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        c.execute_batch("DROP TRIGGER fail_cycle").unwrap();
+        card_obs(&mut c, base + 10_000, 0.0, 0.0, reset + 600);
+        assert_eq!(
+            c.query_row(
+                "SELECT count(*) FROM quota_cycle_estimates WHERE close_kind='manual_card'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn purging_history_does_not_make_a_receipt_available_again() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = crate::schema::open_rw(&d.path().join("history.db")).unwrap();
+        let base = 1_800_000_000_000;
+        let reset = base / 1000 + 18_000;
+        card_receipt(&c, base, "manual");
+        card_obs(&mut c, base, 65.2, 70.0, reset);
+        card_obs(&mut c, base + 10_000, 0.0, 0.0, reset + 600);
+        card_obs(&mut c, base + 20_000, 10.0, 10.0, reset + 600);
+        crate::write::purge_step(&mut c, base + 20_000, 100).unwrap();
+        assert_eq!(
+            c.query_row("SELECT count(*) FROM quota_reset_events", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        card_obs(&mut c, base + 30_000, 5.0, 5.0, reset + 600);
+        assert_eq!(
+            c.query_row(
+                "SELECT count(*) FROM quota_reset_events WHERE kind='limit_change'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            2
+        );
+        assert_eq!(
+            c.query_row("SELECT count(*) FROM quota_cycle_estimates", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
 
     fn snap(r: &Recorder, ms: i64, acct: &str, model: &str, out: i64, p: f64, reset: i64) {
         let mut x = Record::new(r.ids.next_at(ms), Transport::Sse, "responses");

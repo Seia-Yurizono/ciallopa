@@ -21,6 +21,10 @@ node scripts/settings-state-check.cjs
 
 # Account snapshots, partial failures and late reads.
 node scripts/accounts-state-check.cjs
+
+# UI user flows in headless Chromium against the synthetic demo (about 2 s after the build).
+cargo build --locked -p ciallopa --example ui_demo
+uv run --no-project --with playwright==1.65.2 python scripts/ui-browser-check.py
 ```
 
 For a public `core` contract, include its consumers. For a fix, start with a regression
@@ -46,9 +50,20 @@ keeps the production startup delay and the persisted 60-second retry interval. F
 assertions cover fresh-cache reads, retry spacing and limits across restarts, protected live pending requests, quota-refresh
 throttling after failure, and configured refresh intervals without catch-up bursts. These
 checks use synthetic credentials and never need a provider account.
-The usage tests cover the v13/v15/v16/v17-to-v18 v18-to-v19 and v19-to-v20 migrations and missing historical expiry values; the
+The usage tests cover the v13/v15/v16/v17-to-v18, v18-to-v19, v19-to-v20 and v20-to-v21
+migrations and missing historical expiry values; the
 automatic tests cover a card disappearing during retries, exhausting its budget, and
 reopening the database before its saved expiry unblocks later manual use.
+
+`history::tests::*attributed_once_per_window_across_reopen` exercises real SQLite writes and
+the history classifier for manual/automatic consumption, simultaneous or staged reset-time
+and percent updates, and independent primary/secondary attribution across reopen. Later drops
+must not reuse the latest receipt or fall back to an older success; a new consumption can
+explain a new reset. All four cases fail on the pre-fix implementation with four card events
+instead of two card events and two limit changes. Additional history tests inject a cycle-write
+failure to check atomic rollback and purge history to check that receipts stay used. The v21
+migration test starts with an independently constructed v20 schema, preserves old history,
+leaves unknown historical claims NULL, and checks reopen stability.
 
 ### Faults we can reproduce locally
 
@@ -142,7 +157,7 @@ real upstream chooses gzip, flushes promptly or saves a particular amount of ban
 
 | Change | Additional evidence |
 | --- | --- |
-| UI queries, interactions or layout | Run the UI state script and a local browser smoke using synthetic data. Check the affected flow at desktop and narrow widths, plus empty/error states when relevant. |
+| UI queries, interactions or layout | Run the UI state scripts and `ui-browser-check.py` (below). Look at the affected flow in a browser at desktop and narrow widths, plus empty/error states when relevant; add a browser check when the flow is one users depend on. |
 | Forwarding, retries or stream lifecycle | Local mock integration tests for the changed behavior. Use the real CLI against a local mock when client interpretation or compatibility is in question. |
 | Usage queries, recording or admission | Run the relevant benchmark only if the change could affect cost or resource use; compare against the same workload and machine. |
 | Upstream transport dependencies or client construction | Run lock comparison and wire fingerprint checks; see below. |
@@ -313,6 +328,19 @@ state machine in the test to calculate the answer.
 - UI: exercise the actual query/loading functions with controlled deferred responses.
   Cover changed filters, pagination and stale replies; use the browser for interaction
   and rendering that a minimal DOM stub cannot establish.
+- Rules with a large input space (classification thresholds, normalization, merging): add
+  generated cases checked against the documented rule rather than a few hand-picked
+  rows. `classify.rs` checks `invariants::*` this way with a fixed seed and no extra crate,
+  whole-tenth percentages so the expected drop is exact, and the transition printed on failure.
+  These characterize the pure classifier with supplied evidence; they do not establish that
+  a local receipt was matched correctly or used only once. Those are database history behaviors.
+
+A check is only evidence if it can fail. When adding one for a fix, revert the fix (or
+reintroduce the defect) once and confirm the new check fails for the stated reason; when a
+check passes immediately on a broken build, fix the check before relying on it. For
+example, removing v0.5.4's same-window small-dip guard fails `small_dip_in_the_same_window_is_nothing`,
+`one_card_makes_one_cycle_boundary` and the five-point invariant; changing its `>=` to `>` or
+counting near-zero dips without a moved reset fails only the invariant.
 
 The Node scripts exercise real page functions with controlled asynchronous responses. Cover
 state races in those scripts, then check the affected interaction in a browser. DOM stubs do
@@ -325,6 +353,43 @@ cargo run --locked -p ciallopa --example ui_demo -- 127.0.0.1:8399
 The demo creates a unique temporary directory by default and prints its location. An optional
 second argument selects a directory that must not already exist. It uses generated local data;
 do not use production credentials or accounts. Stop only the process you created.
+
+### Browser user flows
+
+`scripts/ui-browser-check.py` starts its own `ui_demo` on a free loopback port with a new data
+directory and drives the three pages in headless Chromium through visible labels and roles:
+
+| Check | Expected result |
+| --- | --- |
+| `login` | A wrong key is refused with a message; the demo key shows the request list. |
+| `account-filter-late-reply` | With the all-accounts reply held back, choosing bob lists only bob and shows an applied-filter chip; releasing the earlier reply afterwards leaves the list unchanged. |
+| `detail-focus` | Opening a request moves focus into the dialog; Esc closes it and focus returns to the row's button. |
+| `names-as-text` | All three pages render the demo's `<img … onerror>` key, email and model names as text: no element is built from them, nothing executes, no uncaught page error. |
+| `phone-width` | At 390 px no page is wider than the viewport, and nothing is cut off at the right edge outside a horizontal scroller. |
+
+Every check also fails on any uncaught page error or a 5xx reply from the demo. Waits are
+for the user-visible result (15 s watchdog), not fixed sleeps. The late reply is released
+only after the bob list has rendered, and the final assertion waits until the page has parsed
+that reply. Use `--check NAME` to run one check and `--evidence DIR` (a new directory) to keep
+the demo log, `results.json` and a full-page screenshot for each failure; by default the
+printed temporary directory keeps them. Exit 0 passed, 1 failed, 77 Playwright or Chromium
+unavailable. If Chromium is missing, install it once with
+`uv run --no-project --with playwright==1.65.2 playwright install chromium-headless-shell`.
+
+`--self-test` reruns each check with a fault injected outside the page code and requires it
+to fail: the API answering 401, the server ignoring the account filter, focus dropped after
+Esc, text nodes parsed as HTML, an uncaught exception, and a 640 px `main`. A fault run only
+counts after the clean run passed. Run it after editing the script. It takes about 35 s
+because the HTTP faults wait out their watchdogs. Faults go through CSSOM and DOM APIs
+because the pages' CSP blocks injected `<style>`; `names-as-text` therefore checks for
+elements built from markup instead of relying on `onerror` running. Separately, deleting the
+`if(current())` guard in `currentLoad` fails both `ui-state-check.cjs` and
+`account-filter-late-reply`.
+
+This covers one Chromium build, two viewport sizes and the demo's data. It does not cover
+other browsers, screen readers, visual design or every page flow, and it is not part of the
+checks workflow. Selectors are user-facing labels; when a deliberate UI change renames one,
+update the check in the same change and keep `--self-test` passing.
 
 Use a channel or notification to establish that a mock has reached the intended phase.
 Use a generous timeout as a watchdog, not a tight wall-clock speed assertion. Wait for
