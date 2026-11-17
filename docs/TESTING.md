@@ -13,19 +13,26 @@ cargo test --locked -p ciallopa-usage
 # A forwarding behavior; omit the final filter to run the integration file.
 cargo test --locked -p ciallopa --test it forward::sse::sse_observation_on_client_disconnect
 
-# Embedded UI query and asynchronous state behavior; no npm install needed.
-node scripts/ui-state-check.cjs
+# Embedded UI foundation (routing, scope URLs, formatting, i18n parity, Api semantics); no npm
+# install needed. Each view adds its own scripts/<view>-check.cjs; run them all with:
+node scripts/shell-check.cjs
+for f in scripts/*-check.cjs; do node "$f"; done
 
-# Settings drafts, reloads and revision conflicts.
-node scripts/settings-state-check.cjs
-
-# Account snapshots, partial failures and late reads.
-node scripts/accounts-state-check.cjs
-
-# UI user flows in headless Chromium against the synthetic demo (about 2 s after the build).
+# UI user flows in headless Chromium against the synthetic demo.
 cargo build --locked -p ciallopa --example ui_demo
 uv run --no-project --with playwright==1.65.2 python scripts/ui-browser-check.py
+
+# Edit the UI against the demo backend without rebuilding Rust (see crates/server/src/ui/README.md):
+# start the demo, then serve the page from disk with the same CSP and proxy the APIs to it.
+cargo run --locked -p ciallopa --example ui_demo -- 127.0.0.1:8399
+node scripts/ui-dev.cjs 8398 http://127.0.0.1:8399
 ```
+
+Check a UI change in a real browser as well (Playwright or by hand) at a desktop width, around
+1100px and a phone viewport with touch, in both languages and both themes; watch for console
+errors, CSP violations and horizontal scrolling. The demo keeps its config, usage log and price
+table (`[usage] prices`) in its own data directory, so settings and price writes (「应用」, set or
+ignore a model) can be exercised for real without touching `~/.ciallopa`.
 
 For a public `core` contract, include its consumers. For a fix, start with a regression
 that exercises the failing behavior, then run the affected crate or integration target.
@@ -357,15 +364,16 @@ do not use production credentials or accounts. Stop only the process you created
 ### Browser user flows
 
 `scripts/ui-browser-check.py` starts its own `ui_demo` on a free loopback port with a new data
-directory and drives the three pages in headless Chromium through visible labels and roles:
+directory and drives the current overview, requests, accounts, API keys and system views in
+headless Chromium through visible labels and roles (Chinese locale):
 
 | Check | Expected result |
 | --- | --- |
 | `login` | A wrong key is refused with a message; the demo key shows the request list. |
-| `account-filter-late-reply` | With the all-accounts reply held back, choosing bob lists only bob and shows an applied-filter chip; releasing the earlier reply afterwards leaves the list unchanged. |
-| `detail-focus` | Opening a request moves focus into the dialog; Esc closes it and focus returns to the row's button. |
-| `names-as-text` | All three pages render the demo's `<img … onerror>` key, email and model names as text: no element is built from them, nothing executes, no uncaught page error. |
-| `phone-width` | At 390 px no page is wider than the viewport, and nothing is cut off at the right edge outside a horizontal scroller. |
+| `account-filter-late-reply` | With the all-accounts reply held back, choosing bob lists only bob and the active scope control names bob; releasing the earlier reply afterwards leaves the list unchanged. |
+| `detail-focus` | At 1100 px, opening a request moves focus into its drawer; Esc closes it and focus returns to the same request row. Wider desktops use a nonmodal side pane. |
+| `names-as-text` | Overview grouped by API Key, paginated requests, accounts and settings' API keys render the demo's `<img … onerror>` key, email and model names as text: no element is built from them, nothing executes, no uncaught page error. |
+| `phone-width` | At 390 px with touch, all five views fit the viewport, and nothing is cut off at the right edge outside a horizontal scroller. |
 
 Every check also fails on any uncaught page error or a 5xx reply from the demo. Waits are
 for the user-visible result (15 s watchdog), not fixed sleeps. The late reply is released
@@ -377,16 +385,16 @@ unavailable. If Chromium is missing, install it once with
 `uv run --no-project --with playwright==1.65.2 playwright install chromium-headless-shell`.
 
 `--self-test` reruns each check with a fault injected outside the page code and requires it
-to fail: the API answering 401, the server ignoring the account filter, focus dropped after
+to fail for its expected reason: the API answering 401, the server ignoring the account filter, focus dropped after
 Esc, text nodes parsed as HTML, an uncaught exception, and a 640 px `main`. A fault run only
 counts after the clean run passed. Run it after editing the script. It takes about 35 s
 because the HTTP faults wait out their watchdogs. Faults go through CSSOM and DOM APIs
 because the pages' CSP blocks injected `<style>`; `names-as-text` therefore checks for
-elements built from markup instead of relying on `onerror` running. Separately, deleting the
-`if(current())` guard in `currentLoad` fails both `ui-state-check.cjs` and
-`account-filter-late-reply`.
+elements built from markup instead of relying on `onerror` running. An unrelated locator
+timeout does not count as detecting a fault. The current `requests-check.cjs` also exercises
+late replies of superseded filters, pages and request details.
 
-This covers one Chromium build, two viewport sizes and the demo's data. It does not cover
+This covers one Chromium build, three viewport sizes and the demo's data. It does not cover
 other browsers, screen readers, visual design or every page flow, and it is not part of the
 checks workflow. Selectors are user-facing labels; when a deliberate UI change renames one,
 update the check in the same change and keep `--self-test` passing.

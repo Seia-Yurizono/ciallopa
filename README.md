@@ -32,14 +32,14 @@ Each path ends with the server on `127.0.0.1:8317`, one account and a client key
 `ciallopa init` writes `config.toml` with a new random admin key and prints that key, the Codex
 client config and the next commands; then [set up the client](#codex-cli-client).
 The commands below use the x86_64 (`amd64`) files; on arm64 Linux use
-`ciallopa_0.5.4-1_arm64.deb` or `ciallopa-0.5.4-aarch64-unknown-linux-musl.tar.gz`. The Docker
+`ciallopa_0.6.0-1_arm64.deb` or `ciallopa-0.6.0-aarch64-unknown-linux-musl.tar.gz`. The Docker
 image is multi-arch, so Compose works unchanged on both, including Docker Desktop on Apple
 Silicon Macs.
 
 **.deb (Ubuntu / Debian)**
 ```
-curl -fLO https://github.com/Seia-Yurizono/ciallopa/releases/download/v0.5.4/ciallopa_0.5.4-1_amd64.deb
-sudo apt install ./ciallopa_0.5.4-1_amd64.deb
+curl -fLO https://github.com/Seia-Yurizono/ciallopa/releases/download/v0.6.0/ciallopa_0.6.0-1_amd64.deb
+sudo apt install ./ciallopa_0.6.0-1_amd64.deb
 sudo ciallopa -c /etc/ciallopa/config.toml init
 sudo -u ciallopa HOME=/var/lib/ciallopa ciallopa -c /etc/ciallopa/config.toml login
 sudo systemctl start ciallopa
@@ -48,7 +48,7 @@ sudo systemctl start ciallopa
 **Docker Compose**
 ```
 mkdir ciallopa && cd ciallopa && mkdir -m 700 config data
-curl -fsSLO https://raw.githubusercontent.com/Seia-Yurizono/ciallopa/v0.5.4/packaging/docker/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/Seia-Yurizono/ciallopa/v0.6.0/packaging/docker/compose.yaml
 sed -i "s/^    user: .*/    user: \"$(id -u):$(id -g)\"/" compose.yaml
 docker compose run --rm ciallopa init
 docker compose up -d && docker compose exec ciallopa ciallopa login
@@ -56,8 +56,8 @@ docker compose up -d && docker compose exec ciallopa ciallopa login
 
 **Tarball**
 ```
-curl -fL https://github.com/Seia-Yurizono/ciallopa/releases/download/v0.5.4/ciallopa-0.5.4-x86_64-unknown-linux-musl.tar.gz | tar xz
-cd ciallopa-0.5.4-x86_64-unknown-linux-musl
+curl -fL https://github.com/Seia-Yurizono/ciallopa/releases/download/v0.6.0/ciallopa-0.6.0-x86_64-unknown-linux-musl.tar.gz | tar xz
+cd ciallopa-0.6.0-x86_64-unknown-linux-musl
 ./ciallopa init
 ./ciallopa -c config.toml login
 ./ciallopa -c config.toml
@@ -109,7 +109,7 @@ from the same release and run `sha256sum -c --ignore-missing SHA256SUMS`.
 
 ### .deb
 ```
-sudo apt install ./ciallopa_0.5.4-1_amd64.deb
+sudo apt install ./ciallopa_0.6.0-1_amd64.deb
 sudo ciallopa -c /etc/ciallopa/config.toml init
 sudo -u ciallopa HOME=/var/lib/ciallopa ciallopa -c /etc/ciallopa/config.toml login
 sudo systemctl start ciallopa             # enabled at install; starts once config.toml exists
@@ -159,7 +159,7 @@ updates and rollback.
 
 ```
 mkdir -m 700 config data
-curl -fsSLO https://raw.githubusercontent.com/Seia-Yurizono/ciallopa/v0.5.4/packaging/docker/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/Seia-Yurizono/ciallopa/v0.6.0/packaging/docker/compose.yaml
 sed -i "s/^    user: .*/    user: \"$(id -u):$(id -g)\"/" compose.yaml   # your uid:gid
 docker compose run --rm ciallopa init           # writes config/config.toml, prints the key
 docker compose up -d
@@ -491,19 +491,20 @@ lists the added and changed models, and 「应用」 writes them. The CLI does t
 `ciallopa prices sync` (dry run; `--write` to apply). Records also keep `service_tier`,
 cache-write tokens and the Codex `thread_id` / `turn_id`.
 
-Web pages: `GET /ui` overview (`/` redirects), `/ui/settings` and `/ui/accounts`
-(`[ui] enabled = true` by default). Each is a single static HTML file embedded in the binary
-(inline CSS/JS, no external resources). They share one login: the access key is kept in the
-tab's `sessionStorage`, sent as `Authorization: Bearer` and never put in the URL. The overview
-has a time-range / grouping bar (24h/7d/30d; by account/key/instance/model) that drives the KPI
-strip, the summary table, the trend chart (requests, errors, tokens) and the recent requests.
-The overview has two tabs, 用量 and 系统情况 (memory, Cloudflare block banner; a badge counts
-alerts); 用量 shows pooled 5h / 周 remaining bars with a link to the 账号 page. Per-account quota
-lives on the 账号 page: 5-hour and weekly remaining %, a 30-day weekly capacity sparkline, the card
-count and 「已达额度上限」 when the last 刷新额度 reported it; clicking a row (a bottom sheet on
-phones) shows the history chart (周 | 5h toggle, one window at a time), scheduling, reset cards and actions. Quota data comes from
+Web pages: one single-document app at `GET /ui` (`/` redirects) with five views: overview `/ui`,
+requests `/ui/requests`, accounts `/ui/accounts`, settings `/ui/settings` and system `/ui/system`
+(`[ui] enabled = true` by default). The document is embedded in the binary (served gzip-compressed
+when accepted, no external resources). One login covers all views: the access key is kept in the
+tab's `sessionStorage`, sent as `Authorization: Bearer` and never put in the URL. A shared scope
+bar (1h/24h/7d/30d or a fixed window; account, model, key, instance) drives the overview (KPIs,
+trend, problems, capacity, breakdown) and the request list (problem groups, more filters, record /
+session ID search, request detail). Per-account quota lives on the accounts view: 5-hour and
+weekly remaining %, purchased credits, a 30-day capacity sparkline, last-24h usage and the card
+count; a row opens the details (quota cycle history with a 周 | 5h toggle, scheduling, reset cards
+and actions). The system view shows memory, buffers, connections, concurrency and recorder counters.
+See [docs/UI.md](docs/UI.md). Quota data comes from
 upstream response headers whenever an account serves a request; 刷新额度 (per account, in the
-account's expanded row) and 刷新全部额度 ask upstream
+account's details) and 刷新全部额度 ask upstream
 directly instead (`GET /wham/usage`, which the Codex backend client reads rate limits from: read-only, spends no
 usage), at most once per account every 30 s and four accounts at a time. Optional background
 刷新额度 (`[ui] quota_refresh_mins`–`quota_refresh_max_mins`, default off) runs the same path for accounts whose
@@ -564,9 +565,10 @@ and the running config stays as it was. Keys that only work at startup (`listen`
 `instance_id`, `upstream`, usage writer sizing, `ui.enabled`) are reported as
 pending until the next restart.
 
-`/ui/settings` shows every setting with its running value and a 热更新 / 需重启 badge, the
+`/ui/settings` shows every setting with its running value and a 需重启 badge where it applies, the
 pending-restart list, the client keys (label + last 4 characters) and the audit log.
-`/ui/accounts` lists accounts with status, quota, last-24h usage, weight and priority. Both pages are
+`/ui/accounts` lists accounts with status, quota and last-24h usage; weight, priority and switches
+are in each account's details. Both pages are
 read-only unless the file says:
 
 ```toml

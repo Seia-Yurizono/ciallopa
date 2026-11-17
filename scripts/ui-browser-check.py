@@ -36,7 +36,8 @@ except ImportError:
 
 DEMO_KEY = "sk-demo-0123456789abcdef"  # crates/server/examples/ui_demo.rs
 EVIL = '<img src=x onerror="window.__xss=1">'  # the demo's account email, key label and model name
-PAGES = ["/ui", "/ui/accounts", "/ui/settings"]
+NAME_PAGES = ["/ui", "/ui/requests", "/ui/accounts", "/ui/settings#keys"]
+PAGES = NAME_PAGES + ["/ui/system"]
 WAIT_MS = 15_000  # watchdog for one user-visible result, not a speed requirement
 
 
@@ -53,7 +54,9 @@ class Run:
         self.page_errors, self.server_errors = [], []
 
     async def open(self, viewport=(1280, 900), init_script=None):
-        self.ctx = await self.browser.new_context(viewport={"width": viewport[0], "height": viewport[1]})
+        self.ctx = await self.browser.new_context(
+            viewport={"width": viewport[0], "height": viewport[1]}, locale="zh-CN",
+            has_touch=viewport[0] < 600)
         if init_script:
             await self.ctx.add_init_script(init_script)
         self.page = await self.ctx.new_page()
@@ -90,7 +93,7 @@ class Run:
         self.check(not self.server_errors, f"server errors: {self.server_errors}")
 
 
-async def login(run, path="/ui", key=DEMO_KEY):
+async def login(run, path="/ui/requests", key=DEMO_KEY):
     page = run.page
     await page.goto(run.base + path)
     await page.get_by_label("访问密钥").fill(key)
@@ -102,20 +105,25 @@ def shown(page, text):
 
 
 def requests_section(page):
-    return page.locator("section", has=page.get_by_role("heading", name="请求", exact=True))
+    return page.get_by_role("main")
 
 
 async def wait_rows(run):
-    rows = requests_section(run.page).locator("table:visible tbody tr[data-ak]")
+    rows = requests_section(run.page).locator("table:visible tbody tr[data-key], .rq-card[data-key]:visible")
     await rows.first.wait_for()
     return rows
 
 
 async def ready(run, path):
     """The page has rendered its synthetic data (the request list, or the demo's EVIL names)."""
-    if path == "/ui":
+    if path == "/ui/requests":
         await wait_rows(run)
+    elif path == "/ui/system":
+        await run.page.get_by_role("heading", name="用量记录", exact=True).wait_for()
+        await shown(run.page, "读取于").wait_for()
     else:
+        if path == "/ui":
+            await run.page.get_by_role("radiogroup", name="分组", exact=True).get_by_role("radio", name="API Key", exact=True).click()
         await shown(run.page, EVIL).wait_for()
 
 
@@ -175,18 +183,18 @@ async def check_account_filter_with_late_reply(run, fault=None):
     try:
         run.step("refresh with every account")
         async with page.expect_request(lambda r: "/usage/v1/records?" in r.url):
-            await page.get_by_role("button", name="刷新", exact=True).click()
+            await page.get_by_role("button", name="立即刷新", exact=True).click()
         run.step("choose bob while that reply is held")
-        await requests_section(page).get_by_label("按账号筛选").select_option("bob")
-        only_bob = """([col]) => { const sec = [...document.querySelectorAll('section')]
-            .find(s => s.querySelector('h2')?.textContent.trim() === '请求');
-          const t = sec && [...sec.querySelectorAll('table')].find(t => t.offsetParent);
-          const rows = t ? [...t.tBodies[0].rows].filter(r => r.dataset.ak) : [];
+        await page.get_by_role("button", name="账号 全部", exact=True).click()
+        await page.get_by_role("option", name="bob", exact=True).click()
+        only_bob = """([col]) => {
+          const t = [...document.querySelectorAll('main table')].find(t => t.offsetParent);
+          const rows = t ? [...t.tBodies[0].rows].filter(r => r.dataset.key) : [];
           return rows.length > 0 && rows.every(r => r.cells[col].textContent.trim() === 'bob'); }"""
         try:
             await page.wait_for_function(only_bob, arg=[col])
         except PlaywrightTimeout:
-            accounts = await requests_section(page).locator(f"table:visible tbody tr[data-ak] td:nth-child({col + 1})").all_text_contents()
+            accounts = await requests_section(page).locator(f"table:visible tbody tr[data-key] td:nth-child({col + 1})").all_text_contents()
             raise CheckFailed(f"{run.step_name}: rows never showed only bob: {sorted(set(accounts))}")
         run.step("release the earlier reply")
         run.check(held, "no earlier records request was held")
@@ -198,8 +206,8 @@ async def check_account_filter_with_late_reply(run, fault=None):
             await page.wait_for_function("(u) => (window.__parsed || []).includes(u)", arg=url)
         await page.evaluate("() => new Promise(r => setTimeout(r, 0))")
         run.check(await page.evaluate(only_bob, [col]), "the late reply replaced the bob-only list")
-        chips = page.locator('[role=group][aria-label^="已应用"]:visible').filter(has_text="bob")
-        run.check(await chips.count() > 0, "no applied-filter chip names bob")
+        run.check(await page.get_by_role("button", name="账号 bob", exact=True).is_visible(),
+                  "the active account filter does not name bob")
     finally:  # a failed run must not leave the page's replies held
         for route in held:
             with contextlib.suppress(PlaywrightError):
@@ -214,11 +222,12 @@ PARSED_MARKER = """(() => { const json = Response.prototype.json;
 
 async def check_detail_focus(run, fault=None):
     """A request detail opens with focus inside it; Esc closes it and focus returns to the row."""
-    page = await run.open(init_script=FOCUS_LOST if fault == "focus-lost" else None)
+    # At 1100 px detail is a drawer; wider desktops deliberately use a nonmodal side pane.
+    page = await run.open(viewport=(1100, 900), init_script=FOCUS_LOST if fault == "focus-lost" else None)
     await login(run)
     rows = await wait_rows(run)
-    opener = rows.first.get_by_role("button").first
-    label = await opener.get_attribute("aria-label")
+    opener = rows.first
+    record_id = await opener.get_attribute("data-key")
     run.step("open the first request")
     await opener.click()
     dialog = page.get_by_role("dialog")
@@ -229,8 +238,8 @@ async def check_detail_focus(run, fault=None):
     await page.keyboard.press("Escape")
     await dialog.wait_for(state="hidden")
     await page.evaluate("() => new Promise(r => setTimeout(r, 0))")
-    focused = await page.evaluate("() => document.activeElement?.getAttribute('aria-label')")
-    run.check(focused == label, f"focus went to {focused!r}, not the opener {label!r}")
+    focused = await page.evaluate("() => document.activeElement?.getAttribute('data-key')")
+    run.check(focused == record_id, f"focus went to {focused!r}, not the opener {record_id!r}")
     run.assert_clean()
 
 
@@ -239,16 +248,24 @@ FOCUS_LOST = """document.addEventListener('keydown', e => { if (e.key === 'Escap
 
 
 async def check_pages_render_names_as_text(run, fault=None):
-    """All three pages load without uncaught errors and show a markup-looking name as text."""
+    """Overview, requests, accounts and API keys show markup-looking names as text."""
     page = await run.open(init_script={"names-as-html": NAMES_AS_HTML, "uncaught": UNCAUGHT}.get(fault))
     await login(run)
     await wait_rows(run)
-    for path in PAGES:
+    for path in NAME_PAGES:
         run.step(path)
         await page.goto(run.base + path)
-        if path == "/ui":  # the request page shows key labels when grouped by key
-            await wait_rows(run)
-            await page.get_by_label("汇总分组").select_option("key")
+        if path == "/ui":
+            await page.get_by_role("radiogroup", name="分组", exact=True).get_by_role("radio", name="API Key", exact=True).click()
+        elif path == "/ui/requests":
+            # The synthetic name can be beyond the first page; exercise real pagination.
+            rows = await wait_rows(run)
+            more = page.get_by_role("button", name="加载更多", exact=True)
+            while not await shown(page, EVIL).count() and await more.is_visible():
+                count = await rows.count()
+                await more.click()
+                await page.wait_for_function(
+                    "n => document.querySelectorAll('main table tbody tr[data-key]').length > n", arg=count)
         # Rendered either way: as visible text, or as an element built from the name's markup.
         await page.wait_for_function(NAME_RENDERED, arg=EVIL)
         # The CSP may stop the handler from running; an element made from data is the regression.
@@ -303,6 +320,14 @@ CHECKS = {
     "detail-focus": (check_detail_focus, ["focus-lost"]),
     "names-as-text": (check_pages_render_names_as_text, ["names-as-html", "uncaught"]),
     "phone-width": (check_phone_width, ["too-wide"]),
+}
+FAULT_FAILURES = {
+    "api-401": "demo key: request list never showed a row",
+    "filter-ignored": "rows never showed only bob",
+    "focus-lost": "close with Escape: focus went to",
+    "names-as-html": "element(s) were built from a name's markup",
+    "uncaught": "uncaught page errors:",
+    "too-wide": "page is 640 px wide in a 390 px viewport",
 }
 
 
@@ -398,8 +423,9 @@ async def main_async(args, evidence, base):
             good, verdict = False, "inconclusive"
         elif r["fault"] is None:
             good, verdict = r["failed"] is None, "pass" if r["failed"] is None else "FAIL"
-        else:  # an injected fault must be detected
-            good, verdict = r["failed"] is not None, "detected" if r["failed"] else "NOT DETECTED"
+        else:  # unrelated timeouts / locator failures do not establish fault detection
+            good = FAULT_FAILURES[r["fault"]] in (r["failed"] or "")
+            verdict = "detected" if good else ("WRONG FAILURE" if r["failed"] else "NOT DETECTED")
         ok &= good
         what = f"{r['check']}" + (f" with fault {r['fault']}" if r["fault"] else "")
         print(f"{verdict:>12}  {what}  ({r['seconds']} s)" + (f"\n{'':>14}{r['failed']}" if r["failed"] else ""))

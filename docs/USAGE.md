@@ -104,7 +104,7 @@ gets 502 (504 only for `idle_timeout`).
 | `tier` | `service_tier` actually served: terminal event's `response.service_tier` (wins), else `response.created`'s, else the request body's; `auto` from a response is ignored (`priority` = Fast mode, `flex`, `default`/`auto` = standard). Pricing uses this. |
 | `req_tier` | v5: request body's `service_tier` (`fast` stored as `priority`), kept even when downgraded |
 | `resp_model`, `resp_effort` | v5: `response.model` / `response.reasoning.effort` (terminal event wins over `response.created`; SSE and WS) |
-| `incomplete` | `response.incomplete` reason (`incomplete_details.reason`, else `unknown`). Passed through untouched, tokens recorded, **not** an error and never a cooldown (Codex treats it as a terminal turn and still counts its tokens). `interrupted` is a normal end (outcome `completed`, shown as `interrupted`); `content_filter` is its own 没答完 cause; any other reason is 上游截断, shown as `incomplete_<reason>`. On the images wrapper an incomplete response without an image is a failure (`content_filter` or `incomplete_<reason>`, 502) |
+| `incomplete` | `response.incomplete` reason (`incomplete_details.reason`, else `unknown`). Passed through untouched, tokens recorded, **not** an error and never a cooldown (Codex treats it as a terminal turn and still counts its tokens). `interrupted` is a normal end (outcome `completed`, shown as `interrupted`); `content_filter` is its own 未完成 cause; any other reason is 上游截断, shown as `incomplete_<reason>`. On the images wrapper an incomplete response without an image is a failure (`content_filter` or `incomplete_<reason>`, 502) |
 | `thread`, `turn` | Codex thread / turn id from the `thread-id` header, `x-codex-turn-metadata` (JSON `thread_id`, `turn_id`) or body `client_metadata` (WS `response.create`). Stored for a future authoritative cost lookup; nothing queries upstream yet. Values > 128 chars are ignored. |
 | `key` | **label** of the client key that made the request (`[[api_keys]] label`, or `key-<sha256[..8]>` for plain keys). The raw key is never stored. |
 | `instance` | `instance_id` of the ciallopa that wrote the row (default: hostname) |
@@ -1043,14 +1043,14 @@ Page behavior:
 - 分布 groups: 账号, 模型, 密钥, 实例, 接口, 推理, 传输, 档位, 错误码, 错误来源. Columns add
   上游 (upstream failure rate), 重试 and 降级. 错误码 rows show the Chinese label, with the raw
   code on hover. Clicking an error code, source or tier row filters the request list to it.
-- Request problems: the list opens with chips 全部 / 报错 / 上游出错 / 没答完 / 本地拒绝, each
+- Request problems: the list opens with chips 全部 / 报错 / 上游出错 / 未完成 / 本地拒绝, each
   with its count (`fproblem` in the URL), and a cause row under the chosen one (`fcause`):
   - 报错 = the client got an error (counts in 失败率). Causes 额度, 限流, 请求内容 (`request`), 上游, 网络代理, 网关
     (local and other), 流中断.
   - 上游出错 = the upstream side (upstream / stream / network source) failed at least once,
     including requests a retry or account switch rescued. Causes 未救回 and 已救回; the hint
     shows both counts. 上游失败率 on the dashboard keeps its definition and no new rate is added.
-  - 没答完 = 客户端断开 (`client_closed`), 需重连 (`reconnect`: WS lifecycle codes), 上游截断 (`response.incomplete` other than `interrupted` / `content_filter`), 内容过滤 (`content_filter`) and 未确认结束
+  - 未完成 = 客户端断开 (`client_closed`), 需重连 (`reconnect`: WS lifecycle codes), 上游截断 (`response.incomplete` other than `interrupted` / `content_filter`), 内容过滤 (`content_filter`) and 未确认结束
     (the former 结果未知); not counted as failures.
   - 本地拒绝 = refusals by a local limit (503 before a row exists), by reason; disabled while an
     account, model or request-only filter is set.

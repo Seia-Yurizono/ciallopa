@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
+<title>ciallopa</title>
+<style>/*@css*/</style>
+</head>
+<body>
+<svg class="sprite" aria-hidden="true" focusable="false">
+  <symbol id="logo" viewBox="0 0 32 32">
+    <rect width="32" height="32" rx="8" fill="currentColor" stroke="none"/>
+    <path d="M20.5 11.2a7 7 0 1 0 0 9.6" fill="none" stroke-width="3.2" stroke-linecap="round"/>
+    <circle cx="23.4" cy="16" r="2.1" stroke="none"/>
+  </symbol>
+  <symbol id="i-overview" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="9" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="5" rx="1.5"/><rect x="13.5" y="11.5" width="7" height="9" rx="1.5"/><rect x="3.5" y="15.5" width="7" height="5" rx="1.5"/></symbol>
+  <symbol id="i-requests" viewBox="0 0 24 24"><path d="M4 6h11M4 12h16M4 18h9"/><circle cx="19" cy="6" r="1.5"/><circle cx="17" cy="18" r="1.5"/></symbol>
+  <symbol id="i-accounts" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20v-.5A5.5 5.5 0 0 1 8 14h2a5.5 5.5 0 0 1 5.5 5.5v.5"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M21.5 20v-.5a5.5 5.5 0 0 0-3.5-5.1"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="m11 12 8.5-8.5M16.5 6.5l2.5 2.5M14 9l2 2"/></symbol>
+  <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3 12h4l2.5-6 5 12 2.5-6h4"/></symbol>
+  <symbol id="i-logout" viewBox="0 0 24 24"><path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4M10 16l-4-4 4-4M6 12h10"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6 6 6M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4 6 18M18 6l1.4-1.4"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5Z"/></symbol>
+  <symbol id="i-theme-system" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17a8.5 8.5 0 0 0 0-17Z" fill="currentColor"/></symbol>
+  <symbol id="i-lang" viewBox="0 0 24 24"><path d="M4 5h9M8.5 3v2M6 5c.5 3.5 3 6.5 6 8M11 5c-.7 3.5-3.3 6.8-7 8.5M13 20l4-9 4 9M14.4 17h5.2"/></symbol>
+  <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.3 2.4 3.4 5.2 3.4 8.5S14.3 18.1 12 20.5C9.7 18.1 8.6 15.3 8.6 12S9.7 5.9 12 3.5Z"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5.5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="18.5" cy="12" r="1.2"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6.5 9.5 5.5 5.5 5.5-5.5"/></symbol>
+  <symbol id="i-chevron-left" viewBox="0 0 24 24"><path d="M14.5 6.5 9 12l5.5 5.5"/></symbol>
+  <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9.5 6.5 5.5 5.5-5.5 5.5"/></symbol>
+  <symbol id="i-panel" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M9.5 4.5v15"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.6v.1"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 4.3 2.9 17.2A2 2 0 0 0 4.6 20h14.8a2 2 0 0 0 1.7-2.8L13.7 4.3a2 2 0 0 0-3.4 0Z"/><path d="M12 9.5v4M12 16.6v.1"/></symbol>
+  <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M3.5 13.5 6 5.5h12l2.5 8v5a1 1 0 0 1-1 1h-15a1 1 0 0 1-1-1Z"/><path d="M3.5 13.5h5l1 2h5l1-2h5"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8.5 10.5V7.5a3.5 3.5 0 0 1 7 0v3"/></symbol>
+  <symbol id="i-filter" viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M10 18h4"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+  <symbol id="i-pin" viewBox="0 0 24 24"><path d="M9 4h6M10 4v5l-3 4h10l-3-4V4M12 13v7"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4.5v4h-4"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6a1.5 1.5 0 0 0-1.5-1.5H6A1.5 1.5 0 0 0 4.5 6v8A1.5 1.5 0 0 0 6 15.5h2.5"/></symbol>
+  <symbol id="i-external" viewBox="0 0 24 24"><path d="M13.5 4.5h6v6M19.5 4.5l-8 8M17 14v4.5a1 1 0 0 1-1 1H5.5a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1H10"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1.2 1.2M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1.2-1.2"/></symbol>
+  <symbol id="i-dots" viewBox="0 0 24 24"><circle cx="12" cy="5.5" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="12" cy="18.5" r="1.2"/></symbol>
+  <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol>
+  <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.5 7h15M10 11v6M14 11v6M6 7l1 12a1.5 1.5 0 0 0 1.5 1.5h7A1.5 1.5 0 0 0 17 19l1-12M9 7V4.5h6V7"/></symbol>
+</svg>
+
+<div id="login" class="login hide">
+  <div class="login-tools">
+    <button type="button" class="btn btn-ghost btn-sm" data-lang-btn>
+      <svg class="icon" aria-hidden="true"><use href="#i-lang"/></svg>
+      <span class="side-text"></span>
+    </button>
+    <button type="button" class="btn btn-ghost btn-sm btn-icon" data-theme-btn>
+      <svg class="icon" aria-hidden="true"><use href="#i-theme-system"/></svg>
+    </button>
+  </div>
+  <div class="login-card">
+    <div class="login-brand"><svg class="logo" aria-hidden="true"><use href="#logo"/></svg>ciallopa</div>
+    <div>
+      <h1 class="login-title" data-i18n="login.title"></h1>
+      <p class="login-sub" data-i18n="login.sub"></p>
+    </div>
+    <form id="login-form" class="login-form" novalidate>
+      <input id="login-key" class="input" type="password" autocomplete="current-password" placeholder="sk-…" required
+        data-i18n-aria-label="login.key" spellcheck="false" autocapitalize="off">
+      <button id="login-submit" class="btn btn-primary" type="submit" data-i18n="login.submit"></button>
+      <div id="login-err" class="login-err" role="alert"></div>
+    </form>
+    <p class="login-note" data-i18n="login.note"></p>
+  </div>
+</div>
+
+<div id="app" class="app hide" data-side="expanded">
+  <a class="skip" href="#view" data-i18n="nav.skip"></a>
+  <aside class="side">
+    <div class="side-brand">
+      <svg class="logo" aria-hidden="true"><use href="#logo"/></svg><span class="brand-name">ciallopa</span>
+      <button type="button" class="btn btn-ghost btn-sm btn-icon side-collapse" data-side-toggle data-tip-side="right">
+        <svg class="icon" aria-hidden="true"><use href="#i-panel"/></svg>
+      </button>
+    </div>
+    <nav class="side-nav" data-i18n-aria-label="nav.main">
+      <div class="side-group" data-i18n="nav.groupOps"></div>
+      <a class="side-link" href="/ui" data-nav="overview" data-tip-side="right">
+        <svg class="icon" aria-hidden="true"><use href="#i-overview"/></svg>
+        <span class="side-text" data-i18n="nav.overview"></span>
+      </a>
+      <a class="side-link" href="/ui/requests" data-nav="requests" data-tip-side="right">
+        <svg class="icon" aria-hidden="true"><use href="#i-requests"/></svg>
+        <span class="side-text" data-i18n="nav.requests"></span>
+      </a>
+      <a class="side-link" href="/ui/accounts" data-nav="accounts" data-tip-side="right">
+        <svg class="icon" aria-hidden="true"><use href="#i-accounts"/></svg>
+        <span class="side-text" data-i18n="nav.accounts"></span>
+        <span class="badge" data-badge="accounts"></span>
+      </a>
+      <div class="side-group" data-i18n="nav.groupConfig"></div>
+      <a class="side-link" href="/ui/settings" data-nav="settings" data-tip-side="right">
+        <svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg>
+        <span class="side-text" data-i18n="nav.settings"></span>
+      </a>
+      <a class="side-link" href="/ui/settings#keys" data-nav="keys" data-tip-side="right">
+        <svg class="icon" aria-hidden="true"><use href="#i-key"/></svg>
+        <span class="side-text" data-i18n="nav.keys"></span>
+      </a>
+    </nav>
+    <div class="side-foot">
+      <a class="side-link" href="/ui/system" data-nav="system" data-tip-side="right">
+        <svg class="icon" aria-hidden="true"><use href="#i-activity"/></svg>
+        <span class="side-text" data-i18n="nav.system"></span>
+        <span class="badge" data-badge="system"></span>
+      </a>
+      <button type="button" class="side-link" data-lang-btn data-tip-side="right">
+        <svg class="icon" aria-hidden="true"><use href="#i-lang"/></svg>
+        <span class="side-text"></span>
+      </button>
+      <button type="button" class="side-link" data-theme-btn data-tip-side="right">
+        <svg class="icon" aria-hidden="true"><use href="#i-theme-system"/></svg>
+        <span class="side-text"></span>
+      </button>
+      <button type="button" class="side-link" data-logout data-i18n-title="nav.logoutTip" data-tip-side="right">
+        <svg class="icon" aria-hidden="true"><use href="#i-logout"/></svg>
+        <span class="side-text" data-i18n="nav.logout"></span>
+      </button>
+      <button type="button" class="side-link side-expand" data-side-toggle data-tip-side="right">
+        <svg class="icon" aria-hidden="true"><use href="#i-panel"/></svg>
+      </button>
+    </div>
+  </aside>
+
+  <div class="main-col">
+    <header id="topbar" class="topbar" data-topbar>
+      <h1 id="page-title" class="page-title"></h1>
+      <div id="scope" class="scope"></div>
+      <div class="topbar-end">
+        <button type="button" id="scope-time-phone" class="scope-btn phone-only hide" aria-haspopup="dialog">
+          <svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg>
+          <span class="v"></span>
+          <svg class="icon" aria-hidden="true"><use href="#i-chevron-down"/></svg>
+        </button>
+        <a id="egress" class="tag outline egress hide" href="/ui/settings#network"></a>
+        <div class="refresh-cluster">
+          <button type="button" id="auto-btn" class="btn btn-sm auto-btn" aria-haspopup="dialog" aria-expanded="false">
+            <span class="dot off"></span>
+            <span class="v"></span>
+          </button>
+          <button type="button" id="refresh-btn" class="btn btn-sm btn-icon refresh-btn">
+            <svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>
+          </button>
+        </div>
+      </div>
+    </header>
+    <div id="scope-chips" class="scope-chips" role="group"></div>
+    <div id="progress" class="progress" aria-hidden="true"></div>
+    <div id="banners" class="banners"></div>
+    <main id="view" class="view" tabindex="-1"></main>
+  </div>
+
+  <nav class="tabbar" data-i18n-aria-label="nav.main">
+    <a class="tab-link" href="/ui" data-nav="overview">
+      <svg class="icon" aria-hidden="true"><use href="#i-overview"/></svg><span data-i18n="nav.overview"></span>
+    </a>
+    <a class="tab-link" href="/ui/requests" data-nav="requests">
+      <svg class="icon" aria-hidden="true"><use href="#i-requests"/></svg><span data-i18n="nav.requests"></span>
+    </a>
+    <a class="tab-link" href="/ui/accounts" data-nav="accounts">
+      <svg class="icon" aria-hidden="true"><use href="#i-accounts"/></svg><span data-i18n="nav.accounts"></span>
+      <span class="badge" data-badge="accounts"></span>
+    </a>
+    <button type="button" id="tab-more" class="tab-link" aria-haspopup="dialog" aria-expanded="false">
+      <svg class="icon" aria-hidden="true"><use href="#i-more"/></svg><span data-i18n="nav.more"></span>
+      <span class="badge" data-badge="system"></span>
+    </button>
+  </nav>
+</div>
+
+<div id="toasts" class="toasts" aria-live="polite"></div>
+<div id="layers"></div>
+<script>/*@js*/</script>
+</body>
+</html>
