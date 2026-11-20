@@ -426,6 +426,7 @@ version = "0.6.1"
 dependencies = [
  "arc-swap",
  "ciallopa-core",
+ "futures",
  "rusqlite",
  "serde",
  "serde_json",
