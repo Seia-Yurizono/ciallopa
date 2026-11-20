@@ -389,3 +389,50 @@ async fn image_non_stream_truncation_is_bad_gateway() {
         assert_eq!(rows[0]["err_source"], source, "{mode}: {}", rows[0]);
     }
 }
+
+#[tokio::test]
+async fn image_wrapper_reports_limit_once_and_records_it() {
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    for (mode, limit) in [
+        ("image_many_items", "item count"),
+        ("image_large_output", "serialized output bytes"),
+    ] {
+        for stream in [false, true] {
+            let r = e
+                .post("/v1/images/generations")
+                .header("x-test-mode", mode)
+                .json(&serde_json::json!({"prompt":"cat","stream":stream}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(r.status(), if stream { 200 } else { 502 });
+            let body = r.text().await.unwrap();
+            assert!(body.len() < 256);
+            let data = if stream {
+                body.strip_prefix("event: error\ndata: ")
+                    .unwrap()
+                    .strip_suffix("\n\n")
+                    .unwrap()
+            } else {
+                &body
+            };
+            let error: serde_json::Value = serde_json::from_str(data).unwrap();
+            assert_eq!(error["error"]["type"], "image_output_too_large");
+            assert!(error["error"]["message"].as_str().unwrap().contains(limit));
+        }
+    }
+    let rows = wait_rows(&e, 4).await;
+    assert_eq!(rows.len(), 4);
+    for row in rows {
+        assert_eq!(row["error"], "image_output_too_large");
+        assert_eq!(row["err_source"], "stream");
+        let detail: serde_json::Value = detail_of(&e, row["request_id"].as_str().unwrap(), true)
+            .await
+            .json()
+            .await
+            .unwrap();
+        let message = detail["message"].as_str().unwrap();
+        assert!(message.contains("item count") || message.contains("serialized output bytes"));
+    }
+}

@@ -273,6 +273,20 @@ pub(super) async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: B
             r.headers_mut().insert("x-request-id", "image-upstream-id".parse().unwrap());
             return r;
         }
+        "image_many_items" => {
+            let item = r#"data: {"type":"response.output_item.done","item":{"type":"image_generation_call","result":"YQ=="}}"#;
+            let body = format!("{item}\n\n").repeat(17) + "data: {\"type\":\"response.completed\"}\n\n";
+            return Response::builder().header("content-type", "text/event-stream").body(Body::from(body)).unwrap();
+        }
+        "image_large_output" => {
+            // Both upstream events fit individually. Joining the image with terminal usage exceeds O.
+            let image = "A".repeat(11 << 20);
+            let usage = "u".repeat(10 << 20);
+            let item = format!(r#"data: {{"type":"response.output_item.done","item":{{"type":"image_generation_call","result":"{image}"}}}}"#);
+            let terminal = format!(r#"data: {{"type":"response.completed","response":{{"tool_usage":{{"image_gen":{{"detail":"{usage}"}}}}}}}}"#);
+            return Response::builder().header("content-type", "text/event-stream")
+                .body(Body::from(format!("{item}\n\n{terminal}\n\n"))).unwrap();
+        }
         "image_truncated" => return sse_resp("data: {\"type\":\"response.created\"}\n\n"),
         "image_reset" => {
             let s = futures::stream::once(async { Ok::<_, std::io::Error>(Bytes::from_static(b"data: {\"type\":\"response.created\"}\n\n")) })

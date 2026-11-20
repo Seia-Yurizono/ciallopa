@@ -93,6 +93,9 @@ full history. Account-bound encrypted context is never stripped to make a failov
 
 Models caching, passthrough and images have separate handlers. The current upstream adapter
 is protocol-specific; the planned provider boundary is not implemented by these traits yet.
+The Images wrapper returns HTTP 502 with `error.type=image_output_too_large` when an upstream
+event, retained image bytes, image count, or serialized output exceeds its limit. In streaming
+mode it ends the HTTP 200 body with a single `event: error` whose message identifies the limit.
 
 ## Invariants
 
