@@ -44,11 +44,23 @@ impl From<Config> for SharedConfig {
     }
 }
 
+/// When a saved change reaches the running process, and which open connections it touches.
+/// Wire values are `hot`, `new_connection`, `ws_after_turn` and `restart`; every value except
+/// `restart` is applied by the reload itself, so a client that only needs "restart or not"
+/// compares against `restart`. The page reads the finer values to say what saving will do to
+/// open WebSockets (docs/SETTINGS.md, "What applies when").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum Effect {
-    /// Applied to the running process by a reload.
+    /// Read the next time the value is used (next request, decision, poll or stop signal).
+    /// Running requests and open WebSockets are not interrupted.
     Hot,
+    /// Like `Hot`, but an already-open client WebSocket keeps the value it connected with;
+    /// new connections (and new HTTP requests, where the setting applies to HTTP) use the new one.
+    NewConnection,
+    /// Changes the effective egress: a WebSocket that is idle closes at once, one running a turn
+    /// closes (1000) after that turn's terminal event; Codex reconnects on its next request.
+    WsAfterTurn,
     /// Recorded as pending; takes effect after a restart.
     Restart,
 }
@@ -106,7 +118,7 @@ const fn f(
     }
 }
 
-use Effect::{Hot, Restart};
+use Effect::{Hot, NewConnection, Restart, WsAfterTurn};
 
 /// Every config key, in file order.
 pub const SCHEMA: &[Field] = &[
@@ -115,15 +127,15 @@ pub const SCHEMA: &[Field] = &[
     f("instance_id", "string", Restart, true, "实例名", "写入每条用量记录；多个实例共用一个用量数据库时用于区分"),
     f("upstream", "string", Restart, true, "上游地址", "ChatGPT 后端地址，通常无需修改"),
     f("auth_dir", "path", Restart, false, "账号文件目录", "每个账号对应一个 JSON 文件；目录变化时自动重新扫描"),
-    Field { secret: true, ..f("proxy_url", "string", Hot, true, "出口代理地址", "支持 http://、https://、socks5:// 和 socks5h://（socks5 同样由代理解析域名）；留空 = 直连") },
-    f("proxy_enabled", "bool", Hot, true, "启用出口代理", "关闭后保留代理地址，改为直连"),
-    f("ipv6", "bool", Hot, true, "允许 IPv6 出口", "开启后 IPv6 与 IPv4 竞速连接，关闭后只用 IPv4；直连和连接代理主机时均适用"),
+    Field { secret: true, ..f("proxy_url", "string", WsAfterTurn, true, "出口代理地址", "支持 http://、https://、socks5:// 和 socks5h://（socks5 同样由代理解析域名）；留空 = 直连") },
+    f("proxy_enabled", "bool", WsAfterTurn, true, "启用出口代理", "关闭后保留代理地址，改为直连"),
+    f("ipv6", "bool", WsAfterTurn, true, "允许 IPv6 出口", "开启后 IPv6 与 IPv4 竞速连接，关闭后只用 IPv4；直连和连接代理主机时均适用"),
     f("max_body_mb", "int", Hot, true, "请求体上限（MiB）", "取值 1–4096 MiB，超过时直接拒绝；对下一个请求生效"),
     f("max_buffered_body_mb", "int", Hot, true, "请求体缓冲总量（MiB）", "所有转发中的 HTTP 请求体和 WebSocket 消息合计可占用的内存上限；HTTP 请求的进程实际占用约为该值的 2 倍。空间不足时最多等待 1 秒，仍不足则 HTTP 请求返回 503，WebSocket 收到 503 错误帧且连接保持。0 = 不限，否则不能小于请求体上限。"),
     f("max_inflight_requests", "int", Hot, true, "并发上限", "同时转发的 HTTP 请求与进行中的 WebSocket turn 合计上限：HTTP 请求占用到响应结束；WebSocket 每个 turn 从收到客户端消息占用到结束事件（或取消、关闭），空闲连接不占用。达到上限时立即返回 503，不排队；调低不会中断已有请求；0 = 不限。"),
-    f("ws_compression", "bool", Hot, true, "客户端 WebSocket 压缩", "客户端请求 permessage-deflate 时启用（Codex 默认会请求）；对新连接生效"),
-    f("ws_max_connections", "int", Hot, true, "WebSocket 连接上限", "同时打开的客户端 WebSocket 连接数上限（含空闲连接）。消息计入请求体缓冲之前，每个连接可能临时占用单条消息上限数倍的内存，因此该值与单条消息上限共同决定 WebSocket 的内存峰值；默认值 24 适用于 2 GB 内存的机器。达到上限时新连接握手返回 503，Codex 重试后改用 HTTP。调低不会断开已有连接，对新连接生效；0 = 不限。"),
-    f("ws_max_message_mb", "int", Hot, true, "WebSocket 单条消息上限（MiB）", "客户端单条 WebSocket 消息解压后的大小上限，范围 1–4096，默认 16。超过时以 1009 关闭连接，Codex 重试后改用 HTTP，此时由请求体上限控制。读取达到该上限即停止，不会先完整缓存超大消息。握手时会通过 x-codex-websocket-max-message-bytes 告诉客户端这个上限（上游给的值更小时用上游的），Codex 0.170 起据此直接改走 HTTP。上游本身只收 16 MiB 以内的消息，调到 16 以上没有意义。对新连接生效。"),
+    f("ws_compression", "bool", NewConnection, true, "客户端 WebSocket 压缩", "客户端请求 permessage-deflate 时启用（Codex 默认会请求）；对新连接生效"),
+    f("ws_max_connections", "int", NewConnection, true, "WebSocket 连接上限", "同时打开的客户端 WebSocket 连接数上限（含空闲连接）。消息计入请求体缓冲之前，每个连接可能临时占用单条消息上限数倍的内存，因此该值与单条消息上限共同决定 WebSocket 的内存峰值；默认值 24 适用于 2 GB 内存的机器。达到上限时新连接握手返回 503，Codex 重试后改用 HTTP。调低不会断开已有连接，对新连接生效；0 = 不限。"),
+    f("ws_max_message_mb", "int", NewConnection, true, "WebSocket 单条消息上限（MiB）", "客户端单条 WebSocket 消息解压后的大小上限，范围 1–4096，默认 16。超过时以 1009 关闭连接，Codex 重试后改用 HTTP，此时由请求体上限控制。读取达到该上限即停止，不会先完整缓存超大消息。握手时会通过 x-codex-websocket-max-message-bytes 告诉客户端这个上限（上游给的值更小时用上游的），Codex 0.170 起据此直接改走 HTTP。上游本身只收 16 MiB 以内的消息，调到 16 以上没有意义。对新连接生效。"),
     f("shutdown_drain_secs", "int", Hot, true, "停止等待（秒）", "收到停止信号后，进行中的 HTTP/SSE 响应和 WebSocket turn 最多再等这么久；空闲连接立即关闭。到时仍未结束的回复会先收到上游已发出的内容，再收到一个可重试的 response.failed，Codex 约 2 秒后在新进程上重发这一轮，已执行的工具调用不会重复。等待期间不接受新连接。范围 0–60，默认 5；调大时同步调大 Docker 的 stop_grace_period 或 systemd 的 TimeoutStopSec（至少等待时间 + 15 秒）。在收到停止信号时读取。"),
     Field { options: &["round-robin", "weighted-round-robin", "fill-first"], choices: &[c("round-robin", "轮询", "按账号名顺序轮流分配，每个模型独立轮转；不考虑权重，适合均衡各账号用量"), c("weighted-round-robin", "加权轮询", "按账号权重比例分配，权重为 0 的账号不参与；适合额度不同的账号按比例分担"), c("fill-first", "依次用满", "始终使用按账号名排序的第一个可用账号，该账号冷却或停用后才使用下一个；不考虑权重，适合集中消耗一个账号、其余作为备用")], ..f("routing.strategy", "enum", Hot, true, "账号选择策略", "新会话和无会话标识的请求如何选择账号：先排除停用和冷却中的账号，再在优先级最高的一组中按策略选择；已绑定的会话在原账号可用时继续使用原账号") },
     f("routing.session_affinity", "bool", Hot, true, "会话亲和", "同一会话的后续请求固定使用同一账号（按会话和模型绑定）。关闭后每个请求都重新选择账号；对话中途换账号时，上游可能拒绝历史中的加密推理内容。"),
@@ -132,9 +144,9 @@ pub const SCHEMA: &[Field] = &[
     Field { options: &["quota", "any"], choices: &[c("quota", "仅额度或令牌问题", "仅在原账号额度用尽、令牌失效、返回 402 或被停用时换绑；短暂故障（如连续 5xx）期间临时使用其他账号，恢复后回到原账号"), c("any", "任何不可用", "原账号因任何原因不可用时换绑到新账号，之后保持在新账号")], ..f("routing.session_affinity_rebind_on", "enum", Hot, true, "何时换绑账号", "绑定账号暂时不可用时，本次请求总会改用其他账号；此项决定是否同时更改会话绑定") },
     f("routing.quota_avoid_threshold", "float", Hot, true, "额度回避阈值", "取值 0–1，0 = 关闭。新会话跳过最近一次观测的已用比例（任一未重置的额度窗口）达到该值的账号；所有账号都达到时不回避。已绑定且可用的会话不受影响。另外不论此项，窗口已满（100%）的账号只在其他账号都没有额度时才用，已绑定的会话也会换到还有额度的账号，因为满额后上游会继续扣点数。"),
     f("routing.cooldown_wait_secs", "int", Hot, true, "全部冷却时最长等待（秒）", "所有账号都在冷却、且有账号会在该时长内恢复时，请求等待其恢复（WebSocket 握手最多等待 10 秒）；最大 120，0 = 不等待，直接返回错误"),
-    f("upstream_opts.stream_idle_timeout_secs", "int", Hot, true, "流空闲超时（秒）", "上游流式响应超过该时长没有新数据时断开（记为 idle_timeout）。Codex 自身的流空闲超时默认 300 秒；此处设得更大时 Codex 会先断开，记录为 client_closed。"),
+    f("upstream_opts.stream_idle_timeout_secs", "int", NewConnection, true, "流空闲超时（秒）", "上游流式响应超过该时长没有新数据时断开（记为 idle_timeout）。Codex 自身的流空闲超时默认 300 秒；此处设得更大时 Codex 会先断开，记录为 client_closed。"),
     f("upstream_opts.response_header_timeout_secs", "int", Hot, true, "响应头等待上限（秒）", "每次 HTTP 尝试从发送请求（含上传请求体）到收到响应头的最长时间；超时按网络错误处理，换账号且不冷却账号。仅用于 HTTP，不限制之后的流式生成。取值 1–86400。"),
-    f("upstream_opts.preparation_timeout_secs", "int", Hot, true, "准备阶段总预算（秒）", "单个请求在重试和换账号上累计可用的时间：获取令牌、等待响应头、读取错误响应、冷却等待和重试等待都计入，正常生成不计入；耗尽后不再重试，返回 504。WebSocket 握手和每个 turn 各有独立预算。取值 1–86400。"),
+    f("upstream_opts.preparation_timeout_secs", "int", NewConnection, true, "准备阶段总预算（秒）", "单个请求在重试和换账号上累计可用的时间：获取令牌、等待响应头、读取错误响应、冷却等待和重试等待都计入，正常生成不计入；耗尽后不再重试，返回 504。WebSocket 握手和每个 turn 各有独立预算。取值 1–86400。"),
     f("upstream_opts.max_attempts", "int", Hot, true, "换账号重试次数", "首字节前遇到网络错误、408 或 5xx 时最多换账号的次数，不在同一账号重试；因 401/402/403/404/429 换账号不占次数；WebSocket 握手另有固定 4 次重试"),
     f("upstream_opts.transient_cooldown_secs", "int", Hot, true, "5xx 冷却（秒）", "同一账号连续 3 次 5xx 后按此时长冷却（优先采用上游 Retry-After，最长 60 秒）；最后一个可用账号不冷却；0 = 不冷却"),
     f("upstream_opts.overload_streak", "int", Hot, true, "overloaded 冷却阈值（次）", "同一账号连续 overloaded 达到该次数后开始冷却；最后一个可用账号不冷却；0 = 不冷却"),
@@ -144,7 +156,7 @@ pub const SCHEMA: &[Field] = &[
     f("upstream_opts.deactivated_cooldown_secs", "int", Hot, true, "402 工作区停用冷却（秒）", "上游返回 402 deactivated_workspace 时换账号，并按此时长冷却该账号；0 = 不冷却"),
     f("upstream_opts.payment_required_cooldown_secs", "int", Hot, true, "其他 402 冷却（秒）", "付费或账单问题导致的 402：换账号，并按此时长冷却该账号；0 = 不冷却"),
     f("upstream_opts.not_found_cooldown_secs", "int", Hot, true, "404 模型冷却（秒）", "上游返回 404 且未明确说明模型不受支持时，按此时长冷却该账号的该模型（明确不支持时固定 12 小时）；0 = 只换账号不冷却"),
-    f("upstream_opts.connect_timeout_secs", "int", Hot, true, "连接超时（秒）", "连接上游或出口代理超过此时长视为网络错误"),
+    f("upstream_opts.connect_timeout_secs", "int", NewConnection, true, "连接超时（秒）", "连接上游或出口代理超过此时长视为网络错误"),
     f("upstream_opts.compress_requests", "bool", Hot, true, "压缩请求体（zstd）", "使用 zstd 压缩发往上游的 /responses 请求体，与官方 Codex 一致；WebSocket 和其他接口不压缩"),
     f("upstream_opts.gzip_responses", "bool", Hot, true, "上游响应压缩（gzip）", "直接 Responses HTTP 请求向上游协商 gzip，并在本机流式解压后以明文返回；关闭时协商 identity；WebSocket、compact、models、images 和透传接口行为不变"),
     f("upstream_opts.cloudflare_cookies", "bool", Hot, true, "按账号保存 Cloudflare cookie", "在内存中按账号保存上游基础设施 cookie，仅在该账号的请求中回放，账号之间不共享"),
@@ -269,10 +281,22 @@ pub fn diff(old: &Config, new: &Config) -> Vec<Change> {
                 key: f.key.to_string(),
                 old: mask(f.key, a.get(f.key).unwrap_or(&null), Some(old)),
                 new: mask(f.key, b.get(f.key).unwrap_or(&null), Some(new)),
-                effect: f.effect,
+                effect: effect_of(f, old, new),
             }
         })
         .collect()
+}
+
+/// The schema effect, except that an egress key which leaves the effective proxy unchanged
+/// (an address edited while the proxy is off) moves no connection and stays `Hot`. `ipv6` always
+/// counts as an egress change (`ClientPool::reconfigure`).
+fn effect_of(field: &Field, old: &Config, new: &Config) -> Effect {
+    let proxy_key = matches!(field.key, "proxy_url" | "proxy_enabled");
+    if proxy_key && old.effective_proxy() == new.effective_proxy() {
+        Effect::Hot
+    } else {
+        field.effect
+    }
 }
 
 /// `new` with every restart-only key taken from `running`: what a reload can apply now.
@@ -419,6 +443,83 @@ mod tests {
         let e = effective(&a, &b);
         assert_eq!(e.listen, a.listen);
         assert_eq!(e.proxy_url, b.proxy_url);
+    }
+
+    /// The settings page tells the operator what saving does to open WebSockets, so every
+    /// connection-bound key must be classified on purpose; the effect is a required argument of
+    /// every schema row, and this pins which rows are not plain `Hot`.
+    /// Evidence per key: docs/SETTINGS.md "What applies when" and the code it cites.
+    #[test]
+    fn connection_bound_keys_are_classified() {
+        let keys = |e: Effect| -> Vec<&str> {
+            SCHEMA
+                .iter()
+                .filter(|f| f.effect == e)
+                .map(|f| f.key)
+                .collect()
+        };
+        assert_eq!(
+            keys(Effect::WsAfterTurn),
+            ["proxy_url", "proxy_enabled", "ipv6"]
+        );
+        assert_eq!(
+            keys(Effect::NewConnection),
+            [
+                "ws_compression",
+                "ws_max_connections",
+                "ws_max_message_mb",
+                "upstream_opts.stream_idle_timeout_secs",
+                "upstream_opts.preparation_timeout_secs",
+                "upstream_opts.connect_timeout_secs",
+            ]
+        );
+    }
+
+    #[test]
+    fn effect_wire_values_stay_compatible() {
+        let wire = |e: Effect| serde_json::to_value(e).unwrap();
+        assert_eq!(wire(Effect::Hot), "hot");
+        assert_eq!(wire(Effect::Restart), "restart");
+        assert_eq!(wire(Effect::NewConnection), "new_connection");
+        assert_eq!(wire(Effect::WsAfterTurn), "ws_after_turn");
+    }
+
+    #[test]
+    fn egress_effect_follows_the_effective_proxy() {
+        let effect = |old: &str, new: &str, key: &str| {
+            let (a, b) = (Config::parse(old).unwrap(), Config::parse(new).unwrap());
+            diff(&a, &b)
+                .into_iter()
+                .find(|c| c.key == key)
+                .map(|c| c.effect)
+        };
+        // Address edited while the proxy is off: effective egress is still direct.
+        assert_eq!(
+            effect(
+                "proxy_enabled = false",
+                "proxy_enabled = false\nproxy_url = \"http://h:1\"",
+                "proxy_url"
+            ),
+            Some(Effect::Hot)
+        );
+        // Switching an existing address on moves the egress.
+        assert_eq!(
+            effect(
+                "proxy_url = \"http://h:1\"\nproxy_enabled = false",
+                "proxy_url = \"http://h:1\"",
+                "proxy_enabled"
+            ),
+            Some(Effect::WsAfterTurn)
+        );
+        assert_eq!(
+            effect(
+                "proxy_url = \"http://h:1\"",
+                "proxy_url = \"http://h:2\"",
+                "proxy_url"
+            ),
+            Some(Effect::WsAfterTurn)
+        );
+        assert_eq!(effect("", "ipv6 = true", "ipv6"), Some(Effect::WsAfterTurn));
     }
 
     #[test]

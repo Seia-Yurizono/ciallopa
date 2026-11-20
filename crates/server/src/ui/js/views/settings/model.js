@@ -372,6 +372,18 @@ const SettingsModel = (() => {
     return SECTIONS.some(s => s.id === id) ? id : null;
   }
 
+  // The save review groups changes by `effect`, most impactful first: restart > ws_after_turn >
+  // new_connection > hot. An effect this page does not know counts as hot (the server only adds
+  // finer values below restart). `top` is what the headline states; `ws` says open client
+  // WebSockets are affected (closed or left on the old value), which is when the page shows their count.
+  const EFFECTS = ["restart", "ws_after_turn", "new_connection", "hot"];
+  function groupByEffect(diff) {
+    const eff = d => (EFFECTS.includes(d.effect) ? d.effect : "hot");
+    const groups = EFFECTS.map(effect => ({effect, rows: diff.filter(d => eff(d) === effect)})).filter(g => g.rows.length);
+    return {groups, top: groups.length ? groups[0].effect : "hot",
+      ws: groups.some(g => g.effect === "ws_after_turn" || g.effect === "new_connection")};
+  }
+
   // A failed write as the page reports it: a 412 is a version conflict that keeps the draft.
   function failure(e, edits) {
     if (e && e.status === 412) {
@@ -381,5 +393,5 @@ const SettingsModel = (() => {
   }
 
   return {failure, SECTIONS, GROUPS, ALIAS, DOCS, COOL, ZO, RZ, RZ_ON, IMM, MOD_Q, zoOff, rzRange, rzText, fmtValue, same, choiceOf,
-    display, defaultText, parseErrors, createDraft, createController, createPoller, matches, unplaced, sectionOf};
+    display, defaultText, parseErrors, createDraft, createController, createPoller, matches, unplaced, sectionOf, groupByEffect};
 })();
