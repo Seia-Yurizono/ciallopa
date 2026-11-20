@@ -363,6 +363,10 @@ test('filter coupling: groups, outcome, failure class and session', () => {
   assert.equal(m.refusedMode({foutcome: 'refused'}), true);
   assert.deepEqual(['', '1a1e540ee3300001', 'abc', '0199abcd', '019a-ffff-1234', 'a b c d e f g h'].map(s => m.parseSearch(s).kind),
     ['empty', 'record', 'invalid', 'thread', 'thread', 'invalid']);
+  const prefixed = m.parseSearch('CP-1a1e540ee3300001');
+  assert.equal(prefixed.kind, 'record');
+  assert.equal(prefixed.id, '1a1e540ee3300001');
+  assert.equal(m.parseSearch('cp-1a1e540ee33000').kind, 'thread');
 });
 
 test('row classification, next steps and conclusions come from backend fields only', () => {

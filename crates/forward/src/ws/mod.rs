@@ -92,7 +92,9 @@ pub(crate) async fn handler(
                     .await
                     .unwrap_or_default();
                 t.record_response(&parts, &b);
-                return Response::from_parts(parts, axum::body::Body::from(b));
+                let mut r = Response::from_parts(parts, axum::body::Body::from(b));
+                crate::errors::stamp_request_id(&mut r, &t.record_id());
+                return r;
             }
             return r;
         }

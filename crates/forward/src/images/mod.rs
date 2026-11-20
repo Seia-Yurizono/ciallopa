@@ -54,8 +54,9 @@ async fn tracked(st: AppState, key: crate::Key, h: HeaderMap, b: Bytes, kind: Ki
         t.headers(&h);
         t.meta(serde_json::from_slice::<Value>(&b).ok().as_ref());
     }
-    let r = run(st, h, b, kind, &mut trk).await;
+    let mut r = run(st, h, b, kind, &mut trk).await;
     let Some(mut t) = trk else { return r };
+    errors::stamp_request_id(&mut r, &t.record_id());
     t.rec.status = r.status().as_u16();
     t.rec.transport = ciallopa_usage::Transport::Http;
     if let Some(meta) = r.extensions().get::<errors::ErrMeta>() {

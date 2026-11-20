@@ -381,9 +381,11 @@ async fn upstream_5xx_passed_through_with_provenance() {
         .send()
         .await
         .unwrap();
-    // Never rewritten into a local 429: the upstream status, body and request id pass through.
+    // Never rewritten into a local 429: the upstream status and body pass through; the
+    // upstream request id moves aside for the gateway's own (checked against the record below).
     assert_eq!(r.status(), 503);
-    assert_eq!(r.headers()["x-request-id"], "req_down");
+    assert_eq!(r.headers()["x-upstream-request-id"], "req_down");
+    let request_id = r.headers()["x-request-id"].to_str().unwrap().to_string();
     assert!(r.headers().keys().all(|k| !k.as_str().contains("ciallopa")));
     let t = r.text().await.unwrap();
     assert!(t.contains("up busy"), "{t}");
@@ -396,6 +398,7 @@ async fn upstream_5xx_passed_through_with_provenance() {
     assert_eq!(row["error"], "server_is_overloaded");
     assert_eq!(row["upstream_status"], 503);
     let id = row["request_id"].as_str().unwrap().to_string();
+    assert_eq!(request_id, format!("cp-{id}"));
     let v: serde_json::Value = detail_of(&e, &id, true).await.json().await.unwrap();
     assert_eq!(v["upstream_request_id"], "req_down");
     let at = v["attempts"].as_array().unwrap();

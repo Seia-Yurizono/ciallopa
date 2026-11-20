@@ -30,6 +30,7 @@ mod cookies;
 mod gzip;
 mod images;
 mod models;
+mod request_id;
 mod retry;
 mod shutdown;
 mod sse;

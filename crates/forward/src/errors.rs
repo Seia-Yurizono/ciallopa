@@ -197,6 +197,32 @@ pub(crate) fn request_id(h: &HeaderMap) -> Option<String> {
         .map(|v| v.chars().take(128).collect())
 }
 
+/// Codex prints `x-request-id` (else `x-oai-request-id`) as "request id: …" on a non-2xx
+/// response; the gateway's own ID goes there so that text finds the record on /ui/requests.
+const REQUEST_ID: http::HeaderName = http::HeaderName::from_static("x-request-id");
+const UPSTREAM_REQUEST_ID: http::HeaderName =
+    http::HeaderName::from_static("x-upstream-request-id");
+
+pub(crate) fn client_request_id(record_id: &str) -> String {
+    format!("cp-{record_id}")
+}
+
+/// Stamp a non-2xx response with the gateway record ID. An upstream `x-request-id` moves to
+/// `x-upstream-request-id`; `x-oai-request-id` and the body stay untouched.
+pub(crate) fn stamp_request_id(r: &mut Response, record_id: &str) {
+    if r.status().is_success() {
+        return;
+    }
+    let Ok(id) = HeaderValue::from_str(&client_request_id(record_id)) else {
+        return;
+    };
+    let h = r.headers_mut();
+    if let Some(up) = h.remove(&REQUEST_ID) {
+        h.insert(UPSTREAM_REQUEST_ID, up);
+    }
+    h.insert(REQUEST_ID, id);
+}
+
 pub(crate) fn upstream_code(status: u16, h: &HeaderMap, b: &[u8]) -> String {
     let html = h
         .get(http::header::CONTENT_TYPE)
@@ -712,6 +738,22 @@ mod tests {
             StatusCode::GATEWAY_TIMEOUT
         );
     }
+    #[test]
+    fn request_id_stamped_on_errors_only() {
+        let mut r = json_error(StatusCode::BAD_GATEWAY, "x", "y");
+        r.headers_mut()
+            .insert("x-request-id", "up".parse().unwrap());
+        r.headers_mut()
+            .insert("x-oai-request-id", "oai".parse().unwrap());
+        stamp_request_id(&mut r, "00ff");
+        assert_eq!(r.headers()["x-request-id"], "cp-00ff");
+        assert_eq!(r.headers()["x-upstream-request-id"], "up");
+        assert_eq!(r.headers()["x-oai-request-id"], "oai");
+        let mut ok = Response::new(axum::body::Body::empty());
+        stamp_request_id(&mut ok, "00ff");
+        assert!(ok.headers().get("x-request-id").is_none());
+    }
+
     #[test]
     fn neutral_bodies() {
         for st in [503u16, 502, 504] {

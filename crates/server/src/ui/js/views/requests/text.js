@@ -198,7 +198,7 @@ const RequestsText = (() => {
     // search
     "requests.search.ph": "记录 ID 或会话 ID",
     "requests.search.label": "按记录 ID 查找，或按会话筛选",
-    "requests.search.tip": "16 位记录 ID 打开详情；会话 ID（完整或至少 8 位）筛选该会话",
+    "requests.search.tip": "16 位记录 ID（可带 cp- 前缀）打开详情；会话 ID（完整或至少 8 位）筛选该会话",
     "requests.search.short": "会话 ID 至少 8 位；记录 ID 是 16 位十六进制",
     "requests.search.finding": "正在查找 {id}…",
     "requests.search.notFound": "没有找到记录 {id}，可能已过保留期",
@@ -566,7 +566,7 @@ const RequestsText = (() => {
     "requests.f.windowClear": "Back to the whole range",
     "requests.search.ph": "Record ID or session ID",
     "requests.search.label": "Find a record by ID, or filter by session",
-    "requests.search.tip": "A 16-character record ID opens its details; a session ID (full or 8+ characters) filters to that session",
+    "requests.search.tip": "A 16-char record ID (cp- prefix ok) opens its details; a session ID (full or 8+ chars) filters to that session",
     "requests.search.short": "Use 8+ characters of a session ID, or a 16-character hex record ID",
     "requests.search.finding": "Looking up {id}…",
     "requests.search.notFound": "No record {id}; it may be past retention",

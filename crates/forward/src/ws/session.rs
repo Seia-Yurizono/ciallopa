@@ -1,5 +1,5 @@
 use super::connect::connect;
-use super::frames::{busy_frame, error_event, to_up, Head, Message};
+use super::frames::{busy_frame, error_event, stamp_error_frame, to_up, Head, Message};
 use super::Ctx;
 use crate::attempt::{quota_plan, Next, OverloadPlan, Policy};
 use crate::budget::PreparationBudget;
@@ -1043,7 +1043,21 @@ impl Session {
         if let Some(tracker) = finished.as_mut() {
             tracker.freeze_duration();
         }
-        let message = rewritten.map(Message::text).unwrap_or(message);
+        let error_frame = classified
+            .as_ref()
+            .is_some_and(|c| c.ty.as_deref() == Some("error"));
+        let mut message = rewritten.map(Message::text).unwrap_or(message);
+        if error_frame {
+            let id = finished
+                .as_ref()
+                .or_else(|| self.tracker())
+                .map(Tracker::record_id);
+            if let (Some(id), Message::Text(text)) = (id, &message) {
+                if let Some(stamped) = stamp_error_frame(text.as_str(), &id) {
+                    message = Message::text(stamped);
+                }
+            }
+        }
         let sent = match to_up(message) {
             Some(message) => {
                 let tracker = finished

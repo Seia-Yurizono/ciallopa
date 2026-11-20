@@ -23,6 +23,13 @@ fn acct(h: &axum::http::HeaderMap) -> String {
 }
 
 async fn env(ids: Vec<&'static str>) -> (String, Arc<ciallopa_routing::CpaRouter>, Log, Instant) {
+    env_usage(ids, None).await
+}
+
+async fn env_usage(
+    ids: Vec<&'static str>,
+    usage: Option<Arc<ciallopa_usage::Recorder>>,
+) -> (String, Arc<ciallopa_routing::CpaRouter>, Log, Instant) {
     let t0 = Instant::now();
     let log: Log = Default::default();
     let (l1, l2) = (log.clone(), log.clone());
@@ -67,7 +74,7 @@ async fn env(ids: Vec<&'static str>) -> (String, Arc<ciallopa_routing::CpaRouter
     ))
     .unwrap();
     let router = Arc::new(ciallopa_routing::CpaRouter::new(cfg.routing.clone()));
-    let state = proxy_state(cfg, Arc::new(Store::new(&ids)), router.clone(), None);
+    let state = proxy_state(cfg, Arc::new(Store::new(&ids)), router.clone(), usage);
     (serve(ciallopa::build_app(state)).await, router, log, t0)
 }
 
@@ -187,6 +194,44 @@ async fn ws_turn_reports_a_long_model_cooldown_like_http_without_sending() {
     assert!(
         turns(&log, 0).is_empty(),
         "nothing reached the cooling account"
+    );
+}
+
+/// The locally generated error frame names its turn's record, like an HTTP error does.
+#[tokio::test]
+async fn ws_local_error_frame_carries_the_turn_request_id() {
+    let d = tempfile::tempdir().unwrap();
+    let usage = ciallopa_usage::Recorder::open(&ciallopa_core::config::UsageConfig {
+        path: d.path().join("usage.db"),
+        flush_ms: 5,
+        ..Default::default()
+    })
+    .unwrap();
+    let (proxy, router, _log, _) = env_usage(vec!["a"], Some(usage)).await;
+    cool_model(&router, "a", units(60));
+    let (_, first) = ws_turn(&proxy).await;
+    let v: serde_json::Value = serde_json::from_str(&first).unwrap();
+    let mut id = None;
+    for _ in 0..100 {
+        let r: serde_json::Value = super::support::http_client()
+            .get(format!("http://{proxy}/usage/v1/records?limit=5"))
+            .bearer_auth(KEY)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        id = r["records"][0]["request_id"].as_str().map(str::to_string);
+        if id.is_some() {
+            break;
+        }
+        tokio::time::sleep(millis(20)).await;
+    }
+    assert_eq!(
+        v["headers"]["x-request-id"],
+        format!("cp-{}", id.unwrap()).as_str(),
+        "{first}"
     );
 }
 

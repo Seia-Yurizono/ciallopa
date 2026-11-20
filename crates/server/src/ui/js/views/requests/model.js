@@ -141,11 +141,13 @@ const RequestsModel = (() => {
   }
   const clearRequestFilters = () => emptyFilters();
 
-  // 16 hex → record id; 8+ characters → session (full id or fragment); anything else is invalid.
+  // 16 hex (optionally as the gateway's `cp-` request id) → record id; 8+ characters → session
+  // (full id or fragment); anything else is invalid.
   function parseSearch(text) {
     const s = String(text || "").trim();
     if (!s) return {kind: "empty"};
-    if (RECORD_ID.test(s.toLowerCase())) return {kind: "record", id: s.toLowerCase()};
+    const id = s.toLowerCase().replace(/^cp-/, "");
+    if (RECORD_ID.test(id)) return {kind: "record", id};
     if (s.length >= 8 && s.length <= 140 && /^[\w.:-]+$/.test(s)) return {kind: "thread", value: s};
     return {kind: "invalid"};
   }

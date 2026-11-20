@@ -93,6 +93,10 @@ WS upstream request ID 来自握手，不是上游给每一轮重新分配的 re
 重连先重置观察状态，使用当前账号及新握手 ID；旧尝试的终止事件不能抑制新失败的警告。
 主动客户端取消保持安静，Force 保留 shutdown 归因。这仍不是完整的逐阶段尝试链。
 
+客户端报错里的 `request id: cp-<16 位 hex>` 就是该 record ID（非 2xx 响应的 `x-request-id`，WS 为
+`type:error` 帧 `headers` 里的同名键）。请求页搜索框接受带或不带 `cp-` 前缀的 ID；上游原 ID 见记录详情的
+`upstream_request_id` 与响应头 `x-upstream-request-id`。没有 record（未启用 usage、认证前拒绝）时不带此头。
+
 本轮不改数据库、UI、重试/超时默认值、转发内容或故障后的恢复策略。
 需要调查时按 record ID 查请求行，再用 thread/turn ID 合并客户端新请求；
 不要把客户端再次生成算作某行的网关内部 `retries`。

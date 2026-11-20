@@ -160,11 +160,16 @@ fn is_json(h: &HeaderMap) -> bool {
 /// `send` + stream back, with an SSE bootstrap window: until the first meaningful event,
 /// upstream bytes are held; a quota / usage-limit error inside that window cools the
 /// account down and transparently replays the same request on another account.
-pub(crate) async fn send_streaming(
-    st: &AppState,
-    mut ob: Outbound,
-    mut trk: Option<Tracker>,
-) -> Response {
+pub(crate) async fn send_streaming(st: &AppState, ob: Outbound, trk: Option<Tracker>) -> Response {
+    let record_id = trk.as_ref().map(Tracker::record_id);
+    let mut response = send(st, ob, trk).await;
+    if let Some(id) = record_id {
+        errors::stamp_request_id(&mut response, &id);
+    }
+    response
+}
+
+async fn send(st: &AppState, mut ob: Outbound, mut trk: Option<Tracker>) -> Response {
     let mut budget = Preparation::new(st);
     let idle = budget.idle;
     let max_switches = st.accounts.len().max(1);

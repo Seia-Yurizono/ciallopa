@@ -301,7 +301,7 @@ Views.requests = (() => {
       const d = await S.ctx.get("/usage/v1/records/" + id, {current});
       if (!current()) return;
       setLookup("");
-      if (S.el.search.value.trim().toLowerCase() === id) S.el.search.value = "";
+      if (M.parseSearch(S.el.search.value).id === id) S.el.search.value = "";
       openDetail(d.record, {opener: from});
     } catch (e) {
       if (!current() || Api.isQuiet(e)) return;

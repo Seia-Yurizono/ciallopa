@@ -87,6 +87,11 @@ macro_rules! enc_error {
     };
 }
 
+/// Upstream 400 body and WS error frame (with its own `headers`) used by the request-id tests.
+pub(super) const REQID_BODY: &str =
+    r#"{"error":{"type":"invalid_request_error","code":"bad_input","message":"nope"}}"#;
+pub(super) const WS_ERROR_FRAME: &str = r#"{"type":"error","status":400,"error":{"type":"invalid_request_error","code":"bad_input","message":"nope"},"headers":{"retry-after":"7","x-request-id":"up-ws-req"}}"#;
+
 pub(super) fn sse_resp(body: &'static str) -> Response {
     Response::builder()
         .header("content-type", "text/event-stream")
@@ -464,6 +469,15 @@ pub(super) async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: B
                 "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n",
                 "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r-m\"}}\n\n"
             ))
+        }
+        "reqid_400" => {
+            return Response::builder()
+                .status(400)
+                .header("content-type", "application/json")
+                .header("x-request-id", "up-req")
+                .header("x-oai-request-id", "up-oai")
+                .body(Body::from(REQID_BODY))
+                .unwrap()
         }
         "enc400" => {
             return Response::builder()
@@ -931,6 +945,11 @@ pub(super) async fn up_ws(State(m): State<Mock>, h: HeaderMap, ws: WebSocketUpgr
                         r#"{"type":"error","status":429,"error":{"type":"rate_limit_error","code":"rate_limit_exceeded","message":"slow down"}}"#
                     };
                     let _ = s.send(Message::Text(event.into())).await;
+                    continue;
+                }
+                if t.as_str().contains("\"stamp_ws\"") {
+                    let _ = s.send(Message::Text(r#"{"type":"response.output_text.delta","delta":"ok"}"#.into())).await;
+                    let _ = s.send(Message::Text(WS_ERROR_FRAME.into())).await;
                     continue;
                 }
                 if t.as_str().contains("\"budget_long\"") || t.as_str().contains("\"budget_next\"") {

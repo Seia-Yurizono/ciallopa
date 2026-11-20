@@ -79,6 +79,12 @@ The source is authoritative; avoid maintaining a second copy of Rust signatures 
    (captured detail) even if the request finally succeeded; a request with no retry stores none.
    It goes through the same batched writer, with no extra write per request and no schema change.
 
+Every non-2xx HTTP response that has a usage record (including a refused WS handshake), and
+every `type:error` WS frame of a recorded turn, carries `x-request-id: cp-<record_id>`; Codex
+prints it as `request id: …`. An upstream `x-request-id` moves to `x-upstream-request-id`
+(also in the frame's `headers`); `x-oai-request-id`, other headers and the body stay untouched.
+Without a record (usage disabled, or rejected before one exists) the response is left as is.
+
 WS uses HTTP/1.1 Upgrade, with optional `permessage-deflate`; HTTP/2 extended CONNECT is not
 implemented. Each established WS is pinned to an account. A pre-output full-input turn can
 reconnect/replay when permitted; an incremental turn or committed output cannot be silently
