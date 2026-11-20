@@ -119,6 +119,49 @@ guarantee: body sizes, stream buffers and idle connections still matter. Observe
 occupancy in the overview, then measure representative traffic before increasing it or
 choosing a container memory limit. See [PERFORMANCE.md](PERFORMANCE.md).
 
+## Self-check: `ciallopa doctor`
+
+`ciallopa [-c config] doctor [--json] [-v] [--full]` checks a deployment in one read-only pass.
+It writes nothing (no migration, `checkpoint` or `VACUUM`), never refreshes a token, never calls
+a model, and sends no credentials upstream. Run it on the host or inside the container
+(`docker compose exec ciallopa ciallopa doctor`), as the service user: it judges permissions
+as the uid it runs as, and says which one. Run as root it can read what the service user
+cannot, and says so when the `.deb` user exists.
+
+| Layer | `id` | What it checks | Not `pass` when |
+|---|---|---|---|
+| config | `config.parse` | The file `serve` would load: same loader and validation, and the HTTP/OAuth clients build | `fail` on any error; `warn` for startup advisories or no `api_keys` |
+| | `config.perm` | Mode of the config file | `warn` when others can read a file that holds `api_keys` |
+| storage | `paths.auth_dir` | `auth_dir` exists, is readable, every file parses | `fail` unreadable / invalid files; `warn` missing dir, no accounts, files that are not Codex accounts |
+| | `paths.data_dir` | The usage database directory (and file) are writable, checked with `access(2)` | `fail` |
+| | `db.open`, `db.schema` | Opens the database read-only; `journal_mode`; `PRAGMA user_version` against the binary's schema | schema behind `warn`, ahead `fail` (a newer binary wrote it) |
+| | `db.quick_check` | `PRAGMA quick_check`, only with `--full` (reads the whole file) | otherwise `skip` |
+| | `db.wal_size`, `db.disk_free` | `-wal` against the database (≥ 64 MiB, or ≥ 16 MiB and half the database: a long reader blocks the checkpoint); free space | `warn`; `fail` under 64 MiB free |
+| network | `egress.proxy` | The proxy in effect. Only `proxy_url`/`proxy_enabled` count; `HTTPS_PROXY` and friends are ignored by ciallopa, and doctor says so | `warn` when a proxy variable is set and the gateway goes direct |
+| | `egress.connect`, `upstream.tls`, `upstream.clock` | One credential-free `GET <upstream origin>/cdn-cgi/trace` through the gateway's own client and egress: reachability, TLS with ALPN and certificate days left, clock against the response `Date` | unreachable `fail`; h2 not negotiated or certificate < 14 days `warn`; clock off by > 60 s `warn` |
+| | `upstream.ws` | A credential-free WebSocket Upgrade to the Responses path. 101, 401 and 403 pass: it proves the path and egress allow an Upgrade, not authorization | other statuses and connect errors `fail` |
+| accounts | `accounts.expiry` | Decodes each access token's `exp` locally (no signature check) | < 24 h or expired with a refresh token `warn`; expired without one, or `needs_relogin`, `fail` |
+| | `accounts.state` | Status and cooldowns from the running service: `GET /admin/v1/accounts` with the first admin key of the config | `skip` when no admin key or no service; `warn` cooling; `fail` token invalid or no account serving |
+
+Each check is `pass`, `warn`, `fail`, `skip` (precondition missing) or `error` (the check
+itself broke). Non-pass lines print a `problem` and a `next` line; `-v` adds the evidence.
+`--json` prints `{schema_version, ciallopa_version, generated_at, summary, checks[]}` with
+`id`, `layer`, `status`, `title`, `detail`, `next`, `evidence` and `duration_ms` per check.
+`id` and `status` are a stable interface and fields are only added; scripts must not match the
+text. Network probes run in parallel with a 5-second bound each. Tokens, keys and proxy
+credentials (`***@`) never appear in the output.
+
+| Exit | Meaning |
+|---|---|
+| 0 | no check failed (warnings allowed) |
+| 1 | at least one check failed, including a config that does not load |
+| 2 | usage error, or a check could not run (`error`) and nothing failed |
+
+An opened-for-reading WAL database normally creates `-wal` and `-shm` files. Doctor avoids that:
+with both present (the service is running) it opens read-only; with neither it reads the file
+as immutable, so a doctor run as root cannot leave root-owned files the service user then
+fails to open; a lone `-wal` is reported, not opened.
+
 ## Behind Cloudflare Tunnel and Access
 
 ciallopa serves plain HTTP and authenticates every API call with a client key in a header

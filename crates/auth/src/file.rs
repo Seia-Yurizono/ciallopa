@@ -585,7 +585,7 @@ fn classify(p: &Path, name: &str) -> Result<AuthFile, SkippedAuthFile> {
 }
 
 /// Read every account file of `dir`; files that cannot be accounts are listed in `skipped`.
-pub(crate) fn scan_dir(dir: &Path) -> Result<Scan, AuthError> {
+pub fn scan_dir(dir: &Path) -> Result<Scan, AuthError> {
     let mut out = Scan {
         files: vec![],
         skipped: vec![],

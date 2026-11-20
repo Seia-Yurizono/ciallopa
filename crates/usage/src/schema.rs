@@ -2,7 +2,8 @@ use crate::UsageError;
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 
-pub(crate) const SCHEMA_VERSION: i64 = 22;
+/// Schema version this binary migrates to (`PRAGMA user_version`).
+pub const SCHEMA_VERSION: i64 = 22;
 
 pub(crate) const LATEST: &str = r#"
 CREATE TABLE IF NOT EXISTS labels(

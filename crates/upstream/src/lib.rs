@@ -64,6 +64,12 @@ impl From<&Config> for ClientOptions {
 }
 
 pub fn build_reqwest(opts: &ClientOptions) -> Result<reqwest::Client, UpstreamError> {
+    Ok(reqwest_builder(opts)?.build()?)
+}
+
+/// The builder behind [`build_reqwest`] (same proxy and address-family handling), for callers
+/// that add a response-side option such as `tls_info` before building.
+pub fn reqwest_builder(opts: &ClientOptions) -> Result<reqwest::ClientBuilder, UpstreamError> {
     ensure_rustls_crypto_provider();
     let mut b = reqwest::Client::builder().use_rustls_tls();
     // Proxy responses (3xx) must reach the client untouched.
@@ -79,7 +85,7 @@ pub fn build_reqwest(opts: &ClientOptions) -> Result<reqwest::Client, UpstreamEr
     if let Some(t) = opts.connect_timeout {
         b = b.connect_timeout(t);
     }
-    Ok(b.build()?)
+    Ok(b)
 }
 
 /// One `reqwest::Client` (and therefore one connection pool) per account, lazily built with

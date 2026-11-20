@@ -13,6 +13,11 @@ cargo test --locked -p ciallopa-usage
 # A forwarding behavior; omit the final filter to run the integration file.
 cargo test --locked -p ciallopa --test it forward::sse::sse_observation_on_client_disconnect
 
+# `ciallopa doctor`: unit tests plus the binary against a temp data dir and a local mock upstream
+# (asserts no file changes, no credentials upstream, no secrets in the output).
+cargo test --locked -p ciallopa --lib doctor::
+cargo test --locked -p ciallopa --test it doctor::
+
 # Embedded UI foundation (routing, scope URLs, formatting, i18n parity, Api semantics); no npm
 # install needed. Each view adds its own scripts/<view>-check.cjs; run them all with:
 node scripts/shell-check.cjs

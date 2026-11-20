@@ -35,6 +35,7 @@ pub use quota::{AccountQuota, CreditState, Estimate, WindowQuota};
 pub use records::{RecordRow, ScopeValue};
 pub use refusals::RefusalQuery;
 pub use refusals::{Reason as RefusalReason, Refusal, RefusalRow, RefusalTotals};
+pub use schema::SCHEMA_VERSION;
 pub use summary::{DayBucket, Dim, Summary, SummaryGroup, SummaryQuery};
 pub use write::{integrity_check, purge_db};
 /// Endpoint label of a Codex WS prewarm turn.

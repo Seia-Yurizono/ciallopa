@@ -17,6 +17,7 @@ pub mod accounts_api;
 pub mod affinity_store;
 pub use reset_credits::auto_reset;
 pub mod client_fp;
+pub mod doctor;
 pub mod estimate_reset;
 pub mod host;
 mod http;

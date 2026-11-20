@@ -4,6 +4,7 @@ mod affinity_restart;
 mod auto_reset;
 mod compaction_concurrency;
 mod cooling;
+mod doctor;
 mod fingerprint;
 mod forward;
 mod forward_policy;

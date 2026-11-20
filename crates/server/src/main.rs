@@ -45,6 +45,20 @@ enum Cmd {
     },
     /// Exit 0 when the local server answers GET /healthz with 200 (container health probes).
     Healthcheck,
+    /// Read-only self-check: config, storage, egress/upstream and account tokens. Never writes,
+    /// refreshes a token or calls a model. Exit 0 = no failure, 1 = a failure, 2 = a check
+    /// could not run.
+    Doctor {
+        /// Machine-readable report (`schema_version` 1).
+        #[arg(long)]
+        json: bool,
+        /// Show the evidence behind every check.
+        #[arg(short, long)]
+        verbose: bool,
+        /// Also run `PRAGMA quick_check` on the usage database (reads the whole file).
+        #[arg(long)]
+        full: bool,
+    },
     /// Price table tools.
     Prices {
         #[command(subcommand)]
@@ -99,6 +113,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(1);
             }
         }
+    }
+    // Runs before the config is loaded: a broken config is one of its findings.
+    if let Some(Cmd::Doctor {
+        json,
+        verbose,
+        full,
+    }) = &cli.cmd
+    {
+        std::process::exit(ciallopa::doctor::run(&config_path, *json, *verbose, *full).await);
     }
     // Built-in defaults have no API key: running on them would answer 401 to everything, so a
     // config that cannot be opened is an error.
@@ -217,7 +240,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             print!("{}", o.report);
             return Ok(());
         }
-        Cmd::Serve | Cmd::Healthcheck | Cmd::Init => {}
+        Cmd::Serve | Cmd::Healthcheck | Cmd::Init | Cmd::Doctor { .. } => {}
     }
     let container = ciallopa::host::in_container();
     if container && cfg.listen.ip().is_loopback() {
