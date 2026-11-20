@@ -20,6 +20,11 @@
 //!                  tool_fault holds the initial test_echo call after output_item.done
 //!                  but before response.completed; later requests only return text.
 //!                  hold_timeout_ms bounds command barriers (default 60000 ms).
+//!                  response_encoding ("gzip": gzip every HTTP response body incl. errors),
+//!                  ws_error_frame {status, code, message} (answer the business turn with a
+//!                  WS type:error frame), ws_close {code, after_events} (close the socket with
+//!                  that code after N events of a business response; omitted = after the
+//!                  terminal event). capture also logs request headers (`hdr`) and WS handshake.
 //!   release_stream — releases a held business response; prewarm is never held.
 //!   disconnect_stream — closes the response held by tool_recovery without a terminal.
 //!   upstream.log — one JSON line per upstream request / WS frame
@@ -71,6 +76,7 @@ impl St {
             v["session"] = json!(hv(headers, "session-id"));
             v["thread"] = json!(hv(headers, "thread-id"));
             v["turn"] = json!(hv(headers, "x-codex-turn-metadata"));
+            v["hdr"] = captured(headers);
         }
         self.log(v);
     }
@@ -91,15 +97,13 @@ impl St {
             response = response.header("retry-after", value);
         }
         self.log(json!({"t":"status","transport":transport,"index":index,"status":status}));
-        Some(
-            response
-                .body(
-                    json!({"error":{"type":code,"code":code,"message":"local fixture"}})
-                        .to_string()
-                        .into(),
-                )
-                .unwrap(),
-        )
+        Some(gzip_body(
+            self,
+            response,
+            json!({"error":{"type":code,"code":code,"message":"local fixture"}})
+                .to_string()
+                .into_bytes(),
+        ))
     }
     fn limited(&self, acct: &str) -> bool {
         std::fs::read_to_string(self.dir.join("limited"))
@@ -125,6 +129,30 @@ impl St {
             .trim()
             .to_string()
     }
+}
+
+/// Request headers for the capture log; credentials never reach the log.
+fn captured(h: &HeaderMap) -> Value {
+    h.iter()
+        .filter(|(k, _)| !matches!(k.as_str(), "authorization" | "cookie"))
+        .map(|(k, v)| (k.to_string(), json!(v.to_str().unwrap_or("?"))))
+        .collect::<serde_json::Map<_, _>>()
+        .into()
+}
+
+/// `response_encoding: "gzip"` fixture: encode an HTTP body and label it.
+fn gzip_body(st: &St, response: axum::http::response::Builder, body: Vec<u8>) -> Response {
+    if st.fixture()["response_encoding"].as_str() != Some("gzip") {
+        return response.body(body.into()).unwrap();
+    }
+    let mut z = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    z.write_all(&body).unwrap();
+    let encoded = z.finish().unwrap();
+    st.log(json!({"t":"gzip","plain":body.len(),"encoded":encoded.len()}));
+    response
+        .header("content-encoding", "gzip")
+        .body(encoded.into())
+        .unwrap()
 }
 
 fn hv(h: &HeaderMap, k: &str) -> String {
@@ -265,6 +293,17 @@ async fn ws_hold(sock: &mut axum::extract::ws::WebSocket, st: &St, id: &str) -> 
             }
         }
     }
+}
+
+/// `ws_close` fixture: close the upstream socket with the configured code (1000, 1009, ...).
+async fn ws_close(sock: &mut axum::extract::ws::WebSocket, st: &St, id: &str, close: &Value) {
+    let code = close["code"].as_u64().unwrap_or(1000) as u16;
+    st.log(json!({"t":"ws-close","id":id,"code":code}));
+    let frame = axum::extract::ws::CloseFrame {
+        code,
+        reason: "fixture close".into(),
+    };
+    let _ = sock.send(Message::Close(Some(frame))).await;
 }
 
 /// `toolcalls` mode: a shell call (whichever shell tool the client offers) while the request
@@ -439,17 +478,21 @@ async fn responses(State(s): State<St>, h: HeaderMap, b: Bytes) -> Response {
             e["type"].as_str().unwrap()
         ));
     }
-    Response::builder()
+    let response = Response::builder()
         .header("content-type", "text/event-stream")
         .header("x-codex-primary-used-percent", s.quota(&acct))
-        .header("x-codex-primary-window-minutes", "300")
-        .body(out.into())
-        .unwrap()
+        .header("x-codex-primary-window-minutes", "300");
+    gzip_body(&s, response, out.into_bytes())
 }
 
 async fn ws(State(s): State<St>, h: HeaderMap, up: WebSocketUpgrade) -> Response {
     let acct = hv(&h, "chatgpt-account-id");
-    s.log(json!({"t":"ws","acct":acct,"session":hv(&h,"session-id"),"ext":hv(&h,"sec-websocket-extensions")}));
+    let hdr = if s.fixture()["capture"].as_bool() == Some(true) {
+        captured(&h)
+    } else {
+        Value::Null
+    };
+    s.log(json!({"t":"ws","acct":acct,"session":hv(&h,"session-id"),"ext":hv(&h,"sec-websocket-extensions"),"hdr":hdr}));
     let request = s.ws_requests.fetch_add(1, Ordering::SeqCst);
     if let Some(delay) = s.fixture()["handshake_delay_ms"].as_u64() {
         let mut waiting = StreamLog {
@@ -480,6 +523,20 @@ async fn ws(State(s): State<St>, h: HeaderMap, up: WebSocketUpgrade) -> Response
             }
             let id = format!("resp_{}", s.resp.fetch_add(1, Ordering::SeqCst));
             let prewarm = v.get("generate").and_then(Value::as_bool) == Some(false);
+            if let Some(f) = s.fixture()["ws_error_frame"].as_object().filter(|_| !prewarm) {
+                let (code, message) = (f["code"].clone(), f["message"].clone());
+                let mut frame = json!({"type":"error","status":f["status"],"error":{"type":code,"code":code,"message":message}});
+                if f.contains_key("headers") {
+                    frame["headers"] = f["headers"].clone();
+                }
+                s.log(json!({"t":"ws-error-frame","id":id,"frame":frame}));
+                if sock.send(Message::Text(frame.to_string().into())).await.is_err() {
+                    return;
+                }
+                continue;
+            }
+            let close = s.fixture()["ws_close"].clone();
+            let close = (close.is_object() && !prewarm).then_some(close);
             let tool_recovery = s.fixture()["tool_recovery"].is_string()
                 || s.fixture()["tool_fault"].as_bool() == Some(true);
             let conversation_index = (!prewarm && (s.fixture()["conversation"].as_bool() == Some(true) || tool_recovery))
@@ -506,6 +563,10 @@ async fn ws(State(s): State<St>, h: HeaderMap, up: WebSocketUpgrade) -> Response
                 .and_then(|x| x.trim().parse::<u64>().ok())
                 .unwrap_or(0);
             for (index, e) in evs.into_iter().enumerate() {
+                if close.as_ref().is_some_and(|c| c["after_events"].as_u64() == Some(index as u64)) {
+                    ws_close(&mut sock, &s, &id, close.as_ref().unwrap()).await;
+                    return;
+                }
                 if hold == Some(index) {
                     match ws_hold(&mut sock, &s, &id).await {
                         Some(false) => {}
@@ -521,6 +582,10 @@ async fn ws(State(s): State<St>, h: HeaderMap, up: WebSocketUpgrade) -> Response
                 }
                 stream_log.terminal = e["type"] == "response.completed";
                 if !s.fixture().is_null() { record_event(&s, "ws", &id, &e); }
+            }
+            if let Some(c) = close.as_ref().filter(|c| c["after_events"].is_null()) {
+                ws_close(&mut sock, &s, &id, c).await;
+                return;
             }
         }
     });

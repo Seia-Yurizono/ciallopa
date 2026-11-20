@@ -81,6 +81,7 @@ Choose the layer whose behavior is in question rather than running every scenari
 | Fault or boundary | Reproduction | What it establishes |
 | --- | --- | --- |
 | 429/503, Retry-After, exhausted retries, delayed WS handshake | `cli-smoke.py --suite recovery` | Actual Codex attempts, gateway records, elapsed recovery and WS-to-SSE fallback. |
+| Codex 0.171.0 client contract: response compression, request-ID display, spend-limit and `Retry-After` handling, WS error frames, 1009 and 1000 closes, trace context | `cli-smoke.py --suite contract` | The pinned client's observable behavior against the mock; evidence grades and sources are in the [compatibility matrix](research/CODEX_COMPAT_MATRIX.md). |
 | Disconnect after a completed tool result reaches the following generation | `cli-smoke.py --suite tool-recovery` | Actual local callback count, original call/result in recovery input and client/gateway outcomes, on SSE and WS. |
 | Pending tool disconnect/cancel and client crash before tool-result acknowledgement | `cli-smoke.py --suite tool-faults` | Local execution count versus persisted history and resumed request input; distinguishes an unexecuted tool from an executed but unacknowledged side effect. |
 | SSE EOF, missing terminal event, silence, client cancellation | `crates/server/tests/it/forward.rs`; for example `cargo test --locked -p ciallopa --test it forward::sse::idle_timeout_aborts_stream` | Forwarded result, failure classification and released request occupancy. |
@@ -207,7 +208,15 @@ overwrite a config; the two runners exercise different user flows.
 ### Optional real Codex CLI smoke
 
 Use an already installed Codex CLI; the script installs nothing and does not call a real
-provider. Build the local executables once, after other Rust edits/builds have finished:
+provider. The pinned client is **Codex 0.171.0** (source tag `rust-v0.171.0`, commit `ccf9be8`);
+the script refuses another `codex --version` unless `--allow-other-codex` is given, and such
+results are not baseline evidence. Obtain the exact binary from the release asset
+`codex-x86_64-unknown-linux-musl.tar.gz` of `openai/codex` tag `rust-v0.171.0` (or npm
+`@openai/codex@0.171.0-linux-x64`) and compare `sha256sum` of the executable with
+`b76a027d6b210f9a8da7aaf321dd235c700f0ef7a794d4a5314b9af6c134f0f0`; the release asset, the npm
+tarball (registry integrity matched) and a standalone install gave this same digest. Read client
+source only at that tag, never from `main`. Build the local executables once, after other Rust
+edits/builds have finished:
 
 ```sh
 cargo build --locked -p ciallopa --bin ciallopa --example mock_upstream
@@ -234,7 +243,10 @@ exit 0 is a functional result, not a performance claim. Its manifest records CLI
 executable hashes and source-tree state separately; concurrent binary replacement fails
 the run. It is not a CI dependency or a replacement for the forwarding integration tests.
 
-Use `--suite recovery` for client/gateway retry boundaries, `--suite conversation` for the
+Use `--suite recovery` for client/gateway retry boundaries, `--suite contract` for the pinned
+client's 0.171.0 behavior (gzip upstream bodies, `request id: cp-…` on HTTP errors and WS error
+frames, spend-limit and `Retry-After` retry counts and waits, 1009 and 1000 closes, `traceparent`),
+`--suite conversation` for the
 app-server tool/multi-turn/cancellation checks, `--suite tool-recovery` for disconnects after
 tool-result submission, `--suite tool-faults` for pending/unacknowledged tools and crash/resume,
 or `--suite all` for the combined opt-in run.

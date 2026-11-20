@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Opt-in real Codex CLI smoke against local fake upstreams; Python stdlib only.
 
-Four default cases, plus opt-in recovery, conversation, tool-recovery and tool-faults suites. No builds or
+Four default cases, plus opt-in recovery, contract, conversation, tool-recovery and tool-faults suites.
+The contract suite pins Codex `rust-v0.171.0` client behavior (docs/research/CODEX_COMPAT_MATRIX.md). No builds or
 downloads. Retains its fresh temporary directory on success and failure. Only owned
 subprocess handles are stopped; user config is untouched.
 """
@@ -23,6 +24,8 @@ import threading
 import time
 
 
+# Client baseline: source tag rust-v0.171.0 (ccf9be8). Contract expectations hold for this exact build only.
+CODEX_BASELINE = "0.171.0"
 KEY = "sk-local-cli-smoke-fake-0123456789"
 # Do not inherit credentials, proxy overrides, application configuration, or
 # telemetry endpoints. CODEX_HOME below is Codex's documented state location,
@@ -187,6 +190,60 @@ RECOVERY_CASES = {
 }
 
 
+# Codex 0.171.0 contract cases, run by run_recovery. Extra keys: "error" (substrings of the client-visible
+# failure text), "request_id" (that text names the gateway's own cp-<record id>), "wire_headers" /
+# "frame_metadata" (what the mock saw per upstream request type), "env" (client environment).
+CP_ID = "request id: cp-"
+CONTRACT_CASES = {
+    "ws-pool-exhausted-retry-after": {"transport": "ws", "routing": "", "request": 0, "stream": 1, "sse": 0, "ws": 2,
+                                      "fixture": {"ws_statuses": [429, 200], "error_code": "rate_limit_exceeded",
+                                                  "retry_after": "14"}, "exit": 0, "wait_min_ms": 12000, "records": 3,
+                                      "record_errors": ["rate_limit_exceeded", "all_cooling", None]},
+    # C10: with every account cooling beyond the wait, the gateway answers 503 server_is_overloaded without
+    # Retry-After. Codex ends the turn with its fixed capacity text, which carries no request id.
+    "http-pool-exhausted-overloaded": {"fixture": {"http_statuses": [429, 200], "error_code": "rate_limit_exceeded",
+                                                   "retry_after": "1"},
+                                       "request": 0, "stream": 1, "sse": 1, "ws": 0, "exit": 1, "records": 2,
+                                       "record_errors": ["rate_limit_exceeded", "all_cooling"],
+                                       "error": ["Selected model is at capacity"], "error_absent": ["request id"]},
+    "http-503-retry-after-budget": {"fixture": {"http_statuses": [503], "retry_after": "2"}, "request": 2, "stream": 0,
+                                    "sse": 3, "ws": 0, "exit": 1, "waits_min_ms": 1800,
+                                    "error": ["unexpected status 503", CP_ID], "request_id": True},
+    "http-gzip-sse": {"fixture": {"response_encoding": "gzip"}, "request": 0, "stream": 0,
+                      "sse": 1, "ws": 0, "exit": 0, "wire_headers": {"sse": {"accept-encoding": "gzip"}}},
+    "http-gzip-error-body": {"fixture": {"http_statuses": [422], "error_code": "fixture_unprocessable",
+                                         "response_encoding": "gzip"},
+                             "request": 0, "stream": 0, "sse": 1, "ws": 0, "exit": 1,
+                             "error": ["unexpected status 422", "local fixture", CP_ID], "request_id": True},
+    "http-error-request-id": {"fixture": {"http_statuses": [422], "error_code": "fixture_unprocessable"},
+                              "request": 0, "stream": 0, "sse": 1, "ws": 0, "exit": 1,
+                              "error": ["unexpected status 422", "local fixture", CP_ID], "request_id": True},
+    "http-spend-limit-org": {"fixture": {"http_statuses": [429, 200], "error_code": "organization_spend_limit_exceeded"},
+                             "request": 2, "stream": 2, "sse": 1, "ws": 0, "exit": 1, "error": ["Quota exceeded"]},
+    "http-spend-limit-project": {"fixture": {"http_statuses": [429, 200], "error_code": "project_spend_limit_exceeded"},
+                                 "request": 2, "stream": 2, "sse": 1, "ws": 0, "exit": 1, "error": ["Quota exceeded"]},
+    "http-spend-limit-gzip": {"fixture": {"http_statuses": [429, 200], "error_code": "organization_spend_limit_exceeded",
+                                          "response_encoding": "gzip"},
+                              "request": 2, "stream": 2, "sse": 1, "ws": 0, "exit": 1, "error": ["Quota exceeded"]},
+    "ws-error-frame-request-id": {"transport": "ws", "fixture": {"ws_error_frame": {
+                                      "status": 422, "code": "fixture_unprocessable", "message": "ws fixture failure",
+                                      "headers": {"x-request-id": "fixture-ws-upstream"}}},
+                                  "request": 0, "stream": 0, "sse": 1, "ws": 1, "exit": 0, "records": 2,
+                                  "error": ["Falling back from WebSockets", "unexpected status 422", "ws fixture failure", CP_ID],
+                                  "request_id": True},
+    "ws-1009-before-text": {"transport": "ws", "fixture": {"ws_close": {"code": 1009, "after_events": 0}},
+                            "request": 0, "stream": 1, "sse": 1, "ws": 1, "exit": 0, "records": 2},
+    "ws-1009-after-text": {"transport": "ws", "fixture": {"ws_close": {"code": 1009, "after_events": 2}},
+                           "request": 0, "stream": 1, "sse": 1, "ws": 2, "exit": 0, "records": 3},
+    "ws-traceparent": {"transport": "ws", "fixture": {}, "request": 0, "stream": 0, "sse": 0, "ws": 1, "exit": 0,
+                       "env": {"TRACEPARENT": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"},
+                       # Trace context exists only when a tracing exporter is configured; 127.0.0.1:1 refuses.
+                       "client_toml": '[otel]\ntrace_exporter = {otlp-http = {endpoint = "http://127.0.0.1:1/v1/traces", protocol = "json"}}\n',
+                       "wire_headers": {"ws": {"traceparent": "00-0af7651916cd43dd8448eb211c80319c-"}},
+                       "frame_metadata": {"ws_request_header_traceparent": "00-0af7651916cd43dd8448eb211c80319c-"}},
+}
+
+
 def run_recovery(args, directory, spec):
     provider = "".join(f"{key} = {spec[name]}\n" for name, key in
                        (("request", "request_max_retries"), ("stream", "stream_max_retries"))
@@ -195,15 +252,18 @@ def run_recovery(args, directory, spec):
         provider += f"websocket_connect_timeout_ms = {spec['connect_ms']}\n"
     client_dir, work, upstream, listen, config = prepare(
         directory, spec.get("transport", "sse"), fixture={"capture": True, **spec["fixture"]},
-        provider_options=provider, gateway_options="transient_cooldown_secs = 0\n" + spec.get("gateway", ""),
+        provider_options=provider, gateway_options=f"transient_cooldown_secs = {spec.get('cooldown', 0)}\n" + spec.get("gateway", ""),
         routing_options=spec.get("routing", "cooldown_wait_secs = 0\n"))
     owned = []
+    if "client_toml" in spec:
+        with (client_dir / "config.toml").open("a") as stream:
+            stream.write(spec["client_toml"])
     try:
         start_servers(args, directory, upstream, listen, config, owned)
         started = time.monotonic()
         client = spawn([str(args.codex_bin), "exec", "--json", "--ephemeral", "--skip-git-repo-check",
                         "--sandbox", "read-only", "--color", "never", "Say hello. Do not use tools."],
-                       directory, "client", env=client_env(client_dir), cwd=work)
+                       directory, "client", env={**client_env(client_dir), **spec.get("env", {})}, cwd=work)
         owned.append(client)
         client.wait(timeout=args.timeout)
         elapsed_ms = round((time.monotonic() - started) * 1000)
@@ -225,15 +285,39 @@ def run_recovery(args, directory, spec):
         waits = client_intervals if spec.get("wait_clock") == "client" else intervals
         if "wait_min_ms" in spec:
             checks["retry_advice_honored"] = bool(waits) and waits[0] >= spec["wait_min_ms"]
+        if "waits_min_ms" in spec:
+            checks["every_retry_waited_for_advice"] = len(intervals) == spec["sse"] - 1 and min(intervals) >= spec["waits_min_ms"]
         if "wait_max_ms" in spec:
             checks["unsupported_advice_removed"] = bool(intervals) and intervals[0] < spec["wait_max_ms"]
         if "record_errors" in spec:
             checks["expected_gateway_errors"] = [row["error"] for row in sorted(records["records"], key=lambda r: r["ts_ms"])] == spec["record_errors"]
+        # Terminal errors plus non-terminal warnings such as "Falling back from WebSockets to HTTPS transport. <error>".
+        failure = " | ".join(
+            x.get("message") or x.get("error", {}).get("message", "") or x.get("item", {}).get("message", "")
+            for x in events if x["type"] in ("error", "turn.failed")
+            or (x["type"] == "item.completed" and x.get("item", {}).get("type") == "error"))
+        for text in spec.get("error", []):
+            checks["client_error_has " + text] = text in failure
+        terminal = " | ".join(x["error"]["message"] for x in events if x["type"] == "turn.failed")
+        for text in spec.get("error_absent", []):
+            checks["terminal_error_lacks " + text] = text not in terminal
+        if spec.get("request_id"):
+            ids = {"cp-" + row["request_id"] for row in records["records"] if row.get("request_id")}
+            checks["client_names_gateway_record"] = bool(ids) and any(i in failure for i in ids) and "fixture-" not in failure
+        if "response_encoding" in spec["fixture"]:
+            checks["mock_encoded_responses"] = any(x["t"] == "gzip" for x in wire)
+        for kind, expected in spec.get("wire_headers", {}).items():
+            seen = [x.get("hdr") or {} for x in requests if x["t"] == kind]
+            checks["upstream_headers_" + kind] = bool(seen) and all(
+                h.get(name, "").startswith(value) for h in seen for name, value in expected.items())
+        for key, value in spec.get("frame_metadata", {}).items():
+            frames = [x["body"].get("client_metadata", {}) for x in wire if x["t"] == "ws-frame"]
+            checks["frame_metadata_" + key] = bool(frames) and all(m.get(key, "").startswith(value) for m in frames)
         if "handshake_error" in spec:
             matches = [
                 row for row in records["records"] if
                 row["transport"] == "ws" and row["error"] == spec["handshake_error"] and row["account"] == "acc-a"
-                and row["err_source"] == ("client" if spec["handshake_error"] == "client_closed" else "network")
+                and row["err_source"] == ("client" if spec["handshake_error"] == "client_closed" else "local")
                 and row["status"] == (0 if spec["handshake_error"] == "client_closed" else 504)
             ]
             checks["handshake_cause_recorded"] = len(matches) == spec["ws"]
@@ -337,6 +421,129 @@ class AppServer:
         if "error" in message:
             raise RuntimeError(f"{method}: {message['error']}")
         return message["result"]
+
+
+def run_request_headers(args, directory):
+    """What 0.171.0 itself puts on a Responses POST: Codex talks to the mock directly, no gateway."""
+    client_dir, work, upstream, listen, _ = prepare(directory, "sse", fixture={"capture": True})
+    path = client_dir / "config.toml"
+    path.write_text(path.read_text().replace(f"http://127.0.0.1:{listen}/v1", f"http://127.0.0.1:{upstream}/backend-api/codex"))
+    owned = []
+    try:
+        mock = spawn([str(args.mock), f"127.0.0.1:{upstream}"], directory, "mock", env={**ENV, "MOCK_DIR": str(directory)})
+        owned.append(mock)
+        ready(mock, upstream)
+        client = spawn([str(args.codex_bin), "exec", "--json", "--ephemeral", "--skip-git-repo-check",
+                        "--sandbox", "read-only", "--color", "never", "Say hello. Do not use tools."],
+                       directory, "client", env=client_env(client_dir), cwd=work)
+        owned.append(client)
+        client.wait(timeout=args.timeout)
+        wire = read_wire(directory)
+        seen = [x.get("hdr") or {} for x in wire if x["t"] == "sse"]
+        encodings = {e.strip() for e in (seen[0].get("accept-encoding", "") if seen else "").split(",")}
+        checks = {
+            "client_exit_zero": client.returncode == 0,
+            "one_post": len(seen) == 1,
+            # #61264: reqwest negotiates both; the gateway replaces this header on its own upstream hop.
+            "accepts_gzip_and_zstd": {"gzip", "zstd"} <= encodings,
+        }
+        result = {"passed": all(checks.values()), "checks": checks, "request_headers": seen, "upstream": wire}
+        save(directory / "result.json", result)
+        if not result["passed"]:
+            raise RuntimeError("failed checks: " + ", ".join(k for k, ok in checks.items() if not ok))
+        return result
+    finally:
+        for child in reversed(owned):
+            stop(child)
+
+
+def run_unknown_header_probe(args, directory):
+    """Gateway, not Codex: headers and body fields it does not know are forwarded (deny-list policy)."""
+    client_dir, work, upstream, listen, config = prepare(directory, "sse", fixture={"capture": True})
+    owned = []
+    try:
+        start_servers(args, directory, upstream, listen, config, owned)
+        sent = {"x-codex-request-country": "DE", "x-unlisted-probe": "1", "traceparent": "00-" + "a" * 32 + "-" + "b" * 16 + "-01",
+                "accept-encoding": "gzip, zstd", "content-type": "application/json", "Authorization": "Bearer " + KEY}
+        conn = http.client.HTTPConnection("127.0.0.1", listen, timeout=5)
+        conn.request("POST", "/v1/responses", headers=sent, body=json.dumps(
+            {"model": "gpt-5.5", "stream": True, "input": [], "request_country": "DE"}))
+        response = conn.getresponse()
+        response.read()
+        conn.close()
+        entry = next((x for x in read_wire(directory) if x["t"] == "sse"), {})
+        seen = entry.get("hdr", {})
+        checks = {
+            "answered": response.status == 200,
+            "unknown_header_forwarded": seen.get("x-codex-request-country") == "DE" and seen.get("x-unlisted-probe") == "1",
+            "traceparent_forwarded": seen.get("traceparent") == sent["traceparent"],
+            "body_field_forwarded": entry.get("body", {}).get("request_country") == "DE",
+            "accept_encoding_replaced": seen.get("accept-encoding") == "gzip",
+            "gateway_key_not_forwarded": KEY not in json.dumps(seen),
+        }
+        result = {"passed": all(checks.values()), "checks": checks, "request_headers": seen, "upstream": entry}
+        save(directory / "result.json", result)
+        if not result["passed"]:
+            raise RuntimeError("failed checks: " + ", ".join(k for k, ok in checks.items() if not ok))
+        return result
+    finally:
+        for child in reversed(owned):
+            stop(child)
+
+
+def run_ws_close_after_turn(args, directory):
+    """Codex 0.171.0: a 1000 close after response.completed is invisible; the next turn redials."""
+    client_dir, work, upstream, listen, config = prepare(
+        directory, "ws", fixture={"capture": True, "ws_close": {"code": 1000}})
+    owned = []
+    rpc = None
+    try:
+        start_servers(args, directory, upstream, listen, config, owned)
+        rpc = AppServer(args, directory, client_dir, work)
+        owned.append(rpc.child)
+        rpc.request("initialize", {"clientInfo": {"name": "ciallopa_probe", "version": "1"},
+                                   "capabilities": {"experimentalApi": True}})
+        rpc.send({"method": "initialized", "params": {}})
+        thread = rpc.request("thread/start", {"model": "gpt-5.5", "modelProvider": "smoke", "cwd": str(work),
+                                              "ephemeral": True, "approvalPolicy": "never", "sandbox": "read-only",
+                                              "environments": []})["thread"]["id"]
+        completed = []
+        for prompt in ("First turn.", "Second turn, after the server closed the socket."):
+            mark = len(rpc.messages)
+            turn = rpc.request("turn/start", {"threadId": thread, "input": [
+                {"type": "text", "text": prompt, "textElements": []}]})["turn"]["id"]
+            completed.append(rpc.wait(lambda m: m.get("method") == "turn/completed"
+                                      and m.get("params", {}).get("turn", {}).get("id") == turn, mark)["params"]["turn"])
+        rpc.child.stdin.close()
+        try:
+            rpc.child.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            stop(rpc.child)
+        rpc.reader.join(timeout=2)
+        runtime, records = observations(listen, expected_records=2)
+        wire = read_wire(directory)
+        visible = [m for m in rpc.messages if m.get("method") in ("error", "warning")
+                   or (m.get("method") == "item/completed" and m["params"]["item"].get("type") == "error")]
+        checks = {
+            "both_turns_completed": [x["status"] for x in completed] == ["completed", "completed"],
+            "no_user_visible_error": not visible,
+            "server_closed_after_each_turn": sum(x["t"] == "ws-close" and x["code"] == 1000 for x in wire) == 2,
+            "second_turn_redialed": sum(x["t"] == "ws" for x in wire) == 2,
+            "no_http_fallback": not any(x["t"] == "sse" for x in wire),
+            "two_clean_gateway_records": records["total"] == 2 and all(not r["error"] for r in records["records"]),
+            "gateway_released": runtime["inflight"] == 0 and runtime["ws_connections"] == 0 and runtime["rejected"] == 0,
+        }
+        result = {"passed": all(checks.values()), "checks": checks, "visible": visible,
+                  "upstream": wire, "records": records, "runtime": runtime}
+        save(directory / "result.json", result)
+        if not result["passed"]:
+            raise RuntimeError("failed checks: " + ", ".join(k for k, ok in checks.items() if not ok))
+        return result
+    finally:
+        for child in reversed(owned):
+            stop(child)
+        if rpc:
+            rpc.reader.join(timeout=2)
 
 
 def run_conversation(args, directory, transport, native_steer=False):
@@ -1009,7 +1216,9 @@ def main():
     parser.add_argument("--binary", type=Path, required=True, help="built ciallopa executable")
     parser.add_argument("--mock", type=Path, required=True, help="built mock_upstream example")
     parser.add_argument("--timeout", type=int, default=45, help="seconds allowed for each CLI process")
-    parser.add_argument("--suite", choices=("smoke", "recovery", "conversation", "tool-recovery", "tool-faults", "all"), default="smoke")
+    parser.add_argument("--suite", choices=("smoke", "recovery", "contract", "conversation", "tool-recovery", "tool-faults", "all"), default="smoke")
+    parser.add_argument("--allow-other-codex", action="store_true",
+                        help=f"run against a Codex other than the pinned {CODEX_BASELINE}; results are not baseline evidence")
     parser.add_argument("--case", action="append", default=[], help="run only a named case in the selected suite (repeatable)")
     args = parser.parse_args()
     if args.timeout <= 0:
@@ -1026,6 +1235,11 @@ def main():
                      for transport in ("sse", "ws") for failover in (False, True))
     if args.suite in ("recovery", "all"):
         cases.extend((name, "recovery", spec) for name, spec in RECOVERY_CASES.items())
+    if args.suite in ("contract", "all"):
+        cases.extend((name, "recovery", spec) for name, spec in CONTRACT_CASES.items())
+        cases.append(("ws-1000-after-turn", "close-after-turn", None))
+        cases.append(("codex-request-headers", "request-headers", None))
+        cases.append(("gateway-unknown-header-probe", "header-probe", None))
     if args.suite in ("conversation", "all"):
         cases.extend((transport + "-conversation", "conversation", (transport, False)) for transport in ("sse", "ws"))
         cases.append(("ws-native-steer", "conversation", ("ws", True)))
@@ -1051,6 +1265,8 @@ def main():
         version.wait(timeout=10)
         if version.returncode:
             raise RuntimeError("codex --version failed")
+        if (run / "version.stdout").read_text().split()[-1] != CODEX_BASELINE and not args.allow_other_codex:
+            raise RuntimeError(f"Codex baseline is {CODEX_BASELINE}; pass --allow-other-codex to run another version")
         repo = Path(__file__).resolve().parents[1]
         git = lambda *a: subprocess.check_output(["git", *a], cwd=repo, text=True).strip()
         binaries = {str(p): {"sha256": digest(p), "bytes": p.stat().st_size}
@@ -1069,6 +1285,12 @@ def main():
                 result = run_case(args, run / name, *spec)
             elif suite == "recovery":
                 result = run_recovery(args, run / name, spec)
+            elif suite == "request-headers":
+                result = run_request_headers(args, run / name)
+            elif suite == "header-probe":
+                result = run_unknown_header_probe(args, run / name)
+            elif suite == "close-after-turn":
+                result = run_ws_close_after_turn(args, run / name)
             elif suite == "tool-recovery":
                 result = run_tool_recovery(args, run / name, *spec)
             elif suite == "tool-faults":
