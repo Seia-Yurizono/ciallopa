@@ -620,23 +620,22 @@ async fn buffered_images(
     }
 }
 
+fn mime_of(fmt: &str) -> &'static str {
+    match fmt.trim().to_ascii_lowercase().as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        _ => "image/png",
+    }
+}
+
+/// Moves the base64 string into `d`; the data URL prefix is inserted in place, not copied.
 fn set_image(d: &mut Value, rf: &str, fmt: &str, mut b64: String) {
-    let key = if rf == "url" {
-        let fmt = fmt.trim();
-        let prefix = if fmt.eq_ignore_ascii_case("jpg") || fmt.eq_ignore_ascii_case("jpeg") {
-            "data:image/jpeg;base64,"
-        } else if fmt.eq_ignore_ascii_case("webp") {
-            "data:image/webp;base64,"
-        } else {
-            "data:image/png;base64,"
-        };
-        b64.reserve_exact(prefix.len());
-        b64.insert_str(0, prefix);
-        "url"
+    if rf == "url" {
+        b64.insert_str(0, &format!("data:{};base64,", mime_of(fmt)));
+        d["url"] = Value::String(b64);
     } else {
-        "b64_json"
-    };
-    d[key] = Value::String(b64);
+        d["b64_json"] = Value::String(b64);
+    }
 }
 
 struct ImageResult {
