@@ -41,6 +41,10 @@ pub use write::{integrity_check, purge_db};
 pub const PREWARM_ENDPOINT: &str = "prewarm";
 
 use ciallopa_core::config::{QuotaWeights, UsageConfig};
+use futures::{
+    future::{BoxFuture, WeakShared},
+    FutureExt,
+};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
@@ -300,6 +304,10 @@ pub enum UsageError {
     Sql(#[from] rusqlite::Error),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+    #[error("usage read cancelled")]
+    Cancelled,
+    #[error(transparent)]
+    SharedQuota(Arc<UsageError>),
     #[error("writer thread gone")]
     Gone,
     #[error("usage blocking task: {0}")]
@@ -309,10 +317,13 @@ pub enum UsageError {
     NotFound(&'static str),
 }
 
+type QuotaRead = BoxFuture<'static, Result<Vec<AccountQuota>, Arc<UsageError>>>;
+
 pub struct Recorder {
     fast: SyncSender<Msg>,
     path: PathBuf,
     reads: Arc<pool::ReadPool>,
+    quota_read: Mutex<Option<WeakShared<QuotaRead>>>,
     kv: Mutex<Option<rusqlite::Connection>>,
     weights: arc_swap::ArcSwap<QuotaWeights>,
     retention_days: Arc<std::sync::atomic::AtomicU32>,
@@ -363,6 +374,7 @@ impl Recorder {
             fast: tx,
             path: cfg.path.clone(),
             reads: pool::ReadPool::new(cfg.path.clone()),
+            quota_read: Mutex::new(None),
             kv: Mutex::new(None),
             weights: arc_swap::ArcSwap::from_pointee(cfg.quota_weights.clone()),
             retention_days,
@@ -522,6 +534,7 @@ impl Recorder {
     /// Hot-reload: quota-capacity estimation weights.
     pub fn set_weights(&self, w: QuotaWeights) {
         self.weights.store(Arc::new(w));
+        self.invalidate_quota_read();
     }
     /// Hot-reload: raw-row retention (0 = keep forever); the writer picks it up within a minute.
     pub fn set_retention_days(&self, days: u32) {
@@ -533,6 +546,7 @@ impl Recorder {
     /// Install / replace the price table (applies to every query, history included).
     pub fn set_prices(&self, p: PriceTable) {
         self.prices.store(Arc::new(p));
+        self.invalidate_quota_read();
     }
     pub fn prices(&self) -> Arc<PriceTable> {
         self.prices.load_full()
@@ -669,9 +683,35 @@ impl Recorder {
     }
 
     pub async fn quota(&self) -> Result<Vec<AccountQuota>, UsageError> {
-        let (weights, prices) = (self.weights.load_full(), self.prices());
-        self.read(move |c| quota::quota(c, &weights, &prices, now_ms()))
-            .await
+        let read = {
+            let mut slot = self.quota_read.lock().expect("quota read lock");
+            if let Some(read) = slot
+                .as_ref()
+                .and_then(WeakShared::upgrade)
+                .filter(|read| read.peek().is_none())
+            {
+                read
+            } else {
+                let (weights, prices) = (self.weights.load_full(), self.prices());
+                let pool = self.reads.clone();
+                let read = async move {
+                    pool.read(move |c| quota::quota(c, &weights, &prices, now_ms()))
+                        .await
+                        .map_err(Arc::new)
+                }
+                .boxed()
+                .shared();
+                // Only waiters own the read, so dropping the last one cancels it.
+                *slot = read.downgrade();
+                read
+            }
+        };
+        read.await
+            .map_err(|e| Arc::try_unwrap(e).unwrap_or_else(UsageError::SharedQuota))
+    }
+
+    fn invalidate_quota_read(&self) {
+        *self.quota_read.lock().expect("quota read lock") = None;
     }
 
     /// Start a new estimate epoch for `account` (one window, or both when `None`). Older
@@ -703,13 +743,15 @@ impl Recorder {
 
     async fn epoch(&self, op: epoch::Op) -> Result<epoch::Reply, UsageError> {
         let fast = self.fast.clone();
-        tokio::task::spawn_blocking(move || {
+        let reply = tokio::task::spawn_blocking(move || {
             let (tx, rx) = sync_channel(1);
             fast.send(Msg::Epoch(Box::new(epoch::Command { op, reply: tx })))
                 .map_err(|_| UsageError::Gone)?;
             rx.recv().map_err(|_| UsageError::Gone)?
         })
-        .await?
+        .await??;
+        self.invalidate_quota_read();
+        Ok(reply)
     }
 
     pub async fn quota_history(
