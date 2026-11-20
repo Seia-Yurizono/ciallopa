@@ -88,40 +88,43 @@ impl Framer {
         &mut self,
         mut chunk: Bytes,
     ) -> impl Iterator<Item = (Frame, bool)> + '_ {
-        std::iter::from_fn(move || {
-            while !chunk.is_empty() {
-                let take = if self.oversized {
-                    chunk.len()
-                } else {
-                    chunk
-                        .len()
-                        .min(self.limit.saturating_sub(self.tail.len()).saturating_add(1))
-                };
-                let boundary = self.scanner.scan(&chunk[..take]);
-                let part = chunk.split_to(boundary.unwrap_or(take));
-                let oversized =
-                    self.oversized || self.tail.len().saturating_add(part.len()) > self.limit;
-                if boundary.is_some() || oversized {
-                    let bytes = if self.tail.is_empty() {
-                        part
-                    } else {
-                        self.tail.extend_from_slice(&part);
-                        self.tail.split().freeze()
-                    };
-                    self.oversized = oversized && boundary.is_none();
-                    return Some((
-                        if oversized {
-                            Frame::Oversize(bytes)
-                        } else {
-                            Frame::Event(bytes)
-                        },
-                        boundary.is_some(),
-                    ));
-                }
+        std::iter::from_fn(move || self.next_part(&mut chunk))
+    }
+
+    /// Consume at most one frame so a parsing caller can yield before scanning more of a chunk.
+    pub(crate) fn next_part(&mut self, chunk: &mut Bytes) -> Option<(Frame, bool)> {
+        if chunk.is_empty() {
+            return None;
+        }
+        let take = if self.oversized {
+            chunk.len()
+        } else {
+            chunk
+                .len()
+                .min(self.limit.saturating_sub(self.tail.len()).saturating_add(1))
+        };
+        let boundary = self.scanner.scan(&chunk[..take]);
+        let part = chunk.split_to(boundary.unwrap_or(take));
+        let oversized = self.oversized || self.tail.len().saturating_add(part.len()) > self.limit;
+        if boundary.is_some() || oversized {
+            let bytes = if self.tail.is_empty() {
+                part
+            } else {
                 self.tail.extend_from_slice(&part);
-            }
-            None
-        })
+                self.tail.split().freeze()
+            };
+            self.oversized = oversized && boundary.is_none();
+            return Some((
+                if oversized {
+                    Frame::Oversize(bytes)
+                } else {
+                    Frame::Event(bytes)
+                },
+                boundary.is_some(),
+            ));
+        }
+        self.tail.extend_from_slice(&part);
+        None
     }
 
     pub(crate) fn finish(&mut self) -> Option<Bytes> {
