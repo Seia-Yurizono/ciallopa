@@ -6,7 +6,7 @@
 //! `checkpoint` / `VACUUM`. Each check is a plain function returning [`Check`]s; `id` and
 //! `status` are the stable contract of `--json`.
 use ciallopa_core::{settings::mask_proxy, Config, SkipReason};
-use ciallopa_upstream::{ClientOptions, UpstreamClient, UpstreamError};
+use ciallopa_upstream::{ClientOptions, UpstreamClient};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::os::unix::fs::MetadataExt;
@@ -17,7 +17,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Clock difference to the upstream above which the tokens' `exp` checks start to lie.
 const CLOCK_SKEW_WARN_SECS: i64 = 60;
-const CERT_WARN_DAYS: i64 = 14;
 /// A token that expires within this window is reported (a running service renews it earlier).
 const TOKEN_WARN_SECS: i64 = 24 * 3600;
 const MIB: u64 = 1024 * 1024;
@@ -796,9 +795,7 @@ async fn probe_upstream(cfg: &Config) -> Vec<Check> {
         cloudflare_cookies: false,
         ipv6: cfg.ipv6,
     };
-    let client = match ciallopa_upstream::reqwest_builder(&opts)
-        .and_then(|b| b.tls_info(true).build().map_err(UpstreamError::from))
-    {
+    let client = match ciallopa_upstream::build_reqwest(&opts) {
         Ok(c) => c,
         Err(e) => return skipped(&format!("cannot build the client: {e}")),
     };
@@ -851,38 +848,18 @@ async fn probe_upstream(cfg: &Config) -> Vec<Check> {
 
     out.push(if https {
         let h2 = resp.version() == reqwest::Version::HTTP_2;
-        let days = resp
-            .extensions()
-            .get::<reqwest::tls::TlsInfo>()
-            .and_then(|i| i.peer_certificate())
-            .and_then(cert_not_after)
-            .map(|exp| (exp - unix_now()).div_euclid(86_400));
-        let ev = json!({"alpn": if h2 { "h2" } else { "http/1.1" }, "cert_days_left": days});
-        match (h2, days) {
-            (_, Some(d)) if d < CERT_WARN_DAYS => warn(
-                "upstream.tls",
-                format!("the certificate of {host} expires in {d} days"),
-            )
-            .next("renew it, or check what terminates TLS in front of the upstream")
-            .ev(ev),
-            (false, _) => warn(
+        let ev = json!({"alpn": if h2 { "h2" } else { "http/1.1" }});
+        if h2 {
+            pass("upstream.tls", "TLS ok, ALPN h2").ev(ev)
+        } else {
+            warn(
                 "upstream.tls",
                 "negotiated HTTP/1.1, not h2: something on the path strips ALPN",
             )
             .next(
                 "the gateway works but is not Codex-shaped; check the proxy and any TLS inspection",
             )
-            .ev(ev),
-            (_, d) => pass(
-                "upstream.tls",
-                format!(
-                    "TLS ok, ALPN h2{}",
-                    d.map_or(String::new(), |d| format!(
-                        ", certificate valid {d} more days"
-                    ))
-                ),
-            )
-            .ev(ev),
+            .ev(ev)
         }
     } else {
         skip("upstream.tls", "the upstream is plain http://")
@@ -916,52 +893,6 @@ fn unix_now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64)
-}
-
-/// `notAfter` of a DER X.509 certificate, Unix seconds. Only the validity field is read.
-fn cert_not_after(der: &[u8]) -> Option<i64> {
-    // (tag, content, rest) of the first DER element.
-    fn tlv(b: &[u8]) -> Option<(u8, &[u8], &[u8])> {
-        let (&tag, b) = b.split_first()?;
-        let (&l, b) = b.split_first()?;
-        let (len, b) = if l < 0x80 {
-            (l as usize, b)
-        } else {
-            let n = (l & 0x7f) as usize;
-            if n == 0 || n > 4 || b.len() < n {
-                return None;
-            }
-            (
-                b[..n].iter().fold(0usize, |a, &x| a << 8 | x as usize),
-                &b[n..],
-            )
-        };
-        (b.len() >= len).then(|| (tag, &b[..len], &b[len..]))
-    }
-    let (_, cert, _) = tlv(der)?;
-    let (_, tbs, _) = tlv(cert)?;
-    let (tag, _, after_version) = tlv(tbs)?;
-    // [0] version (absent in v1), then serial, signature algorithm, issuer.
-    let mut rest = if tag == 0xA0 { after_version } else { tbs };
-    for _ in 0..3 {
-        rest = tlv(rest)?.2;
-    }
-    let (_, validity, _) = tlv(rest)?;
-    let (_, _, not_after) = tlv(validity)?;
-    let (tag, text, _) = tlv(not_after)?;
-    let text = std::str::from_utf8(text).ok()?;
-    let full = match tag {
-        0x17 => {
-            // UTCTime YYMMDDHHMMSSZ: 00..49 is 20xx.
-            let yy: u32 = text.get(..2)?.parse().ok()?;
-            format!("{}{}", if yy < 50 { "20" } else { "19" }, text.get(..12)?)
-        }
-        0x18 => text.get(..14)?.to_string(),
-        _ => return None,
-    };
-    chrono::NaiveDateTime::parse_from_str(&full, "%Y%m%d%H%M%S")
-        .ok()
-        .map(|t| t.and_utc().timestamp())
 }
 
 /// Upgrade request without credentials: 101, or 401/403, proves TLS, the path and the egress
@@ -1365,59 +1296,6 @@ mod tests {
         assert_eq!(token_status(Some(now - 60), false, now).0, Status::Fail);
         assert_eq!(token_status(None, true, now).0, Status::Warn);
         assert!(token_status(Some(now + 3600), true, now).1.contains("1h"));
-    }
-
-    /// `openssl req -x509 -newkey ec -subj /CN=doctor-test -days 3650`: a real certificate,
-    /// `notAfter=Nov 17 18:45:07 2036 GMT` (UTCTime).
-    const REAL_CERT: &str = "3082016e30820114a003020102020101300a06082a8648ce3d04030230163114301206035504030c0b646f63746f722d74657374301e170d3236313132303138343530375a170d3336313131373138343530375a30163114301206035504030c0b646f63746f722d746573743059301306072a8648ce3d020106082a8648ce3d0301070342000419226e8dc9b1f9180b6bf93aae2c581b3bc37510910cb2a70b5056ee0c9482c84109f78decb98c488e91ddae0ddf2c60a4bd36ad05250cfa913887de8c12a037a3533051301d0603551d0e041604141e43403a67a8d9c7259dbb9c0eb7f7dd2a65fde0301f0603551d230418301680141e43403a67a8d9c7259dbb9c0eb7f7dd2a65fde0300f0603551d130101ff040530030101ff300a06082a8648ce3d04030203480030450221008e0f1bd3815a773cb0466e36a95095eb6c4fc91f15ad5fd90a5c7e9e95b8da4302204d36c8154fb5a86e737ac04f8465cd237c4366981f2ad14f1ec50c15e85233f0";
-
-    #[test]
-    fn certificate_not_after_is_read_from_der() {
-        let real: Vec<u8> = (0..REAL_CERT.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&REAL_CERT[i..i + 2], 16).unwrap())
-            .collect();
-        assert_eq!(cert_not_after(&real), Some(2_110_560_307));
-        // UTCTime and GeneralizedTime (dates from 2050), and garbage.
-        let utc = cert_der(b"\x17\x0d261121000000Z", b"\x17\x0d361118000000Z");
-        assert_eq!(cert_not_after(&utc), Some(chrono_ts("20361118000000")));
-        let gen = cert_der(b"\x17\x0d261121000000Z", b"\x18\x0f20601201000000Z");
-        assert_eq!(cert_not_after(&gen), Some(chrono_ts("20601201000000")));
-        assert_eq!(cert_not_after(b"\x30\x03\x02\x01\x01"), None);
-        assert_eq!(cert_not_after(b""), None);
-    }
-    fn chrono_ts(s: &str) -> i64 {
-        chrono::NaiveDateTime::parse_from_str(s, "%Y%m%d%H%M%S")
-            .unwrap()
-            .and_utc()
-            .timestamp()
-    }
-    fn der(tag: u8, content: &[u8]) -> Vec<u8> {
-        let mut v = vec![tag];
-        if content.len() < 128 {
-            v.push(content.len() as u8);
-        } else {
-            v.extend([0x82, (content.len() >> 8) as u8, content.len() as u8]);
-        }
-        v.extend(content);
-        v
-    }
-    /// Certificate ::= SEQ { TBS SEQ { [0] version, serial, sigalg, issuer, validity, … } }.
-    fn cert_der(not_before: &[u8], not_after: &[u8]) -> Vec<u8> {
-        let validity = der(0x30, &[not_before, not_after].concat());
-        let tbs = der(
-            0x30,
-            &[
-                der(0xA0, &der(0x02, &[2])),
-                der(0x02, &[1]),
-                der(0x30, &der(0x06, &[1, 2, 3])),
-                der(0x30, &[]),
-                validity,
-                der(0x30, &[]),
-            ]
-            .concat(),
-        );
-        der(0x30, &[tbs, der(0x30, &[]), der(0x03, &[0])].concat())
     }
 
     #[test]
