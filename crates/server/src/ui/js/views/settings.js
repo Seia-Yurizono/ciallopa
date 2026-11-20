@@ -308,6 +308,12 @@ Views.settings = (() => {
     })) {
       el.appendChild(h("p", "st-legend", UI.tag(t("settings.restart"), "outline"), " ", t("settings.restartLegend")));
     }
+    for (const e of ["ws_after_turn", "new_connection"]) {
+      if (keys.some(k => {
+        const f = S.draft.field(k);
+        return f && f.effect === e;
+      })) el.appendChild(h("p", "st-legend", UI.tag(t("settings.eff." + e + ".tag"), "outline"), " ", t("settings.eff." + e + ".tip")));
+    }
     return el;
   }
 
@@ -337,6 +343,9 @@ Views.settings = (() => {
     S.keySec.set(k, S.curSec);
   }
 
+  // The two effects that say what happens to open client WebSockets.
+  const wsEffect = f => f.effect === "ws_after_turn" || f.effect === "new_connection";
+
   function labelBlock(f, why) {
     const more = T.details(f), extra = f.key === "proxy_url" ? t("settings.proxyNote") : f.key === "ipv6" ? t("settings.ipv6Note") : "";
     const info = more || extra ? UI.info(() => h("div", "st-info", more ? h("p", null, more) : null, extra ? h("p", null, extra) : null,
@@ -344,7 +353,9 @@ Views.settings = (() => {
     return h("div", "st-label",
       h("div", "st-title-line",
         h("span", "st-title", T.title(f)),
-        f.effect === "restart" ? h("span", {class: "tag outline st-tag", title: t("settings.restartTip")}, t("settings.restart")) : null,
+        f.effect === "restart" ? h("span", {class: "tag outline st-tag", title: t("settings.restartTip")}, t("settings.restart")) :
+          wsEffect(f) ? h("span", {class: "tag outline st-tag", title: t("settings.eff." + f.effect + ".tip")},
+            t("settings.eff." + f.effect + ".tag")) : null,
         f.key === "ui.allow_reset_consume" ? h("span", {class: "tag err st-tag", title: t("settings.irreversibleTip")},
           t("settings.irreversible")) : null,
         M.IMM[f.key] && S.draft.base.write_enabled ? h("span", "tag st-tag", t("settings.imm.tag")) : null,
@@ -820,27 +831,51 @@ Views.settings = (() => {
 
   function showReview(o) {
     const val = (f, v) => (f && M.display(f, v) !== null ? M.display(f, v) : M.fmtValue(v));
-    const tbl = UI.table({compact: true, keyOf: d => d.key, label: t("settings.saveTitle", {n: o.diff.length}), columns: [
-      {id: "k", label: t("settings.col.key"), render: d => {
-        const f = S.draft.field(d.key);
-        // Phones drop the effect column; a restart still shows, next to the name.
-        return h("div", null, h("div", null, f ? T.title(f) : d.key, d.effect === "hot" ? null :
-          h("span", {class: "tag outline st-tag phone-only"}, t("settings.restart"))), h("code", "st-key", d.key));
-      }},
-      {id: "o", label: t("settings.col.old"), className: "st-rv-old", render: d => h("span", "muted", val(S.draft.field(d.key), d.old))},
-      {id: "n", label: t("settings.col.new"), className: "st-rv-new", render: d => h("span", "strong", val(S.draft.field(d.key), d.new))},
-      {id: "e", label: t("settings.col.effect"), className: "st-rv-eff", render: d => (d.effect === "hot" ?
-        h("span", {class: "muted small", title: t("settings.hotTip")}, t("settings.hot")) :
-        h("span", {class: "tag outline", title: t("settings.restartTip")}, t("settings.restart")))}]});
-    tbl.setRows(o.diff);
+    const {groups, top, ws} = M.groupByEffect(o.diff);
+    const table = g => {
+      const tbl = UI.table({compact: true, keyOf: d => d.key, label: t("settings.eff." + g.effect + ".tag"), columns: [
+        {id: "k", label: t("settings.col.key"), render: d => {
+          const f = S.draft.field(d.key);
+          return h("div", null, h("div", null, f ? T.title(f) : d.key), h("code", "st-key", d.key));
+        }},
+        {id: "o", label: t("settings.col.old"), className: "st-rv-old", render: d => h("span", "muted", val(S.draft.field(d.key), d.old))},
+        {id: "n", label: t("settings.col.new"), className: "st-rv-new",
+          render: d => h("span", "strong", val(S.draft.field(d.key), d.new))}]});
+      tbl.setRows(g.rows);
+      return h("div", "st-rv-group",
+        h("div", "st-rv-head", UI.tag(t("settings.eff." + g.effect + ".tag") + " · " + g.rows.length, "outline"),
+          h("span", "muted small", t("settings.eff." + g.effect + ".desc"))),
+        tbl.el);
+    };
+    // Open WebSockets: the count is a snapshot read when this dialog opens, with its time.
+    const snap = ws ? h("p", "small", t("settings.wsSnapLoading")) : null;
+    const closes = groups.some(g => g.effect === "ws_after_turn");
+    const wsNote = ws ? h("div", "st-rv-ws stack", snap,
+      h("p", "small", h("b", null, t("settings.wsCodex")), " ", t("settings.wsCodex." + (closes ? "close" : "keep")))) : null;
     const body = h("div", "stack",
       o.versionChanged ? UI.banner({kind: "info", title: t("settings.saveNewer")}) : null,
-      o.diff.length ? tbl.el : h("p", "muted", t("settings.saveNone")),
-      o.diff.some(d => d.effect === "restart") ? h("p", "muted small", t("settings.saveRestartNote")) : null);
+      o.diff.length ? UI.banner({kind: top === "hot" || top === "new_connection" ? "info" : "warn",
+        title: t("settings.eff." + top + ".sum")}) : null,
+      o.diff.length ? groups.map(table) : h("p", "muted", t("settings.saveNone")),
+      wsNote);
     const cancel = UI.button(t("ui.cancel"), {onClick: () => layer.close()});
     const go = UI.button(t("settings.saveGo"), {kind: "primary"});
+    let closed = false;
     const layer = UI.modal({title: t("settings.saveTitle", {n: o.diff.length}), body, foot: [cancel, go], wide: true, focus: go,
-      onClose: o.close});
+      onClose: () => {
+        closed = true;
+        o.close();
+      }});
+    if (ws) {
+      S.ctx.get("/admin/v1/runtime").then(r => {
+        const n = r && r.runtime && r.runtime.ws_connections;
+        if (!closed) {
+          snap.textContent = Number.isFinite(n) ? t("settings.wsSnap", {n, time: fmt.hms(Date.now())}) : t("settings.wsSnapNone");
+        }
+      }).catch(() => {
+        if (!closed) snap.textContent = t("settings.wsSnapNone");
+      });
+    }
     go.addEventListener("click", () => Api.busyRun(go, t("settings.saveGo"), async () => {
       try {
         await o.save();

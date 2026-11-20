@@ -34,6 +34,21 @@ streaming, including Images; a reload cannot shorten an already-running stream's
 
 ## What applies when
 
+Every schema key has one `effect`; the save dialog on the settings page groups changes by it and
+says what saving does to open client WebSockets.
+
+| `effect` | Meaning | Keys |
+|---|---|---|
+| `hot` | Read the next time the value is used (next request, decision, poll or stop signal). Running requests and open WebSockets are not interrupted. | every hot key not listed below |
+| `new_connection` | Like `hot`, but an already-open client WebSocket keeps the value it connected with and is not closed; new requests and new WebSockets use the new one. | `ws_compression`, `ws_max_connections`, `ws_max_message_mb`, `upstream_opts.stream_idle_timeout_secs`, `upstream_opts.preparation_timeout_secs`, `upstream_opts.connect_timeout_secs` |
+| `ws_after_turn` | The effective egress changes (see `proxy_url`, `proxy_enabled`, `ipv6` below): an idle WebSocket closes at once, one running a turn closes after that turn's terminal event, both with 1000. There is no deadline: a turn that never ends keeps its old connection. Codex 0.171.0 (local mock upstream, matrix C12) reconnects on its next request with no visible error and no HTTP fallback. | `proxy_url`, `proxy_enabled`, `ipv6` |
+| `restart` | Written to the file, reported as `pending_restart`. | see **Restart** below |
+
+`effect` is `hot` / `restart` plus the two finer values, all applied by the reload except `restart`;
+a client that only needs "restart or not" compares with `restart`. The validate and reload `diff`
+entries carry the same `effect`, except that `proxy_url` / `proxy_enabled` stay `hot` when the
+effective proxy does not change (an address edited while the proxy is off moves no connection).
+
 **Hot** (applied by the reload at these boundaries):
 
 | Keys | Effect |
@@ -45,7 +60,7 @@ streaming, including Images; a reload cannot shorten an already-running stream's
 | `ws_max_message_mb` | Default 16 MiB (1–4096). Largest client WebSocket message (and frame) after permessage-deflate inflation; a larger one closes the connection with 1009 *message too big*. Applies to new connections. The 101 advertises `x-codex-websocket-max-message-bytes` = min(upstream value, this limit), which Codex 0.170+ uses to send larger turns over HTTP. chatgpt.com refuses messages over 16 MiB anyway, so values above 16 gain nothing (see ARCHITECTURE.md, WS 消息大小上限). Together with `ws_max_connections` this bounds WS receive memory: the defaults (24 × 16 MiB) peaked at 1026 MiB RSS in the worst-case test, fitting a 2 GB host. |
 | `shutdown_drain_secs` | Default 5 (0–60). Read when SIGTERM/SIGINT arrives, so a saved value applies to the next stop. See the shutdown paragraph below. |
 | `max_body_mb` | The next request reads the new limit, on forwarding and management routes. A request already reading its body keeps the limit it started with. |
-| `proxy_url`, `proxy_enabled`, `ipv6` | Per-account clients (and token-refresh clients) are dropped and rebuilt on next use. An already-issued HTTP attempt keeps its client and uses that client's egress when classifying connection errors; the next attempt, including a retry of the same request, can use the new egress. When the effective egress changes (`proxy_enabled` and a non-empty `proxy_url`), open client WebSockets finish the running turn on the old connection and are then closed normally (1000) on both legs; Codex reconnects on its next request through the new egress. Not counted as an error, no cooldown. A change of `ipv6` counts as an egress change. |
+| `proxy_url`, `proxy_enabled`, `ipv6` | Per-account clients (and token-refresh clients) are dropped and rebuilt on next use. An already-issued HTTP attempt keeps its client and uses that client's egress when classifying connection errors; the next attempt, including a retry of the same request, can use the new egress. When the effective egress changes (`proxy_enabled` and a non-empty `proxy_url`), an idle client WebSocket is closed normally (1000) at once and one running a turn finishes it on the old connection first, then is closed the same way, on both legs; Codex reconnects on its next request through the new egress. Not counted as an error, no cooldown. A change of `ipv6` counts as an egress change. |
 | `upstream_opts.connect_timeout_secs` | Model-upstream HTTP clients are rebuilt on next use; the next WS handshake reads the new value. Already-issued attempts retain their clients. OAuth token refresh keeps its separate fixed 10-second connect limit and 30-second whole-request limit. |
 | `ws_compression` | Next WebSocket handshake. Open connections keep what they negotiated. |
 | `upstream_opts.cloudflare_cookies` | Off: every account's jar is dropped. On: empty jars. Connections are kept. |
@@ -127,7 +142,7 @@ All routes sit behind the client-key middleware.
 
 | Route | |
 |---|---|
-| `GET /admin/v1/config` | `version` (also the `ETag`), `path`, `write_enabled`, `values` (file, masked), `running` (masked), `schema` (key, kind, `hot`/`restart`, `editable`, options, description), `pending_restart`, `last_reload`, `file_error`, `overrides`, `egress` (effective proxy, masked, and `direct`), `runtime` (current `inflight`, `limit`, process-lifetime capacity `rejected` and per-reason `rejected_by` (`inflight`, `ws`, `body`, `ws_msg`), `ws_connections`, `draining`). Runtime values are a response-time snapshot; the version is still the configuration write token. |
+| `GET /admin/v1/config` | `version` (also the `ETag`), `path`, `write_enabled`, `values` (file, masked), `running` (masked), `schema` (key, kind, `effect` = `hot`/`new_connection`/`ws_after_turn`/`restart`, `editable`, options, description), `pending_restart`, `last_reload`, `file_error`, `overrides`, `egress` (effective proxy, masked, and `direct`), `runtime` (current `inflight`, `limit`, process-lifetime capacity `rejected` and per-reason `rejected_by` (`inflight`, `ws`, `body`, `ws_msg`), `ws_connections`, `draining`). Runtime values are a response-time snapshot; the version is still the configuration write token. |
 | `GET /admin/v1/runtime` | Lightweight live `{egress, runtime, proxy_errors_1h}` snapshot for page headers. The first two fields match the config response; the count sums `proxy_connect` and `proxy_timeout` records from the last hour (0 when usage logging is disabled). Does not read or parse the config file. |
 | `POST /admin/v1/config/validate` | `{"changes": {"routing.strategy": "fill-first", …}}` → `{ok, errors, diff}`. Dry run; never writes. |
 | `PUT /admin/v1/config` | Same body plus `If-Match: "<version>"`. Missing → 428, stale → 412. Returns `applied`, `pending_restart`, new `version`. `null` removes the key (built-in default). |

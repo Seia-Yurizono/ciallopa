@@ -343,6 +343,21 @@ test('review shows the latest values and saves against the reviewed version', as
   assert.equal(h.draft.base.version, 'v4');
 });
 
+test('the save review groups changes by effect, most impactful first', () => {
+  const row = (key, effect) => ({key, old: 1, new: 2, effect});
+  let g = M.groupByEffect([row('a', 'hot'), row('b', 'new_connection'), row('c', 'ws_after_turn'), row('d', 'restart'), row('e', 'hot')]);
+  assert.deepEqual(JSON.parse(JSON.stringify(g.groups.map(x => [x.effect, x.rows.map(r => r.key)]))),
+    [['restart', ['d']], ['ws_after_turn', ['c']], ['new_connection', ['b']], ['hot', ['a', 'e']]]);
+  assert.equal(g.top, 'restart');
+  assert.equal(g.ws, true, 'a restart on top still reports the WebSocket groups below it');
+  g = M.groupByEffect([row('a', 'hot'), row('b', 'new_connection')]);
+  assert.deepEqual([g.top, g.ws], ['new_connection', true]);
+  g = M.groupByEffect([row('a', 'hot'), row('b', 'something_new')]);
+  assert.deepEqual([g.top, g.ws, g.groups.length], ['hot', false, 1], 'an unknown effect counts as hot');
+  g = M.groupByEffect([]);
+  assert.deepEqual([g.top, g.ws, g.groups.length], ['hot', false, 0]);
+});
+
 test('validation errors are reported per key without opening the review', async () => {
   const h = harness();
   await h.ctl.load();

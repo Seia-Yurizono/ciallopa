@@ -958,11 +958,32 @@
   overflow-wrap: anywhere;
 }
 
-/* Phones: the review table keeps setting / current / new; a restart shows as a tag by the name. */
-@media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
-  .st-rv-eff {
-    display: none;
-  }
+/* Save review: one table per effect, headed by its tag and what it means. */
+.st-rv-group {
+  display: grid;
+  gap: var(--s2);
+}
+
+.st-rv-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.st-rv-head .muted {
+  min-width: 0;
+  flex: 1 1 220px;
+}
+
+.st-rv-ws {
+  padding: var(--s3);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r2);
+}
+
+.st-rv-ws p {
+  margin: 0;
 }
 
 /* ---------- medium widths: default goes under the control ---------- */
