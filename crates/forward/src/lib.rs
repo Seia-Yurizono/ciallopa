@@ -171,8 +171,13 @@ async fn forward(
     let route = session_route(&headers, parsed.as_ref());
     let trk = if inspect {
         usage::endpoint_of(&path).and_then(|ep| {
-            let mut t =
-                usage::Tracker::start(&st, ciallopa_usage::Transport::Sse, ep, key_label(&key))?;
+            let mut t = usage::Tracker::start_at(
+                &st,
+                ciallopa_usage::Transport::Sse,
+                ep,
+                key_label(&key),
+                req.started?,
+            )?;
             t.headers(&headers);
             t.meta(parsed.as_ref());
             Some(t)

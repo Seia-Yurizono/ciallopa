@@ -60,6 +60,7 @@ impl Transport for WsTransport<'_> {
         route: &RouteRequest,
         phase: &mut Phase,
         policy: &Policy,
+        mut tracker: Option<&mut Tracker>,
     ) -> Dialed<Self::Conn> {
         // Capture before the dial reads egress options.
         let generation = self.st.upstream.egress_gen();
@@ -67,8 +68,15 @@ impl Transport for WsTransport<'_> {
             &crate::turn_state::scope(self.headers, id, !route.exclude.is_empty()),
             creds,
         );
+        let sent = std::time::Instant::now();
+        if let Some(t) = tracker.as_deref_mut() {
+            t.prep(sent);
+        }
         match self.st.upstream.ws_connect_as(id, self.path, headers).await {
             Ok((ws, response)) => {
+                if let Some(t) = tracker {
+                    t.received_headers(sent);
+                }
                 if policy.note_successful_attempt {
                     self.st.router.note_attempt(id);
                 }

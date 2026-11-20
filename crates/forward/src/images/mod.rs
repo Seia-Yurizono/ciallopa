@@ -29,7 +29,7 @@ pub(crate) async fn generations(
     h: HeaderMap,
     b: crate::reqbody::ReqBody,
 ) -> Response {
-    tracked(st.0, key, h, b.bytes, Kind::Generate).await
+    tracked(st.0, key, h, b, Kind::Generate).await
 }
 
 pub(crate) async fn edits(
@@ -38,18 +38,28 @@ pub(crate) async fn edits(
     h: HeaderMap,
     b: crate::reqbody::ReqBody,
 ) -> Response {
-    tracked(st.0, key, h, b.bytes, Kind::Edit).await
+    tracked(st.0, key, h, b, Kind::Edit).await
 }
 
 /// One tracker: streaming branches take it into their producer; buffered responses retain
 /// it here until their body is consumed or dropped. Header arrival is never completion.
-async fn tracked(st: AppState, key: crate::Key, h: HeaderMap, b: Bytes, kind: Kind) -> Response {
-    let mut trk = Tracker::start(
-        &st,
-        ciallopa_usage::Transport::Http,
-        "images",
-        crate::key_label(&key),
-    );
+async fn tracked(
+    st: AppState,
+    key: crate::Key,
+    h: HeaderMap,
+    b: crate::reqbody::ReqBody,
+    kind: Kind,
+) -> Response {
+    let mut trk = b.started.and_then(|start| {
+        Tracker::start_at(
+            &st,
+            ciallopa_usage::Transport::Http,
+            "images",
+            crate::key_label(&key),
+            start,
+        )
+    });
+    let b = b.bytes;
     if let Some(t) = trk.as_mut() {
         t.headers(&h);
         t.meta(serde_json::from_slice::<Value>(&b).ok().as_ref());

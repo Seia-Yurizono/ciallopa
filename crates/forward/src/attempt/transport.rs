@@ -1,6 +1,7 @@
 use super::{Dialed, Outbound, Phase, Policy, Transport};
 use crate::headers::upstream_headers;
 use crate::limits::{read_body, BODY_TIMEOUT, ERROR_BODY_LIMIT};
+use crate::usage::Tracker;
 use crate::{errors, AppState};
 use ciallopa_core::{AccountId, Credentials, RouteRequest};
 use http::HeaderMap;
@@ -22,6 +23,7 @@ impl Transport for HttpTransport<'_> {
         route: &RouteRequest,
         phase: &mut Phase,
         policy: &Policy,
+        mut tracker: Option<&mut Tracker>,
     ) -> Dialed<Self::Conn> {
         let url = self.st.upstream.url(&self.ob.path);
         let (client, via_proxy) = match self.st.upstream.http_for_attempt(id) {
@@ -44,6 +46,10 @@ impl Transport for HttpTransport<'_> {
             .request(self.ob.method.clone(), &url)
             .headers(headers)
             .body(self.ob.body.clone());
+        let sent = std::time::Instant::now();
+        if let Some(t) = tracker.as_deref_mut() {
+            t.prep(sent);
+        }
         let response = match tokio::time::timeout(self.header_timeout, request.send()).await {
             Err(_) => {
                 return Dialed::Transport {
@@ -62,6 +68,9 @@ impl Transport for HttpTransport<'_> {
             }
             Ok(Ok(response)) => response,
         };
+        if let Some(t) = tracker {
+            t.received_headers(sent);
+        }
         self.st.upstream.store_cookies(id, &url, response.headers());
         let status = response.status().as_u16();
         if status >= 400 || policy.note_successful_attempt {

@@ -391,7 +391,7 @@ impl Session {
 
     async fn send(&mut self, message: Message) -> Flow {
         let tracker = self.state.turn_mut().and_then(|t| t.tracker.as_mut());
-        match send_down(&mut self.down.tx, message, tracker).await {
+        match send_down(&mut self.down.tx, message, tracker, false).await {
             Ok(()) => Flow::Continue,
             Err(_) => Flow::Close(Close::ClientGone),
         }
@@ -441,7 +441,7 @@ impl Session {
             .budget
             .run(async {
                 if let Some(wait) = wait {
-                    tokio::time::sleep(wait).await;
+                    Tracker::wait(turn.tracker.as_mut(), wait).await;
                 }
                 connect(
                     &self.st,
@@ -449,7 +449,7 @@ impl Session {
                     &self.ctx.headers,
                     route,
                     hold,
-                    None,
+                    turn.tracker.as_mut(),
                 )
                 .await
             })
@@ -565,6 +565,13 @@ impl Session {
             Message::Binary(b) => Some(b.len()),
             _ => None,
         };
+        let create = self.state.turn().is_none()
+            && matches!(&message, Message::Text(text) if text.contains("response.create"));
+        let started = if create {
+            crate::usage::Started::capture(&self.st)
+        } else {
+            None
+        };
         let head = match &message {
             Message::Text(text) if self.state.turn().is_none() => Head::parse(text.as_str()),
             _ => None,
@@ -622,8 +629,7 @@ impl Session {
                     }
                     _ => None,
                 };
-                let tracker = if matches!(&message, Message::Text(text) if text.contains("response.create"))
-                {
+                let tracker = if create {
                     if let Some(model) = head
                         .as_ref()
                         .and_then(|h| h.model.as_ref())
@@ -634,7 +640,13 @@ impl Session {
                     }
                     endpoint_of(&self.ctx.path)
                         .and_then(|ep| {
-                            Tracker::start(&self.st, Transport::Ws, ep, self.ctx.key.as_deref())
+                            Tracker::start_at(
+                                &self.st,
+                                Transport::Ws,
+                                ep,
+                                self.ctx.key.as_deref(),
+                                started?,
+                            )
                         })
                         .map(|mut tr| {
                             let value = head.as_ref().map(Head::to_value);
@@ -674,7 +686,7 @@ impl Session {
                     },
                 });
                 self.reset_idle();
-                if matches!(&message, Message::Text(text) if text.contains("response.create")) {
+                if create {
                     if !self.route.model.is_empty()
                         && self
                             .st
@@ -740,6 +752,11 @@ impl Session {
             }
         }
         if let Some(message) = to_up(message) {
+            if started.is_some() {
+                if let Some(tracker) = self.tracker_mut() {
+                    tracker.prep(std::time::Instant::now());
+                }
+            }
             match write_with_client_close(
                 send_message(&mut self.up.tx, message),
                 &mut self.down.rx,
@@ -852,11 +869,12 @@ impl Session {
             Message::Text(text) => Some(classify(None, text.as_str()).ws_view(text.as_str())),
             _ => None,
         };
+        let mut first_content = false;
         if let Some(ty) = classified.as_ref().and_then(|c| c.ty.as_deref()) {
             if let Some(turn) = self.state.turn_mut() {
                 turn.progress.event(ty);
                 if let Some(tracker) = turn.tracker.as_mut() {
-                    tracker.obs_event(ty);
+                    first_content = tracker.obs_event(ty);
                 }
             }
         }
@@ -1049,7 +1067,9 @@ impl Session {
                 let tracker = finished
                     .as_mut()
                     .or_else(|| self.state.turn_mut().and_then(|t| t.tracker.as_mut()));
-                send_down(&mut self.down.tx, message, tracker).await.is_ok()
+                send_down(&mut self.down.tx, message, tracker, first_content)
+                    .await
+                    .is_ok()
             }
             None => true,
         };
@@ -1115,7 +1135,12 @@ impl Session {
 
 /// Downstream send of a turn's message, observed on its tracker (`sink.send` completion:
 /// frame written and tungstenite's flush returned; not a client receive).
-async fn send_down<S>(dtx: &mut S, m: Message, t: Option<&mut Tracker>) -> Result<(), S::Error>
+async fn send_down<S>(
+    dtx: &mut S,
+    m: Message,
+    t: Option<&mut Tracker>,
+    first_content: bool,
+) -> Result<(), S::Error>
 where
     S: futures::Sink<Message> + Unpin,
 {
@@ -1126,7 +1151,7 @@ where
     };
     let (r, blocked) = crate::downstream::timed(dtx.send(m)).await;
     if let (Some(t), Some(n)) = (t, n) {
-        t.obs_ws_sent(n, blocked, r.is_ok());
+        t.obs_ws_sent(n, blocked, r.is_ok(), first_content);
     }
     r
 }

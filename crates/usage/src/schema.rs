@@ -2,7 +2,7 @@ use crate::UsageError;
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 
-pub(crate) const SCHEMA_VERSION: i64 = 21;
+pub(crate) const SCHEMA_VERSION: i64 = 22;
 
 pub(crate) const LATEST: &str = r#"
 CREATE TABLE IF NOT EXISTS labels(
@@ -180,7 +180,13 @@ CREATE TABLE IF NOT EXISTS request_obs(
   ws_deflate_down       INTEGER,
   ws_ext_down           TEXT,
   ws_deflate_up         INTEGER,
-  ws_ext_up             TEXT
+  ws_ext_up             TEXT,
+  prep_ms               INTEGER,
+  cred_ms               INTEGER,
+  hold_ms               INTEGER,
+  headers_at_ms         INTEGER,
+  send_to_headers_ms    INTEGER,
+  down_first_content_ms INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS quota_reset_events (
@@ -346,6 +352,29 @@ const STEPS: &[(i64, Migration)] = &[
         )
     }),
     (21, migrate_v21),
+    (22, |tx| {
+        // Earlier migrations can already have created request_obs using LATEST.
+        for column in [
+            "prep_ms",
+            "cred_ms",
+            "hold_ms",
+            "headers_at_ms",
+            "send_to_headers_ms",
+            "down_first_content_ms",
+        ] {
+            let has: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('request_obs') WHERE name=?1)",
+                [column],
+                |r| r.get(0),
+            )?;
+            if !has {
+                tx.execute_batch(&format!(
+                    "ALTER TABLE request_obs ADD COLUMN {column} INTEGER"
+                ))?;
+            }
+        }
+        Ok(())
+    }),
 ];
 
 fn migrate_v21(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {

@@ -1272,11 +1272,12 @@ writer (see `ciallopa_core::fingerprint`).
 
 ## Gateway downstream observation (schema v14)
 
-One optional `request_obs` row per Responses SSE request or WS turn (`id` = `requests.id`),
+One optional `request_obs` row per tracked request or WS turn (`id` = `requests.id`),
 aggregated in memory and written in the same transaction as its `requests` row (no per-chunk
 writes); purged with it. Exports and `/records` are unchanged. Every column is nullable:
-NULL means not observed / not applicable / older row, never 0. Times are ms since the record
-start (same zero as `ttft_ms`); `*_us` are microseconds.
+NULL means not observed / not applicable / older row. Event times are ms since the record
+start (same zero as `ttft_ms`); `*_us` are microseconds. For the v22 preparation, header and
+first-content delivery fields, see [request phase timings](METRICS.md#请求阶段耗时).
 
 These are **gateway** observations only. Nothing here is a client receive, parse or render
 time, a socket flush or a TCP acknowledgement; only the client can measure those.
@@ -1295,9 +1296,8 @@ time, a socket flush or a TCP acknowledgement; only the client can measure those
 | `down_incomplete` | SSE body dropped before its end (client gone, including a normal close right after the terminal event), or a WS send error |
 | `ws_deflate_down` / `ws_ext_down`, `ws_deflate_up` / `ws_ext_up` | permessage-deflate **negotiation** per leg (client↔ciallopa, ciallopa↔upstream) and the normalised answer (`unrecognized` if not a plain RFC 7692 answer). Whether each frame was compressed is not recorded |
 
-Notes: the old `ttft_ms`, `duration_ms` and TPS keep their meaning (an SSE row is written when the
-body ends, but `duration_ms` is still the producer end; a WS turn's `duration_ms` is fixed when
-its terminal frame arrives, before that frame's observed send). On a WS replay (switch /
+An SSE row is written when the body ends. Its `duration_ms` ends at producer completion. A WS
+turn fixes `duration_ms` when its terminal frame arrives, before the frame's observed send. On a WS replay (switch /
 wait+retry) the upstream fields restart for the final attempt; times stay relative to the turn
-start. Frames after a WS turn's terminal frame belong to no turn. HTTP (non-stream) rows have
-no observation. No bodies, tokens or headers other than the two ids above are stored.
+start. Frames after a WS turn's terminal frame belong to no turn. Non-stream HTTP rows can carry
+preparation and header timings. No bodies, tokens or headers other than the two ids above are stored.

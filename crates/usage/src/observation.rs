@@ -9,6 +9,18 @@ pub const MAX_EXT_LEN: usize = 160;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Observation {
+    /// Ingress to the first upstream send (WS turn: first send or redial).
+    pub prep_ms: Option<u32>,
+    /// Total credential acquisition and forced refresh time across attempts.
+    pub cred_ms: Option<u32>,
+    /// Total cooldown, switch jitter and retry waits across attempts.
+    pub hold_ms: Option<u32>,
+    /// Final attempt headers (WS: 101), relative to ingress and to send start.
+    pub headers_at_ms: Option<u32>,
+    pub send_to_headers_ms: Option<u32>,
+    /// First model output handed to hyper (SSE) or successfully sent (WS).
+    pub down_first_content_ms: Option<u32>,
+
     // ---- upstream → gateway (final attempt; parse time of complete events / frames)
     /// First `response.output_text.delta` / `response.refusal.delta`.
     pub up_first_text_ms: Option<u32>,
@@ -166,7 +178,7 @@ up_events,up_bytes,response_id,up_req_id,sse_first_queue_ms,sse_last_queue_ms,ss
 sse_queue_blocked_max_us,sse_queue_chunks,sse_queue_bytes,sse_first_yield_ms,sse_last_yield_ms,\
 sse_yield_chunks,sse_yield_bytes,ws_first_send_ms,ws_last_send_ms,ws_sink_blocked_us,\
 ws_sink_blocked_max_us,ws_send_msgs,ws_send_bytes,down_incomplete,ws_deflate_down,ws_ext_down,\
-ws_deflate_up,ws_ext_up";
+ws_deflate_up,ws_ext_up,prep_ms,cred_ms,hold_ms,headers_at_ms,send_to_headers_ms,down_first_content_ms";
 
 fn i(v: Option<u64>) -> Option<i64> {
     v.map(|v| v.min(i64::MAX as u64) as i64)
@@ -175,7 +187,7 @@ fn i(v: Option<u64>) -> Option<i64> {
 pub(crate) fn insert(c: &Connection, id: i64, o: &Observation) -> rusqlite::Result<()> {
     let mut st = c.prepare_cached(&format!(
         "INSERT OR IGNORE INTO request_obs(id,{COLS}) VALUES \
-         (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31)"
+         (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,?34,?35,?36,?37)"
     ))?;
     st.execute(params![
         id,
@@ -209,6 +221,12 @@ pub(crate) fn insert(c: &Connection, id: i64, o: &Observation) -> rusqlite::Resu
         o.ws_ext_down,
         o.ws_deflate_up,
         o.ws_ext_up,
+        o.prep_ms,
+        o.cred_ms,
+        o.hold_ms,
+        o.headers_at_ms,
+        o.send_to_headers_ms,
+        o.down_first_content_ms,
     ])?;
     Ok(())
 }
@@ -264,6 +282,12 @@ pub(crate) fn read(c: &Connection, id: i64) -> rusqlite::Result<Option<Observati
                     ws_ext_down: r.get(27)?,
                     ws_deflate_up: r.get(28)?,
                     ws_ext_up: r.get(29)?,
+                    prep_ms: r.get(30)?,
+                    cred_ms: r.get(31)?,
+                    hold_ms: r.get(32)?,
+                    headers_at_ms: r.get(33)?,
+                    send_to_headers_ms: r.get(34)?,
+                    down_first_content_ms: r.get(35)?,
                 },
             })
         },

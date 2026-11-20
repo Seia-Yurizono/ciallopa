@@ -659,6 +659,18 @@ async fn sse_downstream_observation_recorded() {
     let (s, o) = obs_of(&e, u["request_id"].as_str().unwrap()).await;
     assert_eq!(s, 200, "{o}");
     let text = ms(&o, "up_first_text_ms");
+    let prep = ms(&o, "prep_ms");
+    let headers = ms(&o, "headers_at_ms");
+    let send = ms(&o, "send_to_headers_ms");
+    // This fixture has one attempt. Rounding two intervals can lose one millisecond.
+    assert!((prep + send..=prep + send + 1).contains(&headers), "{o}");
+    assert!(ms(&o, "cred_ms") <= prep && headers <= text, "{o}");
+    let delivered = ms(&o, "down_first_content_ms");
+    assert!(
+        (text..=ms(&o, "sse_last_yield_ms")).contains(&delivered),
+        "{o}"
+    );
+    assert_eq!(o.get("hold_ms"), Some(&serde_json::Value::Null), "{o}");
     assert!(
         text >= millis(250).as_millis() as u64 && text == u["ttft_ms"].as_u64().unwrap(),
         "{o} {u}"
@@ -703,6 +715,32 @@ async fn sse_downstream_observation_recorded() {
         u["duration_ms"].as_u64().unwrap() >= ms(&o, "up_terminal_ms"),
         "{u} {o}"
     );
+}
+
+#[tokio::test]
+async fn sse_prep_includes_reading_the_request_body() {
+    use tower::ServiceExt;
+    let d = tempfile::tempdir().unwrap();
+    let e = env_usage(300, Some(usage_recorder(d.path()))).await;
+    // This future starts only when the gateway polls the incoming body.
+    let delay = Duration::from_millis(20);
+    let body = Body::from_stream(futures::stream::once(async move {
+        tokio::time::sleep(delay).await;
+        Ok::<_, std::io::Error>(Bytes::from_static(br#"{"model":"gpt-5.5","stream":true}"#))
+    }));
+    let req = http::Request::post("/v1/responses")
+        .header("authorization", format!("Bearer {KEY}"))
+        .body(body)
+        .unwrap();
+    let response = e.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), 200);
+    axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let rows = wait_rows(&e, 1).await;
+    let (status, obs) = obs_of(&e, rows[0]["request_id"].as_str().unwrap()).await;
+    assert_eq!(status, 200);
+    assert!(ms(&obs, "prep_ms") >= delay.as_millis() as u64, "{obs}");
 }
 
 /// SSE client disconnect mid-stream: the row is still written (once) with the client_closed

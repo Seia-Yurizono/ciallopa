@@ -424,6 +424,7 @@ impl BodyPump {
                 }
             }
         }
+        let awaiting_content = self.trk.as_ref().is_some_and(|t| t.rec.ttft_ms.is_none());
         let (out, report) = match &mut self.observer {
             Observer::Passthrough => (chunk, None),
             Observer::Images(events, headers) => {
@@ -457,7 +458,9 @@ impl BodyPump {
                 t.error_body(&out);
             }
         }
-        out.is_empty() || tx.send(Ok(out)).await.is_ok()
+        let first_content =
+            awaiting_content && self.trk.as_ref().is_some_and(|t| t.rec.ttft_ms.is_some());
+        out.is_empty() || tx.send_chunk(Ok(out), first_content).await.is_ok()
     }
 
     fn observe_end(&mut self, result: &Finish) {

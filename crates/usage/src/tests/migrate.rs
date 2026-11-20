@@ -336,6 +336,13 @@ fn create_fixture(c: &mut rusqlite::Connection, version: i64) {
         )
         .unwrap();
     }
+    if version >= 21 {
+        c.execute_batch(
+            "ALTER TABLE reset_consume ADD COLUMN p_reset_obs_id INTEGER;
+                         ALTER TABLE reset_consume ADD COLUMN s_reset_obs_id INTEGER",
+        )
+        .unwrap();
+    }
     c.pragma_update(None, "user_version", version).unwrap();
 }
 
@@ -349,9 +356,26 @@ fn fixture(version: i64) -> rusqlite::Connection {
 
 #[test]
 fn historical_schemas_upgrade_and_roundtrip() {
-    for version in [1, 4, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20] {
+    for version in [1, 4, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21] {
         let mut c = fixture(version);
+        if version >= 14 {
+            c.execute(
+                "INSERT INTO request_obs(id,up_events) VALUES (1048576,3)",
+                [],
+            )
+            .unwrap();
+        }
         crate::schema::migrate(&mut c).unwrap();
+        if version >= 14 {
+            let row = crate::observation::read(&c, 1048576).unwrap().unwrap();
+            assert_eq!(
+                row.obs,
+                crate::Observation {
+                    up_events: Some(3),
+                    ..Default::default()
+                }
+            );
+        }
         assert_eq!(
             c.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
                 .unwrap(),
@@ -626,8 +650,8 @@ fn v17_does_not_rebuild_an_existing_target_index() {
         c.pragma_query_value::<i64, _>(None, "schema_version", |r| r.get(0))
             .unwrap(),
         // v18 adds the expiry column, v19 four credit columns plus the epoch table and its
-        // index, v21 two attribution columns; the account index remains unchanged.
-        before + 1 + 6 + 2
+        // index, v21 two attribution columns, and v22 six timing columns.
+        before + 1 + 6 + 2 + 6
     );
     assert_account_index(&c);
 
@@ -919,7 +943,7 @@ fn v21_adds_attribution_without_guessing_or_rewriting_history() {
         assert_eq!(
             c.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
                 .unwrap(),
-            21
+            crate::schema::SCHEMA_VERSION
         );
         let receipts: Vec<_> = c.prepare(
             "SELECT id,redeem_request_id,status,p_reset_obs_id,s_reset_obs_id FROM reset_consume ORDER BY id"

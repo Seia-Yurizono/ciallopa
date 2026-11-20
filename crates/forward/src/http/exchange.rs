@@ -306,12 +306,14 @@ pub(crate) async fn send_streaming(
                     }
                     Replay::SwitchAfterOverload => {
                         ob.route.exclude.push(account);
-                        let _ = budget.run(tokio::time::sleep(switch_jitter(st))).await;
+                        let _ = budget
+                            .run(Tracker::wait(trk.as_mut(), switch_jitter(st)))
+                            .await;
                     }
                     Replay::WaitRetry(wait) => {
                         info.overload_waited = true;
                         let _ = budget
-                            .run(tokio::time::sleep(crate::timing::scale(st, wait)))
+                            .run(Tracker::wait(trk.as_mut(), crate::timing::scale(st, wait)))
                             .await;
                     }
                 }

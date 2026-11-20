@@ -144,6 +144,17 @@ async fn bounded_preparation_budget_is_shared_across_sse_replay() {
     assert_eq!(rows[0]["error"], "preparation_timeout", "{rows:?}");
     assert_eq!(rows[0]["err_source"], "local", "{rows:?}");
     assert_eq!(rows[0]["account"], "b", "{rows:?}");
+    let (status, obs) = obs_of(&e, rows[0]["request_id"].as_str().unwrap()).await;
+    assert_eq!(status, 200);
+    assert!(obs["prep_ms"].is_u64() && obs["cred_ms"].is_u64(), "{obs}");
+    // The previous attempt got headers. The final send timed out before them.
+    for key in [
+        "headers_at_ms",
+        "send_to_headers_ms",
+        "down_first_content_ms",
+    ] {
+        assert_eq!(obs.get(key), Some(&serde_json::Value::Null), "{key}: {obs}");
+    }
 }
 
 #[tokio::test]
@@ -396,6 +407,17 @@ async fn upstream_5xx_passed_through_with_provenance() {
     assert_eq!(row["error"], "server_is_overloaded");
     assert_eq!(row["upstream_status"], 503);
     let id = row["request_id"].as_str().unwrap().to_string();
+    let (status, obs) = obs_of(&e, &id).await;
+    assert_eq!(status, 200);
+    assert!(ms(&obs, "hold_ms") > 0, "{obs}");
+    assert!(
+        ms(&obs, "send_to_headers_ms") <= ms(&obs, "headers_at_ms"),
+        "{obs}"
+    );
+    assert_eq!(
+        obs.get("down_first_content_ms"),
+        Some(&serde_json::Value::Null)
+    );
     let v: serde_json::Value = detail_of(&e, &id, true).await.json().await.unwrap();
     assert_eq!(v["upstream_request_id"], "req_down");
     let at = v["attempts"].as_array().unwrap();

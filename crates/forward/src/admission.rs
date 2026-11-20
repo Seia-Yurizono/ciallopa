@@ -49,8 +49,14 @@ pub(crate) async fn admit(
     mut req: Request<Body>,
     next: Next,
 ) -> Response {
+    let exempt = exempt(&req);
+    if !exempt {
+        if let Some(start) = crate::usage::Started::capture(&st) {
+            req.extensions_mut().insert(start);
+        }
+    }
     let drain = st.upstream.drain.clone();
-    let admitted = if exempt(&req) || is_ws_upgrade(&req) {
+    let admitted = if exempt || is_ws_upgrade(&req) {
         drain.admit_exempt()
     } else {
         let limit = st.config.load().max_inflight_requests;
