@@ -50,6 +50,7 @@ struct LinkState {
     queue_bytes: u64,
     first_yield: Option<u32>,
     last_yield: Option<u32>,
+    first_content_yield: Option<u32>,
     yield_chunks: u32,
     yield_bytes: u64,
     incomplete: bool,
@@ -96,9 +97,12 @@ impl DownLink {
         s.queue_bytes = s.queue_bytes.saturating_add(bytes as u64);
     }
 
-    fn yielded(&self, bytes: usize) {
+    fn yielded(&self, bytes: usize, first_content: bool) {
         let now = ms_since(self.start, Instant::now());
         let mut s = self.lock();
+        if first_content {
+            s.first_content_yield = Some(now);
+        }
         s.first_yield.get_or_insert(now);
         s.last_yield = Some(now);
         s.yield_chunks = s.yield_chunks.saturating_add(1);
@@ -157,6 +161,7 @@ fn merge(s: &LinkState, rec: &mut Record) {
     o.sse_queue_bytes = (s.queue_chunks > 0).then_some(s.queue_bytes);
     o.sse_queue_blocked_us = (s.queue_chunks > 0).then_some(s.queue_blocked_us);
     o.sse_queue_blocked_max_us = (s.queue_chunks > 0).then_some(s.queue_blocked_max_us);
+    o.down_first_content_ms = s.first_content_yield;
     o.sse_first_yield_ms = s.first_yield;
     o.sse_last_yield_ms = s.last_yield;
     o.sse_yield_chunks = n(s.yield_chunks);
@@ -181,24 +186,25 @@ pub(crate) type Item = Result<Bytes, std::io::Error>;
 
 /// The producer's side of the SSE body queue; same `send` shape as `mpsc::Sender`.
 pub(crate) struct ObsTx {
-    tx: tokio::sync::mpsc::Sender<Item>,
+    tx: tokio::sync::mpsc::Sender<(Item, bool)>,
     link: Option<Arc<DownLink>>,
 }
 
 impl ObsTx {
-    pub(crate) async fn send(
-        &self,
-        v: Item,
-    ) -> Result<(), tokio::sync::mpsc::error::SendError<Item>> {
+    pub(crate) async fn send(&self, v: Item) -> Result<(), ()> {
+        self.send_chunk(v, false).await
+    }
+
+    pub(crate) async fn send_chunk(&self, v: Item, first_content: bool) -> Result<(), ()> {
         let Some(link) = &self.link else {
-            return self.tx.send(v).await;
+            return self.tx.send((v, first_content)).await.map_err(|_| ());
         };
         let n = v.as_ref().map(|b| b.len()).ok();
-        let (r, blocked) = timed(self.tx.send(v)).await;
+        let (r, blocked) = timed(self.tx.send((v, first_content))).await;
         if let Some(n) = n {
             link.queued(n, blocked, r.is_ok());
         }
-        r
+        r.map_err(|_| ())
     }
 }
 
@@ -240,12 +246,12 @@ where
         let r = rx.poll_recv(cx);
         if let Some(e) = &end {
             match &r {
-                Poll::Ready(Some(Ok(b))) => e.0.yielded(b.len()),
+                Poll::Ready(Some((Ok(b), first_content))) => e.0.yielded(b.len(), *first_content),
                 Poll::Ready(None) => e.0.body_done(true),
                 _ => {}
             }
         }
-        r
+        r.map(|item| item.map(|(value, _)| value))
     }))
 }
 
@@ -332,9 +338,9 @@ mod tests {
     ) -> impl FnOnce(ObsTx) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> {
         move |tx| {
             Box::pin(async move {
-                for _ in 0..n {
+                for i in 0..n {
                     if tx
-                        .send(Ok(Bytes::from_static(b"0123456789")))
+                        .send_chunk(Ok(Bytes::from_static(b"0123456789")), i == 1)
                         .await
                         .is_err()
                     {
@@ -375,7 +381,12 @@ mod tests {
         assert_eq!(o.sse_yield_bytes, Some(400));
         assert!(o.sse_queue_blocked_us.unwrap() > 0, "{o:?}");
         assert!(o.sse_queue_blocked_max_us <= o.sse_queue_blocked_us);
-        assert!(o.sse_first_yield_ms <= o.sse_last_yield_ms);
+        let delivered = o
+            .down_first_content_ms
+            .expect("second chunk carried first content");
+        assert!(
+            o.sse_first_yield_ms.unwrap() < delivered && delivered < o.sse_last_yield_ms.unwrap()
+        );
         assert_eq!(o.down_incomplete, Some(false));
         r.shutdown();
     }
@@ -398,6 +409,10 @@ mod tests {
         );
         let o = obs(&r, id).await.expect("emitted at once");
         assert_eq!(o.sse_yield_chunks, None, "nothing was handed to hyper");
+        assert_eq!(
+            o.down_first_content_ms, None,
+            "content queued but never yielded"
+        );
         assert_eq!(o.sse_queue_chunks, Some(16));
         assert_eq!(o.down_incomplete, Some(true));
         r.shutdown();

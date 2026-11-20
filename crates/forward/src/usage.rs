@@ -9,7 +9,7 @@ use http::HeaderMap;
 use serde_json::Value;
 use std::borrow::Cow;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub(crate) struct Tracker {
     pub(crate) rec: Record,
@@ -25,6 +25,8 @@ pub(crate) struct Tracker {
     /// Silence at cancellation distinguishes client idle timeout from user cancellation.
     last_upstream: Option<Instant>,
     obs: Observation,
+    credentials: Option<Duration>,
+    waits: Option<Duration>,
     /// Freeze before the terminal WS send to exclude downstream wait.
     frozen_ms: Option<u32>,
 }
@@ -62,6 +64,7 @@ pub(crate) enum End {
     ObservationIncomplete,
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct Started {
     id: i64,
     at: Instant,
@@ -189,15 +192,6 @@ impl Tracker {
         format!("{:016x}", self.rec.id)
     }
 
-    pub(crate) fn start(
-        st: &AppState,
-        transport: Transport,
-        endpoint: &'static str,
-        key: Option<&str>,
-    ) -> Option<Self> {
-        Self::start_at(st, transport, endpoint, key, Started::capture(st)?)
-    }
-
     pub(crate) fn start_at(
         st: &AppState,
         transport: Transport,
@@ -219,8 +213,38 @@ impl Tracker {
             replays: None,
             last_upstream: None,
             obs: Observation::default(),
+            credentials: None,
+            waits: None,
             frozen_ms: None,
         })
+    }
+
+    pub(crate) fn prep(&mut self, at: Instant) {
+        self.obs
+            .prep_ms
+            .get_or_insert_with(|| crate::downstream::ms_since(self.start, at));
+    }
+
+    pub(crate) fn reset_headers(&mut self) {
+        self.obs.headers_at_ms = None;
+        self.obs.send_to_headers_ms = None;
+    }
+
+    pub(crate) fn received_headers(&mut self, sent: Instant) {
+        let now = Instant::now();
+        self.obs.headers_at_ms = Some(crate::downstream::ms_since(self.start, now));
+        self.obs.send_to_headers_ms = Some(crate::downstream::ms_since(sent, now));
+    }
+
+    pub(crate) async fn credential_time<T>(
+        tracker: Option<&mut Self>,
+        future: impl std::future::Future<Output = T>,
+    ) -> T {
+        crate::timing::accumulate(tracker.map(|t| &mut t.credentials), future).await
+    }
+
+    pub(crate) async fn wait(tracker: Option<&mut Self>, delay: Duration) {
+        crate::timing::accumulate(tracker.map(|t| &mut t.waits), tokio::time::sleep(delay)).await;
     }
 
     /// Discard successful handshakes: turns own usage, but preparation cancellation remains observable.
@@ -320,8 +344,8 @@ impl Tracker {
         o.response_id = None;
     }
 
-    /// Use one timestamp for event observation and TTFT, including post-terminal events.
-    pub(crate) fn obs_event(&mut self, ty: &str) -> u32 {
+    /// Observe the event and report whether it carries this turn/request's first output.
+    pub(crate) fn obs_event(&mut self, ty: &str) -> bool {
         let now = elapsed_ms(self.start);
         let o = &mut self.obs;
         o.up_events = Some(o.up_events.unwrap_or(0).saturating_add(1));
@@ -336,13 +360,12 @@ impl Tracker {
         if is_terminal_type(ty) {
             o.up_terminal_ms.get_or_insert(now);
         }
-        if self.rec.transport == Transport::Ws
-            && self.outcome == Outcome::Open
-            && is_output_type(ty)
-        {
-            self.rec.ttft_ms.get_or_insert(now);
+        let first =
+            self.rec.ttft_ms.is_none() && self.outcome == Outcome::Open && is_output_type(ty);
+        if first {
+            self.rec.ttft_ms = Some(now);
         }
-        now
+        first
     }
 
     pub(crate) fn obs_up_bytes(&mut self, n: usize) {
@@ -366,6 +389,7 @@ impl Tracker {
         bytes: usize,
         blocked: Option<std::time::Duration>,
         ok: bool,
+        first_content: bool,
     ) {
         if !ok {
             self.obs.down_incomplete = Some(true);
@@ -374,6 +398,9 @@ impl Tracker {
         let now = elapsed_ms(self.start);
         let b = blocked.map(crate::downstream::us).unwrap_or(0);
         let o = &mut self.obs;
+        if first_content {
+            o.down_first_content_ms = Some(now);
+        }
         o.ws_first_send_ms.get_or_insert(now);
         o.ws_last_send_ms = Some(now);
         o.ws_sink_blocked_us = Some(o.ws_sink_blocked_us.unwrap_or(0).saturating_add(b));
@@ -692,12 +719,9 @@ impl Tracker {
     /// Only created/terminal events need a JSON tree; the forwarder owns the bounded event buffer.
     pub(crate) fn sse_event(&mut self, text: &str, ty: Option<&str>) {
         let Some(ty) = ty else { return };
-        let now = self.obs_event(ty);
+        self.obs_event(ty);
         if self.outcome != Outcome::Open {
             return;
-        }
-        if is_output_type(ty) {
-            self.rec.ttft_ms.get_or_insert(now);
         }
         if is_terminal_type(ty) {
             if let Ok(v) = serde_json::from_str(text) {
@@ -921,6 +945,9 @@ impl Drop for Tracker {
         }
         self.rec.duration_ms = self.frozen_ms.unwrap_or_else(|| elapsed_ms(self.start));
         let forced = self.drain.phase() == ciallopa_upstream::drain::Phase::Force;
+        let millis = |d: Duration| d.as_millis().min(u128::from(u32::MAX)) as u32;
+        self.obs.cred_ms = self.credentials.map(millis);
+        self.obs.hold_ms = self.waits.map(millis);
         let rec = into_record(
             std::mem::replace(&mut self.rec, Record::new(0, Transport::Http, "")),
             self.outcome,

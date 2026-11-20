@@ -39,6 +39,21 @@ pub(crate) fn switch_jitter(st: &AppState) -> Duration {
     scale(st, ciallopa_upstream::retry::switch_jitter())
 }
 
+/// Count elapsed time even when the preparation deadline or client cancels the await.
+pub(crate) async fn accumulate<T>(
+    total: Option<&mut Option<Duration>>,
+    future: impl std::future::Future<Output = T>,
+) -> T {
+    struct Elapsed<'a>(&'a mut Option<Duration>, std::time::Instant);
+    impl Drop for Elapsed<'_> {
+        fn drop(&mut self) {
+            *self.0.get_or_insert(Duration::ZERO) += self.1.elapsed();
+        }
+    }
+    let _elapsed = total.map(|total| Elapsed(total, std::time::Instant::now()));
+    future.await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

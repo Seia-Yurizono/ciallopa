@@ -22,6 +22,7 @@ pub(crate) async fn handler(
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     lease: Option<axum::Extension<ciallopa_upstream::drain::Lease>>,
+    started: Option<axum::Extension<crate::usage::Started>>,
     ws: Upgrade,
 ) -> Response {
     let Some(path) = map_path(pq(&uri)) else {
@@ -58,10 +59,12 @@ pub(crate) async fn handler(
     // Preparing a connection can be cancelled before any upstream response exists.
     // Keep the selected account and start time in the ordinary drop-safe tracker.
     let mut handshake = endpoint_of(&path).and_then(|ep| {
-        Tracker::start(&st, Transport::Ws, ep, crate::key_label(&key)).map(|mut t| {
-            t.headers(&headers);
-            t
-        })
+        Tracker::start_at(&st, Transport::Ws, ep, crate::key_label(&key), started?.0).map(
+            |mut t| {
+                t.headers(&headers);
+                t
+            },
+        )
     });
     // Keep these limits for this connection, including later turns and replays.
     let (preparation_limit, idle) = {

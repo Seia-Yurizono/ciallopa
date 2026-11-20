@@ -151,13 +151,13 @@ impl Cooling {
 }
 
 /// Cancellation ends the cooldown hold; account for its elapsed time.
-pub(crate) async fn hold(d: Duration, held: &mut Duration) {
+pub(crate) async fn hold(d: Duration, held: &mut Duration, tracker: Option<&mut Tracker>) {
     tracing::info!(
         wait_ms = d.as_millis() as u64,
         "every account is cooling down; holding the request until the first one recovers"
     );
     let t = std::time::Instant::now();
-    tokio::time::sleep(d).await;
+    Tracker::wait(tracker, d).await;
     *held += t.elapsed();
 }
 

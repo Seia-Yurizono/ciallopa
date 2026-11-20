@@ -51,6 +51,7 @@ pub(crate) trait Transport {
         route: &RouteRequest,
         phase: &mut Phase,
         policy: &Policy,
+        tracker: Option<&mut Tracker>,
     ) -> impl Future<Output = Dialed<Self::Conn>> + Send;
     fn headers(conn: &Self::Conn) -> &HeaderMap;
 }
@@ -142,7 +143,7 @@ impl<T: Transport> Loop<'_, T> {
                     if let Cooling::Hold(wait) = cooling {
                         self.info.leave_account();
                         self.info.phase = Phase::Holding;
-                        hold(wait, &mut self.info.held).await;
+                        hold(wait, &mut self.info.held, self.tracker.as_deref_mut()).await;
                         continue;
                     }
                     return Err(best.or(|| match (&cooling, last_net) {
@@ -174,9 +175,17 @@ impl<T: Transport> Loop<'_, T> {
                 account: id.clone(),
             };
             if let Some(t) = self.tracker.as_deref_mut() {
-                t.accounts(&self.route.exclude, Some(&id));
+                // Active WS turns adopt a new account only after a successful redial.
+                if t.rec.transport != ciallopa_usage::Transport::Ws || t.rec.status == 0 {
+                    t.accounts(&self.route.exclude, Some(&id));
+                }
             }
-            let mut creds = match self.st.accounts.credentials(&id).await {
+            let mut creds = match Tracker::credential_time(
+                self.tracker.as_deref_mut(),
+                self.st.accounts.credentials(&id),
+            )
+            .await
+            {
                 Ok(c) => c,
                 Err(e) => {
                     tracing::warn!(account = %ciallopa_core::a(&id), error = %e, "credentials unavailable");
@@ -205,9 +214,19 @@ impl<T: Transport> Loop<'_, T> {
                 self.info.phase = Phase::Dialing {
                     account: id.clone(),
                 };
+                if let Some(t) = self.tracker.as_deref_mut() {
+                    t.reset_headers();
+                }
                 let dialed = self
                     .transport
-                    .dial(&id, &creds, self.route, &mut self.info.phase, &self.policy)
+                    .dial(
+                        &id,
+                        &creds,
+                        self.route,
+                        &mut self.info.phase,
+                        &self.policy,
+                        self.tracker.as_deref_mut(),
+                    )
                     .await;
                 let seen = classify(&dialed, &self.st.config.load().upstream_opts);
                 let others = matches!(
@@ -241,7 +260,12 @@ impl<T: Transport> Loop<'_, T> {
                 let mut verdict = decide(&self.policy, &seen, &ctx);
                 if verdict == Verdict::RefreshRetry {
                     refreshed = true;
-                    match self.st.accounts.force_refresh(&id).await {
+                    match Tracker::credential_time(
+                        self.tracker.as_deref_mut(),
+                        self.st.accounts.force_refresh(&id),
+                    )
+                    .await
+                    {
                         Ok(c) => {
                             self.record(&id, "http", |a| {
                                 a.status = Some(401);
@@ -410,7 +434,8 @@ impl<T: Transport> Loop<'_, T> {
                         }
                         self.route.exclude.push(id.clone());
                         if jitter {
-                            tokio::time::sleep(switch_jitter(self.st)).await;
+                            Tracker::wait(self.tracker.as_deref_mut(), switch_jitter(self.st))
+                                .await;
                         }
                         continue 'select;
                     }
@@ -418,7 +443,7 @@ impl<T: Transport> Loop<'_, T> {
                         wait: RetryWait::Backoff,
                     } => {
                         self.info.retries += 1;
-                        tokio::time::sleep(backoff).await;
+                        Tracker::wait(self.tracker.as_deref_mut(), backoff).await;
                         continue 'select;
                     }
                     Verdict::RetrySame {
@@ -429,7 +454,11 @@ impl<T: Transport> Loop<'_, T> {
                             failed.remember(&mut best, self.policy.final_error);
                         }
                         self.info.overload_waited = true;
-                        tokio::time::sleep(crate::timing::scale(self.st, wait)).await;
+                        Tracker::wait(
+                            self.tracker.as_deref_mut(),
+                            crate::timing::scale(self.st, wait),
+                        )
+                        .await;
                     }
                     Verdict::Accept | Verdict::RefreshRetry => {
                         unreachable!("accepted/refreshed above")

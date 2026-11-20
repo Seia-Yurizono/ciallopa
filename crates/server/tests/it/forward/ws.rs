@@ -204,6 +204,18 @@ async fn ws_preparation_budget_cancels_a_credential_lock_wait() {
     assert_eq!(rows[0]["error"], "preparation_timeout", "{rows:?}");
     assert_eq!(rows[0]["err_source"], "local", "{rows:?}");
     assert!(rows[0]["duration_ms"].as_u64().unwrap() >= millis(1000).as_millis() as u64);
+    let (status, obs) = obs_of(&e, rows[0]["request_id"].as_str().unwrap()).await;
+    assert_eq!(status, 200);
+    assert!(ms(&obs, "cred_ms") > 0, "{obs}");
+    for key in [
+        "prep_ms",
+        "hold_ms",
+        "headers_at_ms",
+        "send_to_headers_ms",
+        "down_first_content_ms",
+    ] {
+        assert_eq!(obs.get(key), Some(&serde_json::Value::Null), "{key}: {obs}");
+    }
     assert_eq!(rows[0]["account"], "acct", "{rows:?}");
     assert_eq!(rows[0]["switches"], 0);
     assert_eq!(e.mock.hits.load(Ordering::SeqCst), 0);
@@ -921,6 +933,22 @@ async fn ws_overload_switch_records_attempt_chain() {
     let at = v["attempts"].as_array().unwrap();
     assert_eq!(at.len(), 2, "{v}");
     assert_eq!(at[0]["account"], "a");
+    let (status, obs) = obs_of(&e, row["request_id"].as_str().unwrap()).await;
+    assert_eq!(status, 200);
+    let headers = ms(&obs, "headers_at_ms");
+    let content = ms(&obs, "up_first_text_ms");
+    assert!(
+        ms(&obs, "prep_ms") + ms(&obs, "send_to_headers_ms") <= headers,
+        "{obs}"
+    );
+    assert!(
+        ms(&obs, "cred_ms") <= headers && headers <= content,
+        "{obs}"
+    );
+    assert!(
+        (content..=ms(&obs, "ws_last_send_ms")).contains(&ms(&obs, "down_first_content_ms")),
+        "{obs}"
+    );
     assert_eq!(at[0]["code"], "server_is_overloaded");
     assert_eq!(at[0]["action"], "switch");
     assert_eq!(at[1]["account"], row["account"]);
@@ -1075,6 +1103,15 @@ async fn ws_downstream_observation_per_turn() {
     );
     let (s, w) = obs_of(&e, warm["request_id"].as_str().unwrap()).await;
     assert_eq!(s, 200, "{w}");
+    assert!(w["prep_ms"].is_u64(), "{w}");
+    for key in [
+        "cred_ms",
+        "headers_at_ms",
+        "send_to_headers_ms",
+        "down_first_content_ms",
+    ] {
+        assert_eq!(w.get(key), Some(&serde_json::Value::Null), "{key}: {w}");
+    }
     assert!(
         w["response_id"].is_string() || w["response_id"].is_null(),
         "{w}"

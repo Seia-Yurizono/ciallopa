@@ -17,6 +17,7 @@ const MIB: u64 = 1024 * 1024;
 
 pub(crate) struct ReqBody {
     pub bytes: Bytes,
+    pub started: Option<crate::usage::Started>,
     permit: Option<Arc<BodyPermit>>,
 }
 
@@ -123,7 +124,8 @@ impl FromRequest<AppState> for ReqBody {
             .get(http::header::CONTENT_LENGTH)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.trim().parse::<u64>().ok());
-        let (parts, body) = req.into_parts();
+        let (mut parts, body) = req.into_parts();
+        let started = parts.extensions.remove::<crate::usage::Started>();
         let mut stream = body.into_data_stream();
         let note = |n: u64| {
             crate::refusal::note(
@@ -183,6 +185,7 @@ impl FromRequest<AppState> for ReqBody {
             return Ok(Self {
                 bytes: Bytes::from(buf),
                 permit: None,
+                started,
             });
         }
         let permit = Arc::new(permit);
@@ -192,6 +195,7 @@ impl FromRequest<AppState> for ReqBody {
                 _permit: permit.clone(),
             }),
             permit: Some(permit),
+            started,
         })
     }
 }
