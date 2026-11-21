@@ -56,14 +56,18 @@ const AccModel = (() => {
   // The last snapshot is more than an hour old.
   const staleQuota = (qq, now) => !!(qq && qq.observed_at_ms && (now === undefined ? Date.now() : now) - qq.observed_at_ms > 36e5);
 
-  // Estimated capacity of a window → {mid, lo, hi, lower} (credits) or null.
+  // Estimated capacity of a window → {mid, lo, hi, lower, apiUsd} (credits; apiUsd is the capacity, or
+  // for a lower bound its lower bound, at API price) or null.
   function capacity(w) {
     const e = (w && w.estimate) || {};
+    const usd = v => Core.isNum(v) ? Number(v) : null;
     if (Core.isNum(e.capacity_credits)) {
       return {mid: Number(e.capacity_credits), lo: Core.isNum(e.capacity_lo) ? Number(e.capacity_lo) : null,
-        hi: Core.isNum(e.capacity_hi) ? Number(e.capacity_hi) : null, lower: false, gap: !!e.coverage_gap};
+        hi: Core.isNum(e.capacity_hi) ? Number(e.capacity_hi) : null, lower: false, gap: !!e.coverage_gap,
+        apiUsd: usd(e.capacity_api_usd)};
     }
-    if (Core.isNum(e.capacity_lo)) return {mid: null, lo: Number(e.capacity_lo), hi: null, lower: true, gap: !!e.coverage_gap};
+    if (Core.isNum(e.capacity_lo)) return {mid: null, lo: Number(e.capacity_lo), hi: null, lower: true, gap: !!e.coverage_gap,
+      apiUsd: usd(e.capacity_api_lo)};
     return null;
   }
 

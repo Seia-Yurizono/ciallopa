@@ -120,6 +120,9 @@ test('purchased credits label (Codex /status style) and estimated capacity', () 
   assert.equal(M.capacity({estimate: {capacity_credits: 500, capacity_lo: 480, capacity_hi: 520}}).hi, 520);
   assert.equal(M.capacity({estimate: {capacity_lo: 300}}).lower, true, 'only a lower bound');
   assert.equal(M.capacity({estimate: {status: 'window_reset'}}), null);
+  assert.equal(M.capacity({estimate: {capacity_credits: 500, capacity_api_usd: 18.4, capacity_api_lo: 9}}).apiUsd, 18.4);
+  assert.equal(M.capacity({estimate: {capacity_lo: 300, capacity_api_lo: 15.2}}).apiUsd, 15.2, 'lower bound uses its own price');
+  assert.equal(M.capacity({estimate: {capacity_credits: 500}}).apiUsd, null, 'no price without a $/credit rate');
 });
 
 test('reset cards: the newer source wins; limit_reached yields to a newer observation', () => {

@@ -31,6 +31,11 @@ pub struct Estimate {
     pub capacity_lo: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capacity_hi: Option<f64>,
+    /// Capacity (or, in `capacity_api_lo`, only its lower bound) at this cycle's average $/credit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capacity_api_usd: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capacity_api_lo: Option<f64>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub coverage_gap: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -93,7 +98,7 @@ pub struct AccountQuota {
     pub credits: Option<CreditState>,
 }
 
-fn empty_estimate(status: &'static str) -> Estimate {
+pub(crate) fn empty_estimate(status: &'static str) -> Estimate {
     Estimate {
         status,
         delta_pct: None,
@@ -109,6 +114,8 @@ fn empty_estimate(status: &'static str) -> Estimate {
         credits_used: None,
         capacity_lo: None,
         capacity_hi: None,
+        capacity_api_usd: None,
+        capacity_api_lo: None,
         coverage_gap: false,
         confidence: None,
         api_cost_usd: None,
@@ -187,6 +194,15 @@ pub(crate) fn quota(
     Ok(out)
 }
 
+/// Converts the credit capacity, or its lower bound when that is all there is, to API list price.
+pub(crate) fn price_capacity(e: &mut Estimate, usd_per_credit: f64) {
+    match (e.capacity_credits, e.capacity_lo) {
+        (Some(cap), _) => e.capacity_api_usd = Some(cap * usd_per_credit),
+        (None, Some(lo)) => e.capacity_api_lo = Some(lo * usd_per_credit),
+        (None, None) => {}
+    }
+}
+
 /// Weighted tokens between the first and last snapshot of the current window.
 fn estimate(
     c: &Connection,
@@ -216,6 +232,9 @@ fn estimate(
     e.credits_used = Some(cap.credits_used);
     e.capacity_lo = cap.lo;
     e.capacity_hi = cap.hi;
+    if let Some(rate) = data.usd_per_credit() {
+        price_capacity(&mut e, rate);
+    }
     e.coverage_gap = cap.coverage_gap;
     e.confidence = Some(cap.confidence.as_str());
     e.api_cost_usd = data.api_cost();

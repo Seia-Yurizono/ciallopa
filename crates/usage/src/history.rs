@@ -203,6 +203,10 @@ pub(crate) struct CycleData {
     req_credits: Vec<(i64, f64)>,
     /// Included usage (额度) only; requests served after the window was full are excluded.
     credits_used: f64,
+    /// USD and credits of the included requests that have both; their ratio is the cycle's
+    /// average $/credit, so requests missing either side never skew it.
+    paired_usd: f64,
+    paired_credits: f64,
     /// API list price of the included (额度) requests only; credit-funded ones are in over_api_cost.
     api_cost: Option<f64>,
     /// Purchased credits (点数) of requests served while the window was full.
@@ -364,6 +368,8 @@ pub(crate) fn load_cycle(
         obs,
         req_credits: Vec::new(),
         credits_used: 0.0,
+        paired_usd: 0.0,
+        paired_credits: 0.0,
         api_cost: None,
         over_credits: None,
         over_api_cost: None,
@@ -397,6 +403,10 @@ pub(crate) fn load_cycle(
         if let Some(c) = r.credits {
             d.req_credits.push((r.id, c));
             d.credits_used += c;
+        }
+        if let (Some(usd), Some(c)) = (r.usd, r.credits) {
+            d.paired_usd += usd;
+            d.paired_credits += c;
         }
     }
     Ok(d)
@@ -448,6 +458,10 @@ impl CycleData {
     }
     pub fn api_cost(&self) -> Option<f64> {
         self.api_cost
+    }
+    /// Average API list price per included credit of this cycle.
+    pub fn usd_per_credit(&self) -> Option<f64> {
+        (self.paired_credits > 0.0).then(|| self.paired_usd / self.paired_credits)
     }
 }
 

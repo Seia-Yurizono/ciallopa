@@ -665,6 +665,7 @@ See [METRICS.md](METRICS.md) for the current outcome, sampling, cursor and bucke
   {plan, observed_at_ms, observed_by, primary:{used_pct, resets_at, window_minutes, estimate},
   secondary:{…}}}], "note": …}`. `estimate` includes the legacy weighted-token fields and
   `capacity_credits` / `remaining_credits` / `capacity_lo` / `capacity_hi` / `coverage_gap` /
+  `capacity_api_usd` (capacity at the cycle's average API $/credit; `capacity_api_lo` for the lower bound alone) /
   `confidence` / `api_cost_usd` / `over_credits` / `over_api_usd` / `since_ms` (start after an
   estimate reset), and `quota.credits` is the 点数 state (see *Purchased credits*). Every configured account is listed (`quota: null` if never
   observed); accounts seen in the log but no longer configured carry `configured: false`.

@@ -318,7 +318,8 @@ const AccDetail = (() => {
     if (c) {
       const txt = c.lower ? t("accounts.q.capLower", {n: fmt.n(c.lo)}) : t("accounts.q.capMid", {n: fmt.n(c.mid)}) +
         (c.lo !== null && c.hi !== null ? " (" + fmt.n(c.lo) + "–" + fmt.n(c.hi) + ")" : "");
-      capLine = h("span", "small muted", txt, c.gap ? " · " + t("accounts.q.gap") : "");
+      const api = c.apiUsd === null ? "" : " · " + (c.lower ? "≥ " : "≈ ") + fmt.usd(c.apiUsd);
+      capLine = h("span", "small muted", txt + api, c.gap ? " · " + t("accounts.q.gap") : "");
     }
     return h("div", "acc-win", h("div", "acc-win-head", h("b", null, lb), h("span", "small muted num", M.resetText(w) || "")),
       m, capLine);

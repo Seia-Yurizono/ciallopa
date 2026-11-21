@@ -172,7 +172,7 @@ I18n.add("zh", {
   "accounts.act.refreshToken": "更新令牌…",
   "accounts.act.refreshTokenTip": "立即用刷新令牌换取新的访问令牌（ciallopa 也会自动更新）",
   "accounts.act.delete": "删除账号",
-  "accounts.q.info": "剩余比例来自上游，含其他客户端和其他实例的用量；容量（credits）是本实例根据快照估算的，带估算范围。",
+  "accounts.q.info": "剩余比例来自上游，含其他客户端和其他实例的用量；容量（credits）是本实例根据快照估算的，带估算范围；其后的美元数是按本周期平均 $/credit 折算的 API 价格，不含点数。",
   "accounts.q.none": "尚无额度数据，可以点「刷新额度」查询。",
   "accounts.q.noRead": "额度读取失败或无权限，见页面上方说明。",
   "accounts.q.capMid": "容量 ≈ {n} credits",
@@ -603,7 +603,8 @@ I18n.add("en", {
   "accounts.act.refreshTokenTip": "Exchange the refresh token for a new access token now (ciallopa also does this automatically)",
   "accounts.act.delete": "Delete account",
   "accounts.q.info": "Remaining share comes from upstream and includes other clients and instances. Capacity (credits) is this " +
-    "instance's estimate from snapshots, with an estimate range.",
+    "instance's estimate from snapshots, with an estimate range; the dollar amount after it is that capacity at API price, using this " +
+    "cycle's average $/credit (purchased credits not included).",
   "accounts.q.none": "No quota data yet; press Refresh quota to ask upstream.",
   "accounts.q.noRead": "Quota could not be read (see the notice at the top).",
   "accounts.q.capMid": "Capacity ≈ {n} credits",
