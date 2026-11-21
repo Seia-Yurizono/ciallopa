@@ -221,8 +221,7 @@ The per-attempt response-header budget remains HTTP-only.
 These gateway limits do not extend a client's own wait. Codex 0.164 defaults to a 15-second
 WS connection timeout; its SSE idle clock waits for complete events, so comment heartbeats
 can keep bytes moving without resetting that clock. Client retry, gateway attempt and account
-switch counts are different scopes. The [versioned client research](research/CODEX_NETWORK.md)
-and [recovery boundaries](RECOVERY.md) record the verified combinations; do not
+switch counts are different scopes. [Recovery boundaries](RECOVERY.md) records the verified combinations; do not
 multiply defaults into a universal per-turn attempt limit.
 
 During a backpressured WS upstream write, the relay can observe a client Close/EOF and abandon

@@ -2,7 +2,7 @@
 """Opt-in real Codex CLI smoke against local fake upstreams; Python stdlib only.
 
 Four default cases, plus opt-in recovery, contract, conversation, tool-recovery and tool-faults suites.
-The contract suite pins Codex `rust-v0.171.0` client behavior (docs/research/CODEX_COMPAT_MATRIX.md). No builds or
+The contract suite pins Codex `rust-v0.171.0` client behavior. No builds or
 downloads. Retains its fresh temporary directory on success and failure. Only owned
 subprocess handles are stopped; user config is untouched.
 """

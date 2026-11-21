@@ -214,5 +214,3 @@
 
 交互修改用 `scripts/*-check.cjs` 的 Node 状态回归加真实浏览器验收（桌面、中等宽度、手机触屏，中英文，浅色与深色）；
 DOM stub 不证明真实布局或完整可访问性。执行方法见 [TESTING.md](TESTING.md)。
-改进人体工学时采用[手动爬坡流程](research/UI_HILL_CLIMBING.md)，以往实验见
-[2026-10-31 结果报告](research/UI_HILL_CLIMBING_RESULTS.md)。

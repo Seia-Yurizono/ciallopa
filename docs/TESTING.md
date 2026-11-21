@@ -86,7 +86,7 @@ Choose the layer whose behavior is in question rather than running every scenari
 | Fault or boundary | Reproduction | What it establishes |
 | --- | --- | --- |
 | 429/503, Retry-After, exhausted retries, delayed WS handshake | `cli-smoke.py --suite recovery` | Actual Codex attempts, gateway records, elapsed recovery and WS-to-SSE fallback. |
-| Codex 0.171.0 client contract: response compression, request-ID display, spend-limit and `Retry-After` handling, WS error frames, 1009 and 1000 closes, trace context | `cli-smoke.py --suite contract` | The pinned client's observable behavior against the mock; evidence grades and sources are in the [compatibility matrix](research/CODEX_COMPAT_MATRIX.md). |
+| Codex 0.171.0 client contract: response compression, request-ID display, spend-limit and `Retry-After` handling, WS error frames, 1009 and 1000 closes, trace context | `cli-smoke.py --suite contract` | The pinned client's observable behavior against the mock. |
 | Disconnect after a completed tool result reaches the following generation | `cli-smoke.py --suite tool-recovery` | Actual local callback count, original call/result in recovery input and client/gateway outcomes, on SSE and WS. |
 | Pending tool disconnect/cancel and client crash before tool-result acknowledgement | `cli-smoke.py --suite tool-faults` | Local execution count versus persisted history and resumed request input; distinguishes an unexecuted tool from an executed but unacknowledged side effect. |
 | SSE EOF, missing terminal event, silence, client cancellation | `crates/server/tests/it/forward.rs`; for example `cargo test --locked -p ciallopa --test it forward::sse::idle_timeout_aborts_stream` | Forwarded result, failure classification and released request occupancy. |

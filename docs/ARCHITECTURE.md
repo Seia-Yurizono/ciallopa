@@ -2,8 +2,8 @@
 
 本文描述主线源码的职责和行为边界；供应商、客户端与部署能力按实际实现说明。
 接口见 [INTERFACES.md](INTERFACES.md)，指标见 [METRICS.md](METRICS.md)，
-性能证据见 [PERFORMANCE.md](PERFORMANCE.md)，验证方式见 [TESTING.md](TESTING.md)。
-网关与 Agent 的固定版本依据见[研究](RESEARCH.md)，故障和客户端恢复见[恢复边界](RECOVERY.md)。
+性能证据见 [PERFORMANCE.md](PERFORMANCE.md)，验证方式见 [TESTING.md](TESTING.md)，
+故障和客户端恢复见[恢复边界](RECOVERY.md)。
 
 ## 定位与当前判断
 

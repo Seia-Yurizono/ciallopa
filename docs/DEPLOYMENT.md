@@ -98,8 +98,7 @@ Codex 0.164 can recover on a new connection, but this issued another generation 
 before and after output. In the after-output fixture, app-server received identical text deltas
 under two message IDs, while the final completed turn retained only the second item. The mock
 always returns that text; this does not establish real-model repetition, duplicate billing,
-permanent UI duplication or repeated tool execution. Related public reports and source checks
-are separated in [the CLIProxyAPI study](research/CLIPROXY_RECOVERY.md).
+permanent UI duplication or repeated tool execution.
 Do not describe this as a cost-free or exactly-once hot reload. For planned changes, stop new
 traffic and drain active work before replacing the gateway or reloading its proxy routes.
 The follow-up [local recovery experiment](RECOVERY.md) compares the default with

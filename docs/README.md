@@ -17,7 +17,6 @@
 - [架构](ARCHITECTURE.md)与[模块接口](INTERFACES.md)：当前职责、生命周期和扩展边界。
 - [测试](TESTING.md)：日常检查、隔离客户端探针、部署与传输兼容检查。
 - [性能](PERFORMANCE.md)：可复现测量方法、已有结论及其适用范围。
-- [研究](RESEARCH.md)：网关与 Agent 的固定版本来源及采用的设计思想。
 - [发布](RELEASING.md)与[镜像清理](CONTAINER_CLEANUP.md)：版本、产物、标签和保留规则。
 
 ## 演进方向

@@ -309,8 +309,7 @@ sampling retries). The log and usage records name the reason and the time to rec
 Clients never receive a `Retry-After` of 0 or above 20 s on a 429 / 5xx (from the upstream or
 from ciallopa). This bounds each forwarded delay; it does not bound an entire turn.
 Codex has separate HTTP retries, stream recovery, transport fallback and connection recovery;
-their combined cost depends on the error path and client version. See the versioned
-[gateway and Agent network research](docs/RESEARCH.md) for the measured behavior and remaining checks.
+their combined cost depends on the error path and client version. See [recovery boundaries](docs/RECOVERY.md) for verified behavior.
 
 ## Config (`config.toml`)
 The file is named by `-c` / `--config` or `CIALLOPA_CONFIG` (default `./config.toml`) and is

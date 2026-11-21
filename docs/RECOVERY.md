@@ -1,8 +1,7 @@
 # 故障恢复与诊断
 
 本页说明当前恢复与诊断边界。客户端行为使用官方 Codex 0.164.0、本地 ciallopa、假上游，
-以及 Caddy 2.11.7 验证；没有连接真实模型供应商。外部问题的来源与区别见
-[CLIProxyAPI 反馈分析](research/CLIPROXY_RECOVERY.md)。运行命令见 [TESTING.md](TESTING.md)。
+以及 Caddy 2.11.7 验证；没有连接真实模型供应商。运行命令见 [TESTING.md](TESTING.md)。
 
 ## 工具结果提交之后断流
 
