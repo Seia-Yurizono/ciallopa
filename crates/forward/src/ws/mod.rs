@@ -122,6 +122,14 @@ pub(crate) async fn handler(
     let drain = st.upstream.drain.clone();
     let close_grace = timing::scale(&st, Duration::from_secs(2));
     let advertised = advertised_max_message(&resp_headers, max_message);
+    tracing::debug!(
+        upstream = resp_headers
+            .get(MAX_MESSAGE_BYTES_HEADER)
+            .and_then(|v| v.to_str().ok()),
+        local = max_message,
+        advertised,
+        "websocket max message bytes from the upstream 101"
+    );
     let mut resp = ws.on_upgrade(compression, max_message, move |socket| async move {
         let _slot = slot;
         let handoff = lease.map(|axum::Extension(l)| l);

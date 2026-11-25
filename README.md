@@ -337,7 +337,8 @@ ws_compression = true                   # permessage-deflate on the client WebSo
 ws_max_connections = 24                 # client WebSockets open at once (idle too); over: handshake 503,
                                         # Codex then uses HTTP; 0 = unlimited; new connections
 ws_max_message_mb = 16                  # largest client WS message after inflating; over: close 1009;
-                                        # advertised in the 101; upstream refuses > 16 anyway
+                                        # advertised in the 101 as min(upstream's, this); 16 bounds
+                                        # memory, raise only with RAM and a larger upstream limit
 shutdown_drain_secs = 5                 # on SIGTERM, running responses/turns get this long (0-60), then
                                         # a retryable response.failed that Codex replays; hot-reloadable
 
