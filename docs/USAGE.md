@@ -690,8 +690,8 @@ See [METRICS.md](METRICS.md) for the current outcome, sampling, cursor and bucke
   account per 30 s (`QUOTA_REFRESH_MIN`), a repeat inside that answers `rate_limited` without an
   upstream call. An optional background poll (`[ui] quota_refresh_mins`–`quota_refresh_max_mins`,
   default `0` = off; 1–60 when on) runs the same path for accounts whose 「自动刷新额度」 switch
-  is on (same cooldown clear when `allowed == true && limit_reached == false`). Every opted-in
-  account is scheduled on its own: its next refresh is drawn uniformly in [min, max] minutes
+  is on (same usage-limit cooldown clear when `allowed == true && limit_reached == false`).
+  Every opted-in account is scheduled on its own: its next refresh is drawn uniformly in [min, max] minutes
   after its last one, and the first one (server start, switch just turned on, range just
   turned on) also waits a random [min, max], so accounts are never asked in lockstep. Next
   times are kept in memory only. Codex TUI polls usage while running with adaptive
@@ -707,9 +707,9 @@ See [METRICS.md](METRICS.md) for the current outcome, sampling, cursor and bucke
   `usage_available_count` (`rate_limit_reset_credits.available_count`), `allowed`
   (`rate_limit.allowed`) and `limit_reached` (`rate_limit.limit_reached`) are `null` when
   upstream omits them; they are kept in memory on the account's reset-credit entry for display.
-  When both `allowed == true` and `limit_reached == false`, the account's usage-limit /
-  rate-limit cooldowns are dropped (same as a successful reset-credit consume; other cooldowns
-  stay) and the response carries `cooldown_cleared` (`true` if a live cooldown was dropped).
+  When both `allowed == true` and `limit_reached == false`, the refresh clears usage-limit
+  cooldowns. Per-model rate-limit and capacity cooldowns and other cooldowns stay. The
+  response carries `cooldown_cleared` (`true` if a live usage-limit cooldown was dropped).
   A missing `allowed` never clears.
 
 ## Quota estimate
@@ -1161,11 +1161,11 @@ API (client key):
   Response: `{account, redeem_request_id, reused_redeem_request_id, attempt, status, code,
   windows_reset, reset_credits, rate_limit?}`; after `reset` the listing is re-fetched and
   `/wham/usage` `rate_limit` is returned (quota cards update on the next proxied response).
-  After a `reset` the account's usage-limit and rate-limit cooldowns (account and per-model)
-  are dropped at once, so it serves the next request; other cooldowns (401/403, 402, 404, 5xx,
-  overload) stay. The response then carries `cooldown_cleared` (`true` if a live
-  cooldown was dropped). A successful 刷新额度 with `allowed && !limit_reached` clears the same
-  way; nothing consumes a card by itself.
+  A `reset` clears the account's usage-limit cooldowns. Per-model rate-limit and capacity
+  cooldowns and other cooldowns (401/403, 402, 404, 5xx, overload) stay. The response then
+  carries `cooldown_cleared` (`true` if a live usage-limit cooldown was dropped).
+  A successful 刷新额度 with `allowed && !limit_reached` clears the same cooldowns
+  without consuming a card.
   Also per account `auto` (switch) and `auto_next_ms` (next planned automatic use or `null`), and
   top level `auto_lead_mins`, `auto_available` (usage DB present).
 - `POST /admin/v1/accounts/{id}/reset-credits/auto` (admin key, `allow_config_write`, same-origin
@@ -1180,7 +1180,7 @@ account + `credit_id` within 24 h reuses that `redeem_request_id` (upstream answ
 answer.
 
 After `already_redeemed`, one read-only usage query checks whether quota has recovered. Only
-an explicit `allowed: true` and `limit_reached: false` clears the old quota cooldown; the
+an explicit `allowed: true` and `limit_reached: false` clears the old usage-limit cooldown; the
 receipt itself never triggers another reset.
 
 ## Client fingerprint for internal requests

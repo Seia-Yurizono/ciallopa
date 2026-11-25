@@ -128,9 +128,10 @@ fn clear_quota_keeps_other_cooldowns() {
     );
     assert_eq!(r.cooling_reason(&a), Some("usage_limit"));
     assert!(r.clear_quota_cooldown(&a));
-    assert_eq!(r.cooling_reason(&a), None);
+    assert_eq!(r.cooling_reason(&a), Some("rate_limited"));
     assert_eq!(r.select(&rq("m"), &[acct("a")]).unwrap().account, "a");
-    assert!(!r.clear_quota_cooldown(&a), "nothing left to clear");
+    assert!(r.select(&rq("n"), &[acct("a")]).is_err());
+    assert!(!r.clear_quota_cooldown(&a), "no usage limit left to clear");
     // Non-quota cooldowns survive a reset.
     r.report(
         &rq("m"),
@@ -149,6 +150,52 @@ fn clear_quota_keeps_other_cooldowns() {
     assert!(r.clear_quota_cooldown(&b));
     assert_eq!(r.cooling_reason(&b), Some("workspace_deactivated"));
     assert!(r.select(&rq("m"), &[acct("b")]).is_err());
+}
+
+#[test]
+fn shorter_rate_limit_keeps_usage_limit_clearable() {
+    let (r, _) = router(RoutingConfig::default());
+    let a = "a".to_string();
+    let req = rq("m");
+    for (usage_limit, seconds) in [(true, 3600), (false, 457)] {
+        r.report(
+            &req,
+            &a,
+            &Outcome::RateLimited {
+                retry_after: Some(Duration::from_secs(seconds)),
+                usage_limit,
+                quota: None,
+            },
+        );
+    }
+    assert_eq!(r.cooling_reason(&a), Some("usage_limit"));
+    assert!(r.clear_quota_cooldown(&a));
+    assert_eq!(pick(&r, &req, &[acct("a")]), "a");
+}
+
+#[test]
+fn shorter_usage_limit_keeps_rate_limit_after_clear() {
+    let (r, _) = router(RoutingConfig::default());
+    let a = "a".to_string();
+    let req = rq("m");
+    for (usage_limit, seconds) in [(false, 457), (true, 60)] {
+        r.report(
+            &req,
+            &a,
+            &Outcome::RateLimited {
+                retry_after: Some(Duration::from_secs(seconds)),
+                usage_limit,
+                quota: None,
+            },
+        );
+    }
+    assert!(r.clear_quota_cooldown(&a)); // Clears the account-level usage limit.
+    assert_eq!(r.cooling_reason(&a), Some("rate_limited"));
+    assert_eq!(
+        r.model_cooling_until(&a, "m"),
+        Some(t0() + Duration::from_secs(457))
+    );
+    assert!(r.select(&req, &[acct("a")]).is_err());
 }
 
 // ---------------- strategies ----------------

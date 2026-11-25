@@ -145,14 +145,11 @@ impl Health {
             }
         }
     }
-    /// Never shorten a live cooldown; shorter quota advice cannot replace a non-quota reason.
+    /// Never shorten a live cooldown. Quota advice must extend it to replace its reason.
     fn merge_longer(&mut self, now: SystemTime, until: SystemTime, mut failure: Failure) {
         self.expire(now);
         let previous = self.live_until(now);
-        if previous.is_some_and(|old| old >= until)
-            && failure.quota_window().is_some()
-            && self.failure().is_some_and(|f| f.quota_window().is_none())
-        {
+        if previous.is_some_and(|old| old >= until) && failure.quota_window().is_some() {
             return;
         }
         let until = previous.map_or(until, |old| old.max(until));
@@ -189,7 +186,7 @@ impl Health {
         self.merge_longer(now, until, failure);
     }
     fn clear_quota(&mut self, now: SystemTime) -> bool {
-        if self.failure().and_then(Failure::quota_window).is_none() {
+        if !matches!(self.failure(), Some(Failure::UsageLimit { .. })) {
             return false;
         }
         let live = self.live_until(now).is_some();

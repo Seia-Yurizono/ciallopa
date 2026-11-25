@@ -105,9 +105,8 @@ pub trait Router: Send + Sync + 'static {
     fn clear_cooldown(&self, _id: &AccountId) -> bool {
         false
     }
-    /// The account's usage windows were reset upstream (a manually used reset credit): drop
-    /// its usage-limit / rate-limit cooldowns (account- and model-level) and their backoff.
-    /// Other cooldowns (auth, 402, 404, 5xx, overload, challenge) are kept.
+    /// Clear the account's usage-limit cooldowns and their backoff when upstream usage recovers.
+    /// Per-model rate-limit and capacity cooldowns and all other cooldowns are kept.
     /// Returns whether a live cooldown was cleared.
     fn clear_quota_cooldown(&self, _id: &AccountId) -> bool {
         false

@@ -20,7 +20,7 @@ const KEY: &str = "sk-cpa-0123456789abcdef";
 
 // QUOTA_LAST is process-global; serialize quota-refresh tests and clear it first.
 
-/// Records `clear_quota_cooldown` calls.
+/// Records calls to clear usage-limit cooldowns.
 #[derive(Default)]
 struct NoRoute(Mutex<Vec<String>>);
 impl ciallopa_core::Router for NoRoute {

@@ -1126,8 +1126,8 @@ async fn consume_locked(
     // Refresh credits (and fetch the usage windows) after any definitive answer.
     let mut extra = json!({});
     if status == ConsumeStatus::Done && was_reset {
-        // The usage windows were just reset upstream: a usage-limit cooldown taken earlier no
-        // longer holds. Other cooldowns (auth, 402, 404, 5xx, overload) are kept.
+        // The upstream reset clears usage-limit cooldowns. Per-model rate-limit and capacity
+        // cooldowns and other cooldowns stay.
         let cleared = st.router.clear_quota_cooldown(&account.to_string());
         tracing::info!(%account, cleared, "reset credit used: usage-limit cooldown cleared");
         extra["cooldown_cleared"] = json!(cleared);
@@ -1328,9 +1328,9 @@ async fn quota_refresh_account(st: &AppState, rc: &ResetCredits, account: &str) 
                     tracing::warn!(%account, "quota snapshot dropped (usage queue full)");
                 }
             }
-            // Upstream rate_limit says this account can serve again: drop usage-limit /
-            // rate-limit cooldowns (same as a successful reset-credit consume). Other
-            // cooldowns stay. Both flags must be present — a missing `allowed` never clears.
+            // Clear usage-limit cooldowns when upstream confirms quota recovery, as after a
+            // reset-credit consume. Per-model rate-limit and capacity cooldowns and other
+            // cooldowns stay. Both flags must be present.
             let mut out = json!({"account": account, "ok": true, "quota": quota_json(&q),
                 "observed_at_ms": now_ms(), "usage_available_count": cards,
                 "allowed": allowed, "limit_reached": reached});
