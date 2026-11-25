@@ -165,8 +165,10 @@ pub struct ImagesConfig {
     /// `User-Agent` for non-Codex clients (used when the client UA does not start with "codex").
     pub default_user_agent: String,
 }
-/// Codex CLI version the network stack is pinned to (see Cargo.toml / scripts/fp-check.sh).
-pub const PINNED_CODEX_VERSION: &str = "0.169.0";
+/// Codex CLI version the gateway presents (default `User-Agent`, models `client_version`) and
+/// whose error handling it mirrors. The TLS / h2 fingerprint is checked separately
+/// (Cargo.toml, scripts/fp-check.sh, which records the last compared release).
+pub const PINNED_CODEX_VERSION: &str = "0.172.0";
 impl Default for ImagesConfig {
     fn default() -> Self {
         Self {

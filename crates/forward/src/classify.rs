@@ -80,11 +80,13 @@ impl Classified<'_> {
     }
 }
 
-/// Quota-type error codes that justify switching accounts.
-const QUOTA_CODES: [&str; 3] = [
+/// Quota-type error codes that justify switching accounts. Codex 0.172.0 maps
+/// `credit_balance_exhausted` to the same `QuotaExceeded` as `insufficient_quota`.
+const QUOTA_CODES: [&str; 4] = [
     "usage_limit_reached",
     "insufficient_quota",
     "usage_not_included",
+    "credit_balance_exhausted",
 ];
 
 fn quota_code(v: Option<&serde_json::Value>) -> bool {
@@ -575,7 +577,7 @@ pub(crate) fn classify_observed(
     (classified.class.into(), done, snapshot)
 }
 
-/// Whether Codex ends the turn on this `error` frame. Mirrors codex-api 0.169.0's WS reader:
+/// Whether Codex ends the turn on this `error` frame. Mirrors codex-api 0.172.0's WS reader:
 /// `map_wrapped_websocket_error_event` first (the two lifecycle codes, then a `status` /
 /// `status_code` that is a valid non-2xx `http::StatusCode`, 100..=999), then
 /// `process_responses_event`, which calls `parse_terminal_provider_error` with status None, so
@@ -599,12 +601,22 @@ fn error_frame_ends_turn(v: &serde_json::Value) -> bool {
     code.is_some_and(codex_terminal_code)
 }
 
-/// codex-api 0.169.0 `parse_terminal_provider_error` codes (error.rs), checked there with
-/// status None on the WS path.
+/// codex-api 0.172.0 `parse_terminal_provider_error` codes (error.rs), checked there with
+/// status None on the WS path. The quota codes among them are classified as quota first.
 fn codex_terminal_code(code: &str) -> bool {
     matches!(
         code,
-        "inference_hook_denied"
+        "insufficient_quota"
+            | "credit_balance_exhausted"
+            | "usage_not_included"
+            | "invalid_prompt"
+            | "misalignment_policy_violation"
+            | "api_key_spend_limit_exceeded"
+            | "project_spend_limit_exceeded"
+            | "organization_spend_limit_exceeded"
+            | "cyber_policy"
+            | "bio_policy"
+            | "inference_hook_denied"
             | "context_length_exceeded"
             | "invalid_access_program"
             | "unsupported_access_program"
@@ -723,6 +735,14 @@ mod quota_tests {
             ),
             (
                 r#"{"type":"error","error":{"type":"insufficient_quota"}}"#,
+                quota(true, "usage_limit"),
+            ),
+            (
+                r#"{"type":"error","error":{"code":"credit_balance_exhausted","message":"x"}}"#,
+                quota(true, "usage_limit"),
+            ),
+            (
+                r#"{"type":"response.failed","response":{"error":{"code":"credit_balance_exhausted"}}}"#,
                 quota(true, "usage_limit"),
             ),
             (
@@ -957,6 +977,14 @@ mod quota_tests {
             "invalid_audio_format",
             "missing_audio_sample_rate",
             "model_not_found",
+            // Codex 0.172.0: terminal, no cooldown policy of their own here.
+            "invalid_prompt",
+            "misalignment_policy_violation",
+            "cyber_policy",
+            "bio_policy",
+            "api_key_spend_limit_exceeded",
+            "project_spend_limit_exceeded",
+            "organization_spend_limit_exceeded",
         ];
         for code in CODES {
             for ev in [
@@ -1225,11 +1253,21 @@ mod tests {
         assert_eq!(soft.class, Class::SoftError);
     }
 
-    /// Codex 0.169.0 `parse_terminal_provider_error`, which the WS reader calls for every
+    /// Codex 0.172.0 `parse_terminal_provider_error`, which the WS reader calls for every
     /// `error` frame with `status` = None (after `map_wrapped_websocket_error_event`): these
     /// exact codes end the turn whatever the frame's own `status` says. Exact names, no
-    /// prefix matching (`audio_*` is a fixed list of six).
-    const CODEX_0_169_TERMINAL_CODES: &[&str] = &[
+    /// prefix matching (`audio_*` is a fixed list of six). The quota codes end it as quota.
+    const CODEX_0_172_TERMINAL_CODES: &[&str] = &[
+        "insufficient_quota",
+        "credit_balance_exhausted",
+        "usage_not_included",
+        "invalid_prompt",
+        "misalignment_policy_violation",
+        "api_key_spend_limit_exceeded",
+        "project_spend_limit_exceeded",
+        "organization_spend_limit_exceeded",
+        "cyber_policy",
+        "bio_policy",
         "inference_hook_denied",
         "context_length_exceeded",
         "invalid_access_program",
@@ -1248,10 +1286,13 @@ mod tests {
     ];
 
     #[test]
-    fn error_frame_ends_turn_on_codex_0_169_terminal_codes() {
+    fn error_frame_ends_turn_on_codex_0_172_terminal_codes() {
         let done = |t: &str| classify(t).1;
         let mut wrong = Vec::new();
-        for code in CODEX_0_169_TERMINAL_CODES {
+        for code in CODEX_0_172_TERMINAL_CODES {
+            if !codex_terminal_code(code) {
+                wrong.push(format!("not listed: {code}"));
+            }
             for frame in [
                 format!(r#"{{"type":"error","error":{{"code":"{code}","message":"x"}}}}"#),
                 // A 2xx status is not mapped by the wrapped-error path, so Codex still
@@ -1269,6 +1310,8 @@ mod tests {
             "audio_x",
             "model_not_found_x",
             "invalid_audio_rate",
+            "spend_limit_exceeded",
+            "cyber_policy_x",
         ] {
             let frame = format!(r#"{{"type":"error","error":{{"code":"{code}"}}}}"#);
             if done(&frame) {

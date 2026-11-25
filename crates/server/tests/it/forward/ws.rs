@@ -1333,7 +1333,7 @@ async fn ws_upstream_turn_is_fragmented_at_1_mib_like_codex_0_169() {
     assert!(std::str::from_utf8(&data[2].3).is_err() && std::str::from_utf8(&data[3].3).is_err());
 }
 
-/// Codex 0.169.0 ends the turn on status-less terminal error codes
+/// Codex 0.172.0 ends the turn on status-less terminal error codes
 /// (`parse_terminal_provider_error`; the full list is a unit test in `classify.rs`): the relay
 /// settles the turn on the frame instead of holding it until the idle timeout, and the next
 /// turn on the same socket goes through.
@@ -1347,6 +1347,10 @@ async fn ws_codex_terminal_error_codes_end_the_turn() {
         "model_not_found",
         "audio_too_large",
         "inference_hook_denied",
+        // New in Codex 0.172.0.
+        "invalid_prompt",
+        "cyber_policy",
+        "project_spend_limit_exceeded",
     ];
     for (i, code) in codes.iter().enumerate() {
         ws.send(M::text(format!(
