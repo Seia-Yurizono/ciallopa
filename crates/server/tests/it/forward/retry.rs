@@ -651,6 +651,108 @@ async fn turn_rate_limit_before_output_cools_model_and_switches() {
     rate_limited(&e);
 }
 
+/// Retry advice inside a stream's error event (Codex 0.172: `error.headers` before the event's
+/// own `headers`, which beat the response's): an overload on the last usable account waits the
+/// nested 1 s, not 9 s, and both overload reports carry it for the streak cooldown.
+#[tokio::test]
+async fn stream_overload_uses_the_event_retry_after_for_ws_and_sse() {
+    for ws in [false, true] {
+        // Without the event's advice the wait would be 60 s jittered to at least 40 s.
+        let e = env_cfg(300, None, "overload_retry_wait_secs = 60\n").await;
+        let t0 = std::time::Instant::now();
+        if ws {
+            let got = ws_frames(&e, "over_advice_ws").await;
+            assert!(got.iter().all(|t| !t.contains("overloaded")), "{got:?}");
+            assert!(
+                got.iter()
+                    .any(|t| t.contains("r-b") && t.contains("response.completed")),
+                "{got:?}"
+            );
+        } else {
+            let t = sse_text(&e, "over_advice").await;
+            assert!(t.contains("r-b") && !t.contains("overloaded"), "{t}");
+        }
+        // One configured second is `units(1)`: far below the configured wait's `units(40)`.
+        let waited = t0.elapsed();
+        assert!(
+            waited >= units(1) && waited < units(20),
+            "ws={ws}: waited {waited:?}"
+        );
+        assert_eq!(e.mock.hits.load(Ordering::SeqCst), 3, "ws={ws}");
+        let o = e.outcomes();
+        let advised: Vec<_> = o
+            .iter()
+            .filter_map(|(a, o)| match o {
+                Outcome::Overloaded {
+                    cool, retry_after, ..
+                } => Some((a.as_str(), *cool, *retry_after)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            advised,
+            [
+                ("a", true, Some(Duration::from_secs(1))),
+                ("b", false, Some(Duration::from_secs(1))),
+            ],
+            "ws={ws}: {o:?}"
+        );
+    }
+}
+
+/// `x-retry-metadata: NO_MORE_RETRY` inside the event: switch accounts, but never wait and
+/// retry the last one.
+#[tokio::test]
+async fn stream_overload_no_more_retry_skips_the_wait_for_ws_and_sse() {
+    for ws in [false, true] {
+        let e = env_cfg(300, None, "overload_retry_wait_secs = 1\n").await;
+        if ws {
+            let got = ws_frames(&e, "over_nmr_ws").await;
+            assert!(
+                got.iter().any(|t| t.contains("server_is_overloaded")),
+                "{got:?}"
+            );
+        } else {
+            let t = sse_text(&e, "over_nmr").await;
+            assert!(t.contains("server_is_overloaded"), "{t}");
+        }
+        assert_eq!(
+            e.mock.hits.load(Ordering::SeqCst),
+            2,
+            "ws={ws}: one attempt per account, no wait-and-retry"
+        );
+    }
+}
+
+/// `turn_rate_limit_exceeded` with no reset time in the body takes the event's nested
+/// `Retry-After` for the model cooldown.
+#[tokio::test]
+async fn stream_turn_rate_limit_takes_the_event_retry_after_for_ws_and_sse() {
+    for ws in [false, true] {
+        let e = env(300).await;
+        if ws {
+            let got = ws_frames(&e, "turnrl_ra_ws").await;
+            assert!(got.iter().any(|t| t.contains("r-b")), "{got:?}");
+        } else {
+            let t = sse_text(&e, "pre_turnrl_ra").await;
+            assert!(t.contains("r-b") && !t.contains("turn_rate_limit"), "{t}");
+        }
+        let o = e.outcomes();
+        assert!(
+            o.iter().any(|(a, o)| a == "a"
+                && matches!(
+                    o,
+                    Outcome::RateLimited {
+                        usage_limit: false,
+                        retry_after: Some(d),
+                        ..
+                    } if *d == Duration::from_secs(30)
+                )),
+            "ws={ws}: {o:?}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn turn_rate_limit_without_a_switch_is_recorded_for_ws_and_sse() {
     for (mode, expected_message) in [

@@ -490,7 +490,7 @@ impl<T: Transport> Loop<'_, T> {
         others: bool,
     ) -> Option<Cooled> {
         let outcome = match seen {
-            Seen::Refused(Refusal::Overloaded { .. }) => overload_outcome(self.st, others),
+            Seen::Refused(Refusal::Overloaded { .. }) => overload_outcome(self.st, others, None),
             Seen::Refused(Refusal::Unauthorized) => Outcome::AuthFailed,
             Seen::Refused(Refusal::Account(outcome)) => {
                 log_account_error(id, outcome);

@@ -1,8 +1,9 @@
+use ciallopa_core::retry_after::{parse as parse_retry_after, Format};
 use ciallopa_core::{AccountId, Outcome};
 use ciallopa_routing::{
     is_usage_limit, parse_quota, parse_quota_event_headers, retry_after_for_429,
 };
-use http::HeaderMap;
+use http::{HeaderMap, HeaderValue};
 use std::borrow::Cow;
 use std::time::{Duration, SystemTime};
 
@@ -56,6 +57,11 @@ impl Classified<'_> {
             self.class = Class::SoftError;
         }
         self
+    }
+
+    /// Retry advice carried in the classified event's JSON `headers` (see [`frame_headers`]).
+    pub(crate) fn frame_headers(&self) -> HeaderMap {
+        self.value.as_ref().map(frame_headers).unwrap_or_default()
     }
 
     pub(crate) fn ends_ws_turn(&self) -> bool {
@@ -117,6 +123,76 @@ pub(crate) fn quota_event(v: &serde_json::Value) -> Option<&'static str> {
     } else {
         rate_limit_code(error).or(status_429.then_some(crate::errors::RATE_LIMIT_CODE))
     }
+}
+
+/// Header names kept from an event's JSON `headers`.
+const FRAME_RETRY_AFTER: &str = "retry-after";
+const FRAME_RETRY_METADATA: &str = "x-retry-metadata";
+
+/// Retry advice in a streamed error event's JSON `headers`, read like Codex 0.172.0
+/// (`map_wrapped_websocket_error_event`, `parse_error_event`, `parse_failed_response`):
+/// `error.headers` (or `response.error.headers`) before the event's own `headers`, and the
+/// first object with a valid `Retry-After` (delay seconds or an HTTP date, a value that is a
+/// valid header) wins. Names match case-insensitively. `retry-after-ms`, which Codex does
+/// not read, stands in when that object has no valid `Retry-After`. The result holds only a
+/// normalized `retry-after` (whole seconds, rounded up) and every `x-retry-metadata` value,
+/// so [`header_retry_after`](ciallopa_routing::quota::header_retry_after),
+/// `overload_wait` and `no_more_retry` read it like response headers.
+pub(crate) fn frame_headers(v: &serde_json::Value) -> HeaderMap {
+    let now = SystemTime::now();
+    let mut out = HeaderMap::new();
+    let objects = [
+        v.pointer("/error/headers"),
+        v.pointer("/response/error/headers"),
+        v.get("headers"),
+    ];
+    for obj in objects.into_iter().flatten().filter_map(|o| o.as_object()) {
+        let (mut seconds, mut millis) = (None, None);
+        for (name, value) in obj {
+            let value = match value {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Number(n) => n.to_string(),
+                _ => continue,
+            };
+            let Ok(header) = HeaderValue::from_str(&value) else {
+                continue;
+            };
+            match name.trim().to_ascii_lowercase().as_str() {
+                FRAME_RETRY_AFTER => seconds = Some(value),
+                "retry-after-ms" => millis = Some(value),
+                FRAME_RETRY_METADATA => {
+                    out.append(FRAME_RETRY_METADATA, header);
+                }
+                _ => {}
+            }
+        }
+        if out.contains_key(FRAME_RETRY_AFTER) {
+            continue;
+        }
+        let delay = seconds
+            .and_then(|s| parse_retry_after(&s, now, Format::Http))
+            .or_else(|| {
+                let ms = millis?.trim().parse::<f64>().ok()?;
+                Duration::try_from_secs_f64(ms / 1000.0).ok()
+            });
+        if let Some(d) = delay {
+            let secs = d.as_secs() + u64::from(d.subsec_nanos() > 0);
+            out.insert(FRAME_RETRY_AFTER, HeaderValue::from(secs));
+        }
+    }
+    out
+}
+
+/// An event's retry advice, then the response's own headers for any name the event lacks.
+pub(crate) fn with_response_retry_headers(mut frame: HeaderMap, response: &HeaderMap) -> HeaderMap {
+    for name in [FRAME_RETRY_AFTER, FRAME_RETRY_METADATA] {
+        if !frame.contains_key(name) {
+            for value in response.get_all(name) {
+                frame.append(name, value.clone());
+            }
+        }
+    }
+    frame
 }
 
 /// Structured codes that mean "upstream capacity / account throttled", never quota.
@@ -271,8 +347,9 @@ fn classify_value(ty: &str, text: &str, v: &serde_json::Value) -> Class {
         let usage_limit = code == "usage_limit" || is_usage_limit(text.as_bytes());
         return Class::Terminal(Terminal::Quota(
             Outcome::RateLimited {
-                retry_after: ciallopa_routing::parse_codex_retry_after(
-                    429,
+                // Body reset time first, then the event's `Retry-After`, as for an HTTP 429.
+                retry_after: retry_after_for_429(
+                    &frame_headers(v),
                     text.as_bytes(),
                     SystemTime::now(),
                 ),
@@ -893,6 +970,127 @@ mod quota_tests {
             let body = format!(r#"{{"error":{{"code":"{code}","message":"x"}}}}"#);
             assert_eq!(overload_body(400, body.as_bytes()), None, "{code}");
         }
+    }
+
+    fn advice(text: &str) -> HeaderMap {
+        frame_headers(&serde_json::from_str(text).unwrap())
+    }
+
+    fn ra(h: &HeaderMap) -> Option<u64> {
+        h.get("retry-after")
+            .map(|v| v.to_str().unwrap().parse().unwrap())
+    }
+
+    /// Codex 0.172.0 order: `error.headers` (or `response.error.headers`) before the event's
+    /// own `headers`; the first object with a valid `Retry-After` wins.
+    #[test]
+    fn frame_headers_follow_codex_precedence() {
+        for (text, want) in [
+            (
+                r#"{"type":"error","error":{"code":"x","headers":{"retry-after":"5"}},"headers":{"retry-after":"12"}}"#.to_string(),
+                Some(5),
+            ),
+            (
+                r#"{"type":"error","error":{"code":"x","headers":{"Retry-After":"7"}},"headers":{"retry-after":"12"}}"#.to_string(),
+                Some(7),
+            ),
+            // Invalid nested advice (not a header value, not seconds) falls back to the event's.
+            (
+                r#"{"type":"error","error":{"code":"x","headers":{"retry-after":"\n5\n"}},"headers":{"retry-after":"12"}}"#.to_string(),
+                Some(12),
+            ),
+            (
+                r#"{"type":"error","error":{"code":"x","headers":"invalid"},"headers":{"retry-after":"12"}}"#.to_string(),
+                Some(12),
+            ),
+            (
+                r#"{"type":"error","error":{"code":"x","headers":{"retry-after":"soon"}},"headers":{"RETRY-AFTER":12}}"#.to_string(),
+                Some(12),
+            ),
+            (
+                r#"{"type":"response.failed","response":{"error":{"code":"x","headers":{"retry-after":"3"}}}}"#.to_string(),
+                Some(3),
+            ),
+            // retry-after-ms stands in within its object, rounded up to whole seconds.
+            (
+                r#"{"type":"error","error":{"code":"x","headers":{"retry-after-ms":"1500"}},"headers":{"retry-after":"12"}}"#.to_string(),
+                Some(2),
+            ),
+            (
+                r#"{"type":"error","headers":{"retry-after-ms":"3000","retry-after":"bad"}}"#.to_string(),
+                Some(3),
+            ),
+            (r#"{"type":"error","error":{"code":"x"}}"#.to_string(), None),
+            (r#"{"type":"error","headers":{"retry-after":"-1"}}"#.to_string(), None),
+        ] {
+            assert_eq!(ra(&advice(&text)), want, "{text}");
+        }
+        let h = advice(
+            r#"{"type":"error","error":{"code":"server_is_overloaded","headers":{"X-Retry-Metadata":"NO_MORE_RETRY"}}}"#,
+        );
+        assert!(no_more_retry(&h));
+        let h = advice(
+            r#"{"type":"error","error":{"code":"server_is_overloaded"},"headers":{"x-retry-metadata":"no_more_retry","x-request-id":"r"}}"#,
+        );
+        assert!(no_more_retry(&h));
+        assert!(h.get("x-request-id").is_none(), "only retry advice is kept");
+        assert!(!no_more_retry(&advice(
+            r#"{"type":"error","error":{"code":"x"}}"#
+        )));
+    }
+
+    #[test]
+    fn response_headers_fill_only_what_the_event_lacks() {
+        let mut http = HeaderMap::new();
+        http.insert("retry-after", HeaderValue::from_static("9"));
+        http.insert(
+            "x-retry-metadata",
+            HeaderValue::from_static("NO_MORE_RETRY"),
+        );
+        let merged = with_response_retry_headers(
+            advice(r#"{"type":"error","headers":{"retry-after":"2"}}"#),
+            &http,
+        );
+        assert_eq!(ra(&merged), Some(2));
+        assert!(no_more_retry(&merged));
+        let merged = with_response_retry_headers(HeaderMap::new(), &http);
+        assert_eq!(ra(&merged), Some(9));
+    }
+
+    /// A rate-limit event with no body reset time takes the event's `Retry-After`; a usage
+    /// limit's body reset time still wins over it.
+    #[test]
+    fn stream_rate_limit_takes_the_event_retry_after() {
+        let retry = |text: &str| match super::classify(None, text).class {
+            Class::Terminal(Terminal::Quota(Outcome::RateLimited { retry_after, .. }, _)) => {
+                retry_after
+            }
+            other => panic!("{text}: {other:?}"),
+        };
+        for text in [
+            r#"{"type":"error","error":{"type":"rate_limit_error","code":"turn_rate_limit_exceeded","message":"Codex is at capacity","headers":{"retry-after":"30"}},"headers":{"retry-after":"99"}}"#,
+            r#"{"type":"response.failed","response":{"error":{"code":"turn_rate_limit_exceeded","headers":{"retry-after":"30"}}}}"#,
+            r#"{"type":"error","status":429,"error":{"code":"rate_limit_exceeded"},"headers":{"Retry-After":"30"}}"#,
+        ] {
+            assert_eq!(retry(text), Some(Duration::from_secs(30)), "{text}");
+        }
+        assert_eq!(
+            retry(r#"{"type":"error","error":{"code":"turn_rate_limit_exceeded"}}"#),
+            None
+        );
+        assert_eq!(
+            retry(
+                r#"{"type":"error","status":429,"error":{"type":"usage_limit_reached","resets_in_seconds":60},"headers":{"retry-after":"5"}}"#
+            ),
+            Some(Duration::from_secs(60))
+        );
+        // Same cap as an HTTP 429's Retry-After.
+        assert_eq!(
+            retry(
+                r#"{"type":"error","error":{"code":"rate_limit_exceeded"},"headers":{"retry-after":"99999999"}}"#
+            ),
+            Some(ciallopa_routing::quota::MAX_HEADER_RETRY_AFTER)
+        );
     }
 
     #[test]

@@ -1934,6 +1934,7 @@ fn overload_streak_backoff_and_reset() {
         base: Duration::from_secs(120),
         max: Duration::from_secs(300),
         cool,
+        retry_after: None,
     };
     let left = |r: &CpaRouter| {
         r.cooling_until(&"a".into())
@@ -1976,6 +1977,50 @@ fn overload_streak_backoff_and_reset() {
     r.note_attempt(&a);
     let (att, n) = r.overload_stats(&a);
     assert_eq!((att, n), (1, 13));
+}
+
+/// `Retry-After` on an overload only lengthens a cooldown the streak triggers, capped at `max`;
+/// it never cools below the streak nor the last usable account.
+#[test]
+fn overload_retry_after_extends_streak_cooldown_up_to_max() {
+    let (r, clk) = router(cfg(Strategy::FillFirst));
+    let a: AccountId = "a".into();
+    let ov = |cool, ra: u64| Outcome::Overloaded {
+        streak: 2,
+        base: Duration::from_secs(120),
+        max: Duration::from_secs(300),
+        cool,
+        retry_after: Some(Duration::from_secs(ra)),
+    };
+    let left = |r: &CpaRouter| {
+        r.cooling_until(&"a".into())
+            .and_then(|t| {
+                t.duration_since(t0() + Duration::from_millis(clk.0.load(Ordering::SeqCst)))
+                    .ok()
+            })
+            .map(|d| d.as_secs())
+    };
+    // Last usable account: never cooled, however long the advice.
+    for _ in 0..3 {
+        r.report(&rq("m"), &a, &ov(false, 3600));
+    }
+    assert_eq!(r.cooling_until(&a), None);
+    r.content_ok(&a);
+    // One overload with long advice stays below the streak.
+    r.report(&rq("m"), &a, &ov(true, 200));
+    assert_eq!(r.cooling_until(&a), None, "advice does not skip the streak");
+    r.report(&rq("m"), &a, &ov(true, 200));
+    assert_eq!(left(&r), Some(200), "advice beyond the step lengthens it");
+    clk.0.fetch_add(201_000, Ordering::SeqCst);
+    // Next level step is 240 s; shorter advice keeps the step.
+    r.report(&rq("m"), &a, &ov(true, 5));
+    r.report(&rq("m"), &a, &ov(true, 5));
+    assert_eq!(left(&r), Some(240), "shorter advice keeps the step");
+    clk.0.fetch_add(241_000, Ordering::SeqCst);
+    r.content_ok(&a);
+    r.report(&rq("m"), &a, &ov(true, 3600));
+    r.report(&rq("m"), &a, &ov(true, 3600));
+    assert_eq!(left(&r), Some(300), "capped at max");
 }
 
 #[test]

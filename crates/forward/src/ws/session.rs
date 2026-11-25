@@ -917,17 +917,26 @@ impl Session {
             let accounts = self.st.accounts.accounts();
             let others =
                 crate::attempt::others_usable(&self.st, &accounts, &self.route, &self.up.account);
+            // The frame's own retry advice: a WS turn has no response headers.
+            let advice = classified
+                .as_ref()
+                .map(|c| c.frame_headers())
+                .unwrap_or_default();
             self.st.router.report(
                 &self.route,
                 &self.up.account,
-                &crate::attempt::overload_outcome(&self.st, others),
+                &crate::attempt::overload_outcome(
+                    &self.st,
+                    others,
+                    ciallopa_upstream::retry::retry_after(&advice),
+                ),
             );
             if let Some(request) = self.state.turn().and_then(Turn::request) {
                 let turn = self.state.turn_mut().expect("replayable turn");
                 let plan = Policy::ws_redial().overload_plan(
                     others,
                     turn.overload_waited,
-                    &HeaderMap::new(),
+                    &advice,
                     self.st.config.load().upstream_opts.overload_retry_wait_secs,
                     turn.switches,
                     self.max_switches,

@@ -298,8 +298,12 @@ pub(crate) fn no_more_retry(h: &HeaderMap) -> bool {
         .any(|v| v.to_ascii_uppercase().contains("NO_MORE_RETRY"))
 }
 
-/// Never cool the last usable account.
-pub(crate) fn overload_outcome(st: &AppState, others: bool) -> Outcome {
+/// Never cool the last usable account. `retry_after` only lengthens a streak cooldown.
+pub(crate) fn overload_outcome(
+    st: &AppState,
+    others: bool,
+    retry_after: Option<Duration>,
+) -> Outcome {
     let c = st.config.load();
     let o = &c.upstream_opts;
     Outcome::Overloaded {
@@ -307,6 +311,7 @@ pub(crate) fn overload_outcome(st: &AppState, others: bool) -> Outcome {
         base: Duration::from_secs(o.overload_cooldown_secs),
         max: Duration::from_secs(o.overload_cooldown_max_secs),
         cool: others,
+        retry_after,
     }
 }
 

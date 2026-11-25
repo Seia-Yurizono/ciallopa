@@ -894,6 +894,7 @@ impl Router for CpaRouter {
                 base,
                 max,
                 cool,
+                retry_after,
             } => {
                 a.bump(now, 0, 1);
                 let e = &mut a.overload;
@@ -901,8 +902,9 @@ impl Router for CpaRouter {
                 if !*cool || *streak == 0 || base.is_zero() || e.streak < *streak {
                     return;
                 }
-                let d = base
-                    .saturating_mul(1u32.checked_shl(e.level).unwrap_or(u32::MAX))
+                let step = base.saturating_mul(1u32.checked_shl(e.level).unwrap_or(u32::MAX));
+                let d = retry_after
+                    .map_or(step, |ra| step.max(ra))
                     .min((*max).max(*base));
                 e.streak = 0;
                 e.level = e.level.saturating_add(1).min(16);

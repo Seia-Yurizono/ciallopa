@@ -110,7 +110,8 @@ transient_cooldown_secs = 15
 # Overloaded / "at capacity" (in-stream or HTTP): replayed on another usable account while nothing
 # has reached the client. After this many consecutive ones an account is cooled for
 # overload_cooldown_secs, doubling per further cooldown up to overload_cooldown_max_secs; output
-# resets it. The last usable account is never cooled. overload_streak = 0 = never cool.
+# resets it. An in-stream Retry-After only lengthens that cooldown, up to the max. The last usable
+# account is never cooled. overload_streak = 0 = never cool.
 overload_streak = 2
 overload_cooldown_secs = 120
 overload_cooldown_max_secs = 600

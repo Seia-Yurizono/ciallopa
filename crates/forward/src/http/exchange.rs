@@ -25,8 +25,12 @@ use http::{HeaderMap, StatusCode};
 enum PreludeEnd {
     Commit(Commit),
     Quota(Outcome, &'static str),
-    Overloaded(String),
-    Encrypted { message: String, event: String },
+    /// The code and the event's retry advice ([`crate::classify::frame_headers`]).
+    Overloaded(String, HeaderMap),
+    Encrypted {
+        message: String,
+        event: String,
+    },
     ReadError(reqwest::Error),
     Idle,
 }
@@ -71,13 +75,14 @@ impl Prelude {
                         if let Some(ty) = classified.ty.as_deref() {
                             prelude.progress.event(ty);
                         }
+                        let advice = classified.frame_headers();
                         match classified.class {
                             Class::Preamble | Class::RateLimits(_) | Class::Created => None,
                             Class::Terminal(Terminal::Quota(outcome, code)) => {
                                 Some(PreludeEnd::Quota(outcome, code))
                             }
                             Class::Terminal(Terminal::Overloaded(code)) => {
-                                Some(PreludeEnd::Overloaded(code))
+                                Some(PreludeEnd::Overloaded(code, advice))
                             }
                             Class::Terminal(Terminal::Encrypted(message)) => {
                                 Some(PreludeEnd::Encrypted {
@@ -129,10 +134,10 @@ fn prelude_verdict(end: &PreludeEnd, ctx: &ReplayCtx) -> PreludeVerdict {
             account_reported: false,
         },
         PreludeEnd::Encrypted { .. } => PreludeVerdict::Answer400Encrypted,
-        PreludeEnd::Overloaded(_) if ctx.others => {
+        PreludeEnd::Overloaded(..) if ctx.others => {
             PreludeVerdict::Replay(Replay::SwitchAfterOverload)
         }
-        PreludeEnd::Overloaded(_) => match ctx.overload_wait {
+        PreludeEnd::Overloaded(..) => match ctx.overload_wait {
             Some(wait) => PreludeVerdict::Replay(Replay::WaitRetry(wait)),
             None => PreludeVerdict::Stream {
                 account_reported: true,
@@ -247,13 +252,20 @@ async fn send(st: &AppState, mut ob: Outbound, mut trk: Option<Tracker>) -> Resp
         if matches!(end, PreludeEnd::Commit(Commit::Content)) {
             st.router.content_ok(&account);
         }
-        let others = matches!(end, PreludeEnd::Overloaded(_))
+        let others = matches!(end, PreludeEnd::Overloaded(..))
             && others_usable(st, &st.accounts.accounts(), &route, &account);
-        let overload = if matches!(end, PreludeEnd::Overloaded(_)) {
+        // The event's own retry advice wins over the response's headers.
+        let advice = match &end {
+            PreludeEnd::Overloaded(_, frame) => {
+                crate::classify::with_response_retry_headers(frame.clone(), &up_headers)
+            }
+            _ => HeaderMap::new(),
+        };
+        let overload = if matches!(end, PreludeEnd::Overloaded(..)) {
             Policy::http(&st.config.load().upstream_opts).overload_plan(
                 others,
                 info.overload_waited,
-                &up_headers,
+                &advice,
                 st.config.load().upstream_opts.overload_retry_wait_secs,
                 switches,
                 max_switches,
@@ -272,9 +284,11 @@ async fn send(st: &AppState, mut ob: Outbound, mut trk: Option<Tracker>) -> Resp
         let verdict = prelude_verdict(&end, &ctx);
         // Report and record once, before choosing replay or downstream delivery.
         let failure = match &end {
-            PreludeEnd::Overloaded(code) => {
-                Some((overload_outcome(st, others), code.clone(), overload.next()))
-            }
+            PreludeEnd::Overloaded(code, _) => Some((
+                overload_outcome(st, others, ciallopa_upstream::retry::retry_after(&advice)),
+                code.clone(),
+                overload.next(),
+            )),
             PreludeEnd::Quota(outcome, code) => {
                 switches += 1;
                 Some((
@@ -421,7 +435,7 @@ async fn send(st: &AppState, mut ob: Outbound, mut trk: Option<Tracker>) -> Resp
             PreludeVerdict::Stream { account_reported } => {
                 if let Some(t) = trk.as_mut() {
                     t.rec.status = status.as_u16();
-                    if let PreludeEnd::Overloaded(code) = &end {
+                    if let PreludeEnd::Overloaded(code, _) = &end {
                         t.fail_msg(code, "upstream overloaded on every usable account");
                         t.source(errors::SRC_STREAM);
                     }
@@ -487,7 +501,7 @@ mod tests {
                 message: String::new(),
                 event: String::new(),
             },
-            PreludeEnd::Overloaded("overloaded".into()),
+            PreludeEnd::Overloaded("overloaded".into(), HeaderMap::new()),
             PreludeEnd::Quota(quota, "usage_limit"),
             PreludeEnd::ReadError(read_error(false).await),
             PreludeEnd::ReadError(read_error(true).await),
@@ -545,6 +559,33 @@ mod tests {
         }
     }
 
+    /// The overload exit carries the event's retry advice; the response's headers only fill
+    /// what the event lacks.
+    #[tokio::test]
+    async fn prelude_overload_carries_the_event_retry_advice() {
+        let wire = concat!(
+            "data: {\"type\":\"error\",\"error\":{\"code\":\"server_is_overloaded\",",
+            "\"headers\":{\"retry-after\":\"2\"}},\"headers\":{\"retry-after\":\"8\",",
+            "\"x-retry-metadata\":\"NO_MORE_RETRY\"}}\n\n"
+        );
+        let up = Up::Live(
+            futures::stream::iter([Ok(bytes::Bytes::from_static(wire.as_bytes()))]).boxed(),
+        );
+        let (_, end) = Prelude::read(up, Duration::from_secs(1)).await;
+        let PreludeEnd::Overloaded(code, frame) = end else {
+            panic!("{end:?}");
+        };
+        assert_eq!(code, "server_is_overloaded");
+        let mut http = HeaderMap::new();
+        http.insert("retry-after", "9".parse().unwrap());
+        let advice = crate::classify::with_response_retry_headers(frame, &http);
+        assert_eq!(
+            ciallopa_upstream::retry::retry_after(&advice),
+            Some(Duration::from_secs(2))
+        );
+        assert!(crate::attempt::no_more_retry(&advice));
+    }
+
     #[tokio::test]
     async fn prelude_read_preserves_the_bootstrap_exit_and_bytes() {
         for (wire, expected) in [
@@ -559,7 +600,7 @@ mod tests {
                 PreludeEnd::Commit(Commit::UpstreamEof) => "eof",
                 PreludeEnd::Commit(Commit::Content) => "content",
                 PreludeEnd::Quota(..) => "quota",
-                PreludeEnd::Overloaded(_) => "overload",
+                PreludeEnd::Overloaded(..) => "overload",
                 other => panic!("unexpected exit: {other:?}"),
             };
             assert_eq!(actual, expected);

@@ -359,9 +359,19 @@ body. It is account-level throttling, not quota and not a credential problem.
   cools the account mid-stream on HTTP.
 - `x-retry-metadata: NO_MORE_RETRY` forbids another try on the same account (it skips the
   wait-and-retry and ends the WS handshake retries on the last account); switching to another account is still allowed.
+- In-stream retry advice: an SSE or WS error event may carry its own JSON `headers`. As in Codex
+  0.172.0, `error.headers` (or `response.error.headers`) comes before the event's top-level
+  `headers`, and the first object with a valid `Retry-After` wins (names match in any case;
+  `retry-after-ms` stands in when that object has no valid `Retry-After`). That advice and an
+  event's `x-retry-metadata` beat the HTTP response's own headers. It drives the wait above, a
+  `NO_MORE_RETRY` in it skips the wait, and a stream rate limit (`rate_limit_exceeded`,
+  `turn_rate_limit_exceeded`) without a reset time in the body takes it as the model cooldown
+  (capped like an HTTP 429's `Retry-After`).
 - Cooldown: after `overload_streak` (default 2) consecutive overloaded answers on one account it
   is cooled for `overload_cooldown_secs` (default 120), doubling on each further cooldown up to
-  `overload_cooldown_max_secs` (default 600). Delivered output resets both the streak and the
+  `overload_cooldown_max_secs` (default 600). An in-stream overload's `Retry-After` can only
+  lengthen a cooldown the streak triggers, never past `overload_cooldown_max_secs`; it does not
+  cool an account on its own. Delivered output resets both the streak and the
   doubling. The last usable account is never cooled. The account page shows the reason
   `overloaded` and, per account, overloaded / upstream attempts over the last 24 h (memory only,
   cleared on restart and by "解除冷却"; nothing is written to disk for it).

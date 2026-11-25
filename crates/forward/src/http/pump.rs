@@ -614,7 +614,7 @@ pub(crate) fn stream_body(
         router: st.router.clone(),
         route,
         account,
-        late_overload: overload_outcome(st, false),
+        late_overload: overload_outcome(st, false, None),
         upstream_request_id,
         status,
         idle,

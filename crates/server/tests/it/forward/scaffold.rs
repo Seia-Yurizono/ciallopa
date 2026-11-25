@@ -537,6 +537,33 @@ pub(super) async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: B
         "over400" => return sse_resp(OK_B),
         "overonce" if n < 2 => return sse_resp(OVER),
         "overonce" => return sse_resp(OK_B),
+        // Overload events carrying retry advice in their JSON `headers` (Codex 0.172 order:
+        // `error.headers` before the event's own `headers`). `over_advice`: nested 1 s beats the
+        // event's 9 s and the response's `Retry-After: 9`; the third attempt succeeds.
+        "over_advice" if n < 2 => {
+            let mut r = sse_resp(concat!(
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-a\"}}\n\n",
+                "event: error\ndata: {\"type\":\"error\",\"error\":{\"code\":\"server_is_overloaded\",\"message\":\"overloaded\",\"headers\":{\"Retry-After\":\"1\"}},\"headers\":{\"retry-after\":\"9\"}}\n\n"
+            ));
+            r.headers_mut().insert("retry-after", "9".parse().unwrap());
+            return r;
+        }
+        "over_advice" => return sse_resp(OK_B),
+        // `over_nmr`: every account overloaded, the event says NO_MORE_RETRY (nested).
+        "over_nmr" => {
+            return sse_resp(concat!(
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-a\"}}\n\n",
+                "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"r-a\",\"error\":{\"code\":\"server_is_overloaded\",\"message\":\"overloaded\",\"headers\":{\"x-retry-metadata\":\"NO_MORE_RETRY\"}}}}\n\n"
+            ))
+        }
+        // `pre_turnrl_ra`: per-turn capacity limit with only a `Retry-After` (nested 30 s).
+        "pre_turnrl_ra" if auth.contains("tok-a") => {
+            return sse_resp(concat!(
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r-a\"}}\n\n",
+                "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"code\":\"turn_rate_limit_exceeded\",\"message\":\"Codex is at capacity\",\"headers\":{\"retry-after\":\"30\"}},\"headers\":{\"retry-after\":\"99\"}}\n\n"
+            ))
+        }
+        "pre_turnrl_ra" => return sse_resp(OK_B),
         _ => {}
     }
     match mode.as_str() {
@@ -990,6 +1017,30 @@ pub(super) async fn up_ws(State(m): State<Mock>, h: HeaderMap, ws: WebSocketUpgr
                         r#"{"type":"response.content_part.added","item_id":"msg_a","output_index":0,"content_index":0,"part":{"type":"output_text","annotations":[],"text":""}}"#,
                         r#"{"type":"error","error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"overloaded"}}"#,
                     ] {
+                        let _ = s.send(Message::Text(f.into())).await;
+                    }
+                    continue;
+                }
+                // WS twins of `over_advice` / `over_nmr` / `pre_turnrl_ra` (see up_responses_inner).
+                let advice_tag = ["over_advice_ws", "over_nmr_ws", "turnrl_ra_ws"]
+                    .into_iter()
+                    .find(|tag| t.as_str().contains(&format!("\"{tag}\"")));
+                if let Some(tag) = advice_tag {
+                    let event = match tag {
+                        "over_advice_ws" if attempt < 2 => Some(r#"{"type":"error","error":{"code":"server_is_overloaded","message":"overloaded","headers":{"Retry-After":"1"}},"headers":{"retry-after":"9"}}"#),
+                        "over_nmr_ws" => Some(r#"{"type":"error","error":{"code":"server_is_overloaded","message":"overloaded","headers":{"x-retry-metadata":"NO_MORE_RETRY"}}}"#),
+                        "turnrl_ra_ws" if auth.contains("tok-a") => Some(r#"{"type":"error","error":{"type":"rate_limit_error","code":"turn_rate_limit_exceeded","message":"Codex is at capacity","headers":{"retry-after":"30"}},"headers":{"retry-after":"99"}}"#),
+                        _ => None,
+                    };
+                    let frames = match event {
+                        Some(event) => vec![r#"{"type":"response.created","response":{"id":"r-a"}}"#, event],
+                        None => vec![
+                            r#"{"type":"response.created","response":{"id":"r-b"}}"#,
+                            r#"{"type":"response.output_text.delta","delta":"ok"}"#,
+                            r#"{"type":"response.completed","response":{"id":"r-b"}}"#,
+                        ],
+                    };
+                    for f in frames {
                         let _ = s.send(Message::Text(f.into())).await;
                     }
                     continue;

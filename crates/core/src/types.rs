@@ -191,12 +191,15 @@ pub enum Outcome {
     /// `service_unavailable_error`, "at capacity"), in-stream or as HTTP status. Never a quota
     /// or credential problem. After `streak` consecutive ones the account is cooled for
     /// `base * 2^level` (capped at `max`, level grows per cooldown, reset by a success);
-    /// `cool = false` (last usable account, or feature off) only counts.
+    /// `cool = false` (last usable account, or feature off) only counts. `retry_after` (the
+    /// event's or response's `Retry-After`) only lengthens a cooldown the streak already
+    /// triggers, never past `max`; it never starts one on its own.
     Overloaded {
         streak: u32,
         base: Duration,
         max: Duration,
         cool: bool,
+        retry_after: Option<Duration>,
     },
     /// Cloudflare challenge or block page in front of the upstream (403 with `cf-mitigated`, a
     /// challenge page, or a Cloudflare `1xxx` error such as 1010). It blocks this host's egress,
