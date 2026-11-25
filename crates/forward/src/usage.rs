@@ -705,7 +705,7 @@ impl Tracker {
                 self.source(crate::errors::SRC_STREAM);
                 // Same split as the router outcome: quota code or usage-limit text cools
                 // the account (`usage_limit`); any other 429 is a rate limit.
-                if crate::classify::quota_event(v).0
+                if crate::classify::quota_event(v).is_some()
                     && ciallopa_routing::is_usage_limit(text.as_bytes())
                 {
                     self.fail("usage_limit");

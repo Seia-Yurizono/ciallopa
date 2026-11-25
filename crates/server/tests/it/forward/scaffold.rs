@@ -630,6 +630,10 @@ pub(super) async fn up_responses_inner(State(m): State<Mock>, h: HeaderMap, b: B
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"x\"}\n\n",
             "event: error\ndata: {\"type\":\"error\",\"status\":429,\"error\":{\"type\":\"rate_limit_error\",\"code\":\"rate_limit_exceeded\",\"message\":\"slow down\"}}\n\n"
         )),
+        "late_turn_rate_limit" => sse_resp(concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"x\"}\n\n",
+            "event: error\ndata: {\"type\":\"error\",\"error\":{\"code\":\"turn_rate_limit_exceeded\",\"message\":\"Codex is at capacity, please try again later\"}}\n\n"
+        )),
         mode @ ("delta_then_reset" | "reset_first") => {
             let first = mode == "delta_then_reset";
             let s = futures::stream::unfold(0, move |i| async move {

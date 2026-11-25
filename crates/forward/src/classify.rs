@@ -22,7 +22,7 @@ pub(crate) enum Terminal {
     Incomplete,
     Failed,
     Error,
-    Quota(Outcome),
+    Quota(Outcome, &'static str),
     Overloaded(String),
     Encrypted(String),
 }
@@ -94,33 +94,28 @@ fn quota_code(v: Option<&serde_json::Value>) -> bool {
 /// capacity limit `turn_rate_limit_exceeded` ("Codex is at capacity").
 const RATE_LIMIT_CODES: [&str; 2] = [crate::errors::RATE_LIMIT_CODE, "turn_rate_limit_exceeded"];
 
-/// `code` is one of [`RATE_LIMIT_CODES`].
-fn rate_limit_code(v: Option<&serde_json::Value>) -> bool {
-    v.and_then(|o| o.get("code"))
-        .and_then(|c| c.as_str())
-        .is_some_and(|c| RATE_LIMIT_CODES.contains(&c.trim()))
+fn rate_limit_code(v: Option<&serde_json::Value>) -> Option<&'static str> {
+    let code = v?.get("code")?.as_str()?.trim();
+    RATE_LIMIT_CODES.into_iter().find(|&known| known == code)
 }
 
-/// Returns (rate limited, quota code); inspect structured errors, never model output.
-pub(crate) fn quota_event(v: &serde_json::Value) -> (bool, bool) {
-    match v.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+/// Return the normalized code for a structured quota or rate-limit error.
+pub(crate) fn quota_event(v: &serde_json::Value) -> Option<&'static str> {
+    let (error, status_429) = match v.get("type").and_then(|t| t.as_str()).unwrap_or("") {
         "error" => {
             let status = v
                 .get("status")
                 .or_else(|| v.get("status_code"))
                 .and_then(|s| s.as_u64());
-            let code = quota_code(v.get("error"));
-            (
-                status == Some(429) || code || rate_limit_code(v.get("error")),
-                code,
-            )
+            (v.get("error"), status == Some(429))
         }
-        "response.failed" => {
-            let e = v.pointer("/response/error");
-            let code = quota_code(e);
-            (code || rate_limit_code(e), code)
-        }
-        _ => (false, false),
+        "response.failed" => (v.pointer("/response/error"), false),
+        _ => return None,
+    };
+    if quota_code(error) {
+        Some("usage_limit")
+    } else {
+        rate_limit_code(error).or(status_429.then_some(crate::errors::RATE_LIMIT_CODE))
     }
 }
 
@@ -271,18 +266,21 @@ fn classify_value(ty: &str, text: &str, v: &serde_json::Value) -> Class {
     if let Some(message) = crate::encrypted::rejection(v) {
         return Class::Terminal(Terminal::Encrypted(message));
     }
-    let (quota, code) = quota_event(v);
-    if quota {
+    if let Some(code) = quota_event(v) {
         let quota = parse_quota_event_headers(text.as_bytes()).and_then(|h| parse_quota(&h));
-        return Class::Terminal(Terminal::Quota(Outcome::RateLimited {
-            retry_after: ciallopa_routing::parse_codex_retry_after(
-                429,
-                text.as_bytes(),
-                SystemTime::now(),
-            ),
-            usage_limit: code || is_usage_limit(text.as_bytes()),
-            quota,
-        }));
+        let usage_limit = code == "usage_limit" || is_usage_limit(text.as_bytes());
+        return Class::Terminal(Terminal::Quota(
+            Outcome::RateLimited {
+                retry_after: ciallopa_routing::parse_codex_retry_after(
+                    429,
+                    text.as_bytes(),
+                    SystemTime::now(),
+                ),
+                usage_limit,
+                quota,
+            },
+            if usage_limit { "usage_limit" } else { code },
+        ));
     }
     if let Some(code) = overload_code(v) {
         return Class::Terminal(Terminal::Overloaded(code));
@@ -444,7 +442,7 @@ use crate::usage::StreamObservation;
 #[derive(Debug, PartialEq)]
 pub(crate) enum EventKind {
     Preamble,
-    Quota(Outcome),
+    Quota(Outcome, &'static str),
     Overloaded(String),
     Encrypted(String),
     Content,
@@ -455,7 +453,7 @@ impl From<Class> for EventKind {
     fn from(class: Class) -> Self {
         match class {
             Class::Preamble | Class::RateLimits(_) | Class::Created => Self::Preamble,
-            Class::Terminal(Terminal::Quota(o)) => Self::Quota(o),
+            Class::Terminal(Terminal::Quota(o, code)) => Self::Quota(o, code),
             Class::Terminal(Terminal::Overloaded(code)) => Self::Overloaded(code),
             Class::Terminal(Terminal::Encrypted(message)) => Self::Encrypted(message),
             Class::Output | Class::SoftError | Class::Terminal(_) => Self::Content,
@@ -621,12 +619,15 @@ mod quota_tests {
         use Class::{Created, Output, Preamble};
         let failed = || Class::Terminal(Terminal::Failed);
         let error = || Class::Terminal(Terminal::Error);
-        let quota = |usage_limit| {
-            Class::Terminal(Terminal::Quota(Outcome::RateLimited {
-                retry_after: None,
-                usage_limit,
-                quota: None,
-            }))
+        let quota = |usage_limit, code| {
+            Class::Terminal(Terminal::Quota(
+                Outcome::RateLimited {
+                    retry_after: None,
+                    usage_limit,
+                    quota: None,
+                },
+                code,
+            ))
         };
         let overloaded = |code: &str| Class::Terminal(Terminal::Overloaded(code.to_owned()));
         let encrypted = Class::Terminal(Terminal::Encrypted("The encrypted content for item rs_1 could not be verified. Reason: Encrypted content could not be decrypted or parsed.".to_owned()));
@@ -641,15 +642,19 @@ mod quota_tests {
             ),
             (
                 r#"{"type":"response.failed","response":{"error":{"code":"usage_limit_reached"}}}"#,
-                quota(true),
+                quota(true, "usage_limit"),
             ),
             (
                 r#"{"type":"error","error":{"type":"insufficient_quota"}}"#,
-                quota(true),
+                quota(true, "usage_limit"),
             ),
             (
                 r#"{"type":"error","status":429,"error":{"message":"x"}}"#,
-                quota(false),
+                quota(false, "rate_limit_exceeded"),
+            ),
+            (
+                r#"{"type":"error","status":429,"error":{"code":"unrecognized_limit"}}"#,
+                quota(false, "rate_limit_exceeded"),
             ),
             (
                 r#"{"type":"response.output_text.delta","delta":"usage_limit_reached"}"#,
@@ -657,19 +662,19 @@ mod quota_tests {
             ),
             (
                 r#"{"type":"response.failed","response":{"error":{"code":"rate_limit_exceeded","message":"Rate limit reached for gpt-5.1 on tokens per min (TPM). Please try again in 11.054s."}}}"#,
-                quota(false),
+                quota(false, "rate_limit_exceeded"),
             ),
             (
                 r#"{"type":"error","error":{"type":"rate_limit_error","code":"rate_limit_exceeded"}}"#,
-                quota(false),
+                quota(false, "rate_limit_exceeded"),
             ),
             (
                 r#"{"type":"response.failed","response":{"error":{"code":"turn_rate_limit_exceeded","message":"Codex is at capacity, please try again later"}}}"#,
-                quota(false),
+                quota(false, "turn_rate_limit_exceeded"),
             ),
             (
                 r#"{"type":"error","error":{"type":"rate_limit_error","code":"turn_rate_limit_exceeded","message":"Codex is at capacity, please try again later"}}"#,
-                quota(false),
+                quota(false, "turn_rate_limit_exceeded"),
             ),
             (
                 r#"{"type":"response.failed","response":{"error":{"code":"policy_capacity_unavailable","message":"x"}}}"#,
@@ -709,7 +714,7 @@ mod quota_tests {
             ),
             (
                 r#"{"type":"error","status":429,"error":{"type":"usage_limit_reached","message":"overloaded"}}"#,
-                quota(true),
+                quota(true, "usage_limit"),
             ),
             (
                 r#"{"type":"error","error":{"message":"The encrypted content for item rs_1 could not be verified. Reason: Encrypted content could not be decrypted or parsed.","type":"invalid_request_error","param":"input","code":"invalid_encrypted_content"}}"#,
@@ -800,7 +805,7 @@ mod quota_tests {
             ),
             (
                 r#"{"type":"response.\u0066ailed","response":{"error":{"code":"insufficient_quota"}}}"#,
-                quota(true),
+                quota(true, "usage_limit"),
             ),
         ] {
             let classified = super::classify(None, text);
@@ -810,19 +815,9 @@ mod quota_tests {
             if let Some(ty) = ty.as_deref() {
                 assert_eq!(super::classify(Some(ty), text).class, expected, "{text}");
             }
-            if let Class::Terminal(Terminal::Quota(Outcome::RateLimited { usage_limit, .. })) =
-                &expected
-            {
+            if let Class::Terminal(Terminal::Quota(_, code)) = &expected {
                 let value = serde_json::from_str(text).unwrap();
-                assert_eq!(quota_event(&value), (true, *usage_limit), "{text}");
-                if let Some(code) = value
-                    .pointer("/response/error/code")
-                    .and_then(serde_json::Value::as_str)
-                {
-                    if code == "rate_limit_exceeded" {
-                        assert_eq!(errors::event_code(&value), code);
-                    }
-                }
+                assert_eq!(quota_event(&value), Some(*code), "{text}");
             }
             assert_eq!(event_kind(text), EventKind::from(expected), "{text}");
         }
@@ -940,11 +935,14 @@ mod tests {
         );
         assert!(d);
         match k {
-            EventKind::Quota(Outcome::RateLimited {
-                usage_limit,
-                retry_after,
-                quota,
-            }) => {
+            EventKind::Quota(
+                Outcome::RateLimited {
+                    usage_limit,
+                    retry_after,
+                    quota,
+                },
+                "usage_limit",
+            ) => {
                 assert!(usage_limit);
                 assert_eq!(retry_after, Some(Duration::from_secs(60)));
                 assert!(quota.is_some());
@@ -956,7 +954,7 @@ mod tests {
                 r#"{"type":"response.failed","response":{"error":{"code":"insufficient_quota"}}}"#
             )
             .0,
-            EventKind::Quota(_)
+            EventKind::Quota(_, "usage_limit")
         ));
         assert!(classify(r#"{"type":"response.completed"}"#).1);
         assert_eq!(

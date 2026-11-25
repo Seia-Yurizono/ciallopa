@@ -650,3 +650,46 @@ async fn turn_rate_limit_before_output_cools_model_and_switches() {
     );
     rate_limited(&e);
 }
+
+#[tokio::test]
+async fn turn_rate_limit_without_a_switch_is_recorded_for_ws_and_sse() {
+    for (mode, expected_message) in [
+        (
+            "pre_turnrl_ws",
+            "upstream at capacity (turn rate limit); closed for client replay",
+        ),
+        ("pre_turnrl", "upstream at capacity (turn rate limit)"),
+    ] {
+        let d = tempfile::tempdir().unwrap();
+        let e = env_cfg_accounts(
+            300,
+            Some(usage_recorder(d.path())),
+            "",
+            Some(Arc::new(Store::rotating(&["a"]))),
+        )
+        .await;
+        if mode == "pre_turnrl_ws" {
+            ws_frames(&e, mode).await;
+        } else {
+            let text = sse_text(&e, mode).await;
+            assert!(text.contains("turn_rate_limit_exceeded"), "{text}");
+        }
+        let rows = wait_rows(&e, 1).await;
+        let row = &rows[0];
+        assert_eq!(row["error"], "turn_rate_limit_exceeded", "{mode}: {row}");
+        let detail: serde_json::Value = detail_of(&e, row["request_id"].as_str().unwrap(), true)
+            .await
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(detail["message"], expected_message, "{mode}: {detail}");
+        if mode == "pre_turnrl" {
+            let attempts = detail["attempts"].as_array().unwrap();
+            assert!(
+                attempts.iter().any(|attempt| attempt["kind"] == "stream"
+                    && attempt["code"] == "turn_rate_limit_exceeded"),
+                "{detail}"
+            );
+        }
+    }
+}

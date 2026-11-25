@@ -130,8 +130,7 @@ pub(crate) fn body_code(b: &[u8]) -> Option<String> {
 
 /// Prefer nested error codes over types; normalize quota and code-less 429 failures.
 pub(crate) fn event_code(v: &serde_json::Value) -> String {
-    let (_, quota) = crate::classify::quota_event(v);
-    if quota {
+    if crate::classify::quota_event(v) == Some("usage_limit") {
         return "usage_limit".into();
     }
     if let Some(c) = crate::classify::overload_code(v) {
@@ -168,15 +167,6 @@ pub(crate) fn event_code(v: &serde_json::Value) -> String {
 
 /// Logged for a 429 / rate limit that carries no quota code (cools the model only).
 pub(crate) const RATE_LIMIT_CODE: &str = "rate_limit_exceeded";
-
-pub(crate) fn quota_outcome_code(o: &ciallopa_core::Outcome) -> &'static str {
-    match o {
-        ciallopa_core::Outcome::RateLimited {
-            usage_limit: false, ..
-        } => RATE_LIMIT_CODE,
-        _ => "usage_limit",
-    }
-}
 
 pub(crate) fn sse_block_code(event: &[u8]) -> Option<String> {
     let text = std::str::from_utf8(event).ok()?;

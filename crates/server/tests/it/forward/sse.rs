@@ -524,6 +524,12 @@ async fn committed_errors_are_forwarded_and_recorded() {
             "rate_limit_exceeded",
             "rate_limit",
         ),
+        (
+            "late_turn_rate_limit",
+            "turn_rate_limit_exceeded",
+            "turn_rate_limit_exceeded",
+            "rate_limit",
+        ),
     ]
     .into_iter()
     .enumerate()
@@ -559,7 +565,7 @@ async fn committed_errors_are_forwarded_and_recorded() {
                             ..
                         }
                     )),
-                "late_rate_limit" =>
+                "late_rate_limit" | "late_turn_rate_limit" =>
                     outcomes.iter().any(|(_, o)| matches!(
                         o,
                         Outcome::RateLimited {

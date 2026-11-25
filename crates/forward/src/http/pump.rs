@@ -165,10 +165,10 @@ impl ResponsesObserver {
             )
         {
             match classify(ty.as_deref(), &data).class {
-                Class::Terminal(Terminal::Quota(outcome)) => {
+                Class::Terminal(Terminal::Quota(outcome, code)) => {
                     self.account_reported = true;
                     if let Some(t) = trk.as_mut() {
-                        t.fail(errors::quota_outcome_code(&outcome));
+                        t.fail(code);
                     }
                     return Some(outcome);
                 }

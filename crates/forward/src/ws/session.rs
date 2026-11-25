@@ -69,7 +69,9 @@ enum Redial<'a> {
         code: &'a str,
         wait: Option<Duration>,
     },
-    Quota(&'a Outcome),
+    Quota {
+        code: &'static str,
+    },
 }
 
 enum RedialFailed {
@@ -435,7 +437,7 @@ impl Session {
         let (hold, wait) = match why {
             Redial::ModelCooldown | Redial::QuotaFull => (crate::attempt::WS_HOLD_MAX, None),
             Redial::Overload { wait, .. } => (Duration::MAX, wait),
-            Redial::Quota(_) => (Duration::MAX, None),
+            Redial::Quota { .. } => (Duration::MAX, None),
         };
         let (ws, headers, account, gen) = turn
             .budget
@@ -461,7 +463,7 @@ impl Session {
             Redial::ModelCooldown => "model_cooldown",
             Redial::QuotaFull => "quota_full",
             Redial::Overload { code, .. } => code,
-            Redial::Quota(outcome) => crate::errors::quota_outcome_code(outcome),
+            Redial::Quota { code } => code,
         };
         tracing::info!(from = %self.up.account, to = %replacement.account, code, "ws redialed before output");
         if let Some(tracker) = turn.tracker.as_mut() {
@@ -902,7 +904,7 @@ impl Session {
         }
         if matches!(
             class,
-            Class::SoftError | Class::Terminal(Terminal::Quota(_))
+            Class::SoftError | Class::Terminal(Terminal::Quota(..))
         ) {
             if let (Some(tracker), Message::Text(text)) = (self.tracker_mut(), &message) {
                 tracker.error_text(text.as_bytes());
@@ -959,30 +961,30 @@ impl Session {
                 tracker.source(crate::errors::SRC_STREAM);
             }
         }
-        if let Class::Terminal(Terminal::Quota(outcome)) = class {
+        if let Class::Terminal(Terminal::Quota(outcome, code)) = class {
             self.st
                 .router
                 .report(&self.route, &self.up.account, outcome);
+            let code = *code;
+            let message = match code {
+                "usage_limit" => "usage limit reached mid-turn; closed for client replay",
+                "turn_rate_limit_exceeded" => {
+                    "upstream at capacity (turn rate limit); closed for client replay"
+                }
+                _ => "upstream rate limited; closed for client replay",
+            };
             if let Some(turn) = self.state.turn_mut() {
                 if quota_plan(&mut turn.switches, self.max_switches) == Next::Switch {
                     if let Some(request) = turn.request() {
                         self.route.exclude.push(self.up.account.clone());
-                        return match self.replay(request, Redial::Quota(outcome)).await {
+                        return match self.replay(request, Redial::Quota { code }).await {
                             Ok(()) => Flow::Continue,
-                            Err(failure) => self.replay_failed(
-                                failure,
-                                crate::errors::quota_outcome_code(outcome),
-                                "usage limit reached mid-turn; closed for client replay",
-                            ),
+                            Err(failure) => self.replay_failed(failure, code, message),
                         };
                     }
                 }
             }
-            self.fail(
-                crate::errors::quota_outcome_code(outcome),
-                crate::errors::SRC_STREAM,
-                "usage limit reached mid-turn; closed for client replay",
-            );
+            self.fail(code, crate::errors::SRC_STREAM, message);
             return Flow::Close(Close::Replay);
         }
         let preamble = matches!(

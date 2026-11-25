@@ -24,7 +24,7 @@ use http::{HeaderMap, StatusCode};
 #[derive(Debug)]
 enum PreludeEnd {
     Commit(Commit),
-    Quota(Outcome),
+    Quota(Outcome, &'static str),
     Overloaded(String),
     Encrypted { message: String, event: String },
     ReadError(reqwest::Error),
@@ -73,8 +73,8 @@ impl Prelude {
                         }
                         match classified.class {
                             Class::Preamble | Class::RateLimits(_) | Class::Created => None,
-                            Class::Terminal(Terminal::Quota(outcome)) => {
-                                Some(PreludeEnd::Quota(outcome))
+                            Class::Terminal(Terminal::Quota(outcome, code)) => {
+                                Some(PreludeEnd::Quota(outcome, code))
                             }
                             Class::Terminal(Terminal::Overloaded(code)) => {
                                 Some(PreludeEnd::Overloaded(code))
@@ -138,10 +138,10 @@ fn prelude_verdict(end: &PreludeEnd, ctx: &ReplayCtx) -> PreludeVerdict {
                 account_reported: true,
             },
         },
-        PreludeEnd::Quota(_) if ctx.quota_switches_left => {
+        PreludeEnd::Quota(..) if ctx.quota_switches_left => {
             PreludeVerdict::Replay(Replay::SwitchAfterQuota)
         }
-        PreludeEnd::Quota(_) => PreludeVerdict::DeliverBuffered,
+        PreludeEnd::Quota(..) => PreludeVerdict::DeliverBuffered,
         PreludeEnd::ReadError(error) => PreludeVerdict::TruncatedTail {
             code: response_read_failure(error).0,
         },
@@ -275,11 +275,11 @@ async fn send(st: &AppState, mut ob: Outbound, mut trk: Option<Tracker>) -> Resp
             PreludeEnd::Overloaded(code) => {
                 Some((overload_outcome(st, others), code.clone(), overload.next()))
             }
-            PreludeEnd::Quota(outcome) => {
+            PreludeEnd::Quota(outcome, code) => {
                 switches += 1;
                 Some((
                     outcome.clone(),
-                    errors::quota_outcome_code(outcome).into(),
+                    (*code).into(),
                     if ctx.quota_switches_left {
                         Next::Switch
                     } else {
@@ -344,16 +344,25 @@ async fn send(st: &AppState, mut ob: Outbound, mut trk: Option<Tracker>) -> Resp
                 return crate::encrypted::http_response(value.as_ref());
             }
             PreludeVerdict::DeliverBuffered => {
-                let PreludeEnd::Quota(outcome) = end else {
+                let PreludeEnd::Quota(_, code) = end else {
                     unreachable!()
                 };
                 if let Some(mut t) = trk.take() {
                     t.rec.status = status.as_u16();
                     t.error_body(&prelude.buf);
                     t.finish(End::Failed {
-                        code: errors::quota_outcome_code(&outcome).into(),
+                        code: code.into(),
                         source: errors::SRC_STREAM,
-                        message: Some("usage limit reached on every available account".into()),
+                        message: Some(
+                            match code {
+                                "usage_limit" => "usage limit reached on every available account",
+                                "turn_rate_limit_exceeded" => {
+                                    "upstream at capacity (turn rate limit)"
+                                }
+                                _ => "upstream rate limited",
+                            }
+                            .into(),
+                        ),
                     });
                 }
                 let mut response = Response::new(Body::from(prelude.buf.freeze()));
@@ -479,7 +488,7 @@ mod tests {
                 event: String::new(),
             },
             PreludeEnd::Overloaded("overloaded".into()),
-            PreludeEnd::Quota(quota),
+            PreludeEnd::Quota(quota, "usage_limit"),
             PreludeEnd::ReadError(read_error(false).await),
             PreludeEnd::ReadError(read_error(true).await),
             PreludeEnd::Idle,
@@ -549,7 +558,7 @@ mod tests {
             let actual = match end {
                 PreludeEnd::Commit(Commit::UpstreamEof) => "eof",
                 PreludeEnd::Commit(Commit::Content) => "content",
-                PreludeEnd::Quota(_) => "quota",
+                PreludeEnd::Quota(..) => "quota",
                 PreludeEnd::Overloaded(_) => "overload",
                 other => panic!("unexpected exit: {other:?}"),
             };
