@@ -164,8 +164,10 @@ impl FromRequest<AppState> for ReqBody {
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|_| unreadable())?;
             let len = (buf.len() + chunk.len()) as u64;
+            // Release the buffered bytes and their reservation before draining the rest,
+            // which can take up to `DISCARD_TIME`.
             if len > max {
-                drop(buf);
+                drop((buf, chunk, permit));
                 return Err(discard(stream, too_large()).await);
             }
             if len > permit.held() {
@@ -174,7 +176,7 @@ impl FromRequest<AppState> for ReqBody {
                     .reserve_body(&mut permit, more, budget, timing::scale(st, BUDGET_WAIT))
                     .await
                 {
-                    drop(buf);
+                    drop((buf, chunk, permit));
                     note(len);
                     return Err(discard(stream, crate::admission::refused(r)).await);
                 }

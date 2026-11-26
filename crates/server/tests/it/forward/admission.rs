@@ -100,6 +100,73 @@ async fn buffered_body_budget_waits_briefly_then_refuses_without_upstream() {
     assert_eq!(r.status(), 200);
 }
 
+/// A refused upload is drained for up to 10 s so the client reads the error; its buffered
+/// bytes and their budget reservation are released before that, not after.
+#[tokio::test]
+async fn refused_streaming_body_releases_its_budget_while_draining() {
+    use tower::ServiceExt;
+    let e = env(300).await;
+    let kib = 1024u64;
+    let budget = 2 * 1024 * kib;
+    let mut cfg = (*e.config.load()).clone();
+    cfg.max_body_mb = 1;
+    cfg.max_buffered_body_mb = 2;
+    e.config.store(cfg);
+    async fn settle(drain: &ciallopa_upstream::drain::Drain, bytes: u64) {
+        for _ in 0..200 {
+            if drain.body_bytes() == bytes {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(drain.body_bytes(), bytes);
+    }
+    // (first chunk, second chunk, held meanwhile by another request, status)
+    for (first, second, other, status) in [
+        // The second chunk passes `max_body_mb`.
+        (900 * kib, 200 * kib, 0, 413),
+        // The second chunk does not fit the budget the other request took.
+        (100 * kib, 200 * kib, budget - 100 * kib, 503),
+    ] {
+        let (tx, rx) = futures::channel::mpsc::unbounded::<Result<Bytes, std::io::Error>>();
+        let req = http::Request::post("/v1/responses")
+            .header("authorization", format!("Bearer {KEY}"))
+            .body(Body::from_stream(rx))
+            .unwrap();
+        let app = e.app.clone();
+        let pending = tokio::spawn(async move { app.oneshot(req).await.unwrap() });
+        tx.unbounded_send(Ok(Bytes::from(vec![b' '; first as usize])))
+            .unwrap();
+        settle(&e.drain, first).await;
+        let mut held = e.drain.body_permit();
+        e.drain
+            .reserve_body(&mut held, other, budget, Duration::ZERO)
+            .await
+            .unwrap();
+        tx.unbounded_send(Ok(Bytes::from(vec![b' '; second as usize])))
+            .unwrap();
+        settle(&e.drain, other).await;
+        assert!(
+            !pending.is_finished(),
+            "{status}: the upload is still drained"
+        );
+        let mut next = e.drain.body_permit();
+        e.drain
+            .reserve_body(&mut next, first, budget, Duration::ZERO)
+            .await
+            .expect("another request gets the released bytes at once");
+        drop((next, held));
+        drop(tx);
+        let r = tokio::time::timeout(Duration::from_secs(2), pending)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(r.status(), status);
+    }
+    assert_eq!(e.drain.body_bytes(), 0);
+    assert_eq!(e.mock.hits.load(Ordering::SeqCst), 0);
+}
+
 #[tokio::test]
 async fn declared_oversized_body_gets_neutral_json_413() {
     use tower::ServiceExt;
@@ -440,30 +507,59 @@ async fn websocket_messages_share_the_buffered_body_budget() {
     }
     assert_eq!(e.drain.body_bytes(), 0);
 
-    // Held for the running turn (its replay copy stays in memory).
-    ws.send(M::text(r#"{"type":"response.create","tag":"held"}"#))
-        .await
-        .unwrap();
-    assert!(text(&mut ws).await.contains("held"));
-    assert_eq!(
-        e.drain.body_bytes(),
-        r#"{"type":"response.create","tag":"held"}"#.len() as u64
-    );
-    assert_eq!(e.drain.ws_bytes(), e.drain.body_bytes());
-
     // A message larger than the whole budget is not refused forever: it waits for all of it.
     ws.send(msg("whole", (3 * mib / 2) as usize)).await.unwrap();
     let echo = text(&mut ws).await;
     assert!(echo.contains("\"tag\":\"whole\""), "{}", &echo[..80]);
     ws.close(None).await.unwrap();
-    for _ in 0..100 {
-        if e.drain.body_bytes() == 0 {
-            break;
+    async fn idle(drain: &ciallopa_upstream::drain::Drain, bytes: u64, inflight: usize) {
+        for _ in 0..100 {
+            if drain.body_bytes() == bytes && drain.inflight() == inflight {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert_eq!(drain.body_bytes(), bytes);
+        assert_eq!(drain.ws_bytes(), bytes);
+        assert_eq!(drain.inflight(), inflight);
     }
-    assert_eq!(e.drain.body_bytes(), 0);
-    assert_eq!(e.drain.ws_bytes(), 0);
+    idle(&e.drain, 0, 0).await;
+
+    // Before output the replay copy keeps its reservation.
+    let (mut ws, _) = tokio_tungstenite::connect_async(ws_req(&e)).await.unwrap();
+    let prelude = r#"{"type":"response.create","tag":"prelude_held"}"#;
+    ws.send(M::text(prelude)).await.unwrap();
+    idle(&e.drain, prelude.len() as u64, 1).await;
+    ws.close(None).await.unwrap();
+    idle(&e.drain, 0, 0).await;
+
+    // Committing output (a delta, or held preamble past its cap) drops the copy and its
+    // reservation before the frames are sent; the turn keeps its slot until it ends.
+    for tag in ["held", "prelude_flood"] {
+        let (mut ws, _) = tokio_tungstenite::connect_async(ws_req(&e)).await.unwrap();
+        ws.send(M::text(format!(
+            r#"{{"type":"response.create","tag":"{tag}"}}"#
+        )))
+        .await
+        .unwrap();
+        let first = text(&mut ws).await;
+        assert!(!first.contains("response.completed"), "{tag}");
+        assert_eq!(e.drain.body_bytes(), 0, "{tag}: released at commit");
+        assert_eq!(e.drain.ws_bytes(), 0, "{tag}");
+        assert_eq!(
+            e.drain.inflight(),
+            1,
+            "{tag}: the running turn keeps its slot"
+        );
+        let mut whole = e.drain.body_permit();
+        e.drain
+            .reserve_body(&mut whole, mib, mib, Duration::ZERO)
+            .await
+            .expect("another request gets the whole budget at once");
+        drop(whole);
+        ws.close(None).await.unwrap();
+        idle(&e.drain, 0, 0).await;
+    }
 }
 
 /// Running WS turns fill `max_inflight_requests`; new turns are then refused, but model

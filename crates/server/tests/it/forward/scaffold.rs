@@ -1115,6 +1115,19 @@ pub(super) async fn up_ws(State(m): State<Mock>, h: HeaderMap, ws: WebSocketUpgr
                     burst_sync.0.notify_one();
                     continue;
                 }
+                if t.as_str().contains("\"prelude_held\"") {
+                    // Only a preamble frame, then hold: the turn stays replayable.
+                    let _ = s.send(Message::Text(r#"{"type":"response.created","response":{"id":"r-p"}}"#.into())).await;
+                    continue;
+                }
+                if t.as_str().contains("\"prelude_flood\"") {
+                    // Preamble frames past the 1 MiB held-frame cap, then hold.
+                    let pad = "x".repeat(600 * 1024);
+                    for _ in 0..2 {
+                        let _ = s.send(Message::Text(format!(r#"{{"type":"codex.response.metadata","pad":"{pad}"}}"#).into())).await;
+                    }
+                    continue;
+                }
                 if t.as_str().contains("\"held\"") {
                     let _ = s.send(Message::Text(r#"{"type":"response.output_text.delta","delta":"held"}"#.into())).await;
                     continue;

@@ -173,10 +173,9 @@ enum TurnPhase {
         request: Option<Replayable>,
         held: Held,
     },
-    Committed {
-        // Keep the turn's budget reservation until terminal or the next client message.
-        permit: Option<ciallopa_upstream::drain::BodyPermit>,
-    },
+    /// Output reached the client, so the turn can no longer be replayed: its request copy
+    /// and budget reservation are released at once (`Turn::_slot` stays until the turn ends).
+    Committed,
 }
 
 struct Replayable {
@@ -212,31 +211,23 @@ impl Turn {
     }
 
     fn discard_request(&mut self) {
-        match &mut self.phase {
-            TurnPhase::Prelude { request, .. } => *request = None,
-            TurnPhase::Committed { permit } => *permit = None,
+        if let TurnPhase::Prelude { request, .. } = &mut self.phase {
+            *request = None;
         }
     }
 
     fn held(&mut self) -> Vec<Message> {
         match &mut self.phase {
             TurnPhase::Prelude { held, .. } => std::mem::take(held).frames,
-            TurnPhase::Committed { .. } => Vec::new(),
+            TurnPhase::Committed => Vec::new(),
         }
     }
 
+    /// Drops the replay copy with its reservation and returns the held frames to send.
     fn commit(&mut self) -> Vec<Message> {
-        match std::mem::replace(&mut self.phase, TurnPhase::Committed { permit: None }) {
-            TurnPhase::Prelude { request, held } => {
-                self.phase = TurnPhase::Committed {
-                    permit: request.map(|r| r._permit),
-                };
-                held.frames
-            }
-            TurnPhase::Committed { permit } => {
-                self.phase = TurnPhase::Committed { permit };
-                Vec::new()
-            }
+        match std::mem::replace(&mut self.phase, TurnPhase::Committed) {
+            TurnPhase::Prelude { held, .. } => held.frames,
+            TurnPhase::Committed => Vec::new(),
         }
     }
 }
