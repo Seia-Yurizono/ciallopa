@@ -18,3 +18,4 @@ mod support;
 mod usage_api;
 mod ws_model_cooldown;
 mod ws_quota_full;
+mod ws_turn_switch;

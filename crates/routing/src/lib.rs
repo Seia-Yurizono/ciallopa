@@ -23,7 +23,7 @@ use ciallopa_core::config::{RebindOn, RoutingConfig, Strategy};
 use ciallopa_core::{
     Account, AccountId, Outcome, QuotaSnapshot, RouteError, RouteRequest, Router, Selection,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
@@ -334,6 +334,12 @@ fn eff_weight(a: &Account) -> i64 {
     }
 }
 
+/// Whether `select` considers the account at all (before cooldowns): enabled, not excluded
+/// and, under weighted round robin, with a positive weight.
+fn eligible(a: &Account, exclude: &[AccountId], weighted: bool) -> bool {
+    !a.disabled && !exclude.contains(&a.id) && (!weighted || eff_weight(a) > 0)
+}
+
 /// CPA `nextQuotaCooldown`.
 fn next_quota_cooldown(prev: u32) -> (Duration, u32) {
     let c = QUOTA_BACKOFF_BASE.saturating_mul(1u32.checked_shl(prev).unwrap_or(u32::MAX));
@@ -369,6 +375,27 @@ impl CpaRouter {
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
         self.st.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Whether `select` could pick another of `accounts` than `current` for `req` now and it
+    /// passes `extra`. Read-only: no cooldown expiry, binding or rotation change.
+    fn any_other(
+        &self,
+        req: &RouteRequest,
+        current: &AccountId,
+        accounts: &[Account],
+        extra: impl Fn(&State, &AccountId, SystemTime) -> bool,
+    ) -> bool {
+        let now = (self.clock)();
+        let model = canonical_model_key(&req.model);
+        let weighted = self.cfg.load().strategy == Strategy::WeightedRoundRobin;
+        let st = self.lock();
+        accounts.iter().any(|a| {
+            a.id != *current
+                && eligible(a, &req.exclude, weighted)
+                && blocked(&st, &a.id, &model, now).is_none()
+                && extra(&st, &a.id, now)
+        })
     }
 
     /// Last quota snapshot per account (for `status`).
@@ -567,17 +594,14 @@ impl Router for CpaRouter {
         let model = canonical_model_key(model);
         blocked(&self.lock(), id, &model, now)
     }
-    fn prefer_other(&self, id: &AccountId, model: &str, accounts: &[Account]) -> bool {
-        let now = (self.clock)();
-        let model = canonical_model_key(model);
-        let st = self.lock();
-        used(&st, id, now) >= quota::FULL_FRACTION
-            && accounts.iter().any(|a| {
-                a.id != *id
-                    && !a.disabled
-                    && blocked(&st, &a.id, &model, now).is_none()
-                    && used(&st, &a.id, now) < quota::FULL_FRACTION
-            })
+    fn usable_other(&self, req: &RouteRequest, current: &AccountId, accounts: &[Account]) -> bool {
+        self.any_other(req, current, accounts, |_, _, _| true)
+    }
+    fn prefer_other(&self, req: &RouteRequest, current: &AccountId, accounts: &[Account]) -> bool {
+        self.any_other(req, current, accounts, |st, id, now| {
+            used(st, current, now) >= quota::FULL_FRACTION
+                && used(st, id, now) < quota::FULL_FRACTION
+        })
     }
     fn clear_cooldown(&self, id: &AccountId) -> bool {
         let now = (self.clock)();
@@ -627,14 +651,11 @@ impl Router for CpaRouter {
         let cfg = self.cfg.load_full();
         let keys = BindingKeys::new(req, &model, &cfg);
         let weighted = cfg.strategy == Strategy::WeightedRoundRobin;
-        let excluded: HashSet<&str> = req.exclude.iter().map(String::as_str).collect();
         let by_id: HashMap<&str, &Account> = accounts.iter().map(|a| (a.id.as_str(), a)).collect();
 
         let mut cands: Vec<&Account> = accounts
             .iter()
-            .filter(|a| {
-                !a.disabled && !excluded.contains(a.id.as_str()) && (!weighted || eff_weight(a) > 0)
-            })
+            .filter(|a| eligible(a, &req.exclude, weighted))
             .collect();
         if cands.is_empty() {
             return Err(RouteError::NoAccounts);

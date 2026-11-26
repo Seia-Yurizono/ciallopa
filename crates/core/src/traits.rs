@@ -80,10 +80,26 @@ pub trait Router: Send + Sync + 'static {
     /// When the account is usable again for `model` (account- or model-level cooldown;
     /// None = usable now). Lets a connection pinned to an account re-check each request's model.
     fn model_cooling_until(&self, id: &AccountId, model: &str) -> Option<std::time::SystemTime>;
-    /// The account's window is full (it serves from purchased credits, if any) while another
-    /// of `accounts` is usable for `model` and not full: a connection pinned to it should move
-    /// at the next safe point.
-    fn prefer_other(&self, _id: &AccountId, _model: &str, _accounts: &[Account]) -> bool {
+    /// Another of `accounts` than `current` could serve `req` now (enabled, not in
+    /// `req.exclude`, not cooling for `req.model`): failing over to it can succeed.
+    /// Implementations with more eligibility rules (weights) must apply them here too.
+    fn usable_other(&self, req: &RouteRequest, current: &AccountId, accounts: &[Account]) -> bool {
+        accounts.iter().any(|a| {
+            a.id != *current
+                && !a.disabled
+                && !req.exclude.contains(&a.id)
+                && self.model_cooling_until(&a.id, &req.model).is_none()
+        })
+    }
+    /// The `current` account's window is full (it serves from purchased credits, if any) while
+    /// another account [usable](Self::usable_other) for `req` is not full: a connection pinned
+    /// to it should move at the next safe point.
+    fn prefer_other(
+        &self,
+        _req: &RouteRequest,
+        _current: &AccountId,
+        _accounts: &[Account],
+    ) -> bool {
         false
     }
     /// Why the account is cooling down (`usage_limit`, `rate_limited`, `auth`, `transient`,

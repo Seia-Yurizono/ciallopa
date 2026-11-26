@@ -2149,10 +2149,11 @@ fn threshold_falls_back_to_accounts_below_full() {
 fn prefer_other_only_when_another_account_has_quota() {
     let (r, _) = router(aff(RebindOn::Quota, true));
     let a = [acct("a"), acct("b")];
-    assert!(!r.prefer_other(&"a".into(), "m", &a), "nothing known");
+    let m = rq("m");
+    assert!(!r.prefer_other(&m, &"a".into(), &a), "nothing known");
     mark(&r, "a", 100.0);
-    assert!(r.prefer_other(&"a".into(), "m", &a));
-    assert!(!r.prefer_other(&"b".into(), "m", &a));
+    assert!(r.prefer_other(&m, &"a".into(), &a));
+    assert!(!r.prefer_other(&m, &"b".into(), &a));
     let b_off = [
         acct("a"),
         Account {
@@ -2161,8 +2162,16 @@ fn prefer_other_only_when_another_account_has_quota() {
         },
     ];
     assert!(
-        !r.prefer_other(&"a".into(), "m", &b_off),
+        !r.prefer_other(&m, &"a".into(), &b_off),
         "only disabled others"
+    );
+    let b_excluded = RouteRequest {
+        exclude: vec!["b".into()],
+        ..rq("m")
+    };
+    assert!(
+        !r.prefer_other(&b_excluded, &"a".into(), &a),
+        "the only account with quota is excluded"
     );
     r.report(
         &rq("m"),
@@ -2173,5 +2182,139 @@ fn prefer_other_only_when_another_account_has_quota() {
             quota: None,
         },
     );
-    assert!(!r.prefer_other(&"a".into(), "m", &a), "b cooling down");
+    assert!(!r.prefer_other(&m, &"a".into(), &a), "b cooling down");
+}
+
+#[test]
+fn prefer_other_ignores_accounts_weighted_round_robin_never_picks() {
+    let (r, _) = router(cfg(Strategy::WeightedRoundRobin));
+    mark(&r, "a", 100.0);
+    assert!(!r.prefer_other(&rq("m"), &"a".into(), &[acct("a"), acct_w("b", 0)]));
+    assert!(r.prefer_other(&rq("m"), &"a".into(), &[acct("a"), acct_w("b", 1)]));
+}
+
+#[test]
+fn usable_other_follows_select_eligibility() {
+    let a: AccountId = "a".into();
+    let (r, _) = router(cfg(Strategy::WeightedRoundRobin));
+    assert!(!r.usable_other(&rq("m"), &a, &[acct("a"), acct_w("b", 0)]));
+    assert!(r.usable_other(&rq("m"), &a, &[acct("a"), acct_w("b", 1)]));
+    // Without weighted round robin, a zero weight does not matter (as in `select`).
+    let (r, _) = router(cfg(Strategy::RoundRobin));
+    assert!(r.usable_other(&rq("m"), &a, &[acct("a"), acct_w("b", 0)]));
+    let accounts = [acct("a"), acct("b")];
+    assert!(!r.usable_other(&rq("m"), &a, &[acct("a")]), "only itself");
+    let b_excluded = RouteRequest {
+        exclude: vec!["b".into()],
+        ..rq("m")
+    };
+    assert!(!r.usable_other(&b_excluded, &a, &accounts));
+    // A cooldown for another model does not count; one for this model or the account does.
+    r.report(
+        &rq("other"),
+        &"b".into(),
+        &Outcome::NotFound {
+            retry_after: None,
+            cooldown: Duration::from_secs(60),
+        },
+    );
+    assert!(r.usable_other(&rq("m"), &a, &accounts));
+    assert!(!r.usable_other(&rq("other"), &a, &accounts));
+    r.report(&rq("m"), &"b".into(), &Outcome::AuthFailed);
+    assert!(!r.usable_other(&rq("m"), &a, &accounts));
+}
+
+#[test]
+fn usable_other_has_no_side_effects() {
+    let (r, _) = router(cfg(Strategy::RoundRobin));
+    let a = [acct("a"), acct("b"), acct("c")];
+    assert_eq!(pick(&r, &rq("m"), &a), "a");
+    for _ in 0..3 {
+        assert!(r.usable_other(&rq("m"), &"a".into(), &a));
+        assert!(!r.prefer_other(&rq("m"), &"a".into(), &a));
+    }
+    assert_eq!(pick(&r, &rq("m"), &a), "b", "rotation unchanged");
+}
+
+/// `usable_other(req, cur, A)` is exactly whether `select` succeeds with `cur` also excluded.
+#[test]
+fn usable_other_agrees_with_select() {
+    #[derive(Clone, Copy, Debug)]
+    enum Cool {
+        None,
+        Model,
+        OtherModel,
+        Account,
+        Expired,
+    }
+    const COOLS: [Cool; 5] = [
+        Cool::None,
+        Cool::Model,
+        Cool::OtherModel,
+        Cool::Account,
+        Cool::Expired,
+    ];
+    let cur: AccountId = "a".into();
+    for strategy in [
+        Strategy::RoundRobin,
+        Strategy::WeightedRoundRobin,
+        Strategy::FillFirst,
+    ] {
+        // Per other account: disabled, weight, cooldown, excluded.
+        for case in 0..(2 * 2 * COOLS.len() * 2).pow(2) {
+            let (r, clk) = router(cfg(strategy));
+            let mut accounts = vec![acct("a")];
+            let mut exclude = vec![];
+            let mut rest = case;
+            for id in ["b", "c"] {
+                let mut digit = |n: usize| {
+                    let d = rest % n;
+                    rest /= n;
+                    d
+                };
+                let (disabled, weight, cool, excluded) = (
+                    digit(2) == 1,
+                    digit(2) as i64,
+                    COOLS[digit(COOLS.len())],
+                    digit(2) == 1,
+                );
+                accounts.push(Account {
+                    disabled,
+                    ..acct_w(id, weight)
+                });
+                if excluded {
+                    exclude.push(id.into());
+                }
+                let not_found = |model: &str, secs| {
+                    r.report(
+                        &rq(model),
+                        &id.into(),
+                        &Outcome::NotFound {
+                            retry_after: None,
+                            cooldown: Duration::from_secs(secs),
+                        },
+                    )
+                };
+                match cool {
+                    Cool::None => {}
+                    Cool::Model => not_found("m", 600),
+                    Cool::OtherModel => not_found("x", 600),
+                    Cool::Account => r.report(&rq("m"), &id.into(), &Outcome::AuthFailed),
+                    Cool::Expired => not_found("m", 1),
+                }
+            }
+            clk.advance(Duration::from_secs(2));
+            let req = RouteRequest {
+                exclude: exclude.clone(),
+                ..rq("m")
+            };
+            let mut with_cur = req.clone();
+            with_cur.exclude.push(cur.clone());
+            assert_eq!(
+                r.usable_other(&req, &cur, &accounts),
+                r.select(&with_cur, &accounts).is_ok(),
+                "{strategy:?} {accounts:?} exclude={exclude:?}"
+            );
+        }
+    }
 }

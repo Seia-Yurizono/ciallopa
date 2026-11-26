@@ -635,7 +635,9 @@ async fn d6_http_tries_new_accounts_ws_keeps_its_captured_overload_switch_limit(
 async fn d7_ws_quota_switch_budget_resets_each_turn() {
     let env = Env::new(Scenario::QuotaTurns, 2, "").await;
     let mut ws = env.ws().await.unwrap();
-    for (fail, success) in [("a", "b"), ("b", "c")] {
+    // Exclusion lasts one turn: the second turn may go back to `a` (this router keeps no
+    // cooldowns; a real one would skip `a` while it cools down).
+    for (fail, success) in [("a", "b"), ("b", "a")] {
         ws.send(ClientMessage::text(
             json!({"type":"response.create","model":"gpt-5.5",
             "fail_account":fail})
@@ -653,7 +655,7 @@ async fn d7_ws_quota_switch_budget_resets_each_turn() {
             completed(success)
         );
     }
-    assert_eq!(*env.mock.turns.lock().unwrap(), ["a", "b", "b", "c"]);
+    assert_eq!(*env.mock.turns.lock().unwrap(), ["a", "b", "b", "a"]);
     ws.close(None).await.unwrap();
 }
 

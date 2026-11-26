@@ -9,10 +9,34 @@ use ciallopa_upstream::UpstreamWs;
 use http::HeaderMap;
 use std::time::Duration;
 
+/// Accounts a downstream connection has served, for `x-codex-turn-state` of unknown owner:
+/// the client's value can only belong to the account the connection was opened on.
+#[derive(Clone, Copy)]
+pub(super) enum TurnStateOrigin<'a> {
+    /// The handshake: the first account tried may own it.
+    Initial,
+    /// A redial; the connection has only served this account so far.
+    Pinned(&'a AccountId),
+    /// A redial after the connection has served another account.
+    Switched,
+}
+
+impl TurnStateOrigin<'_> {
+    /// Whether an attempt on `id` with `route` has left the owner.
+    fn switched(self, id: &AccountId, route: &RouteRequest) -> bool {
+        match self {
+            Self::Initial => !route.exclude.is_empty(),
+            Self::Pinned(orig) => id != orig || !route.exclude.is_empty(),
+            Self::Switched => true,
+        }
+    }
+}
+
 pub(super) async fn connect(
     st: &AppState,
     path: &str,
     headers: &HeaderMap,
+    origin: TurnStateOrigin<'_>,
     route: &mut RouteRequest,
     hold_cap: Duration,
     tracker: Option<&mut Tracker>,
@@ -23,7 +47,12 @@ pub(super) async fn connect(
         Policy::ws_redial()
     };
     policy.hold_cap = hold_cap;
-    let transport = WsTransport { st, path, headers };
+    let transport = WsTransport {
+        st,
+        path,
+        headers,
+        origin,
+    };
     let (accepted, id) = Loop {
         st,
         transport,
@@ -48,6 +77,7 @@ struct WsTransport<'a> {
     st: &'a AppState,
     path: &'a str,
     headers: &'a HeaderMap,
+    origin: TurnStateOrigin<'a>,
 }
 
 impl Transport for WsTransport<'_> {
@@ -65,7 +95,7 @@ impl Transport for WsTransport<'_> {
         // Capture before the dial reads egress options.
         let generation = self.st.upstream.egress_gen();
         let headers = upstream_headers(
-            &crate::turn_state::scope(self.headers, id, !route.exclude.is_empty()),
+            &crate::turn_state::scope(self.headers, id, self.origin.switched(id, route)),
             creds,
         );
         let sent = std::time::Instant::now();

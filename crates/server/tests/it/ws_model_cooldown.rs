@@ -30,6 +30,14 @@ async fn env_usage(
     ids: Vec<&'static str>,
     usage: Option<Arc<ciallopa_usage::Recorder>>,
 ) -> (String, Arc<ciallopa_routing::CpaRouter>, Log, Instant) {
+    env_with(Store::new(&ids), "", usage).await
+}
+
+async fn env_with(
+    store: Store,
+    routing: &str,
+    usage: Option<Arc<ciallopa_usage::Recorder>>,
+) -> (String, Arc<ciallopa_routing::CpaRouter>, Log, Instant) {
     let t0 = Instant::now();
     let log: Log = Default::default();
     let (l1, l2) = (log.clone(), log.clone());
@@ -70,11 +78,11 @@ async fn env_usage(
     );
     let up_addr = serve(up).await;
     let cfg = Config::parse(&format!(
-        "api_keys = [\"{KEY}\"]\nupstream = \"http://{up_addr}/backend-api\"\n[routing]\ncooldown_wait_secs = 20\n"
+        "api_keys = [\"{KEY}\"]\nupstream = \"http://{up_addr}/backend-api\"\n[routing]\ncooldown_wait_secs = 20\n{routing}"
     ))
     .unwrap();
     let router = Arc::new(ciallopa_routing::CpaRouter::new(cfg.routing.clone()));
-    let state = proxy_state(cfg, Arc::new(Store::new(&ids)), router.clone(), usage);
+    let state = proxy_state(cfg, Arc::new(store), router.clone(), usage);
     (serve(ciallopa::build_app(state)).await, router, log, t0)
 }
 
@@ -177,6 +185,31 @@ async fn ws_turn_waits_out_a_short_model_cooldown_on_the_only_account() {
     assert_eq!(st, 101);
     assert!(first.contains("response.completed"), "{first}");
     // Like HTTP: held until the cooldown ends, then sent on the (re-dialled) account.
+    assert!(t.elapsed() >= millis(1500), "{:?}", t.elapsed());
+    assert_eq!(turns(&log, 0), ["acct-a"]);
+}
+
+/// Weighted round robin never picks a zero-weight account, so it is no alternative: the
+/// turn waits for the pinned account like with a single account.
+#[tokio::test]
+async fn ws_turn_waits_when_the_only_other_account_has_zero_weight() {
+    let acct = |id: &str, weight| Account {
+        id: id.into(),
+        email: None,
+        chatgpt_account_id: Some(format!("acct-{id}")),
+        plan_type: None,
+        priority: 0,
+        weight,
+        disabled: false,
+    };
+    let store = Store::with_accounts(vec![acct("a", 1), acct("b", 0)]);
+    let (proxy, router, log, _) =
+        env_with(store, "strategy = \"weighted-round-robin\"\n", None).await;
+    cool_model(&router, "a", units(2));
+    let t = Instant::now();
+    let (st, first) = ws_turn(&proxy).await;
+    assert_eq!(st, 101);
+    assert!(first.contains("response.completed"), "{first}");
     assert!(t.elapsed() >= millis(1500), "{:?}", t.elapsed());
     assert_eq!(turns(&log, 0), ["acct-a"]);
 }

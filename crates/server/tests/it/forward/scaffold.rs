@@ -998,7 +998,9 @@ pub(super) async fn up_ws(State(m): State<Mock>, h: HeaderMap, ws: WebSocketUpgr
                     continue;
                 }
                 if t.as_str().contains("\"budget_long\"") || t.as_str().contains("\"budget_next\"") {
-                    if auth.contains("tok-a") || (auth.contains("tok-b") && t.as_str().contains("\"budget_next\"")) {
+                    // Each turn fails on one account: `budget_long` on a, `budget_next` on b.
+                    let next = t.as_str().contains("\"budget_next\"");
+                    if (auth.contains("tok-a") && !next) || (auth.contains("tok-b") && next) {
                         let _ = s.send(Message::Text(r#"{"type":"error","status":429,"error":{"type":"usage_limit_reached","resets_in_seconds":45}}"#.into())).await;
                     } else {
                         for _ in 0..3 {

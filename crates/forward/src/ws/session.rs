@@ -1,4 +1,4 @@
-use super::connect::connect;
+use super::connect::{connect, TurnStateOrigin};
 use super::frames::{busy_frame, error_event, stamp_error_frame, to_up, Head, Message};
 use super::Ctx;
 use crate::attempt::{quota_plan, Next, OverloadPlan, Policy};
@@ -240,7 +240,10 @@ enum Flow {
 struct Session {
     st: AppState,
     ctx: Ctx,
+    /// `exclude` holds the accounts left during the current turn only.
     route: RouteRequest,
+    /// The account the connection was opened on, while it has served no other.
+    initial_account: Option<AccountId>,
     up: UpLink,
     down: Down,
     state: Conn,
@@ -255,6 +258,7 @@ pub(super) async fn relay(
     ctx: Ctx,
     route: RouteRequest,
     account: AccountId,
+    initial_account: Option<AccountId>,
     down: DownWs,
     up: UpstreamWs,
     gen: u64,
@@ -270,6 +274,7 @@ pub(super) async fn relay(
         st,
         ctx,
         route,
+        initial_account,
         up: UpLink::new(up, handshake, account, gen),
         down: Down {
             tx,
@@ -409,16 +414,12 @@ impl Session {
         let mut model_route;
         let route = if matches!(why, Redial::ModelCooldown) {
             model_route = self.route.clone();
-            if self.st.accounts.accounts().iter().any(|a| {
-                a.id != self.up.account
-                    && !a.disabled
-                    && !model_route.exclude.contains(&a.id)
-                    && self
-                        .st
-                        .router
-                        .model_cooling_until(&a.id, &model_route.model)
-                        .is_none()
-            }) {
+            if crate::attempt::others_usable(
+                &self.st,
+                &self.st.accounts.accounts(),
+                &model_route,
+                &self.up.account,
+            ) {
                 model_route.exclude.push(self.up.account.clone());
             }
             &mut model_route
@@ -440,6 +441,9 @@ impl Session {
                     &self.st,
                     &self.ctx.path,
                     &self.ctx.headers,
+                    self.initial_account
+                        .as_ref()
+                        .map_or(TurnStateOrigin::Switched, TurnStateOrigin::Pinned),
                     route,
                     hold,
                     turn.tracker.as_mut(),
@@ -450,6 +454,9 @@ impl Session {
             .map_err(|_| RedialFailed::Budget)?
             .map_err(RedialFailed::Refused)?;
         let replacement = UpLink::new(ws, headers, account, gen);
+        if self.initial_account.as_ref() != Some(&replacement.account) {
+            self.initial_account = None;
+        }
         let code = match why {
             Redial::ModelCooldown => "model_cooldown",
             Redial::QuotaFull => "quota_full",
@@ -666,6 +673,9 @@ impl Session {
                 } else {
                     None
                 };
+                // A new turn may use every account again (turn state scoping keeps its own
+                // history in `initial_account`).
+                self.route.exclude.clear();
                 self.state = Conn::Turn(Turn {
                     _slot: slot,
                     tracker,
@@ -712,8 +722,8 @@ impl Session {
                         }
                     }
                     if self.st.router.prefer_other(
+                        &self.route,
                         &self.up.account,
-                        &self.route.model,
                         &self.st.accounts.accounts(),
                     ) {
                         if self.state.turn().and_then(Turn::request).is_none() {

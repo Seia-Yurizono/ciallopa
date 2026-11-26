@@ -258,12 +258,7 @@ pub(crate) fn others_usable(
     route: &RouteRequest,
     id: &AccountId,
 ) -> bool {
-    accounts.iter().any(|a| {
-        &a.id != id
-            && !a.disabled
-            && !route.exclude.contains(&a.id)
-            && st.router.cooling_until(&a.id).is_none()
-    })
+    st.router.usable_other(route, id, accounts)
 }
 
 /// Report an outcome and name a newly applied account cooldown.

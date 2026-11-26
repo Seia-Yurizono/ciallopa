@@ -4,7 +4,7 @@ mod connect;
 pub(crate) mod frames;
 mod session;
 
-use self::connect::connect;
+use self::connect::{connect, TurnStateOrigin};
 use self::session::{finish_on_shutdown, relay};
 use crate::budget::PreparationBudget;
 use crate::usage::{endpoint_of, Tracker};
@@ -80,6 +80,7 @@ pub(crate) async fn handler(
             &st,
             &path,
             &headers,
+            TurnStateOrigin::Initial,
             &mut route,
             crate::attempt::WS_HOLD_MAX,
             handshake.as_mut(),
@@ -105,6 +106,8 @@ pub(crate) async fn handler(
     if let Some(t) = handshake {
         t.discard();
     }
+    // Opened on the first account tried: the client's turn state may still be its own.
+    let initial_account = route.exclude.is_empty().then(|| account.clone());
     let st2 = st.clone();
     let ctx = Ctx {
         path,
@@ -137,7 +140,17 @@ pub(crate) async fn handler(
             drain,
             close_grace,
             relay(
-                st2, ctx, route, account, socket, up, gen, idle, hs_headers, handoff,
+                st2,
+                ctx,
+                route,
+                account,
+                initial_account,
+                socket,
+                up,
+                gen,
+                idle,
+                hs_headers,
+                handoff,
             ),
         )
         .await;
