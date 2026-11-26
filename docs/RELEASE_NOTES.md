@@ -1,19 +1,22 @@
-本次从 0.6.4 升级到 0.6.5，改进流式错误处理、对齐 Codex 0.172.0，并补充 WebSocket 消息上限观测。
+本次从 0.6.5 升级到 0.6.6，修复请求体字节预算的释放时机，统一账号故障转移的候选资格判定，并修复 WebSocket 跨轮切号误判。
 
-**流式错误与冷却**
+**请求体字节预算释放**
 
-- WebSocket 与 SSE 流内的 `error` / `response.failed` 事件优先从嵌套的 `error.headers` 读取重试指示，兼容顶层 `headers`。解析 `Retry-After`（回退到 `retry-after-ms`）及 `x-retry-metadata: NO_MORE_RETRY`，接入限流冷却、过载等待和连续过载次数达到阈值后的冷却。
+- WebSocket 输出提交（`commit()`）时同步释放 `BodyPermit`，保留并发槽，已预留的请求体字节预算不再占用到连接结束。
+- HTTP 413 / 503 拒绝分支在 10 秒排空前即归还已预留的字节预算。
 
-**Codex 0.172.0 对齐**
+**账号故障转移与 WebSocket 跨轮行为**
 
-- 支持 0.172.0 新增的无 `status` 终结错误码。`credit_balance_exhausted` 纳入额度换号逻辑，三个 `*_spend_limit_exceeded` 错误码终结当前 turn。默认版本基线 `PINNED_CODEX_VERSION` 统一更新至 `0.172.0`。
+- `Router::usable_other` / `prefer_other` 与 `select` 统一候选资格判定：WRR 零权重、排除集、当前模型冷却三项规则一致。
+- 修复 WebSocket 跨轮累积 `exclude` 导致误判 `NoAccounts` 及多余 `1012` 关闭的问题；排除集仅在当前轮内生效。
+- `x-codex-turn-state` 的连接级切号历史与轮内排除解耦。
 
-**WebSocket 上限观测与文档**
+**文档**
 
-- 握手时用 `debug` 日志记录上游 101 响应广告的 `x-codex-websocket-max-message-bytes`、本地上限和最终广告值。默认 `ws_max_message_mb = 16`，文档已修正过时的“16 MiB 硬上限”表述。
+- `ARCHITECTURE.md` 与 `SETTINGS.md` 更新 WS / HTTP 字节预算释放时机及 Images wrapper 局部上限的说明。
 
 **升级说明**
 
-本次无数据库 schema 或配置项变更，数据库仍为 schema v22，可从 0.6.4 直接平滑升级。
+本次无数据库 schema 或配置项变更，数据库仍为 schema v22，可从 0.6.5 直接平滑升级。
 
-安装与备份方法见[部署指南](https://github.com/Seia-Yurizono/ciallopa/blob/v0.6.5/docs/DEPLOYMENT.md#image-tags-and-upgrades)。
+安装与备份方法见[部署指南](https://github.com/Seia-Yurizono/ciallopa/blob/v0.6.6/docs/DEPLOYMENT.md#image-tags-and-upgrades)。
